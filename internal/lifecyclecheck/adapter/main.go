@@ -8,6 +8,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	docsapp "github.com/gosuda/flats/internal/apps/docs"
 	"log"
 	"net"
 	"net/http"
@@ -257,6 +258,7 @@ func serve(args []string) error {
 	rt := &runtime.Manager{DataDir: *data}
 	defer rt.Close() // after svc.Close stopped the instances
 	cfg := core.Config{Now: func() time.Time { return time.Now().Add(time.Duration(clockOffset.Load())).UTC() }, DataDir: *data, Store: st, Private: private, Lifecycle: manager,
+		DocsApp: core.DocsApp{FS: docsapp.FS(), Hash: docsapp.Hash(), Entry: docsapp.Entry, ContentModule: docsapp.ContentModule},
 		Runtime: rt, Reserved: []string{"flats"}, Logf: log.Printf,
 		ConsoleURL: func() string { return "http://" + *listen }}
 	svc, err := core.New(ctx, cfg)

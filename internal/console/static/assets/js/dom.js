@@ -140,12 +140,14 @@ export function accessKey(vis, access) {
 const PUBLIC_EDIT = {
   board: {
     the: 'the board', on: 'on the board', this: 'this board', watch: 'watch', watching: 'watching',
+    everything: 'everything on this board',
     viewDesc: 'Anyone with the link can watch live. Only your networks edit.',
     guestsCannot: "They can't roll back, import, upload images or send selections to an agent.",
     cannot: "Guests can't see history, import, upload images or send selections to an agent.",
   },
   docs: {
     the: 'the documents', on: 'on the documents', this: 'these documents', watch: 'read', watching: 'reading',
+    everything: 'all the text of every document in this flat',
     viewDesc: 'Anyone with the link can read live. Only your networks edit.',
     guestsCannot: "They can't restore earlier text or add files.",
     cannot: "Guests can't see history, restore earlier text or add files.",

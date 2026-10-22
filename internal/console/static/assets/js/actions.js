@@ -292,7 +292,7 @@ export async function allowGuestEditing(flat) {
   const ok = await confirmDialog({
     title: `Let anyone on the internet edit ${label(flat)}?`,
     body: [
-      h('p', { text: `Anyone who opens the link can add, change and delete everything ${words.on}. They type a name first, but nobody checks who they are.` }),
+      h('p', { text: `Anyone who opens the link can add, change and delete ${words.everything}. They type a name first, but nobody checks who they are.` }),
       h('ul', { class: 'checks' },
         check(true, 'You can restore any earlier state from History. Flats pins a ', h('strong', { text: 'safe point' }), ` of ${words.the} as it is now, and it can't be unpinned while guests can edit.`),
         check(true, words.cannot),

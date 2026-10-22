@@ -2478,7 +2478,7 @@ const minutesEdit = { ...minutes, public_access: 'edit', public_presence: { gues
   await tick();
   const confirm = openDialogs().pop();
   assert.ok(confirm.textContent.includes('Let anyone on the internet edit Minutes?'));
-  assert.ok(confirm.textContent.includes('Anyone who opens the link can add, change and delete everything on the documents.'), confirm.textContent);
+  assert.ok(confirm.textContent.includes('Anyone who opens the link can add, change and delete all the text of every document in this flat.'), confirm.textContent);
   assert.ok(confirm.textContent.includes('safe point of the documents as it is now'));
   assert.ok(confirm.textContent.includes("Guests can't see history, restore earlier text or add files."));
   assert.ok(!confirm.textContent.includes('board'), 'no board wording for documents');
@@ -2526,13 +2526,13 @@ const minutesEdit = { ...minutes, public_access: 'edit', public_presence: { gues
   approvalsPage.mount(page, ['apr-doc-edit'], ctx); await tick();
   const dd = all(page, (e) => e.tagName === 'DD').map((e) => e.textContent);
   assert.ok(dd.includes('Public, view only') && dd.includes('Public, anyone can edit'), dd.join(' | '));
-  assert.ok(page.textContent.includes('can add, change and delete everything on the documents.'));
+  assert.ok(page.textContent.includes('can add, change and delete all the text of every document in this flat.'));
   assert.ok(page.textContent.includes('A safe point of the documents will be pinned first.'));
   assert.equal(byText(page, 'Approve…').length, 1);
   byText(page, 'Approve…')[0].dispatch('click');
   await tick();
   const sure = openDialogs().pop();
-  assert.ok(sure.textContent.includes('will be able to add, change and delete everything on the documents.'), sure.textContent);
+  assert.ok(sure.textContent.includes('will be able to add, change and delete all the text of every document in this flat.'), sure.textContent);
   sure.close('cancel');
   await tick();
 }

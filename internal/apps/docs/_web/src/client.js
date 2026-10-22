@@ -267,6 +267,7 @@ let viewers = { count: 0, labels: [] },
   // changes, for Download local text.
   endedText = null,
   endedUnsaved = 0,
+  endedShown = false,
   readers = false;
 const flatName = () => flat || "these documents";
 
@@ -394,6 +395,20 @@ function onWelcome(m) {
   header();
   sync();
   showPresence();
+  if (join.kind === "guest" && endedShown) {
+    // Joined again: the "turned off" notice is out of date, but text that
+    // was not saved then stays downloadable.
+    endedShown = false;
+    if (endedUnsaved)
+      notice(
+        {
+          reason: "",
+          detail: "Changes from before guest editing ended weren't saved.",
+        },
+        [["Download local text", () => download(endedText)]],
+      );
+    else $("#notice").hidden = true;
+  }
 }
 
 function onError(m) {
@@ -469,9 +484,11 @@ function leaveGuestEditing(reason) {
   header();
   sync();
   showPresence();
-  notice(endedNotice(unsaved, reason), [
-    ["Download local text", () => download(endedText)],
-  ]);
+  endedShown = true;
+  notice(
+    endedNotice(unsaved, reason),
+    endedUnsaved ? [["Download local text", () => download(endedText)]] : [],
+  );
 }
 
 // A refused handshake looks like a network failure. When the page's own
@@ -572,8 +589,13 @@ function header() {
   });
 }
 
+// A reader takes no part in presence: it shows nobody, not even itself.
 function showPresence() {
-  people($("#presence"), provider.awareness.getStates(), viewers);
+  people(
+    $("#presence"),
+    writable ? provider.awareness.getStates() : new Map(),
+    writable ? viewers : null,
+  );
 }
 
 startReplica();

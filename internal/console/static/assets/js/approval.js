@@ -138,7 +138,7 @@ export function mount(main, [id], ctx) {
   async function decide(a, yes, flat) {
     const p = params(a);
     const notice = !yes || a.action !== 'set_visibility' ? ''
-      : p.access === 'edit' ? `Anyone on the internet who has the link will be able to add, change and delete everything ${editWords(flat).on}.` : becomingNoticeFor(p.visibility);
+      : p.access === 'edit' ? `Anyone on the internet who has the link will be able to add, change and delete ${editWords(flat).everything}.` : becomingNoticeFor(p.visibility);
     const ok = await confirmDialog({
       title: yes ? `Approve: ${describeApproval(a)}?` : `Reject: ${describeApproval(a)}?`,
       body: [
@@ -182,7 +182,7 @@ function guestEditNotes(flat) {
   const words = editWords(flat);
   const li = (...text) => h('li', { class: 'check ok' }, h('span', { class: 'tick', 'aria-hidden': 'true', text: '✓' }), h('span', null, ...text));
   return h('div', null,
-    h('p', { class: 'alert alert-warn' }, h('strong', { text: 'If you approve,' }), ` anyone on the internet who has the link can add, change and delete everything ${words.on}. Nobody checks who they are.`),
+    h('p', { class: 'alert alert-warn' }, h('strong', { text: 'If you approve,' }), ` anyone on the internet who has the link can add, change and delete ${words.everything}. Nobody checks who they are.`),
     h('ul', { class: 'checks' },
       li(`A safe point of ${words.the} will be pinned first. It can't be unpinned while guests can edit.`),
       li('You can end guest editing at any time with ', h('strong', { text: 'Stop guest editing' }), '.'),
