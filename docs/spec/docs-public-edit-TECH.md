@@ -223,9 +223,29 @@ the WebSocket loop next runs, and at the latest at their next heartbeat
   (viewer) or Try again. A viewer over its pool is closed `1008 capacity` as
   today, and the client shows "Too many readers right now". A Public request
   refused by the runtime's Public slots gets HTTP 503 and the same message.
-- The runtime's event queue stays shared. Guest input is bounded by the flat
-  limits of 3.8 before it reaches the queue's consumer, so members' events
-  wait at most for that bounded work.
+- **Ingress.** Today every socket's reader posts its frames into one event
+  queue (64 events) consumed by the WebSocket VM, and rate checks run in the
+  consumer. The runtime changes so Public frames cannot delay members:
+  - Public connections post to a separate queue of 16 events; members,
+    `open`, `close`, `wake` and signals keep the existing queue.
+  - The loop always takes a waiting event from the member queue first and
+    takes a Public event only when the member queue is empty. A member event
+    therefore waits for at most one Public event already being handled.
+  - Each Public connection's reader has a token bucket in Go before it posts:
+    20 frames/s (burst 40) and 256 KiB/s (burst 512 KiB). All Public readers of
+    the worker share a second bucket: 400 frames/s and 4 MiB/s. A reader over
+    a bucket waits (TCP backpressure); nothing is dropped or refused there.
+    These are above every guest and viewer limit of 3.8, so they only bound a
+    flood, including viewer pings and malformed frames, before any JavaScript
+    runs.
+- **Room memory.** `roomBudget` today sums the writable rooms (4 MiB, 30,000
+  structs, 8 rooms) and the read-only rooms (2 MiB, 20,000, 4) separately. A
+  room is charged to the member budget while at least one member is in it,
+  and otherwise to a separate guest budget (4 MiB, 30,000 structs, 4 rooms)
+  while a guest is in it, else to the reader budget as today. A member
+  joining a guest room moves its charge to the member budget, so guest-only
+  rooms never use member capacity; the room's size itself is bounded by the
+  document size reserve of 3.8.
 - Member welcome is unchanged except for `nick` (3.5) and the `viewers` frames
   (3.4).
 
@@ -313,7 +333,7 @@ New operations under `/_docs/host/revisions/` (private plus
 
 | Limit | Value | Where |
 |---|---|---|
-| Update frames | 8/s, burst 16 per guest socket | before the transaction |
+| Update frames | 8/s, burst 16, and 128 KiB/s, burst 256 KiB, per guest socket | before the transaction |
 | Update size | 64 KiB decoded | before the transaction |
 | Presence | 10/s per guest socket; excess is dropped, not refused | `presence()` |
 | All guests of the flat | 200 updates/s and 2 MiB/s read (refused frames counted); over it the update gets `busy` (below) | before the transaction |
@@ -332,9 +352,11 @@ New operations under `/_docs/host/revisions/` (private plus
   The client stops sending, waits one second, and resends every
   unacknowledged update in its original order, the first with `retry: true`.
   Already committed ids are acknowledged as duplicates, so nothing is applied
-  twice or out of order. With 30 guests at the client pace (4 updates/s,
-  4.1) the flat sees at most 120 updates/s, so `busy` appears only under a
-  flood.
+  twice or out of order. The client paces both frames and bytes (4 updates
+  and 64 KiB per second, section 4), so 30 guests at full pace send at most
+  120 updates/s and 1.9 MiB/s. `busy` appears when more guests than that
+  write at full speed at once, such as several large pastes together, or
+  when a client does not pace; both resend later without loss.
 - Each worker has its own Public send budget (3.3), so one flat's guests and
   viewers cannot use another flat's or the members' send queues. This is how
   rule 25a's guest share of the host's Public traffic is met for documents.
@@ -376,25 +398,29 @@ New operations under `/_docs/host/revisions/` (private plus
 - Each entry's documents carry `guest_lines` computed from the recorded text's
   Yjs items (2.8): walk the `Y.Text` items, collect the visible characters of
   items whose client id is guest-owned, convert offsets to line ranges.
-- `meta.presence` is written by the WebSocket VM when the guest or viewer count
-  changes, at most once per second.
+- `meta.presence = {guests, viewers, at}` is written by the WebSocket VM when
+  a count changes (at most once per second) and, while any Public socket is
+  open, every 10 seconds on a heartbeat even when the counts are unchanged,
+  so `at` stays fresh. The last Public socket closing writes zeros. Core
+  reports the counts while `at` is younger than 30 seconds and the worker is
+  awake (2.7).
 
 ### 3.10 Rendering bound
 
-Mermaid renders on the page's main thread, so a hard time limit cannot
-interrupt one render. The bound has two parts:
+Mermaid renders on the page's main thread, so neither a timer nor sampled
+measurements can bound every accepted input. The guarantee is therefore
+about when a render can start:
 
-- **Size bounds per diagram type.** Mermaid gets `maxTextSize: 20000` and
-  `maxEdges: 500`, plus per-type caps the client checks before calling Mermaid
-  (lines of source and, for flowcharts, nodes). A diagram above a cap renders
-  as its source with a note. The testing stage renders generated worst cases
-  for every diagram type Mermaid supports (deep nesting, long labels, many
-  edges, cycles) in a real browser and sets each cap so the slowest stays
-  under one second; the measured table goes into the test report.
-- **Stop after a slow render.** The page times each render. After any render
-  takes longer than 500 ms, the page renders further diagrams of that page
-  load only when the reader clicks **Show diagram**. One hostile diagram can
-  therefore cost at most one bounded render per page load.
+- **Guest-touched documents render diagrams on request.** The welcome gains
+  `guest_text`: true when the document has any row in
+  `flats_docs_guest_clients` (3.5), and every welcome of a flat at level
+  `edit` sets it too; a `level` frame to `edit` also sets it on open pages. On
+  such a page every Mermaid block shows its source with a **Show diagram**
+  button and renders only when the reader clicks it, for members, guests and
+  viewers alike. Other documents render diagrams as today.
+- **Size caps** limit what one click can cost: Mermaid gets
+  `maxTextSize: 20000` and `maxEdges: 500`; a larger diagram stays source with
+  a note.
 
 Spec rule 21a is reworded to these two guarantees.
 
@@ -414,8 +440,8 @@ Spec rule 21a is reworded to these two guarantees.
 - **People list:** guests with the badge; viewers as "Viewer N" chips (or a
   count above 20).
 - **Guest editor:** today's private editor (Edit/View, no History). Pending
-  Yjs updates are merged (`Y.mergeUpdates`) and sent at most 4 frames per
-  second, below the server's 8/s. Consecutive updates are merged only while
+  Yjs updates are merged (`Y.mergeUpdates`) and sent at most 4 frames and
+  64 KiB per second, below the server's per-guest limits. Consecutive updates are merged only while
   the result stays within 64 KiB; a single update above it (a very large
   paste) is refused by the server and stops editing (rule 22). The status shows "Saving…" until every id is acknowledged.
   `busy` handling as in 3.8.
@@ -498,13 +524,14 @@ Spec rule 21a is reworded to these two guarantees.
 | Current text only | the scan test of 3.7 with fresh and old state vectors, the pending-struct refusal, and the upgrade fixtures with existing pending state |
 | Identity | the frame scans of 3.4 (documents) and 5.1 (boards), with a Tailscale member present |
 | Client ownership | worker tests: a guest extending a member's, seed's or agent's client id, or another guest's, is refused; attribution of existing text never changes |
-| Rendering | browser test with script, raw HTML, `javascript:` links, an outside image and generated worst-case diagrams of every supported type at the caps; the measured table; the stop-after-slow switch |
-| Limits | worker tests per limit in 3.8, including `busy` resend order. Load test: 20 guests at the per-guest limit plus flood clients at the flat limit, with Public pools full, while a member connects, edits, rolls back and saves; measured: member admission succeeds, delivery of the member's update to another member's socket p95 within the document's existing target, rollback completes |
+| Rendering | browser test with script, raw HTML, `javascript:` links and an outside image; a document with guest text and a flat at `edit` render no diagram until Show diagram is clicked; diagrams above the caps stay source; documents without guest text render as today |
+| Limits | worker tests per limit in 3.8, including `busy` resend order with concurrent large pastes; runtime tests for the Public queue priority and ingress buckets; room-budget tests (guest rooms full, a member opens another document). Load test: 20 guests at the per-guest limit plus flood clients over the flat and ingress limits, with Public pools full, while a member connects, edits, rolls back and saves. Target: a member's change is visible in another member's editor (text present in the receiving page's CodeMirror DOM) within 200 ms p95, the board's figure, measured in two headless Chromium pages with the existing opt-in browser harness; also recorded: socket delivery p95, member admission, rollback completion |
 | Refusal | worker and client tests: refused A, dependent B never committed, download contains both, Rejoin works; pacing loses nothing at 50 keystrokes per second for 30 seconds |
 | Lifetime | worker test with lowered limits: guests stop at their share, a member update still commits |
 | Revisions | worker+core test over a simulated hour (fake clock): guests continuously and in pauses, a member editing with 31-second pauses across two documents; at most 12 guest-only entries plus forced boundaries; member closures credit the member. Retention: guest-only at most half (Q = 1, 2, 4, 100). Safe point: reused on an unchanged re-enable, refused unpin while `edit`, pinned in the import transaction under retention pressure |
 | Kill switch | core integration tests: console Stop → commit → `access` → guest sockets closed and in-flight updates refused; the same with the worker asleep (stored level applies on wake), with the `access` call failing (instance restarts), with the signal queue full (reconciled at the next heartbeat), and with a quota change racing an `edit` approval |
 | Recovery | integration test: guests delete all text of every document, rollback to the safe point and to the revision before |
+| Presence | core test: unchanged guest and viewer counts stay reported beyond 30 s; they drop to 0 after the last disconnect and while asleep |
 | Agent safety | `get_document` and `get_revision` return `guest_lines` after a member edits around guest text |
 | Consistency | console UI tests for both types; real browser check on a disposable development host |
 
@@ -518,7 +545,8 @@ Spec rule 21a is reworded to these two guarantees.
 | 16, 16a | guest key | client ownership, current text only (3.5, 3.7) | Client ownership, Current text only |
 | 17–21a | — | guest boundary, rendering (3.3, 3.10, 4) | Boundary, Rendering |
 | 22–26, 25a | retention (2.6) | limits, `busy`, pools, groups (3.3, 3.8, 3.9) | Limits, Refusal, Lifetime, Revisions |
-| 27–28 | — | guest lines (2.8, 3.9) | Agent safety |
+| 27–28 | — | guest lines (2.8, 3.9) | Presence | core test: unchanged guest and viewer counts stay reported beyond 30 s; they drop to 0 after the last disconnect and while asleep |
+| Agent safety |
 | 29–31 | commit order | epoch at commit, signal, reconciliation (3.1, 3.2) | Kill switch, Recovery |
 | 32–36 | console components | per-type nouns (6) | Consistency |
 | Board 8, 11, 15 | — | 5.1, 5.2 | Joining, Identity |
