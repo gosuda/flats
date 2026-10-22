@@ -4,7 +4,8 @@
 import { createMarkdown } from "./markdown.js";
 import {
   ago,
-  who,
+  credit,
+  guestNames,
   changed,
   changeLines,
   isMarkdown,
@@ -49,6 +50,15 @@ async function api(path, options = {}) {
     );
   return body;
 }
+
+// creditNodes draws a revision's credit: guest names as text, each
+// followed by the guest badge.
+const creditNodes = (r) =>
+  credit(r).flatMap((p) =>
+    typeof p === "string"
+      ? [p]
+      : [p.guest, " ", el("span", { class: "guest-badge", text: "guest" })],
+  );
 
 export function initHistory({ path, name, liveText, onView, onLive, status }) {
   const toggle = $("#history-toggle"),
@@ -161,7 +171,9 @@ export function initHistory({ path, name, liveText, onView, onLive, status }) {
     list.replaceChildren();
     for (const r of revisions) {
       const date = new Date(r.created_at),
-        selected = viewing?.revision.number === r.number;
+        selected = viewing?.revision.number === r.number,
+        // The safe point stays pinned while anyone can edit (rule 6).
+        protectedPin = r.safe_point === true && r.pinned;
       const open = el(
         "button",
         {
@@ -170,7 +182,7 @@ export function initHistory({ path, name, liveText, onView, onLive, status }) {
           "aria-current": selected ? "true" : null,
           onclick: () => show(r.number),
         },
-        el("span", { class: "revision-who", text: who(r) }),
+        el("span", { class: "revision-who" }, ...creditNodes(r)),
         el(
           "span",
           { class: "revision-meta" },
@@ -180,6 +192,12 @@ export function initHistory({ path, name, liveText, onView, onLive, status }) {
             text: ago(date),
           }),
           el("span", { text: changed(r, titles, path) }),
+          guestNames(r).length
+            ? el("span", { text: "Names were typed by guests." })
+            : null,
+          protectedPin
+            ? el("span", { text: "Can't be unpinned while guests can edit." })
+            : null,
         ),
         r.message && r.kind !== "created" && r.kind !== "rollback"
           ? el("span", { class: "revision-message", text: r.message })
@@ -194,6 +212,7 @@ export function initHistory({ path, name, liveText, onView, onLive, status }) {
           ? "Pinned: kept until you unpin it"
           : "Pin: keep this revision",
         text: r.pinned ? "Pinned" : "Pin",
+        disabled: protectedPin,
         onclick: () => setPin(r),
       });
       list.append(
@@ -418,7 +437,9 @@ export function initHistory({ path, name, liveText, onView, onLive, status }) {
           "div",
           { class: "revision-title" },
           el("strong", { text: `Revision ${revision.number}` }),
-          el("span", { text: ` · ${who(revision)} · ` }),
+          " · ",
+          ...creditNodes(revision),
+          " · ",
           el("time", {
             datetime: date.toISOString(),
             title: date.toLocaleString(),
