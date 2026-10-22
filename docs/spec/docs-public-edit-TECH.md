@@ -13,12 +13,14 @@ The document app internals are in [docs-app.md](../internal/docs-app.md).
 | Stored level | The board's `flats.public_access`, `access_seq` and `content_state.safe_point_rev`, now allowed for type `docs` as well as `board` |
 | Approval, quotas, preflight | The board's code paths, with the type checks widened to documents and the messages worded per type |
 | Telling the worker | Core writes the level and the epoch (`flats.access_seq`) into the worker database through a new `access` host operation, on every level change of a running worker and on every wake. Each public request also carries both as trusted headers. Guest power needs both to say `edit` with the same epoch |
-| Epoch at commit | Every guest update transaction rereads the stored epoch and refuses on a mismatch, so a level drop takes effect in whichever VM commits next. A runtime signal then closes guest sockets at once |
-| Connections | Three kinds: member (Private route), guest (Public, guest-capable, valid `guest` hello), viewer (Public otherwise). Guests and viewers have their own pools |
-| Guest identity | Server-issued token, key `guest:` + hash, as on boards. Each guest connection owns the Yjs client ids it writes with; ownership is stored so authorship survives reloads |
+| Epoch at commit | Every guest update transaction rereads the stored epoch and refuses on a mismatch, so a level drop takes effect in whichever VM commits next. A coalescing runtime signal, reconciled on every heartbeat, then closes guest sockets and tells viewers |
+| Access epoch on the wire | `flats.access_seq` is sent as `access_epoch` in welcomes and `level` frames of both types, so clients can tell a new `edit` period from a reconnect |
+| Connections | Three kinds: member (Private route), guest (Public, guest-capable, valid `guest` hello), viewer (Public otherwise). Public connections have their own slots and send budget in the runtime and in the worker, so a full Public side never takes member capacity |
+| Guest identity | Server-issued token, key `guest:` + hash, as on boards. A guest may insert only with Yjs client ids that are new to the document or already its own; guest-owned ids are stored, so authorship survives reloads and existing text can never become guest-written |
 | Projection | Presence and welcome are built per audience. Guests see members under their page nickname (`hello.nick`), never a Tailscale identity |
-| Current text only | The initial sync is already a diff of the garbage-collected server document. An update that leaves pending structs is refused for everyone, so no hidden text can ride along |
-| Guest pacing | The client merges and paces guest updates; the server's guest rate limit sits above that pace. A refusal stops the page (Download local text, Rejoin) |
+| Current text only | The initial sync is already a diff of the garbage-collected server document. Pending structs are dropped when a document loads and refused in new updates, so no hidden text can ride along |
+| Guest pacing | The client merges and paces guest updates below the per-guest limit. When all guests together reach the flat's limit, the server answers `busy` and the client resends in order later, losing nothing. A refusal stops the page (Download local text, Rejoin) |
+| Diagrams | Size bounds measured per diagram type, and after any slow render the page renders further diagrams only on request |
 | Revisions | One fixed-window guest group per flat; outbox entries carry guest names; core marks guest-only revisions and uses the board's retention |
 | Authorship | Per document, the line ranges whose current text a guest inserted, computed from Yjs item client ids; stored with each revision entry |
 | Board changes | Popup with View only and Join to edit replaces the bottom panel; members send a nickname and guests see it instead of Member N |
@@ -58,8 +60,9 @@ type publicEditTarget interface {
 }
 ```
 
-The board adapter wraps `*board.Instance` as today (its epoch argument is
-ignored; the board keeps its in-memory epoch). The docs adapter calls host
+The board adapter wraps `*board.Instance` as today; the board keeps its
+in-memory epoch for commits and now also sends the stored epoch to clients
+(5.1). The docs adapter calls host
 operations (3.6) through `docsHost`.
 
 ### 2.3 Applying `edit` to a document
@@ -151,6 +154,8 @@ never wakes a worker.
   transaction. Missing means `""` at epoch 0.
 - A Public WebSocket is **guest-capable** only when the request headers say
   `edit` with epoch E and `meta.access` is `{edit, E}` at admission.
+- The epoch is `flats.access_seq`: stored in flats.db, incremented by every
+  commit of visibility or level, and never reset by worker restarts or sleep.
 - Every guest `update` transaction reads `meta.access` first and refuses with
   `editing_ended` unless it is still `{edit, E}` for the connection's E. This
   check runs in the transaction that would commit, in whichever VM handles it,
@@ -158,19 +163,31 @@ never wakes a worker.
 
 ### 3.2 The `access` signal
 
-After writing `meta.access`, the request VM posts a runtime signal to the
-WebSocket VM. The runtime gains one built-in-docs event next to `wake`:
+After writing `meta.access`, the request VM raises a runtime signal for the
+WebSocket VM. The runtime gains one built-in-docs entry point next to `wake`:
 `__flats_docsSignal("access")` (`internal/runtime/ws.go`, `prelude.js`),
-dispatched to `websocket.signal(name, env)`. On `access` the WebSocket VM
-rereads `meta.access` and:
+dispatched to `websocket.signal(name, env)`. Unlike `wake`, which drops an
+event when the queue is full, the signal is **coalescing and never lost**: it
+sets a pending flag in the hub and tries a non-blocking send; the WebSocket
+loop checks the flag after every event it handles and when the send
+succeeds, so a set flag is always handled once the loop runs again.
+
+On `access` the WebSocket VM rereads `meta.access` and:
 
 - closes every guest socket whose epoch differs with
   `{t: "error", code: "editing_ended"}` and close `1008 editing_ended`;
-- sends `{t: "level", access}` to every viewer socket.
+- sends `{t: "level", access, access_epoch}` to every viewer socket.
 
-A lost signal does not weaken safety (3.1). Liveness: every heartbeat of a
-guest socket (`ping`, every 15 s) rereads `meta.access` and closes a stale
-guest the same way.
+Reconciliation: every client sends `ping` every 15 seconds today (members,
+guests and viewers). On each `ping` from a Public socket the VM compares the
+socket's known level and epoch with `meta.access` and applies the same two
+actions when they differ.
+
+**Completion boundary.** Stop guest editing is complete when the commit and
+the `access` operation have returned (or, for a sleeping worker, the commit
+alone). From then on no guest update commits (3.1). Guest sockets close when
+the WebSocket loop next runs, and at the latest at their next heartbeat
+(15 seconds). The console's confirmation states the first, not the closing.
 
 ### 3.3 Classification and admission
 
@@ -191,23 +208,31 @@ guest the same way.
   `flats-docs-viewer-token`), `token → N` in WebSocket VM memory, a released N
   held for 60 seconds, N the lowest free number. One numbering for the whole
   flat.
-- Pools, apart from the member pool:
+- Pools. The runtime's `admit` decides before the handshake from the trusted
+  `X-Flats-Access` header:
 
-| Pool | Simultaneous | Per document | New per minute |
-|---|---|---|---|
-| Guests | 30 | 20 | 30 |
-| Viewers (today's reader pool) | 40 | 10 | — |
+| Layer | Member (Private) | Public (guests and viewers) |
+|---|---|---|
+| Runtime slots (`MaxWSConnections`, includes handshakes and closing sockets) | 256, as today | a separate 80 |
+| Runtime queued bytes per flat | 16 MiB, as today | a separate 4 MiB |
+| Worker connections | 200, 50 per document, 8 documents, as today | guests 30 (20 per document, 30 new per minute); viewers 40 (10 per document, 4 documents), as today's reader pool |
+| Worker queued bytes (`flatSendBytes`) | 16 MiB, as today | a separate 4 MiB |
 
-  A guest over its pool gets fatal `full` and the client offers Read (viewer)
-  or Try again. A viewer over its pool is closed `1008 capacity` as today and
-  the client shows "Too many readers right now".
+  Public connections therefore never take a member slot or member send
+  budget. A guest over its pool gets fatal `full` and the client offers Read
+  (viewer) or Try again. A viewer over its pool is closed `1008 capacity` as
+  today, and the client shows "Too many readers right now". A Public request
+  refused by the runtime's Public slots gets HTTP 503 and the same message.
+- The runtime's event queue stays shared. Guest input is bounded by the flat
+  limits of 3.8 before it reaches the queue's consumer, so members' events
+  wait at most for that bounded work.
 - Member welcome is unchanged except for `nick` (3.5) and the `viewers` frames
   (3.4).
 
 ### 3.4 Welcome and projection
 
-- `welcome` gains `access` (the level: `view`/`edit`, absent on Private) and
-  `me`:
+- `welcome` gains `access` (the level: `view`/`edit`, absent on Private),
+  `access_epoch` and `me`:
   - member: as today (`you`), plus nothing new;
   - guest: `me: {kind: "guest", name}` and `guest_token`; `you.verified` is
     always false;
@@ -230,14 +255,24 @@ guest the same way.
 
 - `validateUpdate` already decodes the structs; the update path now reads the
   client ids of all inserted structs.
-- New table `flats_docs_clients(client INTEGER PRIMARY KEY, kind TEXT, owner TEXT)`
-  (`kind` member or guest, `owner` the editor key).
-- A guest update is refused with `guest_client` (a fatal refusal, 3.8) when it
-  inserts with a client id owned by anyone else. Unknown ids become owned by
-  that guest key in the same transaction. A member update records unknown ids
-  as member-owned; members are not refused.
-- The awareness id of a guest socket must be one of its owned ids or unseen.
-- Guest-owned rows are capped at 5,000 per flat (part of 3.8 state caps).
+- New table `flats_docs_guest_clients(doc TEXT, client INTEGER, owner TEXT,
+  PRIMARY KEY(doc, client))`, holding only guest-owned ids.
+- A guest update may insert with client id C in document D only when C is
+  already owned by this guest key in D, or when C is in neither the table nor
+  the server document's struct store (`doc.store.clients`). In the second case
+  C becomes owned by the guest in the same transaction. Anything else is
+  refused with `guest_client` (fatal, 3.8). Every other writer (members, seeds,
+  activations, agent edits, restores) already exists in the document's store
+  once committed, so a guest can never extend an existing client, and text
+  that was not inserted by a guest can never become guest-written. Existing
+  databases need no initialization: the struct store is the source of truth
+  for "not a guest's".
+- A member update that inserts with a guest-owned id is refused with
+  `invalid_update` (a member's page never reuses a guest's random id; this
+  keeps attribution exact).
+- The awareness id of a guest socket follows the same rule.
+- Guest-owned rows are capped at 5,000 per flat (3.8).
+- Restoring a document (`resetDocument`) deletes its rows.
 
 ### 3.6 Host operations
 
@@ -261,6 +296,15 @@ New operations under `/_docs/host/revisions/` (private plus
   document must have no `pendingStructs` and no `pendingDs`; otherwise
   `invalid_update`. Pending structs would otherwise be encoded into welcomes
   and checkpoints without ever being visible.
+- Existing data: today such updates are accepted, so logs and checkpoints may
+  already hold pending state. When a document is loaded (`load`, catch-up after
+  a reset), the server drops `pendingStructs` and `pendingDs` from the loaded
+  `Y.Doc` before it is used. Pending state is never visible, so no visible
+  text changes. The next compaction writes a checkpoint without it; until
+  then every welcome is encoded from the cleaned document. A log line records
+  the drop. Tests load fixtures holding pending structs and a pending delete
+  set, check that visible text is unchanged, that welcomes and checkpoints
+  carry no pending bytes, and that later edits commit.
 - A test inserts and deletes marked text as a member, then joins a guest and a
   viewer (fresh and with an old state vector) and scans every byte they
   receive.
@@ -271,14 +315,29 @@ New operations under `/_docs/host/revisions/` (private plus
 |---|---|---|
 | Update frames | 8/s, burst 16 per guest socket | before the transaction |
 | Update size | 64 KiB decoded | before the transaction |
-| Presence | 10/s per guest socket | `presence()` |
-| All guests of the flat | 60 updates/s, 1 MiB/s read including refused frames | before the transaction |
+| Presence | 10/s per guest socket; excess is dropped, not refused | `presence()` |
+| All guests of the flat | 200 updates/s and 2 MiB/s read (refused frames counted); over it the update gets `busy` (below) | before the transaction |
+| Guest presence relayed, all guests | 100 frames/s; excess dropped | `presence()` |
 | Disk | refuse when the disk check's total is above 90% of the quota | `checkDiskQuota`, guests only |
 | Guest byte budget | 256 MiB per flat, `meta.guest_charge` (below) | after the disk check |
-| Document size | refuse above 90% of `LIMITS.text`, `LIMITS.state` or `roomStructs` | after applying |
+| Document size | refuse when the update would take the document above 90% of an enforced limit: `LIMITS.text` (1 MiB), `LIMITS.state` (1.5 MiB) or `LIMITS.structs` (20,000, checked by `validateDocument`) | after applying |
 | Lifetime capacity | guests may not take a document's `seq` above `LIMITS.receipts − 20,000`, nor the flat's receipts above `totalReceipts − 40,000` | `append` |
 | Client ownership rows | 5,000 guest-owned per flat | 3.5 |
 
+- Guest updates do not use the room's shared update bucket (`rateUpdate`),
+  which stays for members only, so guests cannot use up members' rate.
+- **`busy`.** When the flat's guest bucket is empty the server sends
+  `{t: "busy", id}` instead of applying, marks the socket busy and answers
+  every later update from it with `busy` until one arrives with `retry: true`.
+  The client stops sending, waits one second, and resends every
+  unacknowledged update in its original order, the first with `retry: true`.
+  Already committed ids are acknowledged as duplicates, so nothing is applied
+  twice or out of order. With 30 guests at the client pace (4 updates/s,
+  4.1) the flat sees at most 120 updates/s, so `busy` appears only under a
+  flood.
+- Each worker has its own Public send budget (3.3), so one flat's guests and
+  viewers cannot use another flat's or the members' send queues. This is how
+  rule 25a's guest share of the host's Public traffic is met for documents.
 - Guest byte budget: `meta.guest_charge` grows by the growth of the disk
   check's measured part (`page_count × page_size` plus `unimported`) across each
   committed guest update; when a budget installation reports a lower measured
@@ -298,10 +357,18 @@ New operations under `/_docs/host/revisions/` (private plus
 - A guest update touches the group `editor = "guests"`, `fixed = 1`, adding the
   guest name to `names` (first-edit order, at most 64; more are counted).
 - `sync` closes a fixed group only when `started_at` is 5 minutes old; it is
-  never closed for idleness. `record` is non-forced and recording clears
-  `dirty` but keeps `started_at`, so a member's group closing records a mixed
-  entry without restarting the window (rule 25). A due, clean fixed group is
-  deleted without an entry.
+  never closed for idleness.
+- **Who triggers a record** (as board TECH 5.1). Today `sync` records when any
+  group is due and the text is dirty. That changes to: record only when at
+  least one **due** group is **dirty**; a due clean group is deleted without
+  an entry. A member group is due after 30 s idle or 5 minutes; the guest
+  group only at its window end. Recording clears `dirty` on every group but
+  keeps the guest group's `started_at`. So an entry recorded because a member
+  group closed credits that member (it is dirty by definition) and the guests
+  since the last entry, and a guest-only entry is recorded only at a guest
+  window end or a forced boundary. A test interleaves member groups that go
+  clean after a guest-window entry and expire later while guests keep
+  editing.
 - Authors: dirty member groups' labels as today. Guests: the first 5 names of
   dirty fixed groups in `guests`, the rest counted in `guests_more`.
 - Forced boundaries (agent edit, rollback, activation, safe point, `access`
@@ -314,10 +381,22 @@ New operations under `/_docs/host/revisions/` (private plus
 
 ### 3.10 Rendering bound
 
-Mermaid gets `maxTextSize: 20000` and `maxEdges: 500`. A diagram above either
-renders as its source with a note. The testing stage measures the worst
-render time at the bounds in a real browser and lowers them if any diagram
-blocks the page for more than one second.
+Mermaid renders on the page's main thread, so a hard time limit cannot
+interrupt one render. The bound has two parts:
+
+- **Size bounds per diagram type.** Mermaid gets `maxTextSize: 20000` and
+  `maxEdges: 500`, plus per-type caps the client checks before calling Mermaid
+  (lines of source and, for flowcharts, nodes). A diagram above a cap renders
+  as its source with a note. The testing stage renders generated worst cases
+  for every diagram type Mermaid supports (deep nesting, long labels, many
+  edges, cycles) in a real browser and sets each cap so the slowest stays
+  under one second; the measured table goes into the test report.
+- **Stop after a slow render.** The page times each render. After any render
+  takes longer than 500 ms, the page renders further diagrams of that page
+  load only when the reader clicks **Show diagram**. One hostile diagram can
+  therefore cost at most one bounded render per page load.
+
+Spec rule 21a is reworded to these two guarantees.
 
 ## 4. Document client
 
@@ -327,7 +406,7 @@ blocks the page for more than one second.
   `level: edit` frame for a viewer without a guest session unless the tab has
   chosen View only since the level last became `edit`
   (`sessionStorage` `flats-docs-view-only` holds the epoch the choice was made
-  at; a newer `edit` epoch clears it). A remembered name
+  at; a newer `access_epoch` clears it). A remembered name
   (`localStorage` `flats-docs-guest-name`) only fills the field.
 - **Header:** viewer "You are Viewer N" and **Join to edit**; guest "You are
   Mina" with the badge and **Change name** (a dialog; saving reconnects with
@@ -335,9 +414,11 @@ blocks the page for more than one second.
 - **People list:** guests with the badge; viewers as "Viewer N" chips (or a
   count above 20).
 - **Guest editor:** today's private editor (Edit/View, no History). Pending
-  Yjs updates are merged (`Y.mergeUpdates`) and sent at most 5 frames per
-  second, below the server's 8/s; the status shows "Saving…" until every id is
-  acknowledged.
+  Yjs updates are merged (`Y.mergeUpdates`) and sent at most 4 frames per
+  second, below the server's 8/s. Consecutive updates are merged only while
+  the result stays within 64 KiB; a single update above it (a very large
+  paste) is refused by the server and stops editing (rule 22). The status shows "Saving…" until every id is acknowledged.
+  `busy` handling as in 3.8.
 - **Refusals:** a fatal guest code stops editing with the notice "…, so editing
   stopped", **Download local text** and **Rejoin**. Rejoin sets
   `sessionStorage` `flats-docs-rejoin` and reloads; the page then joins with
@@ -355,6 +436,9 @@ blocks the page for more than one second.
 
 ### 5.1 Server (`internal/board`)
 
+- `SetPublicAccess(level, epoch)` and `Options.AccessEpoch` carry
+  `flats.access_seq`; the welcome and the `level` frame send it as
+  `access_epoch`.
 - `helloMsg` gains `Nick`. `welcome` stores `c.nick = model.CleanGuestName(h.Nick)`
   for members (both branches); a Tailscale member's display name is never used
   as a nickname.
@@ -376,8 +460,9 @@ blocks the page for more than one second.
   only sets the tab's view-only epoch (as 4). `offerJoin` always uses the
   popup; `showJoinPanel` and its CSS are removed.
 - `meLabel` shows **Join to edit** for a viewer at level `edit`.
-- `onLevel` opens the popup when the level becomes `edit` and the view-only
-  epoch is older.
+- `onLevel` opens the popup when the level becomes `edit` and the tab's
+  view-only choice was made at an older `access_epoch`
+  (`sessionStorage` `flats-board-view-only`).
 - Pure helpers for these decisions go in `guest.js` with node tests.
 
 ## 6. Console (`internal/console/static`)
@@ -407,20 +492,36 @@ blocks the page for more than one second.
 
 | Spec criterion | Evidence |
 |---|---|
-| Approval | core tests for documents: `edit` only through approval or console self-approval; stale after a level change; preflight problems fail without changing visibility; a sleeping document is woken for the safe point |
-| Name rules, Joining | worker tests (guest update refused before a valid name; invalid names refused; Viewer N kept across a reconnect within 60 s); client node tests of the popup decisions; browser check of both types |
-| Boundary | worker and core tests: history routes, block outline, host operations and earlier text refused at both levels; a `view` socket update and a forged Private-only request from a guest change nothing |
-| Current text only | the scan test of 3.7, including a pending-struct update refused |
-| Identity | the frame scan of 3.4 for documents and 5.1 for boards |
-| Rendering | browser test with script, raw HTML, `javascript:` links, an outside image and Mermaid at the bounds; measured render time |
-| Limits | worker tests per limit in 3.8; a load test with 20 guests at the per-guest limit while a member edits, measuring the member's update round trip |
-| Refusal | worker and client tests: refused A, dependent B never committed, download contains both, Rejoin works; pacing loses nothing at 50 keystrokes per second |
+| Approval | core tests for documents: `edit` only through approval or console self-approval; stale after a level change, including a round trip; preflight problems fail without changing visibility; a sleeping document is woken for the safe point; legacy approvals apply as `view` |
+| Name rules, Joining | worker tests: guest update refused before a valid name; invalid names refused; Viewer N kept across a reconnect within 60 s and across documents. Client node tests of the popup decisions: arrival, remembered name, View only, Join to edit, a `level` frame with a newer `access_epoch`, a reconnect with the same epoch, a missed view→edit→view→edit cycle, navigation between documents. Browser check of both types |
+| Boundary | worker and core tests: history routes, block outline, host operations and earlier text refused at both levels; a `view` socket update and a forged Private-only request from a guest change nothing; forged `X-Flats-Public-Access`/`X-Flats-Access-Epoch` from a client are stripped |
+| Current text only | the scan test of 3.7 with fresh and old state vectors, the pending-struct refusal, and the upgrade fixtures with existing pending state |
+| Identity | the frame scans of 3.4 (documents) and 5.1 (boards), with a Tailscale member present |
+| Client ownership | worker tests: a guest extending a member's, seed's or agent's client id, or another guest's, is refused; attribution of existing text never changes |
+| Rendering | browser test with script, raw HTML, `javascript:` links, an outside image and generated worst-case diagrams of every supported type at the caps; the measured table; the stop-after-slow switch |
+| Limits | worker tests per limit in 3.8, including `busy` resend order. Load test: 20 guests at the per-guest limit plus flood clients at the flat limit, with Public pools full, while a member connects, edits, rolls back and saves; measured: member admission succeeds, delivery of the member's update to another member's socket p95 within the document's existing target, rollback completes |
+| Refusal | worker and client tests: refused A, dependent B never committed, download contains both, Rejoin works; pacing loses nothing at 50 keystrokes per second for 30 seconds |
 | Lifetime | worker test with lowered limits: guests stop at their share, a member update still commits |
-| Revisions | worker+core test over a simulated hour with a fake clock: guests continuously and in pauses, a member editing with 31-second pauses across two documents; at most 12 guest-only entries plus forced boundaries; member closures credit the member |
-| Kill switch | worker test: an update in flight across `access` is refused; guests get `editing_ended`; a sleeping document changes only the stored level and the next wake applies it |
+| Revisions | worker+core test over a simulated hour (fake clock): guests continuously and in pauses, a member editing with 31-second pauses across two documents; at most 12 guest-only entries plus forced boundaries; member closures credit the member. Retention: guest-only at most half (Q = 1, 2, 4, 100). Safe point: reused on an unchanged re-enable, refused unpin while `edit`, pinned in the import transaction under retention pressure |
+| Kill switch | core integration tests: console Stop → commit → `access` → guest sockets closed and in-flight updates refused; the same with the worker asleep (stored level applies on wake), with the `access` call failing (instance restarts), with the signal queue full (reconciled at the next heartbeat), and with a quota change racing an `edit` approval |
 | Recovery | integration test: guests delete all text of every document, rollback to the safe point and to the revision before |
 | Agent safety | `get_document` and `get_revision` return `guest_lines` after a member edits around guest text |
 | Consistency | console UI tests for both types; real browser check on a disposable development host |
+
+## 8a. Rule coverage
+
+| Spec rules | Inherited (board code, widened) | New for documents | Evidence (section 8 row) |
+|---|---|---|---|
+| 1–7, 6a | stored level, approval, staleness, safe point, quota rules (2.1–2.3) | docs safe point and wake path (2.3, 2.4, 3.6) | Approval, Revisions, Kill switch |
+| 8–11 | — | popup, View only, Join to edit, `access_epoch` (3.3, 3.4, 4, 5.2) | Name rules, Joining |
+| 12–15, 13a | label rules | projection and nicknames (3.4, 5.1) | Identity |
+| 16, 16a | guest key | client ownership, current text only (3.5, 3.7) | Client ownership, Current text only |
+| 17–21a | — | guest boundary, rendering (3.3, 3.10, 4) | Boundary, Rendering |
+| 22–26, 25a | retention (2.6) | limits, `busy`, pools, groups (3.3, 3.8, 3.9) | Limits, Refusal, Lifetime, Revisions |
+| 27–28 | — | guest lines (2.8, 3.9) | Agent safety |
+| 29–31 | commit order | epoch at commit, signal, reconciliation (3.1, 3.2) | Kill switch, Recovery |
+| 32–36 | console components | per-type nouns (6) | Consistency |
+| Board 8, 11, 15 | — | 5.1, 5.2 | Joining, Identity |
 
 ## 9. Implementation units
 

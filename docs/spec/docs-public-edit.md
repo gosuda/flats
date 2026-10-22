@@ -222,8 +222,11 @@ And one for consistency:
     links, and links open without referrer or opener; images and other
     resources load only from the flat itself or as `data:` images, never from
     another site; Mermaid renders in its strict mode. One rule is new:
-    rendering a diagram has a time and size bound, so one hostile diagram
-    cannot freeze the page of everyone who opens the document.
+    diagrams have size bounds per diagram type, set so that the slowest
+    diagram within them renders in under a second in a current desktop
+    browser, and after any diagram takes longer than half a second the page
+    renders further diagrams only when the reader asks. One hostile diagram
+    therefore costs at most one bounded render per page load.
 
 ## Limits against abuse
 
@@ -297,8 +300,10 @@ determined flood is **Stop guest editing**, and the confirmation text says so.
 25a. **Totals.** As board public rule 25a: limits for all guests of a flat
     together (updates and bytes per second into the worker, bytes read from
     all guest sockets including refused frames, presence traffic, how often
-    viewer-list updates reach editors), inside a guest share of the host's
-    Public traffic budget.
+    viewer-list updates reach editors), inside a Public share of the
+    document worker's traffic budget that members do not use, so guests
+    cannot starve members or other flats. All guests together reaching the
+    flat's limit are slowed (their pages resend later), not refused.
 26. **Content limits.** The document limits that apply today apply to everyone
     together; a guest update that exceeds one is refused.
 
@@ -364,7 +369,7 @@ continuously for an hour.
 | Current text only | A scan of every frame and response sent to a guest or viewer, after a session that inserted and deleted marked text before they joined, finds none of the deleted text. |
 | Identity | A scan of every frame sent to a guest, while a member on Tailscale edits, finds no Tailscale login or display name and no agent label; that member appears under their page nickname. |
 | Joining | A visitor at level `edit` who chooses View only reads as Viewer N and is not asked again in that tab until the level changes; Join to edit opens the popup; a remembered name still shows the popup once. |
-| Rendering | Guest text containing script, raw HTML, `javascript:` links, outside images and a hostile Mermaid diagram runs no script, loads nothing from another site, and leaves a reader's page responsive. |
+| Rendering | Guest text containing script, raw HTML, `javascript:` links, outside images and hostile Mermaid diagrams of every type runs no script and loads nothing from another site; the slowest diagram within the bounds renders in under a second, and after a slow one further diagrams wait for a click. |
 | Limits | While guests send updates at the per-guest limit on every allowed connection, a Private editor can still connect, edit, roll back and see remote changes within the document's existing latency target. At the reserved disk and document-size room and at the guest byte budget, guests are refused and Private edits succeed. |
 | Revisions | However 20 guests edit for an hour across two documents, alone or while a member edits with 31-second pauses, at most 12 guest-only revisions are recorded plus forced boundaries, and every revision recorded because a member's group closed credits that member. The pinned safe point stays and cannot be unpinned while the level is `edit`. Guest-only revisions hold at most half of the revision quota. Re-enabling editing on an unchanged flat adds no revision. |
 | Refusal | After a guest update A is refused, a following update B that builds on A does not commit, the page never shows A or B as saved, the downloaded Markdown contains both, and after Rejoin the page shows the server's text and can edit. A guest sending faster than its rate loses no text. |
