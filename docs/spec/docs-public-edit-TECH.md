@@ -329,14 +329,25 @@ the WebSocket loop next runs, and at the latest at their next heartbeat
   keeps attribution exact).
 - The awareness id of a guest socket follows the same rule.
 - Guest-owned rows are capped at 5,000 per flat (3.8).
-- **Client count reserve.** A client's state vector lists every client id in
-  the document, and `hello` refuses a vector with more than 1,024 clients
-  (`server.js`). A guest may add a new client id to document D only while D's
-  struct store holds fewer than 768 client ids and D has fewer than 400
-  guest-owned ids; otherwise the update is refused with `guest_room`. Members
-  therefore keep 256 new client ids under the handshake limit after any guest
-  activity. Test: guests add client ids until refused, a member that received
-  them disconnects, reconnects and edits.
+- **Handshake reserve.** A client's state vector lists every client id in the
+  document with its clock, and `hello` refuses a vector with more than 1,024
+  clients or more than 8,192 bytes (`server.js`). Guest updates keep both
+  under a reserve for members:
+  - a guest update may not contain `GC` structs (a content-less clock jump;
+    a browser's incremental updates hold only `ContentString` and
+    `ContentDeleted`), so a guest's clocks grow only with text it inserts,
+    which the update size and document size limits bound;
+  - a guest may add a new client id to document D only while D's struct
+    store holds fewer than 768 client ids and D has fewer than 400
+    guest-owned ids;
+  - after applying a guest update, `Y.encodeStateVector(doc)` must be at most
+    6,144 bytes.
+  Any of these refuses the update with `guest_room` (it rolls back). Members
+  therefore keep 256 client ids and 2 KiB of vector under the handshake
+  limits after any guest activity. Tests: guests with large client ids (near
+  2^53) and growing clocks, including more updates to already-owned ids,
+  until refused; a member that received everything disconnects, reconnects
+  and edits.
 - Restoring a document (`resetDocument`) deletes its rows.
 
 ### 3.6 Host operations
