@@ -1911,6 +1911,106 @@ func (m *Manager) StopProviderRoutes(ctx context.Context, slug string, id ID) er
 
 var _ core.LifecycleProviderStopper = (*Manager)(nil)
 
+// StopProvider stops every registered route of id, for a host grant removed
+// by a config.json reload. Each flat keeps its permission for the provider,
+// so routes are stopped, not retired: tailnet and peer identities, zrok name
+// reservations and quick tunnel records stay for a later grant. A failed stop
+// stays registered, so a later call retries it.
+func (m *Manager) StopProvider(ctx context.Context, id ID) error {
+	if id == Local {
+		return errors.New("provider: local routes cannot be stopped")
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	routes := make(map[string]route)
+	for k, r := range m.routes {
+		if r.provider == id {
+			routes[k] = *r
+		}
+	}
+	m.mu.Unlock()
+	var errs []error
+	for k, r := range routes {
+		if err := ctx.Err(); err != nil {
+			errs = append(errs, err)
+			break
+		}
+		if err := m.stopProviderRoute(r); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		m.mu.Lock()
+		delete(m.routes, k)
+		m.pruneStateLocked(r.slug, r.audience, r.host, r.provider)
+		m.mu.Unlock()
+	}
+	return errors.Join(errs...)
+}
+
+// stopProviderRoute stops one registered route without retiring what it used.
+func (m *Manager) stopProviderRoute(r route) error {
+	switch r.provider {
+	case Tailscale:
+		if m.tailnet() == nil {
+			return ErrNotConfigured
+		}
+		if private, ok := m.tailnet().(interface{ StopPrivate(string) error }); ok {
+			return private.StopPrivate(r.host)
+		}
+		m.mu.Lock()
+		sharedFunnel := false
+		for _, sibling := range m.routes {
+			if sibling.host == r.host && sibling.provider == Funnel {
+				sharedFunnel = true
+				break
+			}
+		}
+		m.mu.Unlock()
+		if sharedFunnel {
+			return errors.New("private-only teardown is unavailable; approve Private access to stop Funnel first")
+		}
+		return m.tailnet().Stop(r.host)
+	case Funnel:
+		if m.tailnet() == nil {
+			return ErrNotConfigured
+		}
+		return m.tailnet().StopFunnel(r.host)
+	case Portal:
+		if m.portalNet() == nil {
+			return ErrNotConfigured
+		}
+		return m.portalNet().Stop(r.host)
+	case Zrok:
+		if z := m.zrokNet(); z != nil {
+			return z.Stop(r.host)
+		}
+		return ErrNotConfigured
+	case CFQuick:
+		if q := m.quickNet(); q != nil {
+			return q.Stop(r.host)
+		}
+		return ErrNotConfigured
+	case Netbird:
+		if n := m.netbirdNet(); n != nil {
+			return n.StopPrivate(r.host)
+		}
+		return ErrNotConfigured
+	case NetbirdExpose:
+		if n := m.netbirdNet(); n != nil {
+			return n.StopPublic(r.host)
+		}
+		return ErrNotConfigured
+	case Proxy, ProxyPublic:
+		if p := m.proxyNet(); p != nil {
+			return p.Stop(r.host)
+		}
+		return ErrNotConfigured
+	}
+	return fmt.Errorf("provider: unknown provider %s", r.provider)
+}
+
 // StopExposure removes private routes for this exact host. Failed
 // stops stay tracked so cleanup can be retried without losing honest status.
 func (m *Manager) StopExposure(ctx context.Context, host string) error {

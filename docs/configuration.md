@@ -151,11 +151,11 @@ written; `flats config unset KEY` removes it.
 | `metrics.enabled` | `true` | restart |
 | `metrics.expose_on` | `["localhost"]`; unique entries from `localhost`, `console`, `external`; `[]` exposes nowhere | restart |
 | `metrics.per_flat` | `true`; set `false` to omit per-flat Prometheus series | restart |
-| `network.permitted` | `[]` | immediately from the console; otherwise restart |
+| `network.permitted` | `[]` | immediately from the console; a SIGHUP reload or restart from the file |
 | `network.private_backend` | `local` | restart |
 | `network.default_private` | `""` (follow `private_backend`); `local`, `tailscale`, `netbird` or `proxy` | immediately, for flats created afterwards |
 | `network.default_public` | `""` (no public provider); `tailscale-funnel`, `portal`, `zrok`, `cloudflare-quick`, `netbird-expose` or `proxy-public` | immediately, for flats created afterwards |
-| `tailscale.console_hosts` | `[]` (console on loopback only) | immediately from the console; otherwise restart |
+| `tailscale.console_hosts` | `[]` (console on loopback only) | immediately from the console; a SIGHUP reload or restart from the file |
 | `system.upload_max_bytes` | `20971520` (20 MiB) | immediately |
 | `system.version_quota` | `20` per flat, `0` = unlimited | immediately; existing versions are kept |
 | `system.revision_quota` | `100` unpinned revisions per document or design, `0` = keep all | immediately; lowering it deletes the oldest unpinned revisions at once |
@@ -172,11 +172,11 @@ written; `flats config unset KEY` removes it.
 | `zrok.environment` | none (Flats manages `zrok-environment/` in the data directory) | restart, or when zrok is turned on from the console |
 | `zrok.namespace` | `public` | restart, or when zrok is turned on from the console |
 | `netbird.management_url` | `https://api.netbird.io:443` (NetBird Cloud); an https URL | restart, or when NetBird is turned on from the console; applies to peers started afterwards |
-| `netbird.console_hosts` | `[]`; lowercase DNS labels, each its own NetBird peer serving the console over HTTP; needs `netbird` in `network.permitted` | immediately when changed from the console (Settings → Console); otherwise restart |
-| `proxy.url_template` | `""` (none); the reverse proxy's address pattern, such as `https://{host}.site.example.org` | immediately from Settings → Networks → Reverse proxy; otherwise restart |
+| `netbird.console_hosts` | `[]`; lowercase DNS labels, each its own NetBird peer serving the console over HTTP; needs `netbird` in `network.permitted` | immediately when changed from the console (Settings → Console); a SIGHUP reload or restart from the file |
+| `proxy.url_template` | `""` (none); the reverse proxy's address pattern, such as `https://{host}.site.example.org` | immediately from Settings → Networks → Reverse proxy; a SIGHUP reload or restart from the file |
 | `proxy.addr` | `127.0.0.1:7880`; the listener the reverse proxy forwards to | offline `flats config set` only; when the listener next binds (at start, or when a reverse proxy kind is turned on) |
-| `console.external_origins` | `[]`; explicit HTTP/HTTPS origins with lowercase DNS names and optional ports | immediately from Settings → Console; otherwise restart |
-| `console.preferred_host` | `""` (no preference); `local`, `tailscale:NAME` or `netbird:NAME` with NAME in that list | immediately when changed from the console (Settings → Console); otherwise restart |
+| `console.external_origins` | `[]`; explicit HTTP/HTTPS origins with lowercase DNS names and optional ports | immediately from Settings → Console; a SIGHUP reload or restart from the file |
+| `console.preferred_host` | `""` (no preference); `local`, `tailscale:NAME` or `netbird:NAME` with NAME in that list | immediately when changed from the console (Settings → Console); a SIGHUP reload or restart from the file |
 | `credentials.operator_file` | none; ignored (the operator credential is no longer used) | — |
 | `credentials.tailscale_authkey_file` | deprecated: the next start stores the key in `flats.db` and removes this key; `flats config set` refuses it | next start |
 
@@ -207,13 +207,15 @@ a new flat is allowed on when it is created, besides Local. Each must be in
 `default_private` follows `private_backend`, and an empty `default_public`
 grants no public provider. A new flat is always Private: a public default is a
 permission only and opens nothing until the operator approves making the flat
-public. Turning a provider off in the console clears a default that names it. Removing a provider from
-`permitted` in the file takes its routes down at the next start but keeps each
-flat's provider permission and visibility in `flats.db`; it never publishes a
-flat or changes visibility. The console's Settings → Networks turns a
+public. Turning a provider off in the console clears a default that names it.
+The console's Settings → Networks turns a
 provider on or off while the host runs: turning one on saves the file and
 starts its backend at once (a backend contacts nothing until a flat allows the
 provider), and turning one off is refused while a flat still allows it.
+Removing a provider from `permitted` in the file takes its routes down at a
+SIGHUP reload or the next start, without the console's refusal, but keeps each
+flat's provider permission and visibility in `flats.db`; it never publishes a
+flat or changes visibility.
 
 `portal.hide: true` keeps public flats out of the Portal relays' lists of
 sites. It is not access control: anyone with a flat's URL can still open it.
@@ -323,9 +325,10 @@ old one.
   is stopped. Deleting the name the page is open on needs another console
   domain that is ready, and moves the page there.
 - `flats.db` records every console node (`console_nodes`), so a name removed
-  with `flats config set` or a text editor is retired at the next start. A
+  with `flats config set` or a text editor is retired at a SIGHUP reload or
+  the next start. A
   retirement that fails keeps the name reserved; the console lists it and
-  retries on request, and the next start retries it.
+  retries on request, and the next reload or start retries it.
 - A listed name that a flat, preview or redirect already uses is not served;
   the console shows the conflict, and deleting it leaves that owner's node
   alone. A name listed again while its old node is still being retired is
@@ -579,16 +582,21 @@ approvals.
   `netbird.console_hosts` through Console.
   A save
   rereads the file under a lock and fails if it changed on disk since the
-  host read it; restart to pick up an outside edit. Host,
+  host read it; SIGHUP reloads an outside edit (a restart also picks it up). Host,
   `network.private_backend` and `proxy.addr` keys are read-only there. A service that still
   passes `--relays` pins the relays, one that passes `--portal`, `--permit` or
   `--network tailscale` pins those providers, and one that passes
   `--console-host` pins the console domains: the console refuses to change
-  them until the service is reinstalled.
+  them until the service is reinstalled, and a reload logs each of their
+  differing file values as held by the flag without applying it.
 - **`flats config set KEY VALUE` / `unset KEY`**: offline; they take the host
   lock and refuse while a host runs.
-- **A text editor**: allowed. A running host does not reload the file; the
-  change applies at the next start, which fails if the file is invalid.
+- **A text editor**: allowed. Sending SIGHUP to `flats serve` reloads the
+  file: the keys whose Applies cell names a live path take effect at once with
+  the same side effects as a console save, the others apply at the next start,
+  and an invalid file is refused and logged, changing nothing. Without a
+  SIGHUP the change applies at the next start, which fails if the file is
+  invalid.
 
 Every Flats write keeps the previous file in `config-history/`, writes a
 synced temporary file, renames it into place and syncs the directory.

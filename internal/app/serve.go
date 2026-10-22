@@ -189,10 +189,22 @@ func Serve(args []string) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	// SIGHUP requests a config reload and must never terminate the host, so
+	// it is intercepted before Start; buffered, the signals coalesce.
+	hup := make(chan os.Signal, 1)
+	signal.Notify(hup, syscall.SIGHUP)
+	defer signal.Stop(hup)
 	h, err := Start(ctx, o)
 	if err != nil {
 		return err
 	}
+	// A SIGHUP that arrived before the settings source exists requests no
+	// reload.
+	select {
+	case <-hup:
+	default:
+	}
+	go h.reloadOnSIGHUP(ctx, hup)
 	consoles := h.ConsoleURLs()
 	if len(consoles) == 0 {
 		consoles = []string{h.ConsoleURL()}
@@ -228,6 +240,9 @@ type Host struct {
 	testTailnet core.PrivateNet
 	// testGrantFailure, when set, fails provider grant changes in tests.
 	testGrantFailure func(provider.ID, bool) error
+	// testReloadGate, when set, runs in Close at the reload gate, before
+	// Close waits out an in-flight reload.
+	testReloadGate func()
 	// testNetbirdConsole replaces netbirdNet for console peers in tests.
 	testNetbirdConsole netbirdConsoleNet
 	portalNet          *portal.Net
@@ -265,14 +280,20 @@ type Host struct {
 	nbKeyDiffers  bool              // nbKeyExternal differs from the stored key
 	enrollErr     map[string]string // zrok/netbird enrollment errors from start inputs
 	// Background work (enrollment, node logouts) stops with the host.
-	bgMu      sync.Mutex // guards bgClosed against new background work
-	bgClosed  bool
-	bgCtx     context.Context
-	bgCancel  context.CancelFunc
-	bg        sync.WaitGroup
-	dataLock  *os.File
-	closeOnce sync.Once
-	closeErr  error
+	bgMu     sync.Mutex // guards bgClosed against new background work
+	bgClosed bool
+	bgCtx    context.Context
+	bgCancel context.CancelFunc
+	bg       sync.WaitGroup
+	// reloadMu gates ReloadConfig against Close: once reloadClosed is set no
+	// reload starts, and reloadWG lets Close wait out an in-flight reload
+	// before the settings, providers and store it uses are torn down.
+	reloadMu     sync.Mutex
+	reloadWG     sync.WaitGroup
+	reloadClosed bool
+	dataLock     *os.File
+	closeOnce    sync.Once
+	closeErr     error
 }
 
 // background runs fn until it returns; Close cancels its context and
@@ -470,7 +491,8 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 		mode = "legacy"
 	}
 	settings, err := core.NewSettingsSource(p.doc, &core.SettingsFile{Mode: mode, Hash: p.hash, Overrides: s.overrides,
-		Save: config.NewWriter(p.path).Save, DiskHash: func() (string, error) { return configHash(p.path) }})
+		Save: config.NewWriter(p.path).Save, DiskHash: func() (string, error) { return configHash(p.path) },
+		Load: func() (*config.Loaded, error) { return config.Load(p.path) }})
 	if err != nil {
 		return nil, err
 	}
@@ -786,6 +808,17 @@ func (h *Host) Status(ctx context.Context) any {
 // repeated and concurrent calls return the same result.
 func (h *Host) Close() error {
 	h.closeOnce.Do(func() {
+		// An in-flight config reload uses the settings, providers and store:
+		// no new one starts once reloadClosed is set, and the running one
+		// finishes, before any teardown below — including before bgClosed
+		// stops it from registering background work.
+		h.reloadMu.Lock()
+		h.reloadClosed = true
+		h.reloadMu.Unlock()
+		if h.testReloadGate != nil {
+			h.testReloadGate()
+		}
+		h.reloadWG.Wait()
 		var errs []error
 		collect := func(component string, err error) {
 			if err != nil {
