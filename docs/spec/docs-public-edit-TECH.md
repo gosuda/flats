@@ -333,7 +333,14 @@ the WebSocket loop next runs, and at the latest at their next heartbeat
 - `validateUpdate` already decodes the structs; the update path now reads the
   client ids of all inserted structs.
 - New table `flats_docs_guest_clients(doc TEXT, client INTEGER, owner TEXT,
-  PRIMARY KEY(doc, client))`, holding only guest-owned ids.
+  PRIMARY KEY(doc, client))`. Rows whose owner starts with `guest:` are the
+  ids guests own; every guest-text question (guest lines, `guest_text`,
+  the caps below, a member reusing a guest's id) reads only those. The other
+  rows are **member reservations**: a member socket's presence id, stored
+  with the member's editor key before that presence is relayed, so a guest
+  that sees it cannot insert with it before the member's first edit commits.
+  Compaction drops a reservation once its id is in the struct store, which
+  keeps guests out by itself from then on.
 - A guest update may insert with client id C in document D only when C is
   already owned by this guest key in D, or when C is in neither the table nor
   the server document's struct store (`doc.store.clients`). In the second case
@@ -474,7 +481,9 @@ New operations under `/_docs/host/revisions/` (private plus
 - Each entry's documents carry `guest_lines` computed from the recorded text's
   Yjs items (2.8): walk the `Y.Text` items, collect the visible characters of
   items whose client id is guest-owned, convert offsets to line ranges.
-- `meta.presence = {guests, viewers, at}` is written by the WebSocket VM when
+- `meta.presence = {guests, viewers, at}` is written by the WebSocket VM, best
+  effort and without waiting for a writer another VM holds (a refused write
+  is tried after a later event), when
   a count changes (at most once per second) and, while any Public socket is
   open, every 10 seconds on a heartbeat even when the counts are unchanged,
   so `at` stays fresh. The last Public socket closing writes zeros. Core
@@ -488,7 +497,7 @@ measurements can bound every accepted input. The guarantee is therefore
 about when a render can start:
 
 - **Guest-touched documents render diagrams on request.** The welcome gains
-  `guest_text`: true when the document has any row in
+  `guest_text`: true when the document has a guest-owned row in
   `flats_docs_guest_clients` (3.5); every welcome of a flat at level `edit`
   sets it too, for members and guests alike, and a `level` frame to `edit`
   sets it on every open page (3.2). A page never clears it until reload. On

@@ -122,7 +122,9 @@ func TestPublicReadsDoNotReserveWriter(t *testing.T) {
 	a.document(t)
 	viewer := connect(t, a.srv.URL, "public")
 	viewer.hello(t, nil)
-	db, err := sql.Open("sqlite", filepath.Join(a.data, "db.sqlite"))
+	// The viewer's hello writes the Public presence counts once; wait for
+	// that short write rather than racing it.
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(a.data, "db.sqlite")+"?_pragma=busy_timeout(5000)")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -134,8 +136,14 @@ func TestPublicReadsDoNotReserveWriter(t *testing.T) {
 	if a.document(t)["markdown"] != initialText {
 		t.Fatal("read failed while writer reserved")
 	}
+	// The WebSocket VM never waits for the reserved writer, not even to
+	// write the Public presence counts.
+	start := time.Now()
 	viewer.send(t, map[string]any{"t": "ping"})
 	viewer.next(t, "pong")
+	if d := time.Since(start); d > 2*time.Second {
+		t.Fatalf("pong took %v while the writer was reserved", d)
+	}
 }
 
 func TestHealthActivatesEveryDocumentAtomically(t *testing.T) {

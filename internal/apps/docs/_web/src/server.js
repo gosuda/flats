@@ -427,8 +427,14 @@ function flushPresence(env, now = Date.now()) {
     return;
   if (changed && (guests || viewers) && now - presenceWritten.at < 1000) return;
   const value = { guests, viewers, at: now };
+  // The counts are best effort: this VM also serves members, so it never
+  // waits for a writer another VM holds. A refused write is tried again
+  // after a later event.
+  const db = env.DB,
+    busy = db.query("PRAGMA busy_timeout")[0]?.timeout ?? 5000;
+  db.exec("PRAGMA busy_timeout = 0");
   try {
-    transaction(env.DB, () => revisions.setMeta(env.DB, "presence", value));
+    transaction(db, () => revisions.setMeta(db, "presence", value));
     presenceWritten = value;
   } catch (e) {
     if (
@@ -436,7 +442,10 @@ function flushPresence(env, now = Date.now()) {
       /out of memory/i.test(String(e?.message))
     )
       throw e;
-    console.warn("docs presence not written:", String(e?.message));
+    if (!/SQLITE_BUSY|database is locked/i.test(String(e?.message)))
+      console.warn("docs presence not written:", String(e?.message));
+  } finally {
+    db.exec(`PRAGMA busy_timeout = ${Number(busy) || 5000}`);
   }
 }
 
