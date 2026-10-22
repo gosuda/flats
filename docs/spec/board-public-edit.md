@@ -407,7 +407,11 @@ Other docs:
 
 Implemented end to end: the stored level and its approvals, the safe point,
 guests and viewers on the board, the guest projection and limits, revision
-grouping and retention, authorship, the board app and the console. Not done
+grouping and retention, authorship, the board app and the console. The
+changes decided with [docs-public-edit.md](docs-public-edit.md) on
+2026-10-22 are implemented too: the popup's **View only** choice and **Join
+to edit** (rules 8 and 11) replace the bottom join panel, and guests see
+members under their page nicknames instead of Member N (rule 15). Not done
 or not measured:
 
 - Remote display under load is measured as delivery to the other
@@ -417,11 +421,6 @@ or not measured:
   only reuse assets live elements already use. The check stays as a second
   line of defense, for example if guests may add images later (open
   question 2), and a unit test calls it directly.
-- Planned with [docs-public-edit.md](docs-public-edit.md) (decided
-  2026-10-22): the popup's **View only** choice and **Join to edit** (rules 8
-  and 11) replacing the bottom join panel, and member nicknames for guests
-  instead of Member N (rule 15). The board app still shows the panel and
-  Member N.
 
 ## Open questions
 
