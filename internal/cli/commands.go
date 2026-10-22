@@ -488,7 +488,7 @@ func (a *app) preview(args []string) error {
 func (a *app) visibility(args []string) error {
 	fs := a.flags("visibility")
 	reason := fs.String("reason", "", "why (shown to the operator when approval is needed)")
-	access := fs.String("access", "", "public only: view (default) or edit (boards: anyone on the internet can edit)")
+	access := fs.String("access", "", "public only: view (default) or edit (boards and documents: anyone on the internet can edit)")
 	pos, err := a.parse(fs, args, 2, 2)
 	if err != nil {
 		return err
@@ -1054,7 +1054,7 @@ func (a *app) saveDocument(args []string) error {
 	return a.upload(pos[1], pos[0], *message, -1, true)
 }
 
-// accessText describes a Public board's public access level.
+// accessText describes a Public board's or document's public access level.
 func accessText(access string) string {
 	if access == "edit" {
 		return "anyone can edit"

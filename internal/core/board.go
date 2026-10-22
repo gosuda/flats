@@ -123,6 +123,7 @@ func (s *Service) buildBoard(slugName string, v store.Version, title, dataDir st
 	if err != nil {
 		return nil, fmt.Errorf("open the board: %w", err)
 	}
+	setBoardAccessEpoch(in, f.AccessSeq)
 	// Import what the board recorded while it was not running.
 	s.boardPending.Store(slugName, true)
 	return &deployed{version: v, handler: in, inst: in, redact: identity, environment: env}, nil
