@@ -235,7 +235,7 @@ function fit() {
 
 function setupViewport() {
   const vp = $('.viewport');
-  const wheel = createWheelPan();
+  const wheel = createWheelPan({ horizontalOnly: true });
   let pan = null, space = false;
   vp.addEventListener('wheel', (e) => {
     e.preventDefault();

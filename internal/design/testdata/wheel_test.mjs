@@ -38,7 +38,7 @@ const cases = [
 
 let failed = 0;
 cases.forEach(([shiftKey, deltaX, deltaY, x, y], i) => {
-  const got = createWheelPan().pan({ shiftKey, deltaX, deltaY, timeStamp: 0 });
+  const got = createWheelPan({ horizontalOnly: true }).pan({ shiftKey, deltaX, deltaY, timeStamp: 0 });
   if (got.x !== x || got.y !== y) {
     failed++;
     console.error(`row ${i}: shift=${shiftKey} (${deltaX}, ${deltaY}): got (${got.x}, ${got.y}), want (${x}, ${y})`);
@@ -48,7 +48,7 @@ if (failed) process.exit(1);
 const event = (deltaX, deltaY, timeStamp, shiftKey = true) => ({ deltaX, deltaY, timeStamp, shiftKey });
 const pairs = [ [[-1, 2], [-1, 1]], [[1, -2], [1, -1]], [[10, -11], [11, -10]] ];
 for (const [first, next] of pairs) {
-  const wheel = createWheelPan();
+  const wheel = createWheelPan({ horizontalOnly: true });
   wheel.pan(event(...first, 0));
   for (let i = 1; i <= 20; i++) {
     const [dx, dy] = i % 2 ? next : first;
@@ -56,7 +56,7 @@ for (const [first, next] of pairs) {
   }
 }
 {
-  const wheel = createWheelPan();
+  const wheel = createWheelPan({ horizontalOnly: true });
   assert.deepEqual(wheel.pan(event(0, 0, 0)), { x: 0, y: 0 });
   assert.deepEqual(wheel.pan(event(5, 1, 1)), { x: 5, y: 0 });
   assert.deepEqual(wheel.pan(event(1, 5, 201)), { x: 1, y: 0 }); // exactly 200 ms
@@ -69,11 +69,11 @@ for (const [first, next] of pairs) {
   for (const time of [undefined, NaN, Infinity, -1, 406]) {
     assert.deepEqual(wheel.pan(event(5, 1, time)), { x: 1, y: 0 });
   }
-  assert.deepEqual(createWheelPan().pan(event(5, 1, 406)), { x: 5, y: 0 });
+  assert.deepEqual(createWheelPan({ horizontalOnly: true }).pan(event(5, 1, 406)), { x: 5, y: 0 });
 }
 // A selected source axis stays selected even through orthogonal-only samples.
 for (const first of [[0, -1], [1, 0], [1, -1]]) {
-  const wheel = createWheelPan();
+  const wheel = createWheelPan({ horizontalOnly: true });
   const vertical = Math.abs(first[1]) > Math.abs(first[0]);
   wheel.pan(event(...first, 0));
   const orthogonal = vertical ? [12, 0] : [0, -12];
@@ -82,19 +82,29 @@ for (const first of [[0, -1], [1, 0], [1, -1]]) {
 }
 // Real direction reversals on the selected axis still reverse the pan.
 {
-  const wheel = createWheelPan();
+  const wheel = createWheelPan({ horizontalOnly: true });
   assert.deepEqual(wheel.pan(event(.001, -.002, 0)), { x: -.002, y: 0 });
   assert.deepEqual(wheel.pan(event(-.001, .002, 10)), { x: .002, y: 0 });
 }
 // Raw line/page values and Alt use the same mapping without a startup dead zone.
 for (const deltaMode of [0, 1, 2]) for (const altKey of [false, true]) {
-  assert.deepEqual(createWheelPan().pan({ ...event(.001, .002, 0), deltaMode, altKey }), { x: .002, y: 0 });
-  assert.deepEqual(createWheelPan().pan({ ...event(.001, .002, 0, false), deltaMode, altKey }), { x: .001, y: .002 });
+  assert.deepEqual(createWheelPan({ horizontalOnly: true }).pan({ ...event(.001, .002, 0), deltaMode, altKey }), { x: .002, y: 0 });
+  assert.deepEqual(createWheelPan({ horizontalOnly: true }).pan({ ...event(.001, .002, 0, false), deltaMode, altKey }), { x: .001, y: .002 });
+}
+// The shared mapper's default keeps the document diagram viewer's two-axis contract.
+for (const options of [undefined, {}, { horizontalOnly: false }]) {
+  const wheel = createWheelPan(options);
+  assert.deepEqual(wheel.pan(event(5, 10, 0)), { x: 10, y: 5 });
+  assert.deepEqual(wheel.pan(event(10, 5, 10)), { x: 5, y: 10 });
+  wheel.reset();
+  assert.deepEqual(wheel.pan(event(10, 0, 20)), { x: 10, y: 0 });
+  assert.deepEqual(wheel.pan(event(7, 12, 30, false)), { x: 7, y: 12 });
 }
 // Exercise the real viewport handler and its reset listeners, with DOM output
 // stubbed. This catches wiring omissions that mapper-only tests cannot see.
 const app = fs.readFileSync(new URL('./app.js', import.meta.url), 'utf8');
 assert.match(app, /import \{ createWheelPan \} from '\.\/wheel\.js';/);
+assert.match(app, /const wheel = createWheelPan\(\{ horizontalOnly: true \}\);/);
 const mapperSource = fs.readFileSync(new URL('./wheel.js', import.meta.url), 'utf8').replace('export function', 'function');
 const setup = app.slice(app.indexOf('function setupViewport()'), app.indexOf('// ---- boards ----'));
 const zoom = app.slice(app.indexOf('function zoomAt('), app.indexOf('function zoomBy('));
