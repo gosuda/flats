@@ -1167,12 +1167,12 @@ Rules:
   Public is NOT access control: anyone can open a ready Public route.
 * An Unpublished flat cannot become Public. Requesting the current
   visibility changes nothing.
-* A Public board has a public access level, `public_access`: `view` (the
-  default) or `edit`, where anyone on the internet can edit it as a guest.
-  Other flats are always view only. Request it with `set_visibility {slug,
-  visibility: "public", access: "edit"}`; it waits for approval and is
-  refused with `public_edit_blocked` when the board lacks the quotas it needs
-  (`topic.board`). `access: "view"` stops guest editing.
+* A Public board or document has a public access level, `public_access`:
+  `view` (the default) or `edit`, where anyone on the internet can edit it as
+  a guest. Other flats are always view only. Request it with `set_visibility
+  {slug, visibility: "public", access: "edit"}`; it waits for approval and is
+  refused with `public_edit_blocked` when the flat lacks the quotas it needs
+  (`topic.board`, `topic.docs`). `access: "view"` stops guest editing.
 * Going Private also waits for approval. Until the approved change applies,
   the public route stays reachable.
 * Local is always permitted. Nonlocal providers (`tailscale`,

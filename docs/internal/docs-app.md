@@ -98,6 +98,13 @@ its receipt lookup, `revisions` for the [revision host
 operations](#host-operations). Private access by itself authorizes neither
 health activation nor a host operation.
 
+On a `public` request of a Public document, core also sets
+`X-Flats-Public-Access` to the flat's public access level (`view` or
+`edit`) and `X-Flats-Access-Epoch` to `flats.access_seq`, the counter of
+visibility and level changes ([docs-public-edit.md](../spec/docs-public-edit.md)).
+It strips every client spelling of both first; `private` requests carry
+neither.
+
 ## Docs app contract (internal/apps/docs)
 
 The app owns the flat's whole origin. Reserved paths start with `/_docs/`.
@@ -712,8 +719,10 @@ even while an activation keeps failing.
 
 | Route | Purpose |
 |---|---|
-| `POST /_docs/host/revisions/sync` | Runs the gate, deletes a remaining intent, closes due groups, deletes unreferenced staged texts older than one hour. Returns `{store, ready, intent}`: `ready` is the number of unacknowledged entries, `intent` the id of the remaining intent or null |
-| `GET /_docs/host/revisions/outbox?after=` | Entries with `seq > after`, oldest first, read with one SQL statement per entry and stopping before the page's document lists pass 4 MiB of JSON (always at least one entry): `{store, entries: [{seq, created_at, kind, authors, message, rollback_of?, op?, source, documents}], more}` |
+| `POST /_docs/host/revisions/sync` | Runs the gate, deletes a remaining intent, closes due groups, deletes unreferenced staged texts older than one hour. Returns `{store, ready, intent, presence}`: `ready` is the number of unacknowledged entries, `intent` the id of the remaining intent or null, `presence` the last `{guests, viewers, at}` (`at` in Unix milliseconds) the WebSocket VM wrote, absent or zeros when never written. Core reports the counts while `at` is younger than 30 seconds and the worker is awake |
+| `GET /_docs/host/revisions/outbox?after=` | Entries with `seq > after`, oldest first, read with one SQL statement per entry and stopping before the page's document lists pass 4 MiB of JSON (always at least one entry): `{store, entries: [{seq, created_at, kind, authors, guests, guests_more, message, rollback_of?, op?, source, documents: [{path, hash, size, guest_lines}]}], more}`; `guests` names up to 5 guests, `guest_lines` are the merged 1-based line ranges guests wrote |
+| `POST /_docs/host/revisions/access` | `{level, epoch}` (`edit`, `view` or `""`, and `flats.access_seq`): writes `meta.access` and signals the WebSocket VM; at a level other than `edit` it closes the guests' group. Returns `{level, epoch}`. Core calls it after every committed level change of a running worker and on every wake, before any request reaches the worker |
+| `POST /_docs/host/revisions/safe_point` | `{prev: {source, documents: [{path, hash}]} \| null}`: in one transaction, runs the gate, records dirty groups as a `person` entry and deletes all groups, then compares the flat with `prev`. Equal returns `{seq: 0, reuse: true}`; otherwise a forced `safe_point` entry and `{seq, reuse: false}` |
 | `GET /_docs/host/revisions/text?hash=` | `{hash, text}` from `texts`; 404 when absent |
 | `POST /_docs/host/revisions/ack` | `{store, through, budget?}`: deletes entries up to `through` with their `ops` rows and their texts' `unimported` rows, releasing their texts, and installs `budget` (as `budget` below) in the same transaction. Idempotent; another `store` is refused with 409 |
 | `POST /_docs/host/revisions/stage` | `{text}` (at most 1 MiB UTF-8): stores it with `staged_at`; returns `{hash}` |
@@ -928,7 +937,9 @@ connections. `running` denotes a logical live document, including a lazy
 restored document before first physical startup. Failed wake produces a
 retryable error and an event. The management-only `budget/revoke` operation
 removes a persisted budget without clearing reservations. Wake explicitly
-revokes, syncs/imports, and installs a fresh budget before normal mutations;
+revokes, tells the worker the stored public access level and epoch (`access`;
+a failure is an event, and the worker keeps an older pair that no request's
+headers match), syncs/imports, and installs a fresh budget before normal mutations;
 failed budget installation leaves reads/recovery available with writes refused.
 Import backlog or capacity errors do not themselves make a document unreadable.
 

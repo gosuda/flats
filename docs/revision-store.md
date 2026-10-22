@@ -30,7 +30,7 @@ preview or a pending activation or rollback approval names.
 
 Migration 11 adds the first five tables; migration 12 adds the document
 columns and `content_sources` and `content_holds`; migration 18 adds the two
-board tables. Every table references `flats(slug)` (or
+board tables; migration 20 adds `revision_guest_lines`. Every table references `flats(slug)` (or
 `revisions`) with `ON DELETE CASCADE ON UPDATE CASCADE`, so rename and delete
 carry the whole history and nothing in memory needs moving.
 
@@ -45,6 +45,7 @@ carry the whole history and nothing in memory needs moving.
 | `content_holds` | `(flat, op, number)`: the target revision of each document or board rollback in progress. |
 | `board_imports` | `(flat, store, outbox_seq, op_id, revision)`: the revision each imported board outbox entry became, so a repeated operation id finds its revision. |
 | `board_rev_stats` | `(flat, number, added, changed, removed)`: the elements a board revision added, changed and removed. |
+| `revision_guest_lines` | `(flat, number, path, ranges)`: for each document of a revision that holds text anonymous guests wrote, the 1-based inclusive line ranges of that text as JSON `[[start, end], ...]`, merged and sorted. Documents without guest text have no row. |
 
 `content_state.type` is the durable type marker of a Revision-model flat. A
 design has it from the first step of its creation, before its shell is live,
@@ -54,9 +55,11 @@ so a racing first save of another type is refused. A document's row (phase
 and edit groups live in the worker.
 
 Revision kinds are `created`, `agent`, `person` and `rollback`, plus
-`import` for a board data file import or whole-board replacement, and
-`recovered` for document text migrated from the retired
-`flats_docs_conflicts` records. A revision's `files` and `size` count all of
+`import` for a board data file import or whole-board replacement,
+`safe_point` for the revision a board or document records when anyone can
+start editing it ([board-public-edit.md](spec/board-public-edit.md),
+[docs-public-edit.md](spec/docs-public-edit.md)), and `recovered` for
+document text migrated from the retired `flats_docs_conflicts` records. A revision's `files` and `size` count all of
 its files, a document's source included.
 
 **Numbers.** The next revision number is `max(number) + 1`, or 1. Retention
@@ -220,10 +223,15 @@ instance, through the worker's host operations:
    hash and store its blob. When the budget runs out, stop: that entry and
    later ones wait for the next call, which finds the blobs already stored.
 4. For the entries whose blobs and source are complete, one transaction
-   inserts each as the next revision (kind, authors, message, `rollback_of`,
-   time, documents and source; `changes` against the previous revision, both
-   expanded), deletes the hold whose id is the entry's `op`, and advances the
-   cursor. Entries the cursor already passed are skipped. Then acknowledge.
+   inserts each as the next revision (kind, authors, guest credits, message,
+   `rollback_of`, time, documents with their guest line ranges, and source;
+   `changes` against the previous revision, both expanded), deletes the hold
+   whose id is the entry's `op`, and advances the cursor. Entries the cursor
+   already passed are skipped. Then acknowledge. Guest names go to
+   `guest_authors` and `guests_more`, apart from `authors`; an entry
+   crediting only guests is guest-only. When anyone-can-edit takes effect,
+   the import names the worker's `safe_point` entry, and this transaction
+   pins it and records it as the safe point if a pin is free.
 5. When revisions were added, run retention.
 
 An entry whose source cannot be resolved stops the import with an event; the
