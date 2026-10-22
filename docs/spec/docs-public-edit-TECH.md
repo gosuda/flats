@@ -482,8 +482,10 @@ New operations under `/_docs/host/revisions/` (private plus
   Yjs items (2.8): walk the `Y.Text` items, collect the visible characters of
   items whose client id is guest-owned, convert offsets to line ranges.
 - `meta.presence = {guests, viewers, at}` is written by the WebSocket VM, best
-  effort and without waiting for a writer another VM holds (a refused write
-  is tried after a later event), when
+  effort: while any socket is open it never waits for a writer another VM
+  holds (a refused write is tried after a later event, at least the next
+  heartbeat); once every socket has closed it waits as other writes do. It is
+  written when
   a count changes (at most once per second) and, while any Public socket is
   open, every 10 seconds on a heartbeat even when the counts are unchanged,
   so `at` stays fresh. The last Public socket closing writes zeros. Core

@@ -413,10 +413,12 @@ function sendViewers(c, frame) {
 function flushPresence(env, now = Date.now()) {
   let guests = 0,
     viewers = 0,
-    open = false;
+    open = false,
+    members = false;
   for (const c of connections.values()) {
     if (c.closed) continue;
     if (c.public) open = true;
+    else members = true;
     if (!c.joined) continue;
     if (c.kind === GUEST_KIND) guests++;
     else if (c.kind === VIEWER) viewers++;
@@ -427,12 +429,14 @@ function flushPresence(env, now = Date.now()) {
     return;
   if (changed && (guests || viewers) && now - presenceWritten.at < 1000) return;
   const value = { guests, viewers, at: now };
-  // The counts are best effort: this VM also serves members, so it never
-  // waits for a writer another VM holds. A refused write is tried again
-  // after a later event.
-  const db = env.DB,
+  // The counts are best effort. While any socket is open this VM never
+  // waits for a writer another VM holds: a refused write is tried again
+  // after a later event (at least the next heartbeat). Once every socket has
+  // closed, waiting delays nobody, and no later event may come.
+  const wait = !open && !members,
+    db = env.DB,
     busy = db.query("PRAGMA busy_timeout")[0]?.timeout ?? 5000;
-  db.exec("PRAGMA busy_timeout = 0");
+  if (!wait) db.exec("PRAGMA busy_timeout = 0");
   try {
     transaction(db, () => revisions.setMeta(db, "presence", value));
     presenceWritten = value;
@@ -445,7 +449,7 @@ function flushPresence(env, now = Date.now()) {
     if (!/SQLITE_BUSY|database is locked/i.test(String(e?.message)))
       console.warn("docs presence not written:", String(e?.message));
   } finally {
-    db.exec(`PRAGMA busy_timeout = ${Number(busy) || 5000}`);
+    if (!wait) db.exec(`PRAGMA busy_timeout = ${Number(busy) || 5000}`);
   }
 }
 
