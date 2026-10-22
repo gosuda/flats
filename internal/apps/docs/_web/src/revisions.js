@@ -251,7 +251,7 @@ export function touchGroup(db, editor, label, now = Date.now()) {
 }
 // GUEST_GROUP is the one group every guest's edits join. It has no idle
 // close: it is due only when its window ends (TECH 3.9).
-export const GUEST_GROUP = "guests";
+const GUEST_GROUP = "guests";
 export function touchGuestGroup(db, name, now = Date.now()) {
   const g = db.query("SELECT names FROM flats_docs_groups WHERE editor=?", [
     GUEST_GROUP,
@@ -687,9 +687,13 @@ export function setAccess(db, content, generation, body) {
     epoch < 0
   )
     throw coded("invalid", "invalid access");
-  if (epoch < accessOf(db).epoch)
+  const old = accessOf(db);
+  if (epoch < old.epoch)
     throw coded("conflict", "an access level with a newer epoch is stored");
-  setMeta(db, "access", { level, epoch });
+  // Core repeats the stored level on every wake; an idle document's log
+  // does not grow for it.
+  if (old.level !== level || old.epoch !== epoch)
+    setMeta(db, "access", { level, epoch });
   if (level !== "edit") {
     // The level is what must commit; recording is best effort.
     db.exec("SAVEPOINT flats_docs_access");

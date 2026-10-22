@@ -264,10 +264,12 @@ function rateUpdate(r, size) {
 
 // --- public access level (TECH 3.1, 3.2) ---
 
+// A new flat's database has no schema before its first document loads.
 function readAccess(db) {
   try {
     return revisions.accessOf(db);
-  } catch {
+  } catch (e) {
+    if (!String(e?.message).includes("no such table")) throw e;
     return { level: "", epoch: 0 };
   }
 }
@@ -308,10 +310,8 @@ function guestCapable(c) {
 
 // --- pools (TECH 3.3) ---
 
-function live(kind, path) {
-  return [...connections.values()].filter(
-    (c) => !c.closed && c.kind === kind && (!path || c.path === path),
-  );
+function live(kind) {
+  return [...connections.values()].filter((c) => !c.closed && c.kind === kind);
 }
 function poolFull(kind, path) {
   const [total, perRoom, roomsMax] =
@@ -591,24 +591,23 @@ function joined(c, m, env, extra) {
     c.diverged = true;
     return;
   }
-  if (c.kind === MEMBER) {
-    reconcileAccess(env);
+  if (c.kind !== GUEST_KIND) {
     const login = c.ws.headers.get("tailscale-user-login"),
       verified = c.ws.headers.get("tailscale-user-name") || login;
     c.you = { name: cleanName(verified || m.name), verified: !!verified };
-    // Guests see a member only under the page's nickname (rule 15).
-    c.nick = cleanGuestName(m.nick) || "";
-    // Edit groups are per person: a verified login, else the browser's own id.
-    c.editor = login
-      ? "ts:" + login.slice(0, 256)
-      : "browser:" +
-        (typeof m.editor === "string" && /^[A-Za-z0-9_-]{8,64}$/.test(m.editor)
-          ? m.editor
-          : crypto.randomUUID());
-  } else if (c.kind === VIEWER) {
-    const login = c.ws.headers.get("tailscale-user-login"),
-      verified = c.ws.headers.get("tailscale-user-name") || login;
-    c.you = { name: cleanName(verified || m.name), verified: !!verified };
+    if (c.kind === MEMBER) {
+      reconcileAccess(env);
+      // Guests see a member only under the page's nickname (rule 15).
+      c.nick = cleanGuestName(m.nick) || "";
+      // Edit groups are per person: a verified login, else the browser's own id.
+      c.editor = login
+        ? "ts:" + login.slice(0, 256)
+        : "browser:" +
+          (typeof m.editor === "string" &&
+          /^[A-Za-z0-9_-]{8,64}$/.test(m.editor)
+            ? m.editor
+            : crypto.randomUUID());
+    }
   }
   c.joined = true;
   c.level = applied.level;
