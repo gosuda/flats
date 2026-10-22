@@ -707,14 +707,15 @@ test("documents with one text count as separate copies", () => {
   fits(db, quota);
 });
 
-test("text an update makes visible by completing an earlier one counts", () => {
+test("stored pending update data never becomes visible or counts", () => {
   const db = database(),
     c = content("v1", doc("a.md", "x\n"));
   transaction(db, () => revisions.ensureFlat(db, c, next()));
   budget(db, 1 << 30);
   ackAll(db);
-  // A remote replica inserts a character, then 200 KB after it; the
-  // second update arrives first and stays pending (invisible).
+  // A remote replica inserts a character, then 200 KB after it; the second
+  // update was stored first, before updates leaving pending data were
+  // refused (docs-public-edit-TECH.md 3.7).
   const remote = new Y.Doc();
   const s = current(db, c.documents[0], c.hash, undefined, generation);
   Y.applyUpdate(remote, Y.encodeStateAsUpdate(s.doc));
@@ -726,28 +727,13 @@ test("text an update makes visible by completing an earlier one counts", () => {
   sv = Y.encodeStateVector(remote);
   t.insert(t.length, "z".repeat(200_000));
   const second = Y.encodeStateAsUpdate(remote, sv);
-  // An unrelated small edit, made before the pending update arrives (a
-  // later local edit would carry the pending structs along).
-  const control = editUpdate(db, c, "a.md", "q");
   transaction(db, () => applyBody(db, c, "a.md", second));
   assert.equal(committed(db, c, "a.md"), "x\n");
-  // Room for the visible text and another small edit, but not for the
-  // 200 KB the small first update makes visible.
+  // Loading drops the pending data: completing it shows only the first
+  // update's text, within a quota without room for the 200 KB.
   budget(db, MIN_WAL + dbBytes(db) + 400 * 1024);
-  const undo = new Error("undo");
-  assert.throws(
-    () =>
-      transaction(db, () => {
-        applyBody(db, c, "a.md", control);
-        throw undo;
-      }),
-    (e) => e === undo,
-  );
-  assert.throws(
-    () => transaction(db, () => applyBody(db, c, "a.md", first)),
-    refused,
-  );
-  assert.equal(committed(db, c, "a.md"), "x\n");
+  transaction(db, () => applyBody(db, c, "a.md", first));
+  assert.equal(committed(db, c, "a.md"), "x\np");
 });
 
 test("near the quota only the edited text is sized; others once", () => {
