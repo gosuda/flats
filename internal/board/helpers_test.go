@@ -365,9 +365,11 @@ type tb struct {
 	pub   *httptest.Server
 	// level is the flat's stored public access level: core sends it on
 	// Public requests (PublicAccessHeader) and opens the instance with it.
+	// seq is the stored access epoch (flats.access_seq).
 	level struct {
-		mu sync.Mutex
-		v  string
+		mu  sync.Mutex
+		v   string
+		seq int64
 	}
 	cancel struct {
 		mu  sync.Mutex
@@ -416,13 +418,17 @@ func (b *tb) publicLevel() string {
 	return b.level.v
 }
 
-// setLevel changes the stored public access level and, when the instance
-// runs, pushes it as core does (TECH public edit 2.6).
+// setLevel changes the stored public access level, bumping the access
+// epoch, and, when the instance runs, pushes both as core does (TECH public
+// edit 2.6).
 func (b *tb) setLevel(level string) {
 	b.t.Helper()
 	b.level.mu.Lock()
 	b.level.v = level
+	b.level.seq++
+	seq := b.level.seq
 	b.level.mu.Unlock()
+	b.in.SetAccessEpoch(seq)
 	if err := b.in.SetPublicAccess(context.Background(), level); err != nil {
 		b.t.Fatal(err)
 	}
@@ -435,6 +441,9 @@ func (b *tb) open() {
 	if err != nil {
 		b.t.Fatal(err)
 	}
+	b.level.mu.Lock()
+	in.SetAccessEpoch(b.level.seq)
+	b.level.mu.Unlock()
 	b.in, b.core.in = in, in
 }
 

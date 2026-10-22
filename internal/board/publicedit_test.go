@@ -308,15 +308,16 @@ func TestGuestRevive(t *testing.T) {
 
 // TestGuestFrameScan: no frame a guest receives names a Tailscale login, a
 // member's typed name or an agent label, with two guests at once; guests
-// and members see each other's presence in their own forms (TECH public
-// edit 3.3, 3.4).
+// and members see each other's presence in their own forms, members under
+// their page nicknames (TECH public edit 3.3, 3.4; docs-public-edit-TECH
+// 5.1).
 func TestGuestFrameScan(t *testing.T) {
 	ctx := context.Background()
 	b := editTB(t)
-	alice := connect(t, b.priv, map[string]any{"editor": "alice", "name": "Alice Secret"},
+	alice := connect(t, b.priv, map[string]any{"editor": "alice", "name": "Alice Secret", "nick": "Ally"},
 		map[string]string{"Tailscale-User-Login": "alice@example.com", "Tailscale-User-Name": "Alice Secret"})
 	alice.snapshot()
-	bob := connect(t, b.priv, map[string]any{"editor": "bobby", "name": "Bob Hidden"}, nil)
+	bob := connect(t, b.priv, map[string]any{"editor": "bobby", "name": "Bob Hidden", "nick": " Bobo\u200b "}, nil)
 	bob.snapshot()
 	el := eid()
 	alice.settle(1, sticky(el, "by alice", 0))
@@ -345,11 +346,15 @@ func TestGuestFrameScan(t *testing.T) {
 	if gp["guest"] != true || !strings.HasPrefix(gp["key"].(string), model.GuestKeyPrefix) || gp["verified"] != false {
 		t.Fatalf("member sees guest presence %v", gp)
 	}
-	// Guests see a member as Member N, without guest, and the other guest
-	// with guest set.
-	mp := g2.expectPres(func(m map[string]any) bool { return strings.HasPrefix(m["name"].(string), "Member ") && m["c"] != nil })
-	if mp["guest"] != nil || mp["verified"] != false || !strings.HasPrefix(mp["key"].(string), "p:") {
-		t.Fatalf("guest sees member presence %v", mp)
+	// Guests see a member under its cleaned nickname, without guest and
+	// unverified, a Tailscale member too, and the other guest with guest
+	// set.
+	alice.send(map[string]any{"t": "pres", "c": []float64{7, 8}})
+	for _, nick := range []string{"Bobo", "Ally"} {
+		mp := g2.expectPres(func(m map[string]any) bool { return m["name"] == nick && m["c"] != nil })
+		if mp["guest"] != nil || mp["verified"] != false || !strings.HasPrefix(mp["key"].(string), "p:") {
+			t.Fatalf("guest sees member presence %v", mp)
+		}
 	}
 	op := g2.expectPres(func(m map[string]any) bool { return m["name"] == "Gus" })
 	if op["guest"] != true || !strings.HasPrefix(op["key"].(string), "p:") {
@@ -390,6 +395,68 @@ func TestGuestFrameScan(t *testing.T) {
 	}
 	if len(bodies) < 3 {
 		t.Fatalf("guests saw %d deltas", len(bodies))
+	}
+}
+
+// TestGuestSeesMemberWithoutNick: a member that sends no usable nickname,
+// a Tailscale member included, appears to guests as Member N, never under
+// its Tailscale display name or login (docs-public-edit-TECH 5.1).
+func TestGuestSeesMemberWithoutNick(t *testing.T) {
+	b := editTB(t)
+	g, log := joinLoggedGuest(t, b, "Gus")
+	for _, hello := range []map[string]any{
+		{"editor": "alice", "name": "Alice Secret"},
+		{"editor": "alice", "name": "Alice Secret", "nick": "\u200b \u0007"},
+	} {
+		m := connect(t, b.priv, hello,
+			map[string]string{"Tailscale-User-Login": "alice@example.com", "Tailscale-User-Name": "Alice Secret"})
+		m.snapshot()
+		m.send(map[string]any{"t": "pres", "c": []float64{1, 2}})
+		mp := g.expectPres(func(p map[string]any) bool { return p["c"] != nil })
+		if name, _ := mp["name"].(string); !strings.HasPrefix(name, "Member ") || mp["verified"] != false {
+			t.Fatalf("guest sees a member without a nickname as %v", mp)
+		}
+		m.ws.Close(1000, "")
+		g.expectPres(func(p map[string]any) bool { return p["gone"] == true })
+	}
+	for _, raw := range log.all() {
+		scanIdentity(t, "guest Gus", raw)
+	}
+}
+
+// TestAccessEpochOnTheWire: welcomes of every kind and level frames carry
+// the stored access epoch core set, also after a restart
+// (docs-public-edit-TECH 5.1).
+func TestAccessEpochOnTheWire(t *testing.T) {
+	b := newTB(t)
+	b.setLevel(AccessView) // epoch 1
+	epoch := func(m map[string]any) int64 { n, _ := m["access_epoch"].(float64); return int64(n) }
+	member := func(editor string) (*client, map[string]any) {
+		t.Helper()
+		c, err := dial(t, b.priv, origin(b.priv))
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.send(map[string]any{"t": "hello", "v": 1, "pending": map[string]any{"count": 0}, "editor": editor})
+		return c, c.expect("welcome")
+	}
+	m, mw := member("ed1")
+	v, vw := joinViewer(t, b, "", nil)
+	if epoch(mw) != 1 || epoch(vw) != 1 {
+		t.Fatalf("welcomes at epoch 1: member %v, viewer %v", mw, vw)
+	}
+	b.setLevel(AccessEdit) // epoch 2
+	for _, c := range []*client{v, m} {
+		if l := c.expect("level"); l["access"] != AccessEdit || epoch(l) != 2 {
+			t.Fatalf("level frame %v", l)
+		}
+	}
+	if _, gw := joinGuest(t, b, "Gus", ""); epoch(gw) != 2 {
+		t.Fatalf("guest welcome %v", gw)
+	}
+	b.restart()
+	if _, w := member("ed2"); epoch(w) != 2 || w["level"] != AccessEdit {
+		t.Fatalf("member welcome after a restart %v", w)
 	}
 }
 

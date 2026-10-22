@@ -229,6 +229,11 @@ type Instance struct {
 	levelNow atomic.Value // string
 	pub      publicLimits
 	viewers  viewerFrames
+
+	// accessSeq is the flat's stored access epoch (flats.access_seq), sent
+	// to clients as access_epoch so they can tell a new edit period from a
+	// reconnect. Core sets it with SetAccessEpoch.
+	accessSeq atomic.Int64
 }
 
 // Open opens the board in dir (flats/<slug>/board), creating board.db with
