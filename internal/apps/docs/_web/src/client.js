@@ -476,21 +476,40 @@ function leaveGuestEditing(reason) {
 
 // A refused handshake looks like a network failure. When the page's own
 // server still answers, the Public side is full: say so instead of
-// retrying for ever.
+// retrying for ever. When it answers with an error, the documents are no
+// longer public (rule 30): stop, and keep a guest's unsaved text to
+// download. A network error proves neither and keeps retrying.
 function onUnreachable(failures) {
-  if (!initialReadonly || failures < 3 || readers) return false;
+  if (!initialReadonly || failures < 3 || readers || withdrawn) return false;
   const p = provider;
   fetch("/_docs/api/documents", { cache: "no-store" }).then(
     (r) => {
-      if (r.ok && p === provider && !p.model.connected && !p.paused) {
-        p.pause();
-        tooManyReaders();
-      }
+      if (p !== provider || p.model.connected || p.paused) return;
+      p.pause();
+      if (r.ok) tooManyReaders();
+      else noLongerPublic();
     },
     () => {},
   );
   return false;
 }
+
+function noLongerPublic() {
+  withdrawn = true;
+  readOnlyEditor();
+  const unsaved = join.kind === "guest" && provider.model.unsynced();
+  notice(
+    {
+      reason: "These documents are no longer public.",
+      detail: unsaved
+        ? "Your latest changes weren't saved. Download them to keep your text."
+        : "The page is not updating.",
+    },
+    unsaved ? [["Download local text", () => download()]] : [],
+  );
+}
+
+let withdrawn = false;
 
 function tooManyReaders() {
   if (readers) return;
