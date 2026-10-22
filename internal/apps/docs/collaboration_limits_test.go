@@ -137,12 +137,18 @@ func TestPublicReadsDoNotReserveWriter(t *testing.T) {
 		t.Fatal("read failed while writer reserved")
 	}
 	// The WebSocket VM never waits for the reserved writer, not even to
-	// write the Public presence counts.
+	// write the Public presence counts: a second viewer changes the counts
+	// more than a second after the last write, so the end of its hello
+	// tries a write, and the first viewer's heartbeat is still answered at
+	// once behind it.
+	time.Sleep(1100 * time.Millisecond)
 	start := time.Now()
+	second := connect(t, a.srv.URL, "public")
+	second.hello(t, nil)
 	viewer.send(t, map[string]any{"t": "ping"})
 	viewer.next(t, "pong")
 	if d := time.Since(start); d > 2*time.Second {
-		t.Fatalf("pong took %v while the writer was reserved", d)
+		t.Fatalf("a heartbeat took %v while the writer was reserved", d)
 	}
 }
 
