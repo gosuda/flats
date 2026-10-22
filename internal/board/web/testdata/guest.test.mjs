@@ -4,6 +4,7 @@ import { installDOM } from './dom.mjs';
 import {
   cleanGuestName, guestNameError, runeCount, viewerLabel, viewersOf, helloFields, byKind, who, badge, nameWithBadge,
   rejectMessage, guestBatchFits, dropPending, finishGuestEditing, overwriteNotice, activityNotice, stored, GUEST_NAME_MAX, GUEST_BATCH_OPS, GUEST_FATALS,
+  randomNick, pageNick, accessEpochOf, viewOnlyHolds, offersJoin, startsJoined,
 } from '../guest.js';
 import { guestCredit, creditText } from '../history.js';
 import { Net, queueBatch } from '../net.js';
@@ -48,6 +49,52 @@ test('hello asks to join only when the visitor chose to, and carries the tab tok
   assert.deepEqual(helloFields({ join: true, name: '', guestToken: 'aa', viewerToken: 'bb' }), { viewer_token: 'bb' }, 'no guest without a name');
 });
 
+test('hello carries the page nickname whenever there is one', () => {
+  assert.deepEqual(helloFields({ join: false, name: '', nick: 'Calm Otter' }), { nick: 'Calm Otter' });
+  assert.deepEqual(helloFields({ join: true, name: 'Mina', nick: 'Kim' }), { nick: 'Kim', guest: { name: 'Mina' } });
+});
+
+const memStorage = () => { const m = new Map(); return { getItem: (k) => m.get(k) ?? null, setItem: (k, v) => m.set(k, String(v)), removeItem: (k) => m.delete(k), m }; };
+
+test('the page nickname: the typed name cut to 40 characters, else a generated two-word name kept in localStorage', () => {
+  globalThis.localStorage = memStorage();
+  assert.equal(pageNick('  Kim\u200b '), 'Kim');
+  assert.equal(pageNick('x'.repeat(80)), 'x'.repeat(GUEST_NAME_MAX), 'a member name may be longer than a guest name');
+  assert.equal(localStorage.m.get('flats-board-nick'), undefined, 'a typed name generates nothing');
+  let made = 0;
+  const first = pageNick('', () => { made++; return 'Calm Otter'; });
+  assert.equal(first, 'Calm Otter');
+  assert.equal(localStorage.m.get('flats-board-nick'), 'Calm Otter');
+  assert.equal(pageNick('\u200b', () => { made++; return 'Brave Fox'; }), 'Calm Otter', 'kept, not made again');
+  assert.equal(made, 1);
+  localStorage.setItem('flats-board-nick', '\u0007');
+  assert.equal(pageNick('', () => 'Kind Owl'), 'Kind Owl', 'an unusable stored nickname is replaced');
+  assert.match(randomNick(), /^[A-Z][a-z]+ [A-Z][a-z]+$/);
+  assert.equal(randomNick((list) => list[0]), 'Amber Badger');
+  delete globalThis.localStorage;
+});
+
+test('the popup decisions: arrival, View only, a newer access_epoch, a reconnect with the same epoch', () => {
+  assert.equal(accessEpochOf({ access_epoch: 7 }), 7);
+  assert.equal(accessEpochOf({}), 0);
+  assert.equal(accessEpochOf({ access_epoch: '7' }), 0);
+  assert.equal(accessEpochOf({ access_epoch: -1 }), 0);
+  assert.equal(viewOnlyHolds('', 0), false, 'no choice yet');
+  assert.equal(viewOnlyHolds('4', 4), true, 'a reconnect in the same edit period');
+  assert.equal(viewOnlyHolds('4', 6), false, 'the level became edit again');
+  assert.equal(viewOnlyHolds('x', 0), false);
+  const at = (o) => offersJoin({ level: 'edit', epoch: 4, viewOnly: '', stopped: null, ...o });
+  assert.equal(at({}), true, 'arrival at level edit');
+  assert.equal(at({ level: 'view' }), false);
+  assert.equal(at({ viewOnly: '4' }), false, 'View only in this edit period');
+  assert.equal(at({ viewOnly: '2' }), true, 'View only in an earlier edit period, also after a missed view, edit, view cycle');
+  assert.equal(at({ stopped: 'full' }), false);
+  assert.equal(startsJoined({ joined: true, guestToken: 'gt', name: 'Ann' }), true, "this tab's live guest session");
+  assert.equal(startsJoined({ joined: false, guestToken: 'gt', name: 'Ann' }), false, 'a token after editing ended');
+  assert.equal(startsJoined({ joined: true, guestToken: '', name: 'Ann' }), false);
+  assert.equal(startsJoined({ joined: false, guestToken: '', name: 'Ann' }), false, 'a remembered name only fills the popup');
+});
+
 test('names and tokens live in browser storage, and blocked storage is harmless', () => {
   const mem = () => { const m = new Map(); return { getItem: (k) => m.get(k) ?? null, setItem: (k, v) => m.set(k, String(v)), removeItem: (k) => m.delete(k), m }; };
   globalThis.localStorage = mem();
@@ -59,6 +106,16 @@ test('names and tokens live in browser storage, and blocked storage is harmless'
   assert.equal(sessionStorage.m.get('flats-board-guest-token'), 'aa');
   assert.equal(sessionStorage.m.get('flats-board-viewer-token'), 'bb');
   assert.equal(stored.name(), 'Mina');
+  stored.setViewOnly(5);
+  stored.setJoined(true);
+  stored.setNick('Calm Otter');
+  assert.equal(sessionStorage.m.get('flats-board-view-only'), '5');
+  assert.equal(sessionStorage.m.get('flats-board-joined'), '1');
+  assert.equal(localStorage.m.get('flats-board-nick'), 'Calm Otter');
+  assert.equal(stored.viewOnly(), '5');
+  assert.equal(stored.joined(), true);
+  stored.setJoined(false);
+  assert.equal(stored.joined(), false);
   stored.setName('');
   assert.equal(stored.name(), '');
   const blocked = { getItem() { throw new Error('denied'); }, setItem() { throw new Error('denied'); }, removeItem() { throw new Error('denied'); } };

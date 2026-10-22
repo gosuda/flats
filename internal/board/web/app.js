@@ -13,7 +13,7 @@ import * as ops from './ops.js';
 import { $, h, icon, toast, dialog, plural, closePopover, replace } from './ui.js';
 import {
   stored, helloFields, viewersOf, viewerLabel, byKind, badge, rejectMessage, guestBatchFits,
-  cleanGuestName, guestNameError, runeCount, finishGuestEditing, overwriteNotice, activityNotice, GUEST_NAME_MAX, GUEST_BATCH_OPS, GUEST_FATALS, NAME_INVALID,
+  pageNick, accessEpochOf, offersJoin, startsJoined, cleanGuestName, guestNameError, runeCount, finishGuestEditing, overwriteNotice, activityNotice, GUEST_NAME_MAX, GUEST_BATCH_OPS, GUEST_FATALS, NAME_INVALID,
 } from './guest.js';
 import { Presence } from './presence.js';
 import { StyleBar, contextMenu } from './stylebar.js';
@@ -95,11 +95,13 @@ export class App {
     this.editorKey = editorId();
     this.name = storedName();
     this.level = '';             // the board's public access level: '', 'view' or 'edit'
+    this.accessEpoch = 0;        // the flat's access epoch from the last welcome or level frame
     this.guestName = stored.name();
-    this.join = !!this.guestName; // hello asks to join as a guest
-    this.joinPanel = null;
+    // hello asks to join as a guest: at once only for this tab's live guest
+    // session; a remembered name only fills the popup.
+    this.join = startsJoined({ joined: stored.joined(), guestToken: stored.guestToken(), name: this.guestName });
     this.joinDialog = null;
-    this.joinOffered = false;
+    this.viewOnlyNext = false;   // View only was chosen while stopped: record it at the next welcome
     this.guestEnded = false;     // the end of this tab's guest editing was handled
     this.endedFile = null;       // recovery file of the guest editing that ended
     this.dom();
@@ -181,6 +183,7 @@ export class App {
         if (this.name) m.name = this.name;
         return Object.assign(m, helloFields({
           join: this.join, name: this.guestName, guestToken: stored.guestToken(), viewerToken: stored.viewerToken(),
+          nick: pageNick(this.name),
         }));
       },
       welcome: (m) => this.welcome(m),
@@ -196,7 +199,7 @@ export class App {
       pres: (m) => this.presence.receive(m),
       shared: (m) => this.share.shared(m),
       viewers: (m) => this.presence.setViewers(viewersOf(m)),
-      level: (m) => this.onLevel(m.access),
+      level: (m) => this.onLevel(m),
       status: () => this.status(),
       tooLarge: (b, changed) => {
         this.changed(changed);
@@ -216,14 +219,23 @@ export class App {
     const unsent = leaving ? finishGuestEditing(this) : 0;
     this.access = access;
     this.level = m.level || '';
+    this.accessEpoch = accessEpochOf(m);
+    if (this.viewOnlyNext) { this.viewOnlyNext = false; stored.setViewOnly(this.accessEpoch); }
+    // Asked to join but admitted as a viewer: this tab has no guest session.
+    if (this.isPublic && this.join) { this.join = false; stored.setJoined(false); }
     this.me = m.me || null;
     this.welcomed = true;
     if (GUEST_FATALS.has(this.stopped)) this.stopped = null;
     if (m.guest_token) stored.setGuestToken(m.guest_token);
     if (m.viewer_token) stored.setViewerToken(m.viewer_token);
-    if (this.isGuest && this.me.label) {
-      this.guestName = this.me.label;
-      stored.setName(this.guestName);
+    if (this.isGuest) {
+      // A guest session reconnects as a guest, also after a reload.
+      this.join = true;
+      stored.setJoined(true);
+      if (this.me.label) {
+        this.guestName = this.me.label;
+        stored.setName(this.guestName);
+      }
     }
     if (this.me && this.me.key) this.names.set(this.me.key, this.me.name || this.me.label);
     this.header();
@@ -247,7 +259,7 @@ export class App {
         }
       }
     } else if (leaving) this.guestEditingEnded(unsent);
-    if (this.isPublic) this.offerJoin(!this.joinOffered);
+    if (this.isPublic) this.offerJoin();
     else this.closeJoin();
   }
 
@@ -1050,35 +1062,41 @@ export class App {
 
   // ---- guests and viewers (board-public-edit.md rules 8 to 13, 29) ----
 
-  // meLabel shows a viewer's number or a guest's name in the top bar.
+  // meLabel shows a viewer's number or a guest's name in the top bar, with
+  // Join to edit for a viewer of an editable board.
   meLabel() {
     const el = $('#me-label');
     el.hidden = !(this.welcomed && (this.isPublic || this.isGuest));
     if (el.hidden) return;
     const name = this.isGuest ? this.guestName : viewerLabel(this.me);
-    replace(el, h('span', { class: 'you', text: 'You are ' }), h('strong', { text: name }),
-      this.isGuest ? [' ', badge('guest'), ' ', h('button', { type: 'button', class: 'link', text: 'Change name', onclick: () => this.guestPrompt({ change: true }) })] : null);
+    const link = (text, onclick) => h('button', { type: 'button', class: 'link', text, onclick });
+    let act = null;
+    if (this.isGuest) act = [' ', badge('guest'), ' ', link('Change name', () => this.guestPrompt({ change: true }))];
+    else if (this.level === 'edit') act = [' ', link('Join to edit', () => this.guestPrompt())];
+    replace(el, h('span', { class: 'you', text: 'You are ' }), h('strong', { text: name }), act);
   }
 
-  onLevel(level) {
-    this.level = level || '';
-    if (this.isPublic) this.offerJoin(false);
+  onLevel(m) {
+    this.level = m.access || '';
+    this.accessEpoch = accessEpochOf(m);
+    if (!this.isPublic) return;
+    this.offerJoin();
+    this.meLabel();
   }
 
-  // offerJoin asks a viewer of an editable board for a name: a dialog on the
-  // first visit without a stored name, otherwise the panel at the bottom
-  // (TECH 8.1). Until then the visitor only watches.
-  offerJoin(first) {
-    this.joinOffered = true;
+  // offerJoin opens the name popup for a viewer of an editable board unless
+  // this tab chose View only since the level last became edit (rule 11).
+  offerJoin() {
     if (this.level !== 'edit') { this.closeJoin(); return; }
-    if (this.joinPanel || this.joinDialog || this.stopped) return;
-    if (first && !this.guestName) this.guestPrompt();
-    else this.showJoinPanel();
+    if (this.joinDialog || !offersJoin({ level: this.level, epoch: this.accessEpoch, viewOnly: stored.viewOnly(), stopped: this.stopped })) return;
+    this.guestPrompt();
   }
 
+  // closeJoin closes the popup without counting it as a View only choice.
   closeJoin() {
-    if (this.joinPanel) { this.joinPanel.remove(); this.joinPanel = null; }
-    if (this.joinDialog) this.joinDialog.close();
+    if (!this.joinDialog) return;
+    this.joinDialog.dismissed = true;
+    this.joinDialog.close();
   }
 
   // joinAs reconnects as a guest with a name already checked by guestNameError.
@@ -1086,8 +1104,18 @@ export class App {
     this.guestName = name;
     this.join = true;
     stored.setName(name);
-    if (this.joinPanel) { this.joinPanel.remove(); this.joinPanel = null; }
+    stored.setJoined(true);
     this.net.resume();
+  }
+
+  // viewOnly keeps this tab a viewer until the level next becomes edit. On
+  // a stopped connection the epoch is that of the next welcome.
+  viewOnly() {
+    this.join = false;
+    stored.setJoined(false);
+    if (this.stopped) this.viewOnlyNext = true;
+    else stored.setViewOnly(this.accessEpoch);
+    this.meLabel();
   }
 
   // nameField is the name input with its character count and badge preview.
@@ -1099,16 +1127,17 @@ export class App {
       const clean = cleanGuestName(input.value);
       count.textContent = `${runeCount(clean)}/${GUEST_NAME_MAX}`;
       count.classList.toggle('refusal', runeCount(clean) > GUEST_NAME_MAX);
-      preview.replaceChildren('Shown as ', h('strong', { text: clean || 'your name' }), ' ', badge('guest'), ' to everyone. Nobody checks it.');
+      preview.replaceChildren('Shown as ', h('strong', { text: clean || 'your name' }), ' ', badge('guest'), ' to other editors. Nobody checks it.');
       onChange(guestNameError(input.value));
     };
     input.addEventListener('input', update);
     return { input, count, preview, update };
   }
 
+  // guestPrompt is the name popup over the live board (rules 8, 11): Join
+  // and edit or View only, or, for a guest, Change name.
   guestPrompt({ reason = '', change = false } = {}) {
     if (this.joinDialog) return;
-    if (this.joinPanel) { this.joinPanel.remove(); this.joinPanel = null; }
     const error = h('p', { class: 'refusal', role: 'alert', text: reason });
     const submit = h('button', { type: 'submit', class: 'btn primary', text: change ? 'Save name' : 'Join and edit' });
     const f = this.nameField('guest-name', this.guestName || '', (err) => { submit.disabled = !!err; });
@@ -1124,45 +1153,28 @@ export class App {
     h('div', { class: 'field' }, h('div', { class: 'label-row' }, h('label', { for: 'guest-name', text: 'Your name' }), f.count), f.input, f.preview),
     error,
     h('p', { class: 'callout', text: "You can add, move and delete notes. You can't see history or send selections to an agent." }),
-    h('div', { class: 'acts' }, h('span', { class: 'spacer' }), submit));
+    h('div', { class: 'acts' }, h('span', { class: 'spacer' }),
+      change ? null : h('button', { type: 'button', class: 'btn ghost', text: 'View only', onclick: () => dlg.close() }),
+      submit));
     const dlg = dialog({
       title: change ? 'Change your name' : `Join ${this.boardName()}`,
-      describe: change ? 'Others see this name next to your cursor.' : 'Anyone with this link can edit this board. Pick the name others will see next to your cursor.',
+      describe: change ? 'Others see this name next to your cursor.' : 'Anyone with this link can edit this board. Pick the name others will see next to your cursor, or just watch.',
       body: form,
       className: 'narrow',
       onClose: () => {
         this.joinDialog = null;
         if (chosen) { if (chosen !== this.guestName || !this.isGuest) this.joinAs(chosen); return; }
-        // Closed without a name: keep watching, and keep the panel to join later.
-        if (this.stopped === 'name_invalid') { this.join = false; this.net.resume(); return; }
-        if (this.isPublic && this.level === 'edit') this.showJoinPanel();
+        if (change || dlg.dismissed) return;
+        // View only, or closed without a name: keep watching.
+        const refused = this.stopped === 'name_invalid';
+        this.viewOnly();
+        if (refused) this.net.resume();
       },
     });
     this.joinDialog = Object.assign(dlg, { join: !change });
     f.update();
     if (reason) error.textContent = reason;
     f.input.focus();
-  }
-
-  showJoinPanel() {
-    if (this.joinPanel) return;
-    const error = h('p', { class: 'refusal', role: 'alert' });
-    const submit = h('button', { type: 'submit', class: 'btn primary', text: 'Join and edit' });
-    const input = h('input', { id: 'join-name', autocomplete: 'nickname', placeholder: 'Pick a name', value: this.guestName || '' });
-    const form = h('form', { class: 'join pop', role: 'region', 'aria-label': 'Join to edit', onsubmit: (e) => {
-      e.preventDefault();
-      const err = guestNameError(input.value);
-      if (err) { error.textContent = err; input.focus(); return; }
-      this.joinAs(cleanGuestName(input.value));
-    } },
-    h('p', {}, h('strong', { text: 'This board is now editable.' }), ' ', h('span', { class: 'note', text: this.guestName ?
-      'Until you join, you can only watch. This browser remembered your name below; nobody sees it until you join.' :
-      'Until you join, you can only watch. No name has been asked of you so far.' })),
-    h('div', { class: 'join-row' }, h('div', { class: 'field grow' }, h('label', { for: 'join-name', text: 'Your name' }), input), submit),
-    error,
-    h('p', { class: 'note' }, 'Shown with a ', badge('guest'), " badge. Nobody checks it. It stays in the board's history. You can add, move and delete anything on the board."));
-    document.body.appendChild(form);
-    this.joinPanel = form;
   }
 
   // editingEnded: the owner stopped guest editing. Unconfirmed edits can be
@@ -1186,6 +1198,7 @@ export class App {
     this.focusId = null;
     this.presence.send({ sel: [], drag: null, edit: null, c: null });
     this.join = false;
+    stored.setJoined(false);
     this.guestEnded = true;
     this.banner('ended', unsent);
   }
@@ -1202,7 +1215,9 @@ export class App {
       actions: acts,
       className: 'narrow',
       onClose: () => {
-        this.join = retry;
+        // Watch is a View only choice; Try again asks to join again.
+        if (retry) this.join = true;
+        else this.viewOnly();
         this.net.resume();
       },
     });

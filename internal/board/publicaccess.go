@@ -226,7 +226,7 @@ func (in *Instance) guestWelcome(r *http.Request, c *conn, h helloMsg) error {
 		c.session, c.epoch = res.Session, in.epoch
 		in.hub.join(c)
 		welcome := map[string]any{"t": "welcome", "session": res.Session, "expires": now + engine.GuestSessionTTL, "access": "guest",
-			"level": in.level, "me": map[string]any{"key": c.plabel, "label": c.name, "guest": true, "color": c.color}}
+			"level": in.level, "access_epoch": in.accessSeq.Load(), "me": map[string]any{"key": c.plabel, "label": c.name, "guest": true, "color": c.color}}
 		if issued != "" {
 			welcome["guest_token"] = issued
 		}
@@ -249,7 +249,7 @@ func (in *Instance) viewerWelcome(r *http.Request, c *conn, h helloMsg) error {
 	return in.do(r.Context(), func() error {
 		in.hub.viewerNumber(c, h.ViewerToken)
 		c.send(map[string]any{"t": "welcome", "session": "", "expires": 0, "access": "public", "level": in.level,
-			"me": map[string]any{"label": "Viewer " + strconv.Itoa(c.viewerN), "viewer": c.viewerN}, "viewer_token": c.viewerToken})
+			"access_epoch": in.accessSeq.Load(), "me": map[string]any{"label": "Viewer " + strconv.Itoa(c.viewerN), "viewer": c.viewerN}, "viewer_token": c.viewerToken})
 		c.queueSnapshot(false)
 		in.hub.register(c)
 		in.notifyViewers()
@@ -443,6 +443,11 @@ func (in *Instance) trimGuestState(now int64) []engine.Changed {
 	}
 }
 
+// SetAccessEpoch records the flat's stored access epoch (flats.access_seq)
+// that welcomes and level frames send as access_epoch. Core calls it after
+// opening the instance and before every SetPublicAccess.
+func (in *Instance) SetAccessEpoch(epoch int64) { in.accessSeq.Store(epoch) }
+
 // SetPublicAccess changes the instance's public access level (TECH 6.1).
 // It returns after the apply loop has bumped the access epoch: no guest
 // batch of the earlier epoch commits after it. Leaving edit closes the
@@ -466,7 +471,7 @@ func (in *Instance) SetPublicAccess(ctx context.Context, level string) error {
 			case c.guest:
 				c.fatal(FatalEditingEnded)
 			case old != level:
-				c.send(map[string]any{"t": "level", "access": level})
+				c.send(map[string]any{"t": "level", "access": level, "access_epoch": in.accessSeq.Load()})
 			}
 		}
 		return nil

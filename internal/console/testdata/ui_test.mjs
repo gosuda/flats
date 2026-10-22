@@ -2428,6 +2428,115 @@ const openDialogs = () => all(document.body, (e) => e.tagName === 'DIALOG' && e.
   assert.equal(byText(main, 'Approve…').length, 1);
 }
 
+// --- anonymous public editing of documents (docs-public-edit.md) ---
+// The same components as for a board, with the documents' nouns (rule 36).
+{
+  const dom = await import('./dom.js');
+  assert.equal(dom.accessOf({ type: 'docs', visibility: 'public' }), 'view', 'a Public document without a level is view only');
+  assert.equal(dom.accessOf({ type: 'docs', visibility: 'public', public_access: 'edit' }), 'edit');
+  assert.equal(dom.accessOf({ type: 'design', visibility: 'public' }), 'public', 'a design has no level');
+}
+const minutes = { ...notes, slug: 'minutes', name: 'Minutes', visibility: 'public', public_access: 'view', providers: ['portal'],
+  private_url: 'https://minutes.tail.ts.net', public_url: 'https://minutes.portal.example', public_notice: PUBLIC, public_presence: { guests: 0, viewers: 2 } };
+const minutesEdit = { ...minutes, public_access: 'edit', public_presence: { guests: 3, viewers: 2 } };
+{
+  const docVis = () => calls.filter((c) => c.key === 'POST /console/api/flats/minutes/visibility').map((c) => JSON.parse(c.body));
+  const openDialogs = () => all(document.body, (e) => e.tagName === 'DIALOG' && e.open);
+  const toasts = new Element('div');
+  const savedGet = document.getElementById;
+  document.getElementById = (id) => (id === 'toasts' ? toasts : savedGet?.(id));
+  // At view only: three choices with the documents' description, networks
+  // can edit, and the viewer count.
+  routes['GET /console/api/flats/minutes'] = minutes;
+  shareDialog(minutes);
+  const dlg = openDialogs().pop();
+  assert.deepEqual(radios(dlg).map((r) => r.value), ['private', 'view', 'edit']);
+  assert.equal(radios(dlg).find((r) => r.checked).value, 'view');
+  assert.ok(dlg.textContent.includes('Anyone with the link can read live. Only your networks edit.'), dlg.textContent);
+  assert.ok(!dlg.textContent.includes('can watch live'));
+  const networksRow = all(dlg, (e) => e.className === 'share-person').find((e) => e.textContent.includes('People on your networks'));
+  assert.ok(networksRow.textContent.includes('Can edit'), networksRow.textContent);
+  assert.ok(dlg.textContent.includes('Can view. 2 viewers on the documents now.'));
+  assert.equal(byText(dlg, 'Stop guest editing')[0].parentNode.hidden, true);
+
+  // The blocked dialog is the board's.
+  routes['GET /console/api/flats/minutes/public-edit'] = { problems: [{ code: 'revision_quota_unlimited', message: 'unlimited' }], disk_quota: 1024, revision_quota: 0, pin_quota: 20, pins: 0, safe_point: null, listed: false };
+  pick(dlg, 'edit');
+  await tick();
+  const blocked = openDialogs().pop();
+  assert.ok(blocked.textContent.includes('Set these limits before anyone can edit') && blocked.textContent.includes('Revision quota is unlimited.'));
+  assert.equal(all(blocked, (e) => e.tagName === 'A' && e.textContent === 'Open revision settings')[0].getAttribute('href'), '/flats/minutes/settings#revisions');
+  byText(blocked, 'Cancel')[0].dispatch('click');
+  await tick();
+  assert.equal(docVis().length, 0);
+
+  // The confirmation names the documents and what guests cannot do.
+  routes['GET /console/api/flats/minutes/public-edit'] = { problems: [], disk_quota: 1024 * 1024 * 1024, revision_quota: 100, pin_quota: 20, pins: 0, safe_point: null, listed: false };
+  routes['POST /console/api/flats/minutes/visibility'] = pending('apr-min-edit');
+  routes['POST /console/api/approvals/apr-min-edit/approve'] = { id: 'apr-min-edit', status: 'approved' };
+  pick(dlg, 'edit');
+  await tick();
+  const confirm = openDialogs().pop();
+  assert.ok(confirm.textContent.includes('Let anyone on the internet edit Minutes?'));
+  assert.ok(confirm.textContent.includes('Anyone who opens the link can add, change and delete everything on the documents.'), confirm.textContent);
+  assert.ok(confirm.textContent.includes('safe point of the documents as it is now'));
+  assert.ok(confirm.textContent.includes("Guests can't see history, restore earlier text or add files."));
+  assert.ok(!confirm.textContent.includes('board'), 'no board wording for documents');
+  routes['GET /console/api/flats/minutes'] = minutesEdit;
+  confirm.close('ok');
+  await tick();
+  assert.deepEqual(docVis().at(-1), { visibility: 'public', access: 'edit', reason: '' });
+  assert.ok(toasts.textContent.includes('Anyone with the link can now edit these documents.'), toasts.textContent);
+
+  // At edit: counts, the documents' guest note and Stop guest editing.
+  assert.equal(radios(dlg).find((r) => r.checked).value, 'edit');
+  assert.ok(dlg.textContent.includes('Can edit. 3 guests and 2 viewers on the documents now.'));
+  assert.ok(dlg.textContent.includes("Guests can't see history. They can't restore earlier text or add files. You can restore any earlier state from History."), dlg.textContent);
+  assert.ok(!dlg.textContent.includes('board'));
+  routes['POST /console/api/flats/minutes/visibility'] = pending('apr-min-stop');
+  routes['POST /console/api/approvals/apr-min-stop/approve'] = { id: 'apr-min-stop', status: 'approved' };
+  routes['GET /console/api/flats/minutes'] = minutes;
+  byText(dlg, 'Stop guest editing')[0].dispatch('click');
+  await tick();
+  assert.deepEqual(docVis().at(-1), { visibility: 'public', access: 'view', reason: '' });
+  assert.ok(toasts.textContent.includes('Guest editing stopped. Viewers can still read.'));
+  dlg.close();
+  document.getElementById = savedGet;
+
+  // The flat page's Sharing row and safe point slot.
+  routes['GET /console/api/flats/minutes'] = minutesEdit;
+  routes['GET /console/api/flats/minutes/revision-quota'] = { revision_quota: 50, pin_quota: null, default_revision_quota: 100, default_pin_quota: 20, pins: 1 };
+  routes['GET /console/api/flats/minutes/public-edit'] = { problems: [], disk_quota: 1024, revision_quota: 50, pin_quota: 20, pins: 1, safe_point: 5, safe_point_pinned: true, listed: false };
+  const main = new Element('main');
+  const stop = flat.mountSettings(main, ['minutes'], ctx);
+  await tick();
+  assert.ok(main.textContent.includes('Who can open these documents'));
+  assert.ok(main.textContent.includes('Public, anyone can edit'));
+  assert.ok(main.textContent.includes('Right now: 3 guests editing, 2 viewers reading.'), main.textContent);
+  assert.ok(main.textContent.includes("Guests can't see history, restore earlier text or add files."));
+  assert.ok(main.textContent.includes('Revision r5, before guest editing'));
+  assert.equal(byText(main, 'Stop guest editing').length, 1);
+  stop();
+
+  // The approval page.
+  routes['GET /console/api/approvals/apr-doc-edit'] = { id: 'apr-doc-edit', flat: 'minutes', action: 'set_visibility', status: 'pending', via: 'mcp', requested_at: '2026-10-03T00:00:00Z',
+    params: { visibility: 'public', access: 'edit', from: 'public', from_access: 'view', access_seq: 2 } };
+  routes['GET /console/api/flats/minutes'] = minutes;
+  const page = new Element('main');
+  approvalsPage.mount(page, ['apr-doc-edit'], ctx); await tick();
+  const dd = all(page, (e) => e.tagName === 'DD').map((e) => e.textContent);
+  assert.ok(dd.includes('Public, view only') && dd.includes('Public, anyone can edit'), dd.join(' | '));
+  assert.ok(page.textContent.includes('can add, change and delete everything on the documents.'));
+  assert.ok(page.textContent.includes('A safe point of the documents will be pinned first.'));
+  assert.equal(byText(page, 'Approve…').length, 1);
+  byText(page, 'Approve…')[0].dispatch('click');
+  await tick();
+  const sure = openDialogs().pop();
+  assert.ok(sure.textContent.includes('will be able to add, change and delete everything on the documents.'), sure.textContent);
+  sure.close('cancel');
+  await tick();
+}
+
 // --- reverse proxy ---
 // The reverse proxy is the proxy (Private) and proxy-public (Public)
 // providers on one listener and one address template.
