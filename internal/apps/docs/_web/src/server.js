@@ -385,7 +385,19 @@ function flushViewers(now = Date.now()) {
     if (key === (room.viewersSent ?? '{"t":"viewers","n":[]}')) continue;
     room.viewersSent = key;
     room.viewersAt = now;
-    for (const c of room.peers) if (seesViewers(c)) send(c, frame);
+    for (const c of room.peers) if (seesViewers(c)) sendViewers(c, frame);
+  }
+}
+// sendViewers sends a viewers frame. Its n is the list of viewer numbers,
+// so it carries no envelope number and takes no output credit; it is small
+// and sent at most once a second per room.
+function sendViewers(c, frame) {
+  if (c.closed) return;
+  try {
+    c.ws.send(JSON.stringify(frame));
+  } catch {
+    c.closed = true;
+    c.ws.close(1011, "send failed");
   }
 }
 // flushPresence writes the guest and viewer counts core reports: when they
@@ -623,7 +635,7 @@ function joined(c, m, env, extra) {
     .map((p) => (c.kind === GUEST_KIND ? p.awGuest : p.aw));
   if (states.length) send(c, { t: "aw", u: base64(encodePresence(states)) });
   const viewers = viewersFrame(room);
-  if (viewers.count || viewers.n.length) send(c, viewers);
+  if (viewers.count || viewers.n.length) sendViewers(c, viewers);
 }
 
 // --- updates ---

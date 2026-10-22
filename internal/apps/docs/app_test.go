@@ -49,6 +49,12 @@ func startApp(t *testing.T, data, text, version string, removed ...bool) *app {
 }
 func startAppWithEnvironment(t *testing.T, data, text, version string, environment map[string]string, removed ...bool) *app {
 	t.Helper()
+	return startAppModule(t, data, module(text, version, removed...), version, environment)
+}
+
+// startAppModule starts the app with the content module source.
+func startAppModule(t *testing.T, data, source, version string, environment map[string]string) *app {
+	t.Helper()
 	dir := t.TempDir()
 	err := fs.WalkDir(FS(), ".", func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -66,7 +72,7 @@ func startAppWithEnvironment(t *testing.T, data, text, version string, environme
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = os.WriteFile(filepath.Join(dir, ContentModule), []byte(module(text, version, removed...)), 0600); err != nil {
+	if err = os.WriteFile(filepath.Join(dir, ContentModule), []byte(source), 0600); err != nil {
 		t.Fatal(err)
 	}
 	number := 1
