@@ -1,6 +1,10 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { createDiagramRuntime } from "./diagram-runtime.js";
+import {
+  DIAGRAM_CAPS,
+  createDiagramRuntime,
+  tooLarge,
+} from "./diagram-runtime.js";
 function harness(options) {
   const calls = [],
     themes = [];
@@ -70,4 +74,33 @@ test("load failure releases queue and can be retried", async () => {
   );
   await assert.rejects(runtime.request("A", "dark"), /offline/);
   assert.equal((await runtime.request("A", "dark")).svg, "ok");
+});
+
+test("a capped request runs with the size caps and is cached apart", async () => {
+  const { runtime, calls, themes } = harness();
+  await runtime.request("A", "dark");
+  await runtime.request("A", "dark", () => true, true);
+  await runtime.request("A", "dark", () => true, true);
+  assert.deepEqual(calls, ["A", "A"]);
+  assert.equal(themes[0].maxTextSize, undefined);
+  assert.equal(themes[1].maxTextSize, 20000);
+  assert.equal(themes[1].maxEdges, 500);
+  assert.equal(themes[1].securityLevel, "strict");
+  await runtime.request("B", "dark");
+  assert.equal(themes[2].maxTextSize, undefined);
+});
+test("diagrams over the caps are named too large", () => {
+  assert.equal(tooLarge("x".repeat(DIAGRAM_CAPS.maxTextSize)), "");
+  assert.match(
+    tooLarge("x".repeat(DIAGRAM_CAPS.maxTextSize + 1)),
+    /over 20,000 characters/,
+  );
+  assert.match(
+    tooLarge(
+      "graph TD",
+      "Edge limit exceeded. 501 edges found, but the limit is 500.",
+    ),
+    /over 500 connections/,
+  );
+  assert.equal(tooLarge("graph TD", "Parse error on line 1"), "");
 });

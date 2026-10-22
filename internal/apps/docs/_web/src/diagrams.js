@@ -1,4 +1,4 @@
-import { createDiagramRuntime } from "./diagram-runtime.js";
+import { createDiagramRuntime, tooLarge } from "./diagram-runtime.js";
 import { diagramTools, uniqueSVG } from "./diagram-tools.js";
 let loading,
   loadAttempt = 0,
@@ -49,6 +49,27 @@ export function destroyDiagram(el) {
   observed.delete(el);
 }
 
+// Once the page may show text anyone could have written (a guest wrote in
+// the document, or the flat is open to anyone for editing), diagrams draw
+// only when the reader asks, within size caps (docs-public-edit-TECH
+// 3.10). The page never switches back before a reload.
+let onRequest = false;
+export function drawOnRequest() {
+  if (onRequest) return;
+  onRequest = true;
+  for (const el of [...observed]) ask(el);
+}
+// ask shows a diagram's source with Show diagram instead of drawing it.
+function ask(el) {
+  destroyDiagram(el);
+  el.querySelector(".mermaid-svg")?.remove();
+  el.dataset.state = "request";
+  delete el.dataset.error;
+  el.removeAttribute("aria-busy");
+  diagramTools(el, () => renderOne(el));
+  status(el, "");
+}
+
 function status(el, message, error = false) {
   let note = el.querySelector(".mermaid-status");
   if (!note) {
@@ -64,7 +85,8 @@ function renderOne(el) {
   observed.delete(el);
   const source = el.querySelector(".mermaid-source")?.textContent ?? "";
   const token = {},
-    theme = dark.matches ? "dark" : "default";
+    theme = dark.matches ? "dark" : "default",
+    capped = onRequest;
   requests.set(el, token);
   // CodeMirror builds widgets before mounting them. A fresh detached widget
   // still owns its request; once mounted, removal invalidates it. Explicit
@@ -74,17 +96,31 @@ function renderOne(el) {
     if (el.isConnected) mounted = true;
     return requests.get(el) === token && (!mounted || el.isConnected);
   };
-  el.dataset.state = "pending";
   delete el.dataset.error;
+  const large = capped && tooLarge(source);
+  if (large) {
+    el.dataset.state = "error";
+    el.dataset.error = "size";
+    diagramTools(el, () => renderOne(el));
+    status(el, large, true);
+    el.dispatchEvent(new Event("diagram-rendered", { bubbles: true }));
+    return Promise.resolve();
+  }
+  el.dataset.state = "pending";
   el.setAttribute("aria-busy", "true");
   diagramTools(el, () => renderOne(el));
   status(el, "Rendering diagram…");
   return runtime
-    .request(source, theme, current)
+    .request(source, theme, current, capped)
     .then(
       (result) => {
         if (!current() || !result) return;
-        if (result.error) {
+        const large = capped && result.error && tooLarge(source, result.error);
+        if (large) {
+          el.dataset.state = "error";
+          el.dataset.error = "size";
+          status(el, large, true);
+        } else if (result.error) {
           el.dataset.state = "error";
           el.dataset.error = "syntax";
           status(
@@ -131,6 +167,13 @@ function renderOne(el) {
 
 // Resolves for visible work; offscreen placeholders render as they approach.
 export function renderDiagrams(root) {
+  if (onRequest) {
+    for (const el of root.querySelectorAll(
+      ".mermaid-diagram:not([data-state])",
+    ))
+      ask(el);
+    return Promise.resolve();
+  }
   const pending = [];
   // Measure the whole batch before toolbar/status writes invalidate layout.
   const placeholders = [
@@ -151,19 +194,37 @@ export function renderDiagrams(root) {
   return Promise.all(pending);
 }
 export function redrawDiagrams(root) {
+  const asked = [];
   for (const el of root.querySelectorAll(".mermaid-diagram")) {
+    // On request, only the diagrams the reader asked for draw again.
+    if (onRequest) {
+      if (!el.dataset.state) ask(el);
+      else if (el.dataset.state !== "request") asked.push(el);
+      continue;
+    }
     destroyDiagram(el);
     delete el.dataset.state;
   }
+  if (onRequest)
+    return Promise.all(
+      asked.map((el) => {
+        destroyDiagram(el);
+        return renderOne(el);
+      }),
+    );
   return renderDiagrams(root);
 }
 export function invalidateDiagram(el, source) {
   destroyDiagram(el);
   el.querySelector(".mermaid-source").textContent = source;
 }
+// updateDiagram draws a diagram's new source, or asks again on request: a
+// click covers only the source the reader saw.
 export function updateDiagram(el, source) {
   invalidateDiagram(el, source);
-  return renderOne(el);
+  if (!onRequest) return renderOne(el);
+  ask(el);
+  return Promise.resolve();
 }
 export function onThemeChange(f) {
   dark.addEventListener("change", f);

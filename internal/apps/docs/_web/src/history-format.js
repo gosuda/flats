@@ -21,24 +21,41 @@ export function ago(date, now = Date.now()) {
   return date.toLocaleDateString();
 }
 
-// who describes what made a revision, for its first line.
-export function who(r) {
+// credit describes what made a revision, for its first line, as parts:
+// strings, and {guest: name} for a name a guest typed, which the panel
+// draws as text followed by the guest badge (docs-public-edit.md rule 25).
+export function credit(r) {
   const authors = (r.authors || []).join(", ");
   switch (r.kind) {
     case "created":
-      return "Created";
+      return ["Created"];
     case "rollback":
-      return (
-        `Restored revision ${r.rollback_of}` + (authors ? ` · ${authors}` : "")
-      );
+      return [
+        `Restored revision ${r.rollback_of}` + (authors ? ` · ${authors}` : ""),
+      ];
     case "recovered":
-      return "Recovered text";
+      return ["Recovered text"];
+    case "safe_point":
+      return ["Safe point before guest editing"];
     case "agent":
-      return authors || "Agent";
-    default:
-      return authors || "Edits";
+      return [authors || "Agent"];
   }
+  const parts = authors ? [authors] : [];
+  for (const name of guestNames(r)) {
+    if (parts.length) parts.push(", ");
+    parts.push({ guest: name });
+  }
+  const more = Number.isSafeInteger(r.guests_more) ? r.guests_more : 0;
+  if (more > 0)
+    parts.push(
+      (parts.length ? " and " : "") +
+        `${more} ${parts.length ? "more " : ""}guest${more === 1 ? "" : "s"}`,
+    );
+  return parts.length ? parts : ["Edits"];
 }
+
+export const guestNames = (r) =>
+  (r.guest_authors || []).filter((n) => typeof n === "string" && n);
 
 export const isMarkdown = (p) => /\.(md|markdown)$/i.test(p);
 const baseName = (p) =>
