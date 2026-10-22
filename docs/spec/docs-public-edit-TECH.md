@@ -1,7 +1,9 @@
 # Anonymous public editing for documents: technical design
 
-Status: design for [docs-public-edit.md](docs-public-edit.md), including the
-board changes of its rules 8, 11 and 15. Rule numbers refer to that page;
+Status: implemented on an unreleased branch; design for
+[docs-public-edit.md](docs-public-edit.md), including the board changes of its
+rules 8, 11 and 15. Where the implementation settled a detail differently, the
+text below describes the implementation. Rule numbers refer to that page;
 "board rule N" refers to [board-public-edit.md](board-public-edit.md) and
 "board TECH N" to [board-public-edit-TECH.md](board-public-edit-TECH.md).
 The document app internals are in [docs-app.md](../internal/docs-app.md).
@@ -54,16 +56,23 @@ types implement:
 
 ```go
 type publicEditTarget interface {
-	SafePoint(ctx context.Context, prev []RevisionFile) (seq int64, reuse bool, err error)
+	SafePoint(ctx context.Context, prev *safePointPrev) (seq int64, reuse bool, err error)
 	SetPublicAccess(ctx context.Context, level string, epoch int64) error
 	PublicPresence() (guests, viewers int, ok bool)
 }
 ```
 
-The board adapter wraps `*board.Instance` as today; the board keeps its
-in-memory epoch for commits and now also sends the stored epoch to clients
-(5.1). The docs adapter calls host
-operations (3.6) through `docsHost`.
+`safePointPrev` is the earlier safe point's source and document list (a
+document's safe point compares both). The board adapter wraps
+`*board.Instance` as today; the board keeps its in-memory epoch for commits
+and now also sends the stored epoch to clients (5.1). The docs adapter calls
+host operations (3.6) through `docsHost`.
+
+**Preflight reuse.** The console's preflight sees only the revision store, so
+it treats the stored safe point as reusable only when it is the newest
+revision. The worker's `safe_point` operation makes the real comparison; when
+it records a new safe point and no pin is free, the approval fails with
+`pin_quota_full` (2.3).
 
 ### 2.3 Applying `edit` to a document
 
@@ -131,9 +140,9 @@ never wakes a worker.
   `guest_lines` (sorted, merged 1-based inclusive ranges `[[start, end], ...]`).
   `core.Document` and MCP `get_document` return them.
 - Each outbox entry's `documents[]` items gain `guest_lines`. Migration 20 adds
-  `revision_guest_lines(flat_id, revision, path, ranges TEXT)`, written in the
-  import transaction for documents with a non-empty range list, deleted with
-  its revision. `get_revision` returns `guest_lines` for each document file.
+  `revision_guest_lines(flat, number, path, ranges TEXT)`, keyed like
+  `revision_files` and deleted with its revision, written in the import
+  transaction for documents with a non-empty range list. `get_revision` returns `guest_lines` for each document file.
 - `docs/agent/topics/docs.md` states rule 28 and the two fields.
 
 ### 2.9 MCP, API, CLI
@@ -206,7 +215,9 @@ the WebSocket loop next runs, and at the latest at their next heartbeat
 | Public otherwise | viewer |
 
 - `hello` gains `guest: {name, token?}`, `viewer_token?` and `nick?`.
-- Guest token: 16 random bytes issued in `welcome.guest_token` when absent;
+- Guest token: 16 random bytes (32 hex digits) issued in
+  `welcome.guest_token` when absent or malformed; a well-formed token from the
+  client is its key secret (documents keep no guest session table);
   the key is `guest:` + the first 16 hex digits of SHA-256(token). Kept in
   `sessionStorage` (`flats-docs-guest-token`).
 - Guest name: `cleanGuestName` (trim, remove Cc and Cf characters, 1 to 40
@@ -226,7 +237,12 @@ the WebSocket loop next runs, and at the latest at their next heartbeat
 | Worker connections | 200, 50 per document, 8 documents, as today | guests 30 (20 per document, 30 new per minute); viewers 40 (10 per document, 4 documents), as today's reader pool |
 | Worker queued bytes (`flatSendBytes`) | 16 MiB, as today | a separate 4 MiB |
 
-  Public connections therefore never take a member slot or member send
+  The runtime's Public slots, queue and buckets apply only to a module that
+  opts in with `websocket.publicPools: true`, which only the built-in
+  document app does; user server flats keep runtime API v1's 256 connections.
+  A Public socket's kind (guest or viewer) is decided at `hello`, so the
+  worker checks its pool there; a viewer over its pool is closed after its
+  hello. Public connections therefore never take a member slot or member send
   budget. A guest over its pool gets fatal `full` and the client offers Read
   (viewer) or Try again. A viewer over its pool is closed `1008 capacity` as
   today, and the client shows "Too many readers right now". A Public request
@@ -304,6 +320,8 @@ the WebSocket loop next runs, and at the latest at their next heartbeat
 - Viewers receive no presence. Members and guests receive
   `{t: "viewers", n: [1, 2, ...]}` for the viewers of their room (or `{count}`
   above 20), at most once per second per room and only when the set changed.
+  This frame carries no envelope serial (its `n` is the list) and takes no
+  output credit.
 - A test serializes every frame sent to a guest socket while a Tailscale
   member edits and fails on the member's `tailscale-user-login`, its
   `tailscale-user-name`, its `browser:` editor id or an agent label.
@@ -503,9 +521,15 @@ Spec rule 21a is reworded to these two guarantees.
   paste) is refused by the server and stops editing (rule 22). The status shows "Saving…" until every id is acknowledged.
   `busy` handling as in 3.8.
 - **Refusals:** a fatal guest code stops editing with the notice "…, so editing
-  stopped", **Download local text** and **Rejoin**. Rejoin sets
-  `sessionStorage` `flats-docs-rejoin` and reloads; the page then joins with
-  the remembered name without the popup.
+  stopped", **Download local text** and **Rejoin**. `sessionStorage`
+  `flats-docs-rejoin` holds the epoch the tab joined at (set by Join and edit
+  and by Rejoin), so a guest stays a guest across reloads and moves between
+  documents within that epoch; Rejoin reloads and joins with the remembered
+  name without the popup.
+- **No longer public** (rule 30): when handshakes fail and the page's own
+  documents route answers with an error, the page stops reconnecting, makes
+  the editor read-only and says "These documents are no longer public.",
+  with **Download local text** when a guest has unsaved changes.
 - **Editing ended:** notice "The owner turned off guest editing. N of your
   latest changes weren't saved. You can keep reading live." with Download local
   text; the page reconnects as a viewer.
@@ -519,8 +543,9 @@ Spec rule 21a is reworded to these two guarantees.
 
 ### 5.1 Server (`internal/board`)
 
-- `SetPublicAccess(level, epoch)` and `Options.AccessEpoch` carry
-  `flats.access_seq`; the welcome and the `level` frame send it as
+- `Instance.SetAccessEpoch(epoch)` stores `flats.access_seq`; core calls it
+  after opening a board and before every `SetPublicAccess(level)`, whose
+  signature is unchanged. The welcomes and the `level` frame send it as
   `access_epoch`.
 - `helloMsg` gains `Nick`. `welcome` stores `c.nick = model.CleanGuestName(h.Nick)`
   for members (both branches); a Tailscale member's display name is never used
@@ -537,8 +562,9 @@ Spec rule 21a is reworded to these two guarantees.
 - Every page sends `hello.nick`: the typed name when there is one, else a
   generated two-word name kept in `localStorage` `flats-board-nick`.
 - `join` no longer starts as `!!guestName`; a remembered name only fills the
-  popup. A live guest session (`sessionStorage` guest token present and a
-  join already chosen in this tab) rejoins without the popup.
+  popup. A live guest session (`sessionStorage` `flats-board-joined`, set on
+  joining and cleared on View only, Watch or editing ended) rejoins without
+  the popup.
 - `guestPrompt` gains **View only** (not in Change name mode). Closing or View
   only sets the tab's view-only epoch (as 4). `offerJoin` always uses the
   popup; `showJoinPanel` and its CSS are removed.

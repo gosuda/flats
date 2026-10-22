@@ -1,6 +1,7 @@
 # Anonymous public editing for documents
 
-Status: planned. This page changes the document parts of
+Status: partly implemented, on an unreleased branch; see
+[Current state](#current-state). This page changes the document parts of
 [content-models.md](content-models.md), the
 [docs app internals](../internal/docs-app.md) and
 [board-public-edit.md](board-public-edit.md) rules 7, 8, 11 and 15; every changed rule is
@@ -424,13 +425,17 @@ rule 28. The generated references change with them.
 
 ## Current state
 
-Nothing of this page is implemented for documents. The board feature already
-has the stored level, the approval and its staleness check, the quota rules,
-the safe point protection and guest-only retention in core, partly written
-for boards only, and the console's Share dialog, Sharing row and dialogs with
-board wording. Documents today: Public is read-only with no presence, Private
-editors without a Tailscale identity get a random name, and every Private
-editor sees the others' names, verified or not.
+Implemented on an unreleased branch: the stored level and approvals for
+documents, the safe point, guests and viewers in the document worker, the
+guest projection and limits, client id ownership and the handshake reserve,
+the runtime's Public pools, guest revisions and retention, guest lines for
+agents, the document client, the board changes of rules 8, 11 and 15, and the
+console. Not done or not measured yet:
+
+- The load test with full Public pools and the 200 ms display target, and the
+  real-browser checks of both types.
+- Viewers' status reads "Read-only" as today, where the mock-ups showed
+  "Live".
 
 ## Open questions
 
