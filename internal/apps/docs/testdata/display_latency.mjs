@@ -3,27 +3,40 @@
 // CodeMirror view, and page B records when each marker first appears in its
 // .cm-content DOM. Both times come from the same machine clock.
 //
-//	node display_latency.mjs <url> <evidence dir> <label> <seconds> <document>
+//	node display_latency.mjs <url> <evidence dir> <label> <seconds> <document> <mode>
+//
+// mode "top" inserts each marker on its own line at the start, so guest text
+// written below is out of page B's viewport; "visible" puts all markers on
+// the first line above a blank line and gives page B a tall viewport, so the
+// guests' growing text stays in view while B times the markers.
+//
+// After the edits it prints "EDITS-DONE" and waits for a line on stdin (the
+// caller stops the guests and lets their updates settle), then waits until
+// both pages' editor text equals the server's committed Markdown.
 //
 // Prints one line "RESULT <json>". Every 2 s during the edits it also times
 // a round trip into page B's main thread ("probe"). With
 // FLATS_DOCS_DISPLAY_PROFILE=1 it records a CPU profile of page B during the
 // edits into the evidence directory and prints its top functions.
 import fs from "node:fs";
+import readline from "node:readline";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 const { chromium } = await import(
   pathToFileURL(process.env.FLATS_PLAYWRIGHT_MODULE).href
 );
-const [url, evidence, label, seconds, doc] = process.argv.slice(2);
+const [url, evidence, label, seconds, doc, mode = "top"] =
+  process.argv.slice(2);
+const input = readline.createInterface({ input: process.stdin }),
+  lines = input[Symbol.asyncIterator]();
 const browser = await chromium.launch({ headless: true });
 console.log("Chromium", browser.version());
 const contexts = [],
   errors = [];
 let a, b;
-async function open(name) {
+async function open(name, height = 900) {
   const context = await browser.newContext({
-    viewport: { width: 1280, height: 900 },
+    viewport: { width: 1280, height },
   });
   contexts.push(context);
   await context.addCookies([{ name: "flats-test-private", value: "1", url }]);
@@ -63,7 +76,7 @@ function pct(sorted, q) {
 try {
   phase("open");
   a = await open("Member A");
-  b = await open("Member B");
+  b = await open("Member B", mode === "visible" ? 2400 : 900);
   for (const page of [a, b])
     if (!(await editorText(page)).includes("Agent line"))
       throw new Error("the page did not open " + doc);
@@ -95,7 +108,7 @@ try {
       const now = performance.timeOrigin + performance.now();
       let i = 0;
       for (const line of content.children) {
-        if (i++ >= 8) break;
+        if (i++ >= 3) break;
         for (const m of line.textContent.matchAll(re))
           if (!(m[0] in window.__seen)) window.__seen[m[0]] = now;
       }
@@ -106,6 +119,24 @@ try {
       characterData: true,
     });
   });
+  // In visible mode the markers' line is kept apart from the guests' text
+  // by a blank line.
+  if (mode === "visible") {
+    await a
+      .locator(".cm-content")
+      .evaluate((el) =>
+        el.cmTile.root.view.dispatch({ changes: { from: 0, insert: "\n\n" } }),
+      );
+    await b.waitForFunction(
+      () =>
+        document
+          .querySelector(".cm-content")
+          .cmTile.root.view.state.doc.toString()
+          .startsWith("\n\n"),
+      null,
+      { timeout: 20000 },
+    );
+  }
   phase("edits");
   let profiler;
   if (process.env.FLATS_DOCS_DISPLAY_PROFILE === "1") {
@@ -128,7 +159,7 @@ try {
   // A: one marked line every 250 ms through its CodeMirror view, which the
   // Yjs binding sends like typed text.
   await a.evaluate(
-    (seconds) =>
+    ({ seconds, separator }) =>
       new Promise((resolve) => {
         const view = document.querySelector(".cm-content").cmTile.root.view;
         window.__sent = {};
@@ -142,12 +173,24 @@ try {
           }
           const marker = "Mk" + String(i++).padStart(5, "0");
           window.__sent[marker] = performance.timeOrigin + performance.now();
-          view.dispatch({ changes: { from: 0, insert: marker + "\n" } });
+          view.dispatch({ changes: { from: 0, insert: marker + separator } });
         }, 250);
       }),
-    Number(seconds),
+    { seconds: Number(seconds), separator: mode === "visible" ? " " : "\n" },
   );
   phase("edits done");
+  // Guest text in B's viewport now, by its words.
+  const guestInView = await b.evaluate(() => {
+    let n = 0;
+    for (const line of document.querySelectorAll(".cm-content .cm-line")) {
+      const r = line.getBoundingClientRect();
+      if (r.bottom < 0 || r.top > innerHeight) continue;
+      n += (line.textContent.match(/g\d\dw\d{5}|\[g\d\d-\d{5}\]/g) || [])
+        .length;
+    }
+    return n;
+  });
+  console.log("guest words in page B's viewport:", guestInView);
   probing = false;
   await probe;
   console.log("probe [seconds since start, ms]: " + JSON.stringify(probes));
@@ -203,6 +246,47 @@ try {
   }
   latencies.sort((x, y) => x - y);
   const round = (x) => (x === null ? null : Math.round(x * 10) / 10);
+  // The caller stops the guests and lets their updates settle; then both
+  // pages must show exactly the server's committed text.
+  console.log("EDITS-DONE");
+  await lines.next();
+  phase("settled");
+  const server = () =>
+    a.evaluate(
+      async (doc) =>
+        (
+          await (
+            await fetch("/_docs/api/document?doc=" + encodeURIComponent(doc))
+          ).json()
+        ).markdown,
+      doc,
+    );
+  let convergence;
+  const deadline = Date.now() + 20000;
+  for (;;) {
+    const [s, x, y] = await Promise.all([
+      server(),
+      editorText(a),
+      editorText(b),
+    ]);
+    const diff = (u, v) => {
+      let i = 0;
+      while (i < u.length && u[i] === v[i]) i++;
+      return i === u.length && u.length === v.length ? -1 : i;
+    };
+    convergence = {
+      converged: s === x && s === y,
+      server: s.length,
+      a: x.length,
+      b: y.length,
+      aFirstDifference: diff(s, x),
+      bFirstDifference: diff(s, y),
+    };
+    if (convergence.converged || Date.now() > deadline) break;
+    await new Promise((r) => setTimeout(r, 250));
+  }
+  phase("compared");
+  console.log("convergence: " + JSON.stringify(convergence));
   const status = await Promise.all(
     [a, b].map((p) => p.locator("#status").innerText()),
   );
@@ -219,6 +303,9 @@ try {
         status,
         errors,
         responsiveness,
+        probeMax: Math.max(0, ...probes.map((p) => p[1])),
+        guestInView,
+        ...convergence,
       }),
   );
   // Screenshots last: a busy page may not take one in time.
@@ -249,6 +336,7 @@ try {
         .catch(() => {});
   throw e;
 } finally {
+  input.close();
   for (const c of contexts) await c.close().catch(() => {});
   await browser.close();
 }
