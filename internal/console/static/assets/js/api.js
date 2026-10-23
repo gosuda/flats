@@ -39,7 +39,7 @@ const post = (p, b) => request('POST', p, b === undefined ? {} : b);
 
 export const api = {
   status: () => get('/status'),
-  flats: (q) => get('/flats' + (q ? '?q=' + enc(q) : '')),
+  flats: (q, signal) => request('GET', '/flats' + (q ? '?q=' + enc(q) : ''), undefined, undefined, signal),
   flat: (slug) => get(`/flats/${enc(slug)}`),
   versions: (slug) => get(`/flats/${enc(slug)}/versions`),
   deleteVersion: (slug, version) => request('DELETE', `/flats/${enc(slug)}/versions/${version}`),
@@ -57,7 +57,7 @@ export const api = {
   publicEdit: (slug) => get(`/flats/${enc(slug)}/public-edit`),
   setName: (slug, name) => post(`/flats/${enc(slug)}/name`, { name }),
   rename: (slug, to) => post(`/flats/${enc(slug)}/rename`, { slug: to }),
-  remove: (slug) => request('DELETE', `/flats/${enc(slug)}?reason=${enc('deleted in the console')}`),
+  remove: (slug, signal) => request('DELETE', `/flats/${enc(slug)}?reason=${enc('deleted in the console')}`, undefined, undefined, signal),
   logs: (slug, after) => get(`/flats/${enc(slug)}/logs?limit=200` + (after ? '&after=' + after : '')),
   env: (slug) => get(`/flats/${enc(slug)}/env`),
   putEnv: (slug, name, value) => request('PUT', `/flats/${enc(slug)}/env/${enc(name)}`, { value }),
@@ -74,7 +74,7 @@ export const api = {
   stats: (slug, days) => get(`/flats/${enc(slug)}/stats?days=${days || 30}`),
   approvals: (status, signal) => request('GET', '/approvals' + (status ? '?status=' + enc(status) : ''), undefined, undefined, signal),
   approval: (id) => get(`/approvals/${enc(id)}`),
-  decide: (id, approve) => post(`/approvals/${enc(id)}/${approve ? 'approve' : 'reject'}`),
+  decide: (id, approve, signal) => request('POST', `/approvals/${enc(id)}/${approve ? 'approve' : 'reject'}`, {}, undefined, signal),
   providers: () => get('/providers'),
   // etag is config.etag from settings(), as for saveSettings.
   setProvider: (id, enabled, etag) => request('PUT', `/providers/${enc(id)}`, { enabled }, etag ? { 'If-Match': `"${etag}"` } : undefined),

@@ -365,7 +365,7 @@ a.menu-item { text-decoration: none; color: inherit; display: block; }
   background: transparent; color: var(--text); font: inherit; cursor: pointer;
 }
 .menu-item:hover:not(:disabled), .menu-item:focus-visible { background: var(--hover); outline: none; }
-.menu-item:disabled { color: var(--muted); opacity: 0.6; cursor: not-allowed; }
+.menu-item:disabled, .menu-item[aria-disabled="true"] { color: var(--muted); opacity: 0.6; cursor: not-allowed; }
 .menu-item.danger { color: var(--danger); }
 
 /* --- cards, facts, tables --- */
@@ -542,6 +542,8 @@ td > .badge:first-child { margin-left: 0; }
   }
   .flats-grid .type-icon { width: 44px; height: 44px; }
   .flats-grid .row-actions { justify-content: flex-start; flex-wrap: wrap; }
+  /* The card's actions sit at its left here, so its menu opens rightward. */
+  .flats-grid .row-actions .menu { left: 0; right: auto; }
   .flat-head { flex-direction: column; gap: 12px; }
   .card { padding: 16px; }
   .facts { grid-template-columns: minmax(0, 1fr); gap: 2px; }
@@ -919,3 +921,63 @@ input.switch:focus-visible { outline: 2px solid var(--focus); outline-offset: 2p
 .s-inline-actions .savebar-row { flex-wrap: wrap; }
 .s-inline-actions .savebar-msg { flex: 1 1 180px; }
 .s-inline-actions .savebar-acts { margin-left: auto; }
+
+/* --- delete from the list (docs/spec/console-row-delete.md) --- */
+
+.menu-sep { height: 1px; margin: 6px 4px; background: var(--border-strong); }
+.menu-item.danger:hover:not(:disabled), .menu-item.danger:focus-visible { background: var(--danger-bg); }
+
+/* Slide to delete. It takes exactly the box of the menu item it replaces
+   (one line plus the item's 8px padding), so the menu keeps its size. The
+   track has the menu's corner radius; the handle, inset by --pad plus the
+   border, follows the same curve. --p is the handle position from 0 (start)
+   to 1 (end); --travel is its path in pixels, set by the script. */
+.slide {
+  --p: 0; --pad: 3px; --size: calc(1.5em + 16px - 2px - 2 * var(--pad));
+  position: relative; height: calc(1.5em + 16px);
+  border-radius: 12px; border: 1px solid var(--border-strong); background: var(--bg);
+  overflow: hidden; user-select: none; -webkit-user-select: none;
+}
+.slide-fill {
+  position: absolute; inset: 0 auto 0 0; border-radius: inherit;
+  width: calc(var(--size) + 2 * var(--pad) + var(--p) * (100% - var(--size) - 2 * var(--pad)));
+  background: var(--danger-bg);
+}
+.slide-label {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  padding-left: calc(var(--size) + var(--pad)); font-size: 14px; font-weight: 500;
+  color: var(--muted); opacity: max(0, 1 - var(--p) * 1.8); pointer-events: none; white-space: nowrap;
+}
+.slide-shine {
+  background: linear-gradient(90deg, var(--muted) 0%, var(--muted) 40%, var(--text) 50%, var(--muted) 60%, var(--muted) 100%);
+  background-size: 250% 100%; -webkit-background-clip: text; background-clip: text; color: transparent;
+  animation: slide-shine 2.6s linear infinite;
+}
+@keyframes slide-shine { from { background-position: 100% 0; } to { background-position: -150% 0; } }
+.slide-failed { color: var(--danger); }
+.slide-handle {
+  position: absolute; top: var(--pad); left: var(--pad); width: var(--size); height: var(--size);
+  border-radius: 8px; display: grid; place-items: center;
+  background: var(--danger); color: var(--bg); cursor: grab; touch-action: none;
+  transform: translateX(calc(var(--p) * var(--travel, 0px)));
+}
+.slide-handle:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
+.slide-handle .icon { width: 18px; height: 18px; stroke-width: 2.2; }
+.slide[data-state="dragging"] .slide-handle { cursor: grabbing; }
+.slide[data-state="returning"] .slide-handle { transition: transform 220ms cubic-bezier(.3, .7, .4, 1); }
+.slide[data-state="returning"] .slide-fill { transition: width 220ms cubic-bezier(.3, .7, .4, 1); }
+.slide[data-state="returning"] .slide-label { transition: opacity 220ms; }
+.slide[data-state="busy"] .slide-fill { background: var(--danger); }
+.slide[data-state="busy"] .slide-label, .slide[data-state="locked"] .slide-label {
+  opacity: 1; padding-left: 0; padding-right: calc(var(--size) + var(--pad));
+}
+.slide[data-state="busy"] .slide-label { color: var(--bg); }
+.slide[data-state="busy"] .slide-handle { background: var(--bg); color: var(--danger); cursor: default; }
+.slide[data-state="busy"] .slide-handle .icon { animation: slide-spin 0.8s linear infinite; }
+@keyframes slide-spin { to { transform: rotate(360deg); } }
+.slide[data-state="locked"] .slide-fill { background: var(--surface-2); }
+.slide[data-state="locked"] .slide-handle { background: var(--border-strong); color: var(--muted); cursor: not-allowed; }
+@media (prefers-reduced-motion: reduce) {
+  .slide-shine { animation: none; background: none; color: var(--muted); }
+  .slide[data-state="busy"] .slide-handle .icon { animation: none; }
+}

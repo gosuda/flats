@@ -36,6 +36,7 @@ list.
 | [Agent self-update](agent-self-update.md) | implemented | Client compatibility checks and explicit updates of the CLI, connection skill and guidance |
 | [Fast worker cold start](worker-cold-start.md) | implemented | Pre-started worker process and saved document images so workers and sleeping documents answer within 50 ms |
 | [Metrics](metrics.md) | implemented | Configurable Prometheus exposure, optional per-flat series, and independent Analytics usage (requests, errors, response time, worker CPU and memory, disk) |
+| [Delete from the flat list](console-row-delete.md) | implemented | A Delete item in each flat's "…" menu that turns into a slide control in place; dragging its handle to the end deletes the flat |
 | [Flats behind a reverse proxy](reverse-proxy-sites.md) | implemented | `proxy` and `proxy-public` providers that serve flats through an operator's reverse proxy, address selection by host default, and rename redirects on the arrival network |
 
 ## Where the technical designs live
