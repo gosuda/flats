@@ -2,7 +2,6 @@ import * as Y from "yjs";
 import { EditorState, Compartment } from "@codemirror/state";
 import { EditorView, keymap, drawSelection } from "@codemirror/view";
 import { defaultKeymap, indentWithTab } from "@codemirror/commands";
-import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { yCollab, yUndoManagerKeymap } from "y-codemirror.next";
 import { Provider } from "./provider.js";
 import { remoteCursors } from "./remote-cursors.js";
@@ -22,6 +21,7 @@ import {
 } from "./guest-ui.js";
 import { livePreview } from "./live-view.js";
 import { createMarkdown, linkRules } from "./markdown.js";
+import { editorMarkdown } from "./markdown-links.js";
 import { replaceRendered } from "./diagram-preview.js";
 import { coalescedRefresh } from "./render-budget.js";
 import { initHistory } from "./history.js";
@@ -283,7 +283,7 @@ function createEditor() {
       extensions: [
         drawSelection(),
         EditorView.lineWrapping,
-        markdown({ base: markdownLanguage }),
+        editorMarkdown(),
         livePreview(links, resolveURL, (source) => md.render(source)),
         access.of(EditorState.readOnly.of(false)),
         keymap.of([...yUndoManagerKeymap, ...defaultKeymap, indentWithTab]),
