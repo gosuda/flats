@@ -913,10 +913,18 @@ assert.ok(codexSnippet.includes('url = "http://127.0.0.1:7878/mcp"') && codexSni
 assert.ok(page.textContent.includes('It does not make a version live') && page.textContent.includes('Use it only with trusted agents.'));
 const cursorSnippet = snippetOf(agentTabs, 2);
 assert.ok(cursorSnippet.includes('cursor-agent plugin marketplace add https://github.com/gosuda/flats'));
-assert.ok(cursorSnippet.includes('install Flats from the Cursor plugin list') && cursorSnippet.includes('"mcpServers"'));
-// A pasted block must not open a shell quote: interactive zsh treats # as a
-// command, not a comment, so an apostrophe in it leaves the paste at quote>.
-for (const i of [0, 1, 2, 3]) assert.ok(!snippetOf(agentTabs, i).includes("'"), `tab ${i} snippet has no apostrophe`);
+assert.ok(cursorSnippet.includes('Then install Flats from the Cursor plugin list.') && cursorSnippet.includes('"mcpServers"'));
+// Interactive zsh treats a pasted # line as a command, not a comment: it prints
+// "command not found: #", and an apostrophe in it leaves the paste at quote>.
+// So no copied block holds an apostrophe, and the shell blocks (plugin and CLI)
+// hold no # line. The Codex TOML block is a config file and keeps its comments.
+for (const i of [0, 1, 2, 3]) {
+  agentTabs[i].dispatch('click');
+  const blocks = all(byId(page, 'agent-snippet'), (e) => e.tagName === 'PRE').map((pre) => pre.textContent);
+  blocks.forEach((text, b) => assert.ok(!text.includes("'"), `tab ${i} block ${b} has no apostrophe`));
+  const shell = i === 3 ? blocks : blocks.slice(0, 1);
+  shell.forEach((text) => assert.ok(!text.split('\n').some((line) => line.trim().startsWith('#')), `tab ${i} shell block has no # line`));
+}
 const cliSnippet = snippetOf(agentTabs, 3);
 // The plugin and the direct registration are alternatives, so each client tab
 // has two blocks with a Copy button each, and neither block holds the other's text.
