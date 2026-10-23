@@ -67,12 +67,14 @@ reference.
 
 | | Flats | Hosted AI artifacts and sites (for example Claude Artifacts) | App hosting (for example Vercel, Netlify) |
 | --- | --- | --- | --- |
-| Where it runs | Your own Mac or Linux machine, or your own server | The AI vendor's cloud | The hosting company's cloud |
-| Where your data lives | Files and SQLite databases on that machine | The vendor's account | The hosting company's account and the services you add |
-| Which agents can use it | Any MCP client; a plugin for Claude Code, Codex and Cursor | That vendor's assistant | Any tool that runs their CLI or pushes to Git |
-| Server code and a database | JavaScript server apps with SQLite and persistent files ([details](#static-and-server-flats)) | Depends on the product | Yes, through their functions and add-on services |
-| People and agents editing together | Documents, designs and boards, with history | Depends on the product | Not a hosting feature |
-| Who decides what goes live | You approve every publish and visibility change in your console | You publish and share through the product's controls | Your deployment permissions and release workflow |
+| Where it runs | Your own Mac or Linux machine, or your own server | Usually the provider's cloud | Usually the provider's cloud |
+| Where your data lives | Files and SQLite databases on that machine | Usually your account with the provider | Usually your account with the provider and the services you add |
+| Which agents can use it | Any MCP client; a plugin for Claude Code, Codex and Cursor | Often the provider's own assistant | Usually any tool that can deploy there, such as a CLI or a Git push |
+| Server code and a database | JavaScript server apps with SQLite and persistent files ([details](#static-and-server-flats)) | Varies by product | Often available through the provider's functions and add-ons |
+| People and agents editing together | Documents, designs and boards, with history | Varies by product | Usually outside the hosting itself |
+| Who decides what goes live | You approve every publish and visibility change in your console | Varies by product | Varies with your deployment setup |
+
+Other products change often; check their current documentation for details.
 
 ## Quick start
 
@@ -357,8 +359,12 @@ Read the [design and trust model](docs/design.md) for the details.
 
 Flats is one Go binary built without CGO, for macOS and Linux. It serves a web
 console, a CLI, an HTTP API and an MCP endpoint. There is no hosted Flats
-service. Other networks reach your flats only through the providers you turn
-on.
+service. By default the console and the Local flat listener bind only to
+loopback (`127.0.0.1:7878` and `127.0.0.1:7879`), so other networks reach your
+flats only through the providers you turn on. Binding either listener to
+another address (`host.console_addr`, `host.local_addr` or `--local-addr`)
+changes that: anyone who can reach it can open the console or Local routes,
+including Private flats. See [config.json](docs/configuration.md#configjson).
 
 ## Documentation
 
