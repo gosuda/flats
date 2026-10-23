@@ -912,9 +912,15 @@ func (l *loadRun) rollback(t *testing.T, a *app, texts map[string]string) (time.
 
 // --- guests ---
 
-// pacedGuest is a guest page: 4 updates a second at most, in order, and
-// after busy it waits a second and resends everything unacknowledged, the
-// first marked retry (provider.js).
+// loadGuestWindow is how many updates a guest page keeps sent and
+// unacknowledged (provider.js GUEST_WINDOW).
+const loadGuestWindow = 2
+
+// pacedGuest is a guest page: 4 updates a second at most, at most
+// loadGuestWindow unacknowledged, in order, and after busy it waits a second
+// and resends everything unacknowledged, the first marked retry
+// (provider.js). Typing while updates wait starts no new update: the page
+// merges it into the waiting one.
 type pacedGuest struct {
 	index      int
 	client     uint64
@@ -1047,8 +1053,9 @@ func (g *pacedGuest) run(l *loadRun) {
 			g.written = append(g.written, loadText{id: id, text: text, created: now})
 			g.unsent = append(g.unsent, id)
 		}
-		// Pacing: at most 4 updates in any second.
-		for len(g.unsent) > 0 {
+		// Pacing: at most 4 updates in any second, and at most
+		// loadGuestWindow sent and unacknowledged; an ack lets the next go.
+		for len(g.unsent) > 0 && len(g.inflight) < loadGuestWindow {
 			g.log = slices.DeleteFunc(g.log, func(s time.Time) bool { return now.Sub(s) >= time.Second })
 			if len(g.log) >= 4 {
 				break
