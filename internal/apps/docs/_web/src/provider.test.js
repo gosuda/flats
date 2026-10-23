@@ -332,6 +332,10 @@ test("only an unsent update is merged, and only up to 64 KiB", () => {
   // Sent updates keep their exact bytes for retries.
   provider.pacer.delay = () => 0;
   provider.flush();
+  // A guest keeps at most two updates unacknowledged.
+  assert.equal(sent.length, 2);
+  provider.inflight.delete(sent[0].id);
+  provider.flush();
   assert.equal(sent.length, 3);
   t_insert(text, "d");
   assert.equal(provider.model.items.size, 4);

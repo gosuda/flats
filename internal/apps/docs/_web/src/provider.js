@@ -7,6 +7,8 @@ import {
   removeAwarenessStates,
 } from "y-protocols/awareness";
 import { base64, unbase64, LIMITS, cleanName } from "./protocol.js";
+// A guest's unacknowledged updates (see Provider.flush).
+const GUEST_WINDOW = 2;
 // Receipts (see Provider.receipt).
 const RECEIPT_BYTES = 256 * 1024,
   RECEIPT_DELAY = 200;
@@ -256,6 +258,10 @@ export class Provider {
         this.unsent.shift();
         continue;
       }
+      // A guest keeps at most GUEST_WINDOW updates unacknowledged, so its
+      // own updates never queue up in the connection ahead of its receipts
+      // when the server reads Public connections slowly.
+      if (this.paced && this.inflight.size >= GUEST_WINDOW) return;
       const size = this.raw.get(id)?.length ?? decodedLength(u);
       const wait = this.paced ? this.pacer.delay(size) : 0;
       if (wait > 0) {
@@ -488,6 +494,7 @@ export class Provider {
       this.inflight.delete(m.id);
       this.raw.delete(m.id);
       this.model.remember(m);
+      if (this.paced && this.unsent.length) this.flush();
     } else if (m.t === "busy") {
       this.busy(m.id);
     } else if (m.t === "aw") {

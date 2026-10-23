@@ -534,6 +534,10 @@ Spec rule 21a is reworded to these two guarantees.
   unacknowledged frame, or at once after 256 KiB. Acknowledging each frame
   would use up a Public connection's ingress allowance (3.3) and a member's
   frame rate in a room with many guests.
+  A guest page keeps at most two updates unacknowledged at a time, so its
+  own updates never pile up in the connection ahead of its receipts when the
+  runtime reads Public connections slowly (a flood); the rest wait in the
+  page and merge.
   Yjs updates are merged (`Y.mergeUpdates`) and sent at most 4 frames and
   64 KiB per second, below the server's per-guest limits. Consecutive updates are merged only while
   the result stays within 64 KiB; a single update above it (a very large
