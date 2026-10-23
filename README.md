@@ -34,12 +34,12 @@ Each thing Flats hosts is a **flat**: one web page, document, app, design or
 board with its own name and link. Your agent creates and updates flats. You
 decide in the Flats console what goes live and who can open it.
 
-<!-- README IMAGE PLACEHOLDER (hero): three steps shown left to right.
-     1. "Ask your agent": a chat asking for a one-page Q3 report with a chart; the agent answers with a console approval link.
-     2. "Approve it in your console": the console's "Publish version 1 of coffee-report (put it live)" approval request.
-     3. "Share the link": the finished report at coffee-report.localhost:7879.
+<!-- README IMAGE PLACEHOLDER (content examples): five screenshots of flats, three on top and two centered below, each with a caption:
+     Page (a report with charts), Document (notes people and agents edit together),
+     Website (a small app with its own database), Design (screens and click-through prototypes),
+     Board (a whiteboard for brainstorming).
      Suggested markup once the image is committed:
-     <p align="center"><img src="docs/assets/readme/hero.png" alt="Ask your agent for a report, approve it in the Flats console, then open the live page" width="880"></p>
+     <p align="center"><img src="docs/assets/readme/gallery-content.png" alt="Examples of flats: a report page with a chart, a shared handbook document, a small voting app, a design canvas of phone screens and a retro board of sticky notes" width="880"></p>
 -->
 
 1. **Ask your agent:** "Make a one-page report of our Q3 numbers with a chart
@@ -57,14 +57,6 @@ decide in the Flats console what goes live and who can open it.
 | A small internal tool with a database, such as a poll, tracker or form | **Website**: a static site, or a small JavaScript server app with SQLite | You approve saving and publishing each version |
 | Screen mock-ups and click-through prototypes | **Design**: a canvas of HTML artboards | Edits apply at once and are kept as revisions |
 | A brainstorm, retro or flowchart that people rearrange by hand | **Board**: an infinite whiteboard with sticky notes, shapes and connectors | Edits apply at once and are kept as revisions |
-
-<!-- README IMAGE PLACEHOLDER (gallery): six screenshots in a 3x2 grid with captions:
-     Page (a report with charts), Document (notes people and agents edit together),
-     Website (a small app with its own database), Design (screens and click-through prototypes),
-     Board (a whiteboard for brainstorming), Console (every flat and approval in one place).
-     Suggested markup once the image is committed:
-     <p align="center"><img src="docs/assets/readme/gallery.png" alt="A page, a document, a small app, a design canvas, a board and the Flats console" width="880"></p>
--->
 
 Every flat starts Private. Making any flat Public, or Private again, always
 waits for your approval. [How changes go live](#how-changes-go-live) has the
