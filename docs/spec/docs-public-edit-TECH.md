@@ -416,7 +416,7 @@ New operations under `/_docs/host/revisions/` (private plus
 
 | Limit | Value | Where |
 |---|---|---|
-| Update frames | 8/s, burst 16, and 128 KiB/s, burst 256 KiB, per guest socket | before the transaction |
+| Update frames | 8/s, burst 16, and 128 KiB/s, burst 256 KiB, per guest socket; over it the update gets `busy` (below), as over the flat's limit | before the transaction |
 | Update size | 64 KiB decoded | before the transaction |
 | Presence | 10/s per guest socket; excess is dropped, not refused | `presence()` |
 | All guests of the flat | 200 updates/s and 2 MiB/s read (refused frames counted); over it the update gets `busy` (below) | before the transaction |
@@ -429,7 +429,8 @@ New operations under `/_docs/host/revisions/` (private plus
 
 - Guest updates do not use the room's shared update bucket (`rateUpdate`),
   which stays for members only, so guests cannot use up members' rate.
-- **`busy`.** When the flat's guest bucket is empty the server sends
+- **`busy`.** When the guest's own bucket or the flat's guest bucket is
+  empty the server sends
   `{t: "busy", id}` instead of applying, marks the socket busy and answers
   every later update from it with `busy` until one arrives with `retry: true`.
   The client stops sending, waits one second, and resends every
@@ -528,6 +529,11 @@ Spec rule 21a is reworded to these two guarantees.
 - **People list:** guests with the badge; viewers as "Viewer N" chips (or a
   count above 20).
 - **Guest editor:** today's private editor (Edit/View, no History). Pending
+  The page acknowledges server frames with one `received` per busy moment
+  (it covers every frame up to its number): 200 ms after the first
+  unacknowledged frame, or at once after 256 KiB. Acknowledging each frame
+  would use up a Public connection's ingress allowance (3.3) and a member's
+  frame rate in a room with many guests.
   Yjs updates are merged (`Y.mergeUpdates`) and sent at most 4 frames and
   64 KiB per second, below the server's per-guest limits. Consecutive updates are merged only while
   the result stays within 64 KiB; a single update above it (a very large

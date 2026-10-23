@@ -7,6 +7,10 @@ import {
   removeAwarenessStates,
 } from "y-protocols/awareness";
 import { base64, unbase64, LIMITS, cleanName } from "./protocol.js";
+// Receipts (see Provider.receipt).
+const RECEIPT_BYTES = 256 * 1024,
+  RECEIPT_DELAY = 200;
+
 export class Pending {
   constructor() {
     this.items = new Map();
@@ -338,7 +342,7 @@ export class Provider {
     socket.onmessage = (e) => {
       if (generation !== this.generation) return;
       try {
-        this.receive(JSON.parse(e.data));
+        this.receive(JSON.parse(e.data), e.data.length);
       } catch {
         this.stop(
           "The server sent an invalid sync message. Download your text and reload.",
@@ -387,6 +391,9 @@ export class Provider {
   // presence and which updates it was sent.
   disconnected() {
     this.model.connected = false;
+    // Frame numbers start again on the next connection.
+    clearTimeout(this.receiptTimer);
+    this.receiptTimer = this.unacked = this.unackedBytes = 0;
     this.inflight.clear();
     clearTimeout(this.paceTimer);
     clearTimeout(this.busyTimer);
@@ -420,7 +427,7 @@ export class Provider {
     this.socket?.close();
     this.state();
   }
-  receive(m) {
+  receive(m, size = 0) {
     this.lastServer = Date.now();
     if (m.t === "diverged") {
       this.stop(
@@ -496,8 +503,26 @@ export class Provider {
     } else if (m.t === "viewers") {
       this.onViewers(m);
     } else throw new Error("unknown response");
-    if (Number.isSafeInteger(m.n)) this.send({ t: "received", n: m.n });
+    if (Number.isSafeInteger(m.n)) this.receipt(m.n, size);
     this.state();
+  }
+  // receipt acknowledges server frames. A receipt covers every frame up to
+  // its number, so the page sends one for each busy moment instead of one
+  // per frame: at once after 256 KiB, otherwise 200 ms after the first
+  // unacknowledged frame. A Public connection's frames count against small
+  // per-connection limits, which its own updates need too.
+  receipt(n, size) {
+    this.unacked = Math.max(this.unacked || 0, n);
+    this.unackedBytes = (this.unackedBytes || 0) + size;
+    if (this.unackedBytes >= RECEIPT_BYTES) return this.flushReceipt();
+    this.receiptTimer ||= setTimeout(() => this.flushReceipt(), RECEIPT_DELAY);
+  }
+  flushReceipt() {
+    clearTimeout(this.receiptTimer);
+    this.receiptTimer = 0;
+    if (!this.unacked) return;
+    this.send({ t: "received", n: this.unacked });
+    this.unacked = this.unackedBytes = 0;
   }
   // halt stops syncing like stop, for a page that explains why itself.
   halt() {
@@ -520,6 +545,7 @@ export class Provider {
     clearInterval(this.heartbeat);
     clearTimeout(this.awTimer);
     clearTimeout(this.reconnectTimer);
+    clearTimeout(this.receiptTimer);
     clearTimeout(this.paceTimer);
     clearTimeout(this.busyTimer);
     this.awareness.setLocalState(null);

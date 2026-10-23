@@ -697,10 +697,17 @@ function update(c, m, env, size) {
 // the room members keep, checked in the transaction that would commit.
 function guestUpdate(c, m, env, size) {
   validUpdateID(m.id);
-  if (!c.frames.take(1) || !c.bytesIn.take(size))
-    throw coded("guest_rate", "guest update rate");
+  // Over its own rate or the rate of all guests together a guest is slowed,
+  // not refused (spec rule 22): the page waits and resends in order. Frames
+  // held back by the runtime's ingress pacing can reach this VM together,
+  // so even a paced page may meet its own bucket here.
   if (c.busy && m.retry !== true) return send(c, { t: "busy", id: m.id });
-  if (c.overBytes || !guestLimits.updates.take(1)) {
+  if (
+    !c.frames.take(1) ||
+    !c.bytesIn.take(size) ||
+    c.overBytes ||
+    !guestLimits.updates.take(1)
+  ) {
     c.busy = true;
     return send(c, { t: "busy", id: m.id });
   }

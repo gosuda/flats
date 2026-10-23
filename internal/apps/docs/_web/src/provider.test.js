@@ -454,3 +454,53 @@ test("a dropped welcome changes nothing; a full reader pool pauses reconnects", 
   t.mock.timers.tick(60000);
   assert.ok(sockets.length > 2);
 });
+
+test("receipts cover every frame up to their number: one per busy moment, at once after 256 KiB", (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout", "setInterval", "Date"] });
+  const saved = globalThis.location;
+  globalThis.location = { href: "https://flat.test/a.md", protocol: "https:" };
+  t.after(() => (globalThis.location = saved));
+  const sent = [];
+  let socket;
+  class Socket {
+    constructor() {
+      socket = this;
+      this.readyState = 0;
+      this.bufferedAmount = 0;
+      setTimeout(() => {
+        this.readyState = 1;
+        this.onopen();
+      }, 1);
+    }
+    close() {}
+    send(data) {
+      const m = JSON.parse(data);
+      if (m.t === "received") sent.push(m.n);
+    }
+  }
+  const provider = new Provider(new Y.Doc(), "a.md", {
+    readonly: true,
+    WebSocketClass: Socket,
+  });
+  t.after(() => provider.destroy());
+  t.mock.timers.tick(2);
+  const frame = (n, pad = "") =>
+    socket.onmessage({
+      data: JSON.stringify({
+        t: "pong",
+        epoch: "e",
+        seq: 0,
+        chain: "0",
+        n,
+        pad,
+      }),
+    });
+  for (let n = 1; n <= 50; n++) frame(n);
+  assert.deepEqual(sent, []);
+  t.mock.timers.tick(200);
+  assert.deepEqual(sent, [50]);
+  frame(51, "x".repeat(300 * 1024));
+  assert.deepEqual(sent, [50, 51]);
+  t.mock.timers.tick(500);
+  assert.deepEqual(sent, [50, 51]);
+});

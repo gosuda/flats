@@ -685,19 +685,43 @@ func TestGuestUpdateLimits(t *testing.T) {
 	expectCode(t, g.update(t, "big", yInsert(900, strings.Repeat("x", 65*1024))), "guest_size")
 	g, _ = a.guest(t, "index.md", "Mina", "", 1)
 	expectCode(t, g.update(t, "gc", yGC(901, 0, 5)), "guest_room")
-	// More than 16 updates at once from one guest.
+	// More than 16 updates at once from one guest are slowed, not refused
+	// (spec rule 22): the ones over its rate are answered busy, the socket
+	// stays open, and a retry later commits.
 	g, _ = a.guest(t, "index.md", "Mina", "", 1)
 	for i := 0; i < 20; i++ {
 		g.send(t, map[string]any{"t": "update", "id": fmt.Sprint("fast-", i), "u": yInsert(uint64(910+i), "f")})
 	}
+	acks, busy := 0, 0
+	for acks+busy < 20 {
+		m, err := g.read()
+		if err != nil {
+			t.Fatal("socket closed", err)
+		}
+		switch m["t"] {
+		case "error":
+			t.Fatal("refused", m)
+		case "ack":
+			acks++
+		case "busy":
+			busy++
+		}
+	}
+	if busy == 0 || acks == 0 {
+		t.Fatal(acks, busy)
+	}
+	time.Sleep(2 * time.Second)
+	g.send(t, map[string]any{"t": "update", "id": "fast-retry", "retry": true, "u": yInsert(940, "r")})
 	for {
 		m, err := g.read()
 		if err != nil {
-			t.Fatal("no refusal", err)
+			t.Fatal("socket closed", err)
 		}
-		if m["t"] == "error" {
-			expectCode(t, m, "guest_rate")
+		if m["t"] == "ack" && m["id"] == "fast-retry" {
 			break
+		}
+		if m["t"] == "error" || m["t"] == "busy" {
+			t.Fatal("retry not applied", m)
 		}
 	}
 	// A member is not limited by guests' limits.
