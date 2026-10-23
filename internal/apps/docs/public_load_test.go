@@ -626,7 +626,9 @@ type loadRun struct {
 	// per guest; "words" for words with a newline every 10 updates and a
 	// blank line every 50, like typed paragraphs; "brackets" for the
 	// bracketed form with a newline every 10 updates and no blank lines,
-	// one long paragraph.
+	// one long paragraph; "destinations" for "[g00-00001](", an unfinished
+	// link destination, with no spaces or line breaks, so each guest's
+	// text is one run that a link destination scan crosses.
 	guestText string
 	stop      chan struct{}
 	halted    sync.Once
@@ -1075,6 +1077,8 @@ func (g *pacedGuest) run(l *loadRun) {
 				if g.created%10 == 9 {
 					text += "\n"
 				}
+			case "destinations":
+				text += "("
 			}
 			u := yInsert(g.client, text)
 			if g.clock > 0 {

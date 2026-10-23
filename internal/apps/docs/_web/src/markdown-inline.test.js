@@ -103,6 +103,55 @@ test("random emphasis soup parses exactly as before", () => {
   }
 });
 
+test("link destinations and titles parse exactly as before", () => {
+  for (const text of [
+    "[a](b(c)d) [a](b(c)d)e) [a](b)c) [a](b((c)) [a]((b)) [a](()) [a](b(c(d)e)f)g",
+    "[a](b\\(c) [a](b\\)c) [a](b\\\\)c) [a](\\\\) [a](\\() [a](b\\ c) [a](b\\",
+    '[a](  b  ) [a]( b "t" ) [a](b\n"t") [a](\nb\n) [a](b "t"x) [a](b"t")',
+    '[a](<b c>) [a](<b>c) [a](<b(>) [a](<b\nc>) [a](<b<c>) [a](<> "t") [a](<b',
+    '[a](b "c\\"d") [a](b \'c\\\'d\') [a](b (c\\)d)) [a](b (c(d)) [a](b "c\nd")',
+    "[a](b \"c [x](y) d\") [a](b (c [x](y) d)) [a](b 'c' 'd') [a](b \"c\")",
+    "[x](a[x](b[x](c) [x](a(b[x](c)d)e) [x](\\[x](a)",
+    "[x](a (t [x](b (u [x](c (v) w) ([x](d))",
+    '[x](a "t\\\\" [x](b "u\\\\\\" [x](c "v")',
+    "![i](a(b) ![i](a \"t\" [x](b) ![i](<a> 'b' ![i](a))",
+    "[x](a)(b) [x](a) (b) [x] (a) [x][y](z) [x](a)[y]\n\n[y]: /q",
+  ])
+    same(text);
+});
+
+test("random destination soup parses exactly as before", () => {
+  let seed = 13;
+  const random = () => {
+    seed = (Math.imul(seed, 1103515245) + 12345) >>> 0;
+    return seed / 4294967296;
+  };
+  const pieces = [
+    "[x]",
+    "](",
+    "(",
+    ")",
+    "\\",
+    "a",
+    " ",
+    '"',
+    "'",
+    "<",
+    ">",
+    "\n",
+    "[",
+    "]",
+    "![",
+  ];
+  for (let n = 0; n < 20000; n++) {
+    let text = "";
+    const length = 1 + Math.floor(random() * 30);
+    for (let i = 0; i < length; i++)
+      text += pieces[Math.floor(random() * pieces.length)];
+    same(text);
+  }
+});
+
 test("random bracket soup parses exactly as before", () => {
   // A deterministic generator, so a failure names a reproducible input.
   let seed = 7;
@@ -149,6 +198,11 @@ test("random bracket soup parses exactly as before", () => {
     "<!--",
     "-->",
     "<a b='c'>",
+    "'",
+    "](",
+    "](a ",
+    ' "',
+    " (",
   ];
   for (let n = 0; n < 6000; n++) {
     let text = "";
@@ -179,8 +233,14 @@ const paragraph = (n, item) => {
   for (let i = 0; i < n; i++) text += item(i) + (i % 10 == 9 ? "\n" : " ");
   return text;
 };
+// A paragraph of items typed without spaces or line breaks.
+const joined = (n, item) => {
+  let text = "w ";
+  for (let i = 0; i < n; i++) text += item(i);
+  return text;
+};
 
-for (const [name, item] of [
+for (const [name, item, layout = paragraph] of [
   ["bracketed words", (i) => `[g${i % 20}-${i}]`],
   ["links", (i) => `[a${i}](https://x/${i})`],
   ["stray closing brackets", () => "*a* ]"],
@@ -195,10 +255,17 @@ for (const [name, item] of [
   ["unclosed processing instructions", () => "w <?a"],
   ["unclosed declarations", () => "w <!A"],
   ["unclosed CDATA", () => "w <![CDATA["],
+  ["unfinished destinations", () => "[x](", joined],
+  ["unfinished word destinations", () => "[x](a", joined],
+  ["unbalanced destinations", () => "[x]((", joined],
+  ["unfinished parenthesized titles", () => "[x](a (", joined],
+  ["unfinished parenthesized titles on lines", () => "[x](a ("],
+  ["unfinished quoted titles", () => '[x](a "', joined],
+  ["unfinished labels", () => "[x][y", joined],
 ]) {
   test(`a paragraph of ${name} parses in linear time`, () => {
-    const small = paragraph(2000, item),
-      large = paragraph(8000, item);
+    const small = layout(2000, item),
+      large = layout(8000, item);
     const ts = best(small),
       tl = best(large);
     // Stock lezer took ~40-1200 ms for 8000 of these items on a laptop and

@@ -22,6 +22,11 @@
 //     lists, and a closer that finds no opener records, per delimiter kind,
 //     that nothing before it can open for that kind (CommonMark's "openers
 //     bottom"), lowered again when an opener before it shrinks.
+//   - Link destinations and titles. After each "](" lezer scans on for the
+//     ")" that ends the destination or title; when there is none (as in
+//     "[x](" repeated without spaces) every scan runs to the end of the
+//     space-free run or paragraph. Here a run's parenthesis depths are
+//     computed once, and title searches remember their answer.
 //   - Unclosed HTML. An inline "<?", "<!X" or "<![CDATA[" searches the rest
 //     of the paragraph for its terminator; here the search result is
 //     remembered, since every later search starts further on.
@@ -150,18 +155,7 @@ function parseURL(cx, text, start, offset) {
     }
     return null;
   }
-  let depth = 0,
-    pos = start;
-  for (let escaped = false; pos < text.length; pos++) {
-    const ch = text.charCodeAt(pos);
-    if (space(ch)) break;
-    else if (escaped) escaped = false;
-    else if (ch == 40 /* '(' */) depth++;
-    else if (ch == 41 /* ')' */) {
-      if (!depth) break;
-      depth--;
-    } else if (ch == 92 /* '\\' */) escaped = true;
-  }
+  const pos = urlEnd(cx, start + offset) - offset;
   return pos > start
     ? cx.elt("URL", start + offset, pos + offset)
     : pos == text.length
@@ -169,18 +163,89 @@ function parseURL(cx, text, start, offset) {
       : false;
 }
 
+// urlEnd returns where lezer's scan of a bare link destination starting at
+// document position pos stops: the first space, the first ")" that would
+// close more than the destination opened, or the end of the paragraph.
+// Scanning on from every "](" of a paragraph such as "[x](" repeated would
+// cost O(n^2), so the levels of one space-free run are computed once: the
+// scan from pos stops at the ")" just before the first later point whose
+// parenthesis depth is lower than at pos (the next smaller value).
+// Destinations start after "(" or a space, never after a backslash, so a
+// scan from any of them sees the same escapes as one from the run's start.
+function urlEnd(cx, pos) {
+  let run = cx[urlRun];
+  if (
+    !run ||
+    pos < run.from ||
+    pos >= run.to ||
+    (pos > run.from && cx.char(pos - 1) != 40) /* '(' */
+  ) {
+    const text = cx.text,
+      from = pos - cx.offset;
+    let to = from;
+    while (to < text.length && !space(text.charCodeAt(to))) to++;
+    // level[k]: unescaped "(" minus ")" before from + k.
+    const length = to - from,
+      level = new Int32Array(length + 1),
+      lower = new Int32Array(length + 1).fill(-1),
+      stack = [];
+    for (let k = 0, depth = 0, escaped = false; k <= length; k++) {
+      level[k] = depth;
+      while (stack.length && depth < level[stack[stack.length - 1]])
+        lower[stack.pop()] = k;
+      stack.push(k);
+      if (k == length) break;
+      const ch = text.charCodeAt(from + k);
+      if (escaped) escaped = false;
+      else if (ch == 40 /* '(' */) depth++;
+      else if (ch == 41 /* ')' */) depth--;
+      else if (ch == 92 /* '\\' */) escaped = true;
+    }
+    run = cx[urlRun] = {
+      from: pos,
+      to: to + cx.offset,
+      lower,
+    };
+  }
+  const k = run.lower[pos - run.from];
+  return k < 0 ? run.to : run.from + k - 1;
+}
+const urlRun = Symbol("urlRun");
+
 function parseLinkTitle(cx, text, start, offset) {
   const next = text.charCodeAt(start);
   if (next != 39 && next != 34 && next != 40 /* '"\'(' */) return false;
-  const end = next == 40 ? 41 : next;
-  for (let pos = start + 1, escaped = false; pos < text.length; pos++) {
-    const ch = text.charCodeAt(pos);
-    if (escaped) escaped = false;
-    else if (ch == end)
-      return cx.elt("LinkTitle", start + offset, pos + 1 + offset);
-    else if (ch == 92 /* '\\' */) escaped = true;
+  const at = unescaped(cx, next == 40 ? 41 : next, start + offset + 1);
+  return at < 0 ? null : cx.elt("LinkTitle", start + offset, at + 1);
+}
+
+// unescaped returns the document position of the first ch at or after pos
+// not escaped by a backslash, or -1, remembering the answer as find does.
+// Whether a character is escaped depends only on the backslashes right
+// before it, and a title search starts after its opening quote, so the
+// answer does not depend on where the search started.
+function unescaped(cx, ch, pos) {
+  const memo = (cx[found] ??= new Map()),
+    m = memo.get(ch);
+  if (m && m.pos <= pos && (m.at < 0 || m.at >= pos)) return m.at;
+  const text = cx.text,
+    from = pos - cx.offset,
+    needle = String.fromCharCode(ch);
+  let at = -1;
+  for (let i = from; ; ) {
+    const j = text.indexOf(needle, i);
+    if (j < 0) break;
+    let backslashes = 0;
+    while (j - backslashes > from && text.charCodeAt(j - backslashes - 1) == 92)
+      backslashes++;
+    if (backslashes % 2 == 0) {
+      at = j + cx.offset;
+      break;
+    }
+    i = j + 1;
   }
-  return null;
+  memo.set(ch, { pos, at });
+  return at;
 }
 
 function parseLinkLabel(cx, text, start, offset) {

@@ -29,7 +29,8 @@ import (
 // FLATS_PLAYWRIGHT_MODULE; FLATS_DOCS_BROWSER_EVIDENCE keeps the
 // screenshots, FLATS_DOCS_DISPLAY_SECONDS changes the 60 s of edits,
 // FLATS_DOCS_DISPLAY_GUEST_TEXT=brackets makes the guests type one long
-// paragraph of bracketed words instead of plain paragraphs, and
+// paragraph of bracketed words instead of plain paragraphs (=destinations
+// types unfinished link destinations without spaces instead), and
 // FLATS_DOCS_DISPLAY_PROFILE=1 records a CPU profile of page B.
 func TestBrowserDisplayLatency(t *testing.T) {
 	if os.Getenv("FLATS_DOCS_BROWSER_TEST") != "1" || os.Getenv("FLATS_PLAYWRIGHT_MODULE") == "" {
