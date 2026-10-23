@@ -65,18 +65,11 @@ func TestGuestLoad(t *testing.T) {
 	}
 	t.Logf("LOAD uptime at start: %s", uptime())
 
-	texts := map[string]string{
-		"index.md": initialText,
-		"flood.md": "# Flood\n",
-	}
-	for i := 1; i <= 4; i++ {
-		texts[fmt.Sprintf("v%d.md", i)] = fmt.Sprintf("# Viewers %d\n", i)
-	}
+	texts := loadTexts()
 	a := startAppModule(t, t.TempDir(), docsModule("v1", texts), "v1", map[string]string{})
 	a.setAccess(t, "edit", 1)
-	l := &loadRun{url: a.srv.URL, stop: make(chan struct{}), pending: map[string]time.Time{}, aSentAt: map[string]time.Time{}}
-	t0 := time.Now()
-	l.t0 = t0
+	l := newLoadRun(a.srv.URL)
+	t0 := l.t0
 	// A failed step still stops the flood clients.
 	t.Cleanup(func() {
 		l.halt()
@@ -106,22 +99,7 @@ func TestGuestLoad(t *testing.T) {
 	}
 	floodStart := time.Now()
 	if flood {
-		for i := 0; i < 8; i++ {
-			l.spawn(func() { l.holdingGuest(i) })
-		}
-		for i := 0; i < 2; i++ {
-			l.spawn(func() { l.unpacedGuest(i) })
-		}
-		for i := 0; i < 40; i++ {
-			l.spawn(func() { l.floodViewer(i) })
-		}
-		l.spawn(l.churn)
-		// Wait for the pools to fill: 30 guests and 40 viewers.
-		for time.Since(floodStart) < 20*time.Second && (l.guestsJoined.Load() < 10 || l.viewersJoined.Load() < 40) {
-			time.Sleep(100 * time.Millisecond)
-		}
-		t.Logf("LOAD at %v pools after %v: flood guests %d/10, viewers %d/40", since(), time.Since(floodStart).Round(time.Millisecond),
-			l.guestsJoined.Load(), l.viewersJoined.Load())
+		l.startFlood(t)
 	} else {
 		t.Logf("LOAD DOCS_LOAD_FLOOD=0: no flood clients")
 	}
@@ -285,6 +263,45 @@ func TestGuestLoad(t *testing.T) {
 	if p := pct(lat, 0.95); p >= 200*time.Millisecond {
 		t.Errorf("member->member socket delivery p95 %v, want under 200ms (uptime at start and end logged above)", p)
 	}
+}
+
+// loadTexts are the flat's documents: index.md for members and paced
+// guests, flood.md for flood guests, v1.md to v4.md for flood viewers.
+func loadTexts() map[string]string {
+	texts := map[string]string{
+		"index.md": initialText,
+		"flood.md": "# Flood\n",
+	}
+	for i := 1; i <= 4; i++ {
+		texts[fmt.Sprintf("v%d.md", i)] = fmt.Sprintf("# Viewers %d\n", i)
+	}
+	return texts
+}
+
+func newLoadRun(url string) *loadRun {
+	return &loadRun{url: url, t0: time.Now(), stop: make(chan struct{}), pending: map[string]time.Time{}, aSentAt: map[string]time.Time{}}
+}
+
+// startFlood starts the flood clients and waits up to 20 s for them to fill
+// the pools: 30 guests with the paced ones, and 40 viewers.
+func (l *loadRun) startFlood(t *testing.T) {
+	t.Helper()
+	start := time.Now()
+	for i := 0; i < 8; i++ {
+		l.spawn(func() { l.holdingGuest(i) })
+	}
+	for i := 0; i < 2; i++ {
+		l.spawn(func() { l.unpacedGuest(i) })
+	}
+	for i := 0; i < 40; i++ {
+		l.spawn(func() { l.floodViewer(i) })
+	}
+	l.spawn(l.churn)
+	for time.Since(start) < 20*time.Second && (l.guestsJoined.Load() < 10 || l.viewersJoined.Load() < 40) {
+		time.Sleep(100 * time.Millisecond)
+	}
+	t.Logf("LOAD at %v pools after %v: flood guests %d/10, viewers %d/40", time.Since(l.t0).Round(time.Millisecond),
+		time.Since(start).Round(time.Millisecond), l.guestsJoined.Load(), l.viewersJoined.Load())
 }
 
 // --- a minimal concurrent WebSocket client ---
@@ -603,11 +620,14 @@ func (s *loadConn) flushReceipt() {
 // --- the run ---
 
 type loadRun struct {
-	url    string
-	t0     time.Time
-	stop   chan struct{}
-	halted sync.Once
-	floods sync.WaitGroup
+	url string
+	t0  time.Time
+	// newlines ends every tenth paced guest update with a newline, so guest
+	// text forms lines of ordinary length in an editor.
+	newlines bool
+	stop     chan struct{}
+	halted   sync.Once
+	floods   sync.WaitGroup
 
 	guestsJoined, viewersJoined atomic.Int64
 	aSent, aAcked               atomic.Int64
@@ -1040,6 +1060,9 @@ func (g *pacedGuest) run(l *loadRun) {
 		if !g.stopTyping.Load() && len(g.unsent) == 0 && now.Sub(lastTyped) >= 250*time.Millisecond {
 			lastTyped = now
 			text := fmt.Sprintf("[g%02d-%05d]", g.index, g.created)
+			if l.newlines && g.created%10 == 9 {
+				text += "\n"
+			}
 			u := yInsert(g.client, text)
 			if g.clock > 0 {
 				u = yAfter(g.client, g.clock, text)
