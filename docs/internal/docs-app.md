@@ -156,6 +156,26 @@ rendered in the client; assets in `content.assets` are still the host's responsi
   text and emoji remain Markdown source. The client uses CodeMirror 6,
   `y-codemirror.next`, and a `Y.UndoManager` that tracks only its local binding
   origin (including its own undo/redo), never remote or activation changes.
+* The editor keeps up with remote changes (spec rule 21b, TECH 3.11):
+  * Its Markdown language (`_web/src/markdown-inline.js`,
+    `editorMarkdown()`) is `@lezer/markdown` 1.7.2 GFM with linear-time
+    replacements for link closing, emphasis resolution, unclosed inline HTML
+    and link destination/title scans; its trees equal the stock parser's.
+  * A paragraph whose text (without container markers, with line breaks) is
+    longer than 20,000 characters is not inline parsed in Edit mode: its
+    links, emphasis and other inline syntax show as source. View mode
+    (markdown-it) and the stored text are unaffected.
+  * `Provider` hands remote `update` frames to a `RemoteBatcher`
+    (`_web/src/remote-batch.js`) instead of applying each at once. An
+    update arriving while the page is idle applies at once; after each batch
+    (the queued updates merged with `Y.mergeUpdates` and applied as one) is
+    applied and its frame rendered, the next waits at least as long as that
+    batch took, at most 1 s. Only applying to the `Y.Doc` (and so the editor
+    and View render) waits: known history positions, ACKs, receipts, pacing
+    and sending happen as frames arrive, and local typing never waits. The
+    queue is applied first on a new connection's open (so its hello's state
+    vector covers it), before a welcome and on a stop; an invalid batch stops
+    sync as an invalid frame does.
 * The serial WebSocket VM has one room per connected document. HTTP VMs load
   committed state per API request and keep no mutable document replicas.
   The last connection leaving destroys its room. The server creates no

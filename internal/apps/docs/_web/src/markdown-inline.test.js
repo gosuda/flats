@@ -1,10 +1,18 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { markdownLanguage } from "@codemirror/lang-markdown";
-import { linearInline } from "./markdown-inline.js";
+import {
+  linearInline,
+  plainLongParagraphs,
+  PLAIN_PARAGRAPH,
+} from "./markdown-inline.js";
 
 // The stock editor parser and the one the editor uses.
+// stock is lezer's parser; editor is the editor's (all test paragraphs
+// here are shorter than PLAIN_PARAGRAPH, so it must match stock); linear
+// has only the inline replacements, for growth tests on long paragraphs.
 const stock = markdownLanguage.parser,
+  editor = stock.configure([linearInline, plainLongParagraphs]),
   linear = stock.configure(linearInline);
 
 // nodes lists every node of a parse with its range, so two parses compare
@@ -21,9 +29,9 @@ function nodes(parser, text) {
 
 function same(text) {
   assert.deepEqual(
-    nodes(linear, text),
+    nodes(editor, text),
     nodes(stock, text),
-    JSON.stringify(text),
+    JSON.stringify(text.length > 200 ? text.slice(0, 200) + "…" : text),
   );
 }
 
@@ -277,3 +285,64 @@ for (const [name, item, layout = paragraph] of [
     );
   });
 }
+
+// sized returns Markdown with links, emphasis, inline HTML and references
+// whose paragraph text is exactly n characters.
+function sized(n) {
+  const unit = "a *b* [c](https://d/) <i>e</i> [f][g] `h` ";
+  let text = unit.repeat(Math.ceil(n / unit.length)).slice(0, n - 1);
+  return text + "x";
+}
+
+test("paragraphs up to 20,000 characters are inline parsed as before", () => {
+  assert.equal(PLAIN_PARAGRAPH, 20000);
+  for (const n of [19999, 20000]) {
+    const text = sized(n);
+    assert.equal(text.length, n);
+    same(text);
+    same(text + "\n\n[g]: /ref");
+    same("> " + text);
+    // A task item's text includes its "[ ] ".
+    same("- [ ] " + text.slice(4));
+    // Text over several lines counts its line breaks.
+    const split = text.indexOf(" a ", 9990);
+    same(text.slice(0, split) + "\n" + text.slice(split + 1));
+  }
+});
+
+test("a paragraph over 20,000 characters is not inline parsed", () => {
+  const text = sized(20001),
+    tree = (doc) => editor.parse(doc).topNode;
+  // Only the paragraph, without inline nodes.
+  assert.equal(tree(text).toString(), "Document(Paragraph)");
+  // A quote keeps its marks, a task item its marker.
+  // (Split before a word: a line starting "* " would begin a list.)
+  const split = text.indexOf(" a ", 9990) + 1,
+    quoted = "> " + text.slice(0, split) + "\n> " + text.slice(split);
+  assert.equal(
+    tree(quoted).toString(),
+    "Document(Blockquote(QuoteMark,Paragraph(QuoteMark)))",
+  );
+  assert.equal(
+    tree("- [ ] " + text.slice(3)).toString(),
+    "Document(BulletList(ListItem(ListMark,Task(TaskMarker))))",
+  );
+  // Neighbouring blocks, and a reference definition starting the long
+  // paragraph, are parsed as before.
+  const doc = "# *T*\n\n" + text + "\n\n*after* [x](y)",
+    nodesOf = (parser) => {
+      const out = [];
+      parser.parse(doc).iterate({
+        enter(n) {
+          if (n.from < 9 || n.from > 9 + text.length)
+            out.push(`${n.name} ${n.from}-${n.to}`);
+        },
+      });
+      return out;
+    };
+  assert.deepEqual(nodesOf(editor), nodesOf(stock));
+  assert.equal(
+    tree("[g]: /ref\n" + text).toString(),
+    "Document(LinkReference(LinkLabel,LinkMark,URL),Paragraph)",
+  );
+});

@@ -7,6 +7,7 @@ import {
   removeAwarenessStates,
 } from "y-protocols/awareness";
 import { base64, unbase64, LIMITS, cleanName } from "./protocol.js";
+import { RemoteBatcher } from "./remote-batch.js";
 // A guest's unacknowledged updates (see Provider.flush).
 const GUEST_WINDOW = 2;
 // Receipts (see Provider.receipt).
@@ -156,6 +157,8 @@ export class Provider {
       onCapacity = () => false,
       onUnreachable = () => false,
       WebSocketClass = globalThis.WebSocket,
+      // Options of the RemoteBatcher that applies remote updates.
+      batch = {},
     } = {},
   ) {
     this.doc = doc;
@@ -190,6 +193,14 @@ export class Provider {
     this.raw = new Map();
     this.inflight = new Set();
     this.retryNext = false;
+    // Remote updates are applied in batches (remote-batch.js). Only the
+    // editor's view of the document waits: acknowledgements, the known
+    // history position, receipts and sending never depend on it, and a
+    // welcome, a new connection's hello and a stop apply the queue first.
+    this.remote = new RemoteBatcher(
+      (updates) => this.applyRemote(updates),
+      batch,
+    );
     this.update = (u, origin) => this.queue(u, origin);
     doc.on("update", this.update);
     this.awUpdate = (_, origin) => {
@@ -334,6 +345,8 @@ export class Provider {
     socket.onopen = () => {
       if (generation !== this.generation) return;
       opened = true;
+      // The state vector then covers every update received so far.
+      this.remote?.flush();
       this.send({
         t: "hello",
         v: 1,
@@ -458,6 +471,7 @@ export class Provider {
         throw new Error("epoch changed");
       if (this.onAccess(m) === false) return;
       this.model.readonly = m.readonly;
+      this.remote?.flush();
       Y.applyUpdate(this.doc, unbase64(m.u, LIMITS.state), this);
       this.model.remember(m);
       this.model.connected = true;
@@ -487,7 +501,9 @@ export class Provider {
       }
       this.sendAwareness();
     } else if (m.t === "update") {
-      Y.applyUpdate(this.doc, unbase64(m.u, LIMITS.state), this);
+      const u = unbase64(m.u, LIMITS.state);
+      if (this.remote) this.remote.push(u);
+      else Y.applyUpdate(this.doc, u, this);
       this.model.remember(m);
     } else if (m.t === "ack") {
       this.model.ack(m.id);
@@ -531,8 +547,24 @@ export class Provider {
     this.send({ t: "received", n: this.unacked });
     this.unacked = this.unackedBytes = 0;
   }
+  // applyRemote applies a batch of remote updates as one.
+  applyRemote(updates) {
+    try {
+      Y.applyUpdate(
+        this.doc,
+        updates.length === 1 ? updates[0] : Y.mergeUpdates(updates),
+        this,
+      );
+    } catch {
+      this.stop(
+        "The server sent an invalid sync message. Download your text and reload.",
+      );
+    }
+  }
   // halt stops syncing like stop, for a page that explains why itself.
   halt() {
+    // Text the server sent is kept, as it would have been without batching.
+    this.remote?.flush();
     this.model.stopped = true;
     this.model.connected = false;
     clearTimeout(this.reconnectTimer);
@@ -555,6 +587,7 @@ export class Provider {
     clearTimeout(this.receiptTimer);
     clearTimeout(this.paceTimer);
     clearTimeout(this.busyTimer);
+    this.remote?.destroy();
     this.awareness.setLocalState(null);
     this.awareness.destroy();
     this.doc.off("update", this.update);

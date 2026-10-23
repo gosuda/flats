@@ -31,6 +31,11 @@
 //     of the paragraph for its terminator; here the search result is
 //     remembered, since every later search starts further on.
 //
+// Even linear, inline parsing a huge paragraph after every change is too
+// much work, so a paragraph longer than PLAIN_PARAGRAPH characters is not
+// inline parsed at all: it shows as its Markdown source (spec rule 21b,
+// TECH 3.11). Paragraphs up to that length parse exactly as before.
+//
 // The private lezer helpers these need (finishLink and the link parsers)
 // are copied from lezer; node_modules is not modified.
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
@@ -476,6 +481,35 @@ function install(cx) {
   return -1;
 }
 
+// PLAIN_PARAGRAPH is the longest paragraph, in characters of its text
+// (without container markers such as "> "), that is inline parsed.
+export const PLAIN_PARAGRAPH = 20000;
+
+// plainLong finishes a paragraph longer than PLAIN_PARAGRAPH without its
+// inline content: only container marks (as in a quote) remain inside. A
+// task list item keeps its Task node and marker. Leaf parsers before it
+// (reference definitions, tables, setext headings) still decide first.
+const plainLong = {
+  nextLine: () => false,
+  finish(cx, leaf) {
+    if (leaf.content.length <= PLAIN_PARAGRAPH) return false;
+    const end = leaf.start + leaf.content.length;
+    cx.addLeafElement(
+      leaf,
+      /^\[[ xX]\][ \t]/.test(leaf.content) && cx.parentType().name == "ListItem"
+        ? cx.elt("Task", leaf.start, end, [
+            cx.elt("TaskMarker", leaf.start, leaf.start + 3),
+          ])
+        : cx.elt("Paragraph", leaf.start, end),
+    );
+    return true;
+  },
+};
+
+export const plainLongParagraphs = {
+  parseBlock: [{ name: "PlainLongParagraph", leaf: () => plainLong }],
+};
+
 export const linearInline = {
   parseInline: [
     { name: "LinearInline", parse: install, before: "Escape" },
@@ -485,6 +519,9 @@ export const linearInline = {
 };
 
 // editorMarkdown is the editor's Markdown language: GFM with linear-time
-// inline parsing.
+// inline parsing and plain long paragraphs.
 export const editorMarkdown = () =>
-  markdown({ base: markdownLanguage, extensions: linearInline });
+  markdown({
+    base: markdownLanguage,
+    extensions: [linearInline, plainLongParagraphs],
+  });
