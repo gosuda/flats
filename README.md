@@ -34,13 +34,7 @@ Each thing Flats hosts is a **flat**: one web page, document, app, design or
 board with its own name and link. Your agent creates and updates flats. You
 decide in the Flats console what goes live and who can open it.
 
-<!-- README IMAGE PLACEHOLDER (content examples): five screenshots of flats, three on top and two centered below, each with a caption:
-     Page (a report with charts), Document (notes people and agents edit together),
-     Website (a small app with its own database), Design (screens and click-through prototypes),
-     Board (a whiteboard for brainstorming).
-     Suggested markup once the image is committed:
-     <p align="center"><img src="docs/assets/readme/gallery-content.png" alt="Examples of flats: a report page with a chart, a shared handbook document, a small voting app, a design canvas of phone screens and a retro board of sticky notes" width="880"></p>
--->
+<p align="center"><img src="docs/assets/readme/gallery-content.png" alt="Examples of flats: a report page with a chart, a shared handbook document, a small voting app, a design canvas of phone screens and a retro board of sticky notes" width="880"></p>
 
 1. **Ask your agent:** "Make a one-page report of our Q3 numbers with a chart
    and put it on Flats."
