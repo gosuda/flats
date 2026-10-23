@@ -1973,6 +1973,13 @@ assert.equal(remote.tagName, 'SPAN');
 assert.equal(remote.getAttribute('aria-disabled'), 'true');
 assert.equal(remote.getAttribute('title'), ui.SERVER_ONLY);
 assert.ok(remote.textContent.includes('Open') && remote.textContent.includes('server only'));
+// Without its own text a server-only link names the network, never the address.
+const bare = ui.extLink('http://blog.localhost:7879/');
+assert.equal(bare.tagName, 'SPAN');
+assert.ok(bare.textContent.includes(ui.LOCAL_ADDRESS) && bare.textContent.includes('server only'), bare.textContent);
+assert.ok(!bare.textContent.includes('localhost'), 'the Local address is not shown');
+assert.equal(ui.addressText('http://blog.localhost:7879/'), ui.LOCAL_ADDRESS);
+assert.equal(ui.addressText('https://blog.tail1234.ts.net/'), 'https://blog.tail1234.ts.net/');
 assert.ok(ui.SERVER_ONLY.includes('Settings → Networks → Private'), 'the tooltip must say where to allow Tailscale');
 // An icon-only row button keeps its size: no text badge, the explanation is
 // in the tooltip and the icon's accessible name.
@@ -2003,7 +2010,9 @@ const remoteShare = all(document.body, (e) => e.tagName === 'DIALOG').pop();
 const copyLink = all(remoteShare, (e) => e.tagName === 'BUTTON' && e.textContent.includes('Copy link'))[0];
 assert.equal(copyLink.getAttribute('disabled'), '', 'copying a server-only link is disabled');
 assert.ok(remoteShare.textContent.includes(ui.SERVER_ONLY));
-assert.equal(all(remoteShare, (e) => e.tagName === 'A' && e.textContent === 'Visit').length, 0);
+assert.ok(!remoteShare.textContent.includes('localhost'), 'the share dialog does not show the Local address');
+assert.equal(all(remoteShare, (e) => (e.getAttribute('class') || '').includes('share-link'))[0].textContent, '', 'no Local link text');
+assert.equal(all(remoteShare, (e) => e.textContent.includes('Visit')).length, 0, 'no Visit for a server-only link');
 remoteShare.close();
 shareDialog({ ...blog, visibility: 'private', private_url: 'https://blog.tail1234.ts.net', live_version: 1 });
 const tailShare = all(document.body, (e) => e.tagName === 'DIALOG').pop();
@@ -2033,10 +2042,12 @@ const isSpacer = (el) => el.getAttribute('class') === 'icon-btn open-spacer' && 
 const openPrivate = ui.openLinks({ ...blog, visibility: 'private', live_version: 1, endpoints: [ep('local', 'http://blog.localhost:7879/'), ep('tailscale', 'https://blog.tail1234.ts.net/'), ep('portal', 'https://blog.rly.best/')] });
 assert.equal(openPrivate.childNodes.length, 2);
 assert.ok(isSpacer(openPrivate.childNodes[0]), 'a private flat has no public button');
-assert.ok(openPrivate.childNodes[1].getAttribute('class').includes('menu-wrap'), 'two private networks become a menu');
+assert.ok(openPrivate.childNodes[1].getAttribute('class').includes('menu-wrap'), 'on the host, Local and one more network stay a menu');
 assert.equal(all(openPrivate, (e) => (e.getAttribute('class') || '').includes('menu-item')).length, 2);
 // A private flat with a leftover public URL still shows only the private button.
 assert.ok(isSpacer(ui.openLinks({ ...blog, visibility: 'private' }).childNodes[0]));
+const onlyLocal = ui.openLinks({ ...blog, visibility: 'private', live_version: 1, endpoints: [ep('local', 'http://blog.localhost:7879/')] });
+assert.equal(onlyLocal.childNodes[1].getAttribute('href'), 'http://blog.localhost:7879/', 'on the host a Local-only flat opens Local');
 // The narrow list's single open link uses the external-link arrow, so globe
 // and lock only mean visibility. It opens the first public address while the
 // flat is public, else the first private one; the menu lists every address.
@@ -2061,8 +2072,62 @@ globalThis.location = { origin: 'http://flats.netbird.cloud', hostname: 'flats.n
 assert.equal(ui.openPrimary(meshNets).getAttribute('href'), 'http://blog.netbird.cloud/', 'a remote viewer gets the NetBird address');
 assert.equal(ui.openPrimary({ ...meshNets, endpoints: [meshNets.endpoints[0]] }).tagName, 'BUTTON', 'with only Local it stays server only');
 assert.ok(ui.SERVER_ONLY.includes('NetBird'), 'the server-only note names NetBird too');
+// Seen from another device, Local addresses are not offered at all: the
+// lock opens the one remaining address, menus leave Local out, and a flat
+// with only Local keeps a disabled lock that explains itself.
+{
+  const meshTs = { ...meshNets, endpoints: [...meshNets.endpoints, ep('tailscale', 'https://blog.tail1234.ts.net/')] };
+  const remoteMenu = ui.openLinks(meshTs).childNodes[1];
+  assert.ok(remoteMenu.getAttribute('class').includes('menu-wrap'));
+  const items = all(remoteMenu, (e) => (e.getAttribute('class') || '').includes('menu-item'));
+  assert.equal(items.length, 2, 'the remote menu leaves Local out');
+  assert.ok(!remoteMenu.textContent.includes('localhost') && !remoteMenu.textContent.includes('Local'), remoteMenu.textContent);
+  const lock = ui.openLinks(meshNets).childNodes[1];
+  assert.equal(lock.tagName, 'A', 'Local plus NetBird opens NetBird directly, without a menu');
+  assert.equal(lock.getAttribute('href'), 'http://blog.netbird.cloud/');
+  const disabledLock = ui.openLinks({ ...meshNets, endpoints: [meshNets.endpoints[0]] }).childNodes[1];
+  assert.equal(disabledLock.tagName, 'BUTTON');
+  assert.equal(disabledLock.getAttribute('href'), null);
+  assert.equal(disabledLock.getAttribute('title'), ui.SERVER_ONLY);
+  assert.deepEqual(ui.openMenuItems(meshNets).map((i) => i.label), ['Open privately · NetBird'], 'the narrow menu leaves Local out');
+  // A private_url on Local (the host's private default) gives way to an
+  // address this device can open; with none it stays.
+  assert.equal(ui.privateURL({ ...meshNets, private_url: 'http://blog.localhost:7879' }), 'http://blog.netbird.cloud/');
+  assert.equal(ui.privateURL({ ...meshNets, endpoints: [meshNets.endpoints[0]], private_url: 'http://blog.localhost:7879' }), 'http://blog.localhost:7879');
+  assert.equal(ui.privateURL({ ...meshNets, private_url: 'https://blog.tail1234.ts.net' }), 'https://blog.tail1234.ts.net');
+  // The Status row shows that address with its own route's state.
+  {
+    const flatMod = await import('./flat.js');
+    const starting = { ...blog, visibility: 'private', type: 'docs', running: true, private_url: 'http://blog.localhost:7879', private_state: 'ready',
+      endpoints: [ep('local', 'http://blog.localhost:7879/'), { ...ep('tailscale', 'https://blog.tail1234.ts.net/'), state: 'starting', ready: false, detail: 'joining the tailnet' }] };
+    const savedRoute = routes['GET /console/api/flats/blog'];
+    routes['GET /console/api/flats/blog'] = starting;
+    const statusMain = new Element('main');
+    const stopStatus = flatMod.mount(statusMain, ['blog'], ctx);
+    await tick();
+    const statusBox = byId(statusMain, 'status') || statusMain;
+    const statusText = statusBox.textContent;
+    assert.equal(all(statusBox, (e) => e.tagName === 'A')[0]?.getAttribute('href'), 'https://blog.tail1234.ts.net/', 'the Private URL links the Tailscale address');
+    assert.ok(!statusText.includes('localhost'), statusText);
+    assert.ok(statusText.includes('starting') && statusText.includes('joining the tailnet'), statusText);
+    stopStatus();
+    routes['GET /console/api/flats/blog'] = savedRoute;
+  }
+  assert.deepEqual(ui.openMenuItems({ ...meshNets, endpoints: [meshNets.endpoints[0]] }), []);
+  // The fallback private_url is a Local address too.
+  assert.deepEqual(ui.openMenuItems({ ...blog, visibility: 'private', live_version: 1, endpoints: [], private_url: 'http://blog.localhost:7879' }), []);
+  const { siteHeader: remoteHeader } = await import('./site.js');
+  const remoteLines = (f) => all(remoteHeader(f, 'deployments'), (e) => e.className === 'site-address muted');
+  const withNb = remoteLines(meshNets);
+  assert.equal(withNb.length, 1);
+  assert.ok(withNb[0].textContent.includes('netbird') && !withNb[0].textContent.includes('localhost'), withNb[0].textContent);
+  const onlyLocalLine = remoteLines({ ...meshNets, endpoints: [meshNets.endpoints[0]] });
+  assert.equal(onlyLocalLine.length, 1, 'a Local-only flat keeps its private line');
+  assert.ok(onlyLocalLine[0].textContent.includes(ui.LOCAL_ADDRESS) && !onlyLocalLine[0].textContent.includes('localhost'), onlyLocalLine[0].textContent);
+}
 globalThis.location = { origin: 'http://127.0.0.1:7878' };
 assert.equal(ui.openPrimary(meshNets).getAttribute('href'), 'http://blog.localhost:7879/', 'on the host the first address is kept');
+assert.equal(ui.privateURL({ ...meshNets, private_url: 'http://blog.localhost:7879' }), 'http://blog.localhost:7879', 'on the host private_url is kept');
 // Public routes the flat may not use (unpermitted, another flat's, stopped)
 // never become its public button; only the server's public_url backs it.
 const local = ep('local', 'http://blog.localhost:7879/');

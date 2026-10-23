@@ -78,7 +78,33 @@ previews, changes are live at once, and history is kept as revisions.
 
 5. **The canvas.** The design's URL opens a canvas that shows every artboard at
    its frame with its title, plus the notes. People pan and zoom it, and fit it
-   to the window.
+   to the window. Without modifiers, wheel and trackpad input pans on both
+   axes. Holding Shift constrains panning to the horizontal axis, including
+   diagonal input and small residual movement on the other axis. The first
+   nonzero sample selects the component with the larger absolute raw delta,
+   without `deltaMode` conversion (horizontal on a tie);
+   that component supplies horizontal movement for the rest of the gesture.
+   A change in which component is larger must not switch the mapping or
+   reverse the pan. Samples with zero movement on the selected axis do not
+   pan, even when the other component is nonzero. To change the source axis,
+   start another gesture. A residual-only first sample can therefore select
+   the wrong source axis and suppress subsequent movement until a reset.
+   This zero-output behavior is specified, rather than a mapping defect:
+   every sample uses the selected component until a gesture boundary resets
+   it. A gesture that begins on an unwanted axis may therefore need to be
+   restarted.
+   When horizontal is selected, the pan amount is `deltaX`; when vertical is
+   selected, it is `deltaY`. The other component is ignored. Thus an event
+   already converted to horizontal input (`deltaY = 0`) selects `deltaX`.
+   A gap longer than 200 ms between nonzero input events starts a new gesture.
+   Zero samples do not extend the gesture.
+   Unmodified input, Ctrl/Cmd zoom, a delivered Shift release or window blur
+   clears the selection. Missing or backwards timestamps do not reset it
+   or advance the last valid timestamp. They do not trigger an idle check.
+   Alt does not change these rules, alone or with Shift.
+   Release events inside an artboard may not reach the canvas; the next
+   unmodified event or idle gap still clears the selection. Ctrl/Cmd input
+   still zooms about the pointer, including when Shift is held.
 6. **Focus and play.** Any artboard opens full window. In this view,
    prototype links move between artboards, and a `fill` artboard fills the
    window.
@@ -181,9 +207,28 @@ previews, changes are live at once, and history is kept as revisions.
 ## Current state
 
 The first release is implemented, including the
-[revision store](../revision-store.md) that documents share. There are no
-differences from this page.
+[revision store](../revision-store.md) that documents share. Shift panning
+uses the selected input component for horizontal movement and ignores the
+other component.
 
 ## Open questions
 
 None at the moment.
+
+## Shift panning verification
+
+Automated mapping and viewport tests must cover both signs, vertical and horizontal
+input, diagonal input with opposite signs, residual deltas, equal components,
+zero samples, gesture boundaries and resets. They must check unmodified two-axis
+panning and Ctrl/Cmd zoom with and without Shift. A browser check must use the
+served design app. Physical trackpad input must also verify horizontal-only
+motion and stable direction for vertical, horizontal and diagonal starts,
+including the first event. Check at least one gesture of each kind in each
+direction (six gestures minimum). Pass criteria are zero vertical displacement,
+movement matching the selected input component, and unchanged mapping within
+each gesture. Record the number of observed gestures and any that stall
+because their first sample selected the other axis. Such a stall is the
+selection limitation described above; disclose it with the result rather
+than claiming the gesture worked. Synthetic events alone do not establish
+physical input behavior. This requirement does not claim support verified on other platforms
+or browsers.

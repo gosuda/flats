@@ -11,7 +11,8 @@
 <h1 align="center">Flats</h1>
 
 <p align="center">
-  Sites, apps, documents, designs and boards — built by agents, hosted on your machine.
+  Ask your AI agent for a web page, a shared document, a small app, a design or
+  a whiteboard. Flats hosts it on your own machine and gives you a link.
 </p>
 
 <p align="center">
@@ -22,55 +23,52 @@
 
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
-  <a href="#what-you-can-build">What you can build</a> ·
-  <a href="#agent-integration">Connect an agent</a> ·
+  <a href="#what-you-can-make">What you can make</a> ·
+  <a href="#how-flats-compares">How Flats compares</a> ·
   <a href="docs/README.md">Documentation</a>
 </p>
 
 ---
 
-Flats turns your own machine into a home for the things you build with AI.
-Deploy a website, run a small server app, share an HTML page, collaborate
-on a Markdown document, lay out a design canvas or brainstorm on a whiteboard.
-Start Private on local
-loopback, then choose who can reach it through explicitly permitted network
-providers.
+Each thing Flats hosts is a **flat**: one web page, document, app, design or
+board with its own name and link. Your agent creates and updates flats. You
+decide in the Flats console what goes live and who can open it.
 
-One CGO-free Go binary. macOS and Linux. A web console, CLI, HTTP API and MCP
-endpoint. **No hosted Flats control plane.**
+<p align="center"><img src="docs/assets/readme/gallery-content.png" alt="Examples of flats: a report page with a chart, a shared handbook document, a small voting app, a design canvas of phone screens and a retro board of sticky notes" width="880"></p>
 
-| Your machine, your data | Built for agent workflows | Private by default |
+1. **Ask your agent:** "Make a one-page report of our Q3 numbers with a chart
+   and put it on Flats."
+2. **Approve it** in the Flats console. The agent sends you the approval link.
+3. **Open the link.** The page starts Private, on your machine. Share it on
+   a private network such as Tailscale, or make it Public when you are ready.
+
+## What you can make
+
+| You want | Flats makes a | How it changes |
 | --- | --- | --- |
-| Keep code, SQLite databases, persistent files and encrypted secrets locally. | Connect Claude Code, Codex, Cursor or another MCP client. Inspect and approve deployments in the console. | Use Local or a permitted private network. Public sharing is a separate, approved choice. |
+| A report or dashboard with charts you can send around | **Page**: one HTML document with its assets | You approve saving and publishing each version |
+| Notes, a handbook or meeting minutes that people and agents edit together | **Document**: live, collaborative Markdown | Edits apply at once and are kept as revisions |
+| A small internal tool with a database, such as a poll, tracker or form | **Website**: a static site, or a small JavaScript server app with SQLite | You approve saving and publishing each version |
+| Screen mock-ups and click-through prototypes | **Design**: a canvas of HTML artboards | Edits apply at once and are kept as revisions |
+| A brainstorm, retro or flowchart that people rearrange by hand | **Board**: an infinite whiteboard with sticky notes, shapes and connectors | Edits apply at once and are kept as revisions |
 
-## What you can build
+Every flat starts Private. Making any flat Public, or Private again, always
+waits for your approval. [How changes go live](#how-changes-go-live) has the
+details for each type, and [content types](docs/content-types.md) has the full
+reference.
 
-| Type | Made for | How it goes live |
-| --- | --- | --- |
-| **Website** | Static sites and sandboxed JavaScript or WASI server apps | Save a Private Draft and preview it. Approve saving it as a numbered version, then approve deploying that version. Deployed versions support rollback. |
-| **Page** | A single HTML document with bundled assets: charts, reports and visualizations | The same Draft, version and deployment flow as websites. No server code or data storage. |
-| **Document** | Live, collaborative Markdown | Create or save to run immediately, initially Private. No Draft, versions or publish step. |
-| **Design** | A canvas of HTML artboards: screens, landing pages, posters and click-through prototypes | Changes are live at once, initially Private. Every change is kept as a revision you can pin or roll back. |
-| **Board** | An infinite-canvas whiteboard with sticky notes, shapes, connectors, text, pen strokes, images and frames | Create or edit to run immediately, initially Private. No Draft, versions or publish step. Revisions support pins and rollback. |
+## How Flats compares
 
-Websites and pages follow the **version model**: you work on a Private Draft
-while the live version keeps serving, and previews use isolated data. Saving a
-version (v1, v2, ...) and deploying it are separate approved steps, so a
-version can exist without ever going live. Publication and rollback require
-console approval.
+| | Flats | Hosted AI artifacts and sites (for example Claude Artifacts) | App hosting (for example Vercel, Netlify) |
+| --- | --- | --- | --- |
+| Where it runs | Your own Mac or Linux machine, or your own server | Usually the provider's cloud | Usually the provider's cloud |
+| Where your data lives | Files and SQLite databases on that machine | Usually your account with the provider | Usually your account with the provider and the services you add |
+| Which agents can use it | Any MCP client; a plugin for Claude Code, Codex and Cursor | Often the provider's own assistant | Usually any tool that can deploy there, such as a CLI or a Git push |
+| Server code and a database | JavaScript server apps with SQLite and persistent files ([details](#static-and-server-flats)) | Varies by product | Often available through the provider's functions and add-ons |
+| People and agents editing together | Documents, designs and boards, with history | Varies by product | Usually outside the hosting itself |
+| Who decides what goes live | You approve every publish and visibility change in your console | Varies by product | Varies with your deployment setup |
 
-Documents, designs and boards are edited live by people and agents together: private
-visitors can edit while public visitors read, and changes to an already Public
-flat are visible immediately. Documents merge agent saves into people's edits;
-designs keep every change as a whole-canvas revision. Boards record each agent
-write as one revision and group each person's edits into revisions. **Changing visibility in
-either direction requires approval for every type.**
-
-Explore [content types](docs/content-types.md) for the full lifecycle and
-agent tools, including `save_page`, `update_document` and `save_design`. The
-[Boards guide](docs/content-types.md#boards) covers `get_board`, `update_board`,
-live collaboration, imports and history. Choose a board for ideas people will
-move and connect; choose a design for HTML screens and prototypes.
+Other products change often; check their current documentation for details.
 
 ## Quick start
 
@@ -83,18 +81,52 @@ curl -fsSL https://raw.githubusercontent.com/gosuda/flats/main/install.sh | sh
 ```
 
 The installer verifies the release, installs `flats` to `~/.local/bin` and
-starts it as a background service, without sudo. The default network is
-Local; other providers are off.
+starts it as a background service, without sudo. The console is at
+[127.0.0.1:7878](http://127.0.0.1:7878). The default network is Local, so
+flats open only on this machine; other providers are off.
 
-### 2. Deploy your first site
+### 2. Connect your agent
+
+Install the Flats plugin. In Claude Code:
+
+```sh
+claude plugin marketplace add gosuda/flats && claude plugin install flats@flats
+```
+
+In Codex:
+
+```sh
+codex plugin marketplace add gosuda/flats && codex plugin add flats@flats
+```
+
+Then restart or reconnect the agent. [Connecting agents](docs/agents.md)
+covers Cursor, other MCP clients and agents on another machine.
+
+### 3. Ask for something
+
+Try one of these:
+
+- "Make a one-page report of last quarter's sales with a bar chart and put it
+  on Flats."
+- "Start a Flats document for our team handbook."
+- "Build a lunch poll on Flats that saves votes."
+
+### 4. Approve and open it
+
+For a page or website, the agent saves a Private Draft and sends you a console
+link. Approve two requests there: saving the Draft as version 1, then
+publishing that version. Then open the link the agent gives you, such as
+`http://coffee-report.localhost:7879`. A document, design or board opens at
+once, without an approval.
+
+<details>
+<summary><strong>Deploy without an agent, from the command line</strong></summary>
 
 ```sh
 mkdir -p hello
 printf '<h1>Hello from Flats</h1>\n' > hello/index.html
 flats save-draft hello ./hello
 ```
-
-### 3. Approve, deploy and open
 
 Run the exact `flats create-version` command printed by the save above; its
 `--revision` and `--hash` freeze the files you saved, even if someone edits
@@ -116,6 +148,8 @@ Then visit [hello.localhost:7879](http://hello.localhost:7879).
 Run `flats status` to check the host. See
 [installation and upgrades](docs/release.md#installing-a-host) for installer
 options, upgrades and backups.
+
+</details>
 
 <details>
 <summary><strong>Other ways to run Flats: container, foreground or source</strong></summary>
@@ -170,16 +204,36 @@ the release binary from a checkout.
 
 </details>
 
+## How changes go live
+
+Websites and pages follow the **version model**: you work on a Private Draft
+while the live version keeps serving, and previews use isolated data. Saving a
+version (v1, v2, ...) and deploying it are separate approved steps, so a
+version can exist without ever going live. Publication and rollback require
+console approval.
+
+Documents, designs and boards are edited live by people and agents together:
+private visitors can edit while public visitors read, unless you approve
+guest editing for a Public board, and changes to an already Public flat are
+visible immediately. Documents merge agent saves into
+people's edits; designs keep every change as a whole-canvas revision. Boards
+record each agent write as one revision and group each person's edits into
+revisions. **Changing visibility in either direction requires approval for
+every type.**
+
+Explore [content types](docs/content-types.md) for the full lifecycle and
+agent tools, including `save_page`, `update_document` and `save_design`. The
+[Boards guide](docs/content-types.md#boards) covers `get_board`, `update_board`,
+live collaboration, imports and history. Choose a board for ideas people will
+move and connect; choose a design for HTML screens and prototypes.
+
 ## Agent integration
 
 Connect **Claude Code, Codex or Cursor** with the Flats plugin, which runs
 `flats mcp` (the `flats` CLI must be on the agent's `PATH`) to relay the
 selected host's MCP endpoint; any other MCP client registers
-`http://127.0.0.1:7878/mcp` directly. For example, in Claude Code:
-
-```sh
-claude plugin marketplace add gosuda/flats && claude plugin install flats@flats
-```
+`http://127.0.0.1:7878/mcp` directly. The install commands are in the
+[Quick start](#2-connect-your-agent).
 
 [Connecting agents](docs/agents.md) covers the other clients, remote hosts
 (`flats connect`), client updates and llms.txt. The agent starts with
@@ -294,6 +348,17 @@ and upgrades from older hosts.
   [what to back up](docs/configuration.md#what-to-back-up).
 
 Read the [design and trust model](docs/design.md) for the details.
+
+## Under the hood
+
+Flats is one Go binary built without CGO, for macOS and Linux. It serves a web
+console, a CLI, an HTTP API and an MCP endpoint. There is no hosted Flats
+service. By default the console and the Local flat listener bind only to
+loopback (`127.0.0.1:7878` and `127.0.0.1:7879`), so other networks reach your
+flats only through the providers you turn on. Binding either listener to
+another address (`host.console_addr`, `host.local_addr` or `--local-addr`)
+changes that: anyone who can reach it can open the console or Local routes,
+including Private flats. See [config.json](docs/configuration.md#configjson).
 
 ## Documentation
 
