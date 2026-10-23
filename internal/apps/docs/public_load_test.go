@@ -33,18 +33,23 @@ import (
 //	DOCS_LOAD=1 (60 s) or DOCS_LOAD=<duration>, for example DOCS_LOAD=60s
 //	DOCS_LOAD_FLOOD=0 leaves out the flood clients, for diagnosis
 //
-// One document flat at level edit. 20 guests edit index.md at the client's
-// pace (4 updates a second) and resend after busy as the page does. Flood
-// clients fill the guest pool (30) and the viewer pool (40), send frames and
-// bytes above the Public ingress buckets and the flat's guest byte budget,
-// churn Public connections, and 2 unpaced guests send above the per-guest
-// limit and reconnect when refused. Meanwhile member A edits index.md every
-// 250 ms and member B, on the same document, times each edit's update frame.
-// A third member connects and edits, and a member rollback runs, during the
-// flood. The test asserts only robust facts: members are admitted, edit and
-// roll back, no member socket closes, paced guests are never refused or
-// closed, acknowledged text after the rollback is kept in order, and member
-// socket delivery p95 is under 200 ms; everything else is logged ("LOAD").
+// One document flat at level edit. Every socket acknowledges frames as the
+// page does (one cumulative receipt per busy moment). 20 guests edit
+// index.md at the client's pace (4 updates a second) and resend after busy
+// as the page does, first for 10 s without flood. Then flood clients fill
+// the guest pool (30) and the viewer pool (40), send frames and bytes above
+// the Public ingress buckets and the flat's guest byte budget, churn Public
+// connections, and 2 unpaced guests send above the per-guest limit (they
+// are answered busy; refused, they reconnect). Meanwhile member A edits
+// index.md every 250 ms and member B, on the same document, times each
+// edit's update frame. A third member connects and edits, and a member
+// rollback runs, during the flood. The test asserts only robust facts:
+// members are admitted, edit and roll back, no member socket closes during
+// or after the flood, paced guests are never refused or closed (busy is
+// allowed), acknowledged text after the rollback is kept in order, and
+// member socket delivery p95 is under 200 ms. Guest throughput is only
+// logged ("LOAD"), by phase: a determined flood may use up guest capacity
+// (a documented limitation; Stop guest editing is the remedy).
 func TestGuestLoad(t *testing.T) {
 	setting := os.Getenv("DOCS_LOAD")
 	if setting == "" {
@@ -92,6 +97,12 @@ func TestGuestLoad(t *testing.T) {
 	guests := make([]*pacedGuest, 20)
 	for i := range guests {
 		guests[i] = l.pacedGuest(t, i)
+	}
+	// A phase without flood first: the paced guests and the members alone.
+	quietStart := time.Now()
+	if flood {
+		t.Logf("LOAD at %v phase without flood, 10 s", since())
+		time.Sleep(10 * time.Second)
 	}
 	floodStart := time.Now()
 	if flood {
@@ -148,6 +159,7 @@ func TestGuestLoad(t *testing.T) {
 	t.Logf("LOAD at %v member edits end; flood stops", since())
 
 	// Stop the flood, then let paced guests finish what they have.
+	floodEnd := time.Now()
 	l.halt()
 	l.floods.Wait()
 	for _, g := range guests {
@@ -205,6 +217,35 @@ func TestGuestLoad(t *testing.T) {
 		gs.created, gs.sent, gs.acked, gs.busyFrames, gs.busyEpisodes, undrained, undrainedOpen, gs.fatal, gs.closed)
 	t.Logf("LOAD paced guest updates, created to acknowledged: count %d, p50 %v, p95 %v, max %v",
 		len(guestAcks), pct(guestAcks, 0.5), pct(guestAcks, 0.95), pct(guestAcks, 1))
+	// The same by the phase each update was created in. Under the flood
+	// guests may wait long (a documented limitation); it is not asserted.
+	phase := func(name string, from, to time.Time) {
+		var d []time.Duration
+		created, acked := 0, 0
+		for _, g := range guests {
+			g.mu.Lock()
+			for _, x := range g.written {
+				if x.created.Before(from) || !x.created.Before(to) {
+					continue
+				}
+				created++
+				if !x.acked.IsZero() {
+					acked++
+					d = append(d, x.acked.Sub(x.created))
+				}
+			}
+			g.mu.Unlock()
+		}
+		t.Logf("LOAD paced guest updates created %s: created %d, acked %d, created to acknowledged p50 %v, p95 %v, max %v",
+			name, created, acked, pct(d, 0.5), pct(d, 0.95), pct(d, 1))
+	}
+	if flood {
+		phase("before the flood", quietStart, floodStart)
+		phase("during the flood", floodStart, floodEnd)
+		phase("after the flood", floodEnd, finalAt)
+	} else {
+		phase("without flood", quietStart, finalAt)
+	}
 	l.mu.Lock()
 	t.Logf("LOAD unpaced guests: connections %d, updates sent %d, acked %d, busy %d, refusals %v, hello errors %v, http %v",
 		l.unpacedJoined, l.unpacedSent, l.unpacedAcked, l.unpacedBusy, l.unpacedRefusals, l.unpacedHello, l.unpacedHTTP)
@@ -249,7 +290,8 @@ func TestGuestLoad(t *testing.T) {
 // --- a minimal concurrent WebSocket client ---
 
 // loadConn is a client socket like a browser's: sends are queued and never
-// block the reader, every numbered frame is confirmed with received, and
+// block the reader, numbered frames are confirmed with cumulative received
+// receipts as the page sends them, and
 // server pings are answered.
 type loadConn struct {
 	conn   net.Conn
@@ -266,7 +308,12 @@ type loadConn struct {
 	track    bool
 	arrivals []time.Time
 	maxQueue int
-	handler  atomic.Pointer[func(m map[string]any, at time.Time)]
+	// Unacknowledged frames: the highest number and their bytes.
+	unackedN     float64
+	unackedBytes int
+	receiptTimer *time.Timer
+	receipts     int
+	handler      atomic.Pointer[func(m map[string]any, at time.Time)]
 }
 
 // setHandler sets the function the reader calls for every JSON frame.
@@ -379,7 +426,7 @@ func (s *loadConn) stats(start time.Time) string {
 	if s.end != "" {
 		end = fmt.Sprintf("%s at %v", s.end, s.endAt.Sub(start).Round(time.Millisecond))
 	}
-	return fmt.Sprintf("frames received %d, most in 1 s %d, most queued sends %d, %s", len(s.arrivals), peak, s.maxQueue, end)
+	return fmt.Sprintf("frames received %d, most in 1 s %d, receipts sent %d, most queued sends %d, %s", len(s.arrivals), peak, s.receipts, s.maxQueue, end)
 }
 
 // perSecond lists the frames received in each second since start.
@@ -508,8 +555,48 @@ func (s *loadConn) readLoop() {
 			(*f)(m, at)
 		}
 		if n, ok := m["n"].(float64); ok {
-			s.send(map[string]any{"t": "received", "n": n})
+			s.receipt(n, len(b))
 		}
+	}
+}
+
+// Receipts as the page sends them (provider.js receipt): one cumulative
+// received per busy moment, 200 ms after the first unacknowledged frame or
+// at once after 256 KiB of unacknowledged frames.
+const (
+	loadReceiptBytes = 256 * 1024
+	loadReceiptDelay = 200 * time.Millisecond
+)
+
+func (s *loadConn) receipt(n float64, size int) {
+	s.mu.Lock()
+	s.unackedN = max(s.unackedN, n)
+	s.unackedBytes += size
+	if s.unackedBytes >= loadReceiptBytes {
+		s.mu.Unlock()
+		s.flushReceipt()
+		return
+	}
+	if s.receiptTimer == nil {
+		s.receiptTimer = time.AfterFunc(loadReceiptDelay, s.flushReceipt)
+	}
+	s.mu.Unlock()
+}
+
+func (s *loadConn) flushReceipt() {
+	s.mu.Lock()
+	if s.receiptTimer != nil {
+		s.receiptTimer.Stop()
+		s.receiptTimer = nil
+	}
+	n := s.unackedN
+	s.unackedN, s.unackedBytes = 0, 0
+	if n > 0 {
+		s.receipts++
+	}
+	s.mu.Unlock()
+	if n > 0 {
+		s.send(map[string]any{"t": "received", "n": n})
 	}
 }
 
