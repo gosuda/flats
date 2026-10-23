@@ -227,6 +227,17 @@ And one for consistency:
     anyone for editing, diagrams render only when the reader clicks
     **Show diagram**, within size caps. A hostile diagram therefore never
     blocks a page that a reader merely opens.
+21b. **The editor keeps up** (decided by the owner, 2026-10-24). Guests
+    can grow a very long paragraph, and the editor reworks a whole paragraph
+    after each change. Two rules keep every page responsive, for all
+    documents:
+    - Remote changes are applied to the editor in batches, no more often
+      than the editor's own measured work allows, so a page never falls
+      behind; local typing is not delayed.
+    - In Edit mode's live preview, a single paragraph longer than 20,000
+      characters is shown as its Markdown source, without rendering its
+      links or emphasis. View mode, everyone else's pages and the stored
+      text are unchanged.
 
 ## Limits against abuse
 
@@ -370,6 +381,7 @@ continuously for an hour.
 | Identity | A scan of every frame sent to a guest, while a member on Tailscale edits, finds no Tailscale login or display name and no agent label; that member appears under their page nickname. |
 | Joining | A visitor at level `edit` who chooses View only reads as Viewer N and is not asked again in that tab until the level changes; Join to edit opens the popup; a remembered name still shows the popup once. |
 | Rendering | Guest text containing script, raw HTML, `javascript:` links and outside images runs no script and loads nothing from another site; in a document with guest text, or of a flat open for editing, no diagram renders until the reader asks. |
+| Responsive editor | While 20 guests grow one paragraph without blank lines, a member's page keeps answering within 200 ms and still shows every remote change; inline Markdown of ordinary-length paragraphs (links, emphasis, inline HTML, references) is parsed in time linear in the paragraph's length. |
 | Limits | While guests send updates at the per-guest limit on every allowed connection, a Private editor can still connect, edit and roll back, and sees another member's change in the editor within 200 ms p95 (the board's figure). At the reserved disk and document-size room and at the guest byte budget, guests are refused and Private edits succeed. |
 | Revisions | However 20 guests edit for an hour across two documents, alone or while a member edits with 31-second pauses, at most 12 guest-only revisions are recorded plus forced boundaries, and every revision recorded because a member's group closed credits that member. The pinned safe point stays and cannot be unpinned while the level is `edit`. Guest-only revisions hold at most half of the revision quota. Re-enabling editing on an unchanged flat adds no revision. |
 | Refusal | After a guest update A is refused, a following update B that builds on A does not commit, the page never shows A or B as saved, the downloaded Markdown contains both, and after Rejoin the page shows the server's text and can edit. A guest sending faster than its rate loses no text. |

@@ -513,6 +513,26 @@ about when a render can start:
 
 Spec rule 21a is reworded to these two guarantees.
 
+### 3.11 Editor parse cost
+
+The live-preview editor (CodeMirror with `@lezer/markdown`) reparses the whole
+edited paragraph after every change, and one paragraph's inline parse cannot
+be split. Three measures keep the cost bounded (spec rule 21b):
+
+- **Linear inline parsing.** `src/markdown-inline.js` (`editorMarkdown()`)
+  replaces lezer 1.7.2's link closing, emphasis resolution, unclosed inline
+  HTML search and link destination/title scans with linear-time equivalents
+  that produce the same syntax tree (pinned version; equality tests against
+  the stock parser on hand-written and seeded random inputs).
+- **Batched remote changes.** Remote Yjs updates are applied to the editor
+  view in batches: after a batch is applied, the next one waits at least as
+  long as that batch took to apply and render (and at most one second), so
+  the main thread always has idle time. Local typing is applied at once.
+- **Plain long paragraphs.** In Edit mode's live preview, a paragraph whose
+  text is longer than 20,000 characters is not inline parsed: it is shown as
+  its Markdown source. View mode's renderer (markdown-it, linear) is
+  unchanged.
+
 ## 4. Document client
 
 - **Popup** (rule 8 and 11): a dialog over the live document, name field with
