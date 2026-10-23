@@ -27,7 +27,10 @@ import (
 // Only the guests scenario asserts p95 under 200 ms; the others are
 // reported. Opt in with FLATS_DOCS_BROWSER_TEST=1 and
 // FLATS_PLAYWRIGHT_MODULE; FLATS_DOCS_BROWSER_EVIDENCE keeps the
-// screenshots and FLATS_DOCS_DISPLAY_SECONDS changes the 60 s of edits.
+// screenshots, FLATS_DOCS_DISPLAY_SECONDS changes the 60 s of edits,
+// FLATS_DOCS_DISPLAY_GUEST_TEXT=brackets makes the guests type one long
+// paragraph of bracketed words instead of plain paragraphs, and
+// FLATS_DOCS_DISPLAY_PROFILE=1 records a CPU profile of page B.
 func TestBrowserDisplayLatency(t *testing.T) {
 	if os.Getenv("FLATS_DOCS_BROWSER_TEST") != "1" || os.Getenv("FLATS_PLAYWRIGHT_MODULE") == "" {
 		t.Skip("opt in with FLATS_DOCS_BROWSER_TEST=1 and FLATS_PLAYWRIGHT_MODULE")
@@ -64,7 +67,10 @@ func TestBrowserDisplayLatency(t *testing.T) {
 			}))
 			defer proxy.Close()
 			l := newLoadRun(a.srv.URL)
-			l.newlines = true
+			l.guestText = "words"
+			if v := os.Getenv("FLATS_DOCS_DISPLAY_GUEST_TEXT"); v != "" {
+				l.guestText = v
+			}
 			t.Cleanup(func() {
 				l.halt()
 				l.floods.Wait()
@@ -90,6 +96,7 @@ func TestBrowserDisplayLatency(t *testing.T) {
 				Sent, Count, Missing int
 				P50, P95, P99, Max   *float64
 				Status, Errors       []string
+				Responsiveness       map[string]map[string]float64
 			}
 			found := false
 			for _, line := range strings.Split(string(output), "\n") {
@@ -108,6 +115,7 @@ func TestBrowserDisplayLatency(t *testing.T) {
 				}
 				return fmt.Sprintf("%.1fms", *p)
 			}
+			t.Logf("DISPLAY %s: page main threads (frame gaps in ms, long tasks in ms, document lines): %v", sc.name, result.Responsiveness)
 			t.Logf("DISPLAY %s: markers sent %d, seen %d, missing %d, p50 %s, p95 %s, p99 %s, max %s, page status %v, page errors %v",
 				sc.name, result.Sent, result.Count, result.Missing, ms(result.P50), ms(result.P95), ms(result.P99), ms(result.Max), result.Status, result.Errors)
 			if len(guests) > 0 {

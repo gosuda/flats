@@ -5,7 +5,11 @@
 //
 //	node display_latency.mjs <url> <evidence dir> <label> <seconds> <document>
 //
-// Prints one line "RESULT <json>".
+// Prints one line "RESULT <json>". Every 2 s during the edits it also times
+// a round trip into page B's main thread ("probe"). With
+// FLATS_DOCS_DISPLAY_PROFILE=1 it records a CPU profile of page B during the
+// edits into the evidence directory and prints its top functions.
+import fs from "node:fs";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 const { chromium } = await import(
@@ -47,11 +51,17 @@ async function editorText(page) {
     .locator(".cm-content")
     .evaluate((el) => el.cmTile.root.view.state.doc.toString());
 }
+const started = Date.now();
+const phase = (name) =>
+  console.log(
+    `phase ${name} at ${((Date.now() - started) / 1000).toFixed(1)}s`,
+  );
 function pct(sorted, q) {
   if (!sorted.length) return null;
   return sorted[Math.max(0, Math.ceil(q * sorted.length) - 1)];
 }
 try {
+  phase("open");
   a = await open("Member A");
   b = await open("Member B");
   for (const page of [a, b])
@@ -60,6 +70,23 @@ try {
   // B: the first time each marker is in its editor's DOM. A's markers are
   // inserted at the start, so the newest is in the first lines, which stay
   // rendered while B is scrolled to the top.
+  // Both pages also record their main thread's responsiveness: the gaps
+  // between animation frames and the time in long tasks.
+  for (const page of [a, b])
+    await page.evaluate(() => {
+      window.__gaps = [];
+      window.__longTasks = 0;
+      let last = performance.now();
+      const frame = (now) => {
+        window.__gaps.push(now - last);
+        last = now;
+        if (!window.__stopFrames) requestAnimationFrame(frame);
+      };
+      requestAnimationFrame(frame);
+      new PerformanceObserver((list) => {
+        for (const e of list.getEntries()) window.__longTasks += e.duration;
+      }).observe({ type: "longtask" });
+    });
   await b.evaluate(() => {
     window.__seen = {};
     const content = document.querySelector(".cm-content"),
@@ -79,6 +106,25 @@ try {
       characterData: true,
     });
   });
+  phase("edits");
+  let profiler;
+  if (process.env.FLATS_DOCS_DISPLAY_PROFILE === "1") {
+    profiler = await b.context().newCDPSession(b);
+    await profiler.send("Profiler.enable");
+    await profiler.send("Profiler.setSamplingInterval", { interval: 1000 });
+    await profiler.send("Profiler.start");
+  }
+  // Round trips into B's main thread while A edits.
+  const probes = [];
+  let probing = true;
+  const probe = (async () => {
+    while (probing) {
+      const at = Date.now();
+      await b.evaluate(() => 0);
+      probes.push([Math.round((at - started) / 1000), Date.now() - at]);
+      await new Promise((r) => setTimeout(r, 2000));
+    }
+  })();
   // A: one marked line every 250 ms through its CodeMirror view, which the
   // Yjs binding sends like typed text.
   await a.evaluate(
@@ -101,9 +147,54 @@ try {
       }),
     Number(seconds),
   );
+  phase("edits done");
+  probing = false;
+  await probe;
+  console.log("probe [seconds since start, ms]: " + JSON.stringify(probes));
+  if (profiler) {
+    const { profile } = await profiler.send("Profiler.stop");
+    fs.writeFileSync(
+      path.join(evidence, `${label}-b.cpuprofile`),
+      JSON.stringify(profile),
+    );
+    const self = new Map(),
+      total = profile.samples.length;
+    const byId = new Map(profile.nodes.map((n) => [n.id, n]));
+    for (const id of profile.samples) {
+      const f = byId.get(id).callFrame,
+        key = `${f.functionName || "(anonymous)"} ${path.basename(f.url)}:${f.lineNumber + 1}`;
+      self.set(key, (self.get(key) || 0) + 1);
+    }
+    const top = [...self].sort((x, y) => y[1] - x[1]).slice(0, 25);
+    console.log(`profile of page B: ${total} samples`);
+    for (const [key, n] of top)
+      console.log(`  ${((100 * n) / total).toFixed(1)}% ${key}`);
+  }
   await new Promise((r) => setTimeout(r, 3000));
   const sent = await a.evaluate(() => window.__sent),
     seen = await b.evaluate(() => window.__seen);
+  phase("collected");
+  const responsiveness = {};
+  for (const [name, page] of [
+    ["a", a],
+    ["b", b],
+  ])
+    responsiveness[name] = await page.evaluate(() => {
+      window.__stopFrames = true;
+      const g = window.__gaps.slice().sort((x, y) => x - y),
+        at = (q) =>
+          Math.round(g[Math.max(0, Math.ceil(q * g.length) - 1)] || 0);
+      return {
+        frames: g.length,
+        gapP50: at(0.5),
+        gapP95: at(0.95),
+        gapMax: at(1),
+        longTaskMs: Math.round(window.__longTasks),
+        lines:
+          document.querySelector(".cm-content").cmTile.root.view.state.doc
+            .lines,
+      };
+    });
   const latencies = [];
   let missing = 0;
   for (const [marker, at] of Object.entries(sent)) {
@@ -115,13 +206,6 @@ try {
   const status = await Promise.all(
     [a, b].map((p) => p.locator("#status").innerText()),
   );
-  for (const [name, page] of [
-    ["a", a],
-    ["b", b],
-  ])
-    await page.screenshot({
-      path: path.join(evidence, `${label}-${name}.png`),
-    });
   console.log(
     "RESULT " +
       JSON.stringify({
@@ -134,8 +218,24 @@ try {
         max: round(pct(latencies, 1)),
         status,
         errors,
+        responsiveness,
       }),
   );
+  // Screenshots last: a busy page may not take one in time.
+  for (const [name, page] of [
+    ["a", a],
+    ["b", b],
+  ])
+    await page
+      .screenshot({
+        path: path.join(evidence, `${label}-${name}.png`),
+        timeout: 60000,
+      })
+      .then(
+        () => phase("screenshot " + name),
+        (e) =>
+          console.log(`screenshot ${name} failed: ${e.message.split("\n")[0]}`),
+      );
 } catch (e) {
   for (const [name, page] of [
     ["a", a],

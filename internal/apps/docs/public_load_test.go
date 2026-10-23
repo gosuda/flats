@@ -622,12 +622,15 @@ func (s *loadConn) flushReceipt() {
 type loadRun struct {
 	url string
 	t0  time.Time
-	// newlines ends every tenth paced guest update with a newline, so guest
-	// text forms lines of ordinary length in an editor.
-	newlines bool
-	stop     chan struct{}
-	halted   sync.Once
-	floods   sync.WaitGroup
+	// guestText is the paced guests' text: "" for "[g00-00001]" on one line
+	// per guest; "words" for words with a newline every 10 updates and a
+	// blank line every 50, like typed paragraphs; "brackets" for the
+	// bracketed form with a newline every 10 updates and no blank lines,
+	// one long paragraph.
+	guestText string
+	stop      chan struct{}
+	halted    sync.Once
+	floods    sync.WaitGroup
 
 	guestsJoined, viewersJoined atomic.Int64
 	aSent, aAcked               atomic.Int64
@@ -1060,8 +1063,18 @@ func (g *pacedGuest) run(l *loadRun) {
 		if !g.stopTyping.Load() && len(g.unsent) == 0 && now.Sub(lastTyped) >= 250*time.Millisecond {
 			lastTyped = now
 			text := fmt.Sprintf("[g%02d-%05d]", g.index, g.created)
-			if l.newlines && g.created%10 == 9 {
-				text += "\n"
+			switch l.guestText {
+			case "words":
+				text = fmt.Sprintf("g%02dw%05d ", g.index, g.created)
+				if g.created%50 == 49 {
+					text += "\n\n"
+				} else if g.created%10 == 9 {
+					text += "\n"
+				}
+			case "brackets":
+				if g.created%10 == 9 {
+					text += "\n"
+				}
 			}
 			u := yInsert(g.client, text)
 			if g.clock > 0 {
