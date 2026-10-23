@@ -2105,8 +2105,10 @@ assert.ok(ui.SERVER_ONLY.includes('NetBird'), 'the server-only note names NetBir
     const statusMain = new Element('main');
     const stopStatus = flatMod.mount(statusMain, ['blog'], ctx);
     await tick();
-    const statusText = byId(statusMain, 'status')?.textContent || statusMain.textContent;
-    assert.ok(statusText.includes('blog.tail1234.ts.net') && !statusText.includes('localhost'), statusText);
+    const statusBox = byId(statusMain, 'status') || statusMain;
+    const statusText = statusBox.textContent;
+    assert.equal(all(statusBox, (e) => e.tagName === 'A')[0]?.getAttribute('href'), 'https://blog.tail1234.ts.net/', 'the Private URL links the Tailscale address');
+    assert.ok(!statusText.includes('localhost'), statusText);
     assert.ok(statusText.includes('starting') && statusText.includes('joining the tailnet'), statusText);
     stopStatus();
     routes['GET /console/api/flats/blog'] = savedRoute;
