@@ -21,7 +21,7 @@ import {
 } from "./guest-ui.js";
 import { livePreview } from "./live-view.js";
 import { createMarkdown, linkRules } from "./markdown.js";
-import { editorMarkdown } from "./markdown-links.js";
+import { editorMarkdown } from "./markdown-inline.js";
 import { replaceRendered } from "./diagram-preview.js";
 import { coalescedRefresh } from "./render-budget.js";
 import { initHistory } from "./history.js";

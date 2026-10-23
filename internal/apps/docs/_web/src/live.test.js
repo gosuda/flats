@@ -11,7 +11,7 @@ import {
   tableBlocks,
 } from "./live.js";
 import { createMarkdown, linkRules } from "./markdown.js";
-import { editorMarkdown } from "./markdown-links.js";
+import { editorMarkdown } from "./markdown-inline.js";
 
 const links = linkRules(createMarkdown());
 

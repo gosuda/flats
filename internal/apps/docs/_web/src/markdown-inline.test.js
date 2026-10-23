@@ -1,11 +1,11 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { markdownLanguage } from "@codemirror/lang-markdown";
-import { linearLinks } from "./markdown-links.js";
+import { linearInline } from "./markdown-inline.js";
 
 // The stock editor parser and the one the editor uses.
 const stock = markdownLanguage.parser,
-  linear = stock.configure(linearLinks);
+  linear = stock.configure(linearInline);
 
 // nodes lists every node of a parse with its range, so two parses compare
 // node for node.
@@ -49,6 +49,60 @@ test("ordinary Markdown parses exactly as before", () => {
     same(text);
 });
 
+test("emphasis, strikethrough and inline HTML parse exactly as before", () => {
+  for (const text of [
+    "*a* _b_ **c** __d__ ***e*** ___f___ ~~g~~ ~h~ ^i^",
+    "snake_case_word and a_b_c but _a_b_ and __a__b__ and *a*b*",
+    "*a **b** c* and **a *b* c** and ***a* b** and ***a** b* and *a **b***",
+    "*a _b* c_ and _a *b_ c* and ~~a *b~~ c* and *a ~~b* c~~",
+    "**a* and *a** and ****a**** and *****a** and **a*****",
+    // An opener that shrinks can become usable for a closer kind that
+    // found nothing before.
+    "*****_****_***_",
+    "a* b* c* d_ e_ f_ g~~ h~~ and a*b c*d e_f g_h",
+    "*foo**bar**baz* and *foo**bar* and **foo*bar*baz** and foo***bar***baz",
+    '*(*foo*)* and _(_foo_)_ and **foo "*bar*" foo** and *foo [bar](/url)*',
+    "*a `*` b* and _a <span>_</span> b_ and *a [*](b) c* and \\*a\\* *b\\*",
+    "* not a list *\n\n*a\nb* and _a\n_ and **a\n\n**b",
+    "x <?php echo 1; ?> y <!DOCTYPE html> <![CDATA[ a ]] b ]]> <!-- c --> <a href='x' b=\"y\" c=d e>",
+    "x <? never closed and <!X never > closed <![CDATA[ never and <a b='c and </a > <b/> <c / >",
+    "x <a@b.c> <https://a.b/c?d> <?a@b> <!A@b> <?x?> <??> <?> <!A> <!a> <![CDATA[]]>",
+  ])
+    same(text);
+});
+
+test("random emphasis soup parses exactly as before", () => {
+  let seed = 11;
+  const random = () => {
+    seed = (Math.imul(seed, 1103515245) + 12345) >>> 0;
+    return seed / 4294967296;
+  };
+  const pieces = [
+    "*",
+    "**",
+    "***",
+    "_",
+    "__",
+    "~~",
+    "~",
+    "a",
+    "b",
+    " ",
+    ".",
+    "\n",
+    "[",
+    "](u)",
+    "`",
+  ];
+  for (let n = 0; n < 20000; n++) {
+    let text = "";
+    const length = 1 + Math.floor(random() * 30);
+    for (let i = 0; i < length; i++)
+      text += pieces[Math.floor(random() * pieces.length)];
+    same(text);
+  }
+});
+
 test("random bracket soup parses exactly as before", () => {
   // A deterministic generator, so a failure names a reproducible input.
   let seed = 7;
@@ -84,8 +138,19 @@ test("random bracket soup parses exactly as before", () => {
     "\n> ",
     "\n- ",
     "&amp;",
+    "**",
+    "***",
+    "_",
+    "<?",
+    "?>",
+    "<!A",
+    "<![CDATA[",
+    "]]>",
+    "<!--",
+    "-->",
+    "<a b='c'>",
   ];
-  for (let n = 0; n < 4000; n++) {
+  for (let n = 0; n < 6000; n++) {
     let text = "";
     const length = 1 + Math.floor(random() * 60);
     for (let i = 0; i < length; i++)
@@ -121,14 +186,23 @@ for (const [name, item] of [
   ["stray closing brackets", () => "*a* ]"],
   ["autolinks", (i) => `www.a${i}.io`],
   ["unclosed openers", () => "[a"],
+  ["closing asterisks", () => "a*"],
+  ["closing underscores", () => "a_"],
+  ["closing tildes", () => "a~~"],
+  ["mixed closers", (i) => ["a*", "a_", "a~~", "a**"][i % 4]],
+  ["intraword asterisks", () => "a*b"],
+  ["leftover closers", () => "*a**"],
+  ["unclosed processing instructions", () => "w <?a"],
+  ["unclosed declarations", () => "w <!A"],
+  ["unclosed CDATA", () => "w <![CDATA["],
 ]) {
   test(`a paragraph of ${name} parses in linear time`, () => {
     const small = paragraph(2000, item),
       large = paragraph(8000, item);
     const ts = best(small),
       tl = best(large);
-    // Lezer's own LinkEnd took ~40-280 ms for 8000 items on a laptop and
-    // grew ~4x per doubling; linear parsing takes a few ms and doubles.
+    // Stock lezer took ~40-1200 ms for 8000 of these items on a laptop and
+    // grew 11-16x from 2000; linear parsing takes a few ms and grows ~4x.
     assert.ok(tl < 1000, `${name}: 8000 items took ${tl.toFixed(1)} ms`);
     assert.ok(
       tl / Math.max(ts, 0.1) < 8,
