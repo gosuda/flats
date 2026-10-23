@@ -88,7 +88,15 @@ async function open(name, { member = false } = {}) {
     if (/Content Security Policy/i.test(m.text()))
       csp.push(name + ": " + m.text());
   });
-  await page.goto(url + "/index.md");
+  const response = await page.goto(url + "/index.md");
+  // Spec rule 21a: resources load only from the flat itself or as data:
+  // images. The page's policy enforces it for every renderer.
+  const policy = response.headers()["content-security-policy"] || "";
+  if (
+    !/img-src 'self' data:/.test(policy) ||
+    !/default-src 'self'/.test(policy)
+  )
+    problems.push(name + ": page policy does not confine resources: " + policy);
   pages[name] = page;
   return page;
 }
@@ -218,12 +226,22 @@ try {
   console.log("failed requests to another origin:", JSON.stringify(failed));
   if (dialogs.length) problems.push("dialogs opened: " + dialogs);
   if (sent.length) problems.push("requests left the flat's origin: " + sent);
-  if (attempted.length)
-    problems.push("requests to another origin were attempted: " + attempted);
+  // A renderer may still ask for an outside image; the page's policy must
+  // refuse every such attempt before it is sent (rule 21a is about what
+  // loads). Each attempt must have failed with the policy as the reason.
+  for (const a of attempted) {
+    const u = a.split(" ").at(-1);
+    if (!failed.some((f) => f.includes(u) && /csp/i.test(f)))
+      problems.push(
+        "an outside request was not refused by the page policy: " + a,
+      );
+  }
   if (errors.length) problems.push("page errors: " + errors);
   assert.deepEqual(problems, []);
   console.log(
-    "PASS: no script ran, no request left the origin, links safe on member (edit and view), viewer and guest pages.",
+    "PASS: no script ran, no request left the origin (" +
+      attempted.length +
+      " outside attempts refused by the page policy), links safe on member (edit and view), viewer and guest pages.",
   );
 } catch (e) {
   for (const [name, page] of Object.entries(pages))
