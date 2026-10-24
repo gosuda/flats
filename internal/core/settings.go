@@ -131,6 +131,8 @@ type SettingsFile struct {
 	Save func(expected string, apply func(*config.Document) error) (string, error)
 	// DiskHash returns the hash of the file on disk now.
 	DiskHash func() (string, error)
+	// Load reads and validates the file on disk, as a start does.
+	Load func() (*config.Loaded, error)
 }
 
 // ErrConfigOverridden rejects a change to a setting that the running
@@ -278,7 +280,7 @@ func (s *SettingsSource) commit(ifMatch string, apply func(*config.Document) err
 				if ifMatch != "" {
 					return errChangedOnDisk()
 				}
-				return withKind(ErrConflict, fmt.Errorf("config.json changed on disk since Flats loaded it; restart `flats serve` to load the file, then retry: %w", err))
+				return withKind(ErrConflict, fmt.Errorf("config.json changed on disk since Flats loaded it; send SIGHUP or restart `flats serve` to load the file, then retry: %w", err))
 			}
 			var fe *config.FieldError
 			if errors.As(err, &fe) {
@@ -584,7 +586,7 @@ func (s *Service) SettingsETag() string {
 }
 
 func errChangedOnDisk() error {
-	return withKind(ErrConfigChanged, errors.New("config.json changed on disk since Flats loaded it; restart Flats to load the file, then retry"))
+	return withKind(ErrConfigChanged, errors.New("config.json changed on disk since Flats loaded it; send SIGHUP or restart Flats to load the file, then retry"))
 }
 
 // changedOnDisk reports whether the file on disk is not the one the host
@@ -605,7 +607,7 @@ type ConfigView struct {
 	// ETag is the hash of the file the host last read or wrote.
 	ETag string `json:"etag"`
 	// ChangedOnDisk reports that the file differs from ETag (or cannot be
-	// read); a restart loads it.
+	// read); a SIGHUP reload or a restart loads it.
 	ChangedOnDisk bool `json:"changed_on_disk"`
 	Host          struct {
 		ConsoleAddr   string `json:"console_addr"`

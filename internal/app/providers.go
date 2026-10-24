@@ -261,7 +261,7 @@ func (h *Host) SetNetworkProvider(ctx context.Context, raw string, enabled bool,
 			}
 			return "", err
 		}
-		return h.providerChangedLocked(id, enabled, etag), nil
+		return h.providerChangedLocked(id, enabled, etag, "from the console"), nil
 	}
 	// Turning off: stop new routes and release the proxy backend before
 	// saving, so a refusal on the way saves nothing.
@@ -293,20 +293,20 @@ func (h *Host) SetNetworkProvider(ctx context.Context, raw string, enabled bool,
 		}
 		h.proxyNet = nil
 	}
-	return h.providerChangedLocked(id, enabled, etag), nil
+	return h.providerChangedLocked(id, enabled, etag, "from the console"), nil
 }
 
 // providerChangedLocked finishes a saved provider change: it refreshes the
-// backend parts of the approval policy and logs the change. It returns etag.
-// h.pmu is held.
-func (h *Host) providerChangedLocked(id provider.ID, enabled bool, etag string) string {
+// backend parts of the approval policy and logs the change, naming where it
+// came from. It returns etag. h.pmu is held.
+func (h *Host) providerChangedLocked(id provider.ID, enabled bool, etag, source string) string {
 	if id == provider.Zrok {
 		h.syncZrokConfigurationLocked()
 	}
 	if id == provider.Netbird || id == provider.NetbirdExpose {
 		h.syncNetbirdConfigurationLocked()
 	}
-	h.logf("provider %s enabled=%t from the console", id, enabled)
+	h.logf("provider %s enabled=%t %s", id, enabled, source)
 	return etag
 }
 
