@@ -49,6 +49,7 @@ the full list.
 | [Revision store](revision-store.md) | Revisions, pins, quotas and rollback for documents, designs and boards |
 | [Network provider lifecycle](network-provider-lifecycle.md) | Provider manager states and teardown |
 | [Docs app internals](internal/docs-app.md) | Host integration of the collaborative Markdown editor |
+| [Idle document worker internals](internal/docs-worker-idle.md) | How document workers sleep when idle and wake on demand: ownership, leases, preparation, clean sleep, tests |
 | [WebSocket handshake](internal/websocket-handshake.md) | Why the RFC 6455 accept hash uses SHA-1 |
 
 ## Repository development

@@ -852,7 +852,9 @@ of the active worker.
   later entry credits them again only after they edit again.
 * The host calls `sync` every 15 seconds for each awake document. Sleeping
   documents are not woken by maintenance; groups/outbox are drained before
-  clean sleep. After host restart, pending recovery waits for demand.
+  clean sleep. After host restart, pending recovery waits for demand. Which
+  callers wake a document is listed in
+  [Idle document worker internals](docs-worker-idle.md#callers).
 
 **Editor identity.** `hello` carries `editor`, a random id (8–64 characters
 of `A-Z a-z 0-9 _ -`) the page keeps in local storage next to its
@@ -885,7 +887,7 @@ belong to a rollback. Operation ids are 8–120 characters of
   started (a failed health check, a crash before the switch) or already
   activated. The host calls `sync` after operations while awake and on demand
   after lazy restoration. Unrecovered dormant documents do not authorize blob
-  sweeping.
+  sweeping ([clean sleep and retention](docs-worker-idle.md#clean-sleep-and-retention)).
 * A rollback intent's texts must be staged (`stage`) or present before the
   intent is written; the intent holds one reference on each until it is
   consumed or deleted.
@@ -930,13 +932,13 @@ get 403. Core calls them in process on the running worker instance, not
 through the flat's routes, with a 30-second timeout per call. Bodies are
 JSON; a POST body above 8 MiB of text is refused with 413. `sync`, `intent`
 and `restore` pass the activation gate first. The transport operations
-(`outbox`, `text`, `ack`, `stage`, `op`, `budget`, `checkpoint`) do not: they only need the schema,
+(`outbox`, `text`, `ack`, `stage`, `op`, `budget`, `budget/revoke`, `checkpoint`) do not: they only need the schema,
 so the host can always drain and acknowledge the backlog, which frees space,
 even while an activation keeps failing.
 
 | Route | Purpose |
 |---|---|
-| `POST /_docs/host/revisions/sync` | Runs the gate, deletes a remaining intent, closes due groups, deletes unreferenced staged texts older than one hour. Returns `{store, ready, intent, presence}`: `ready` is the number of unacknowledged entries, `intent` the id of the remaining intent or null, `presence` the last `{guests, viewers, at}` (`at` in Unix milliseconds) the WebSocket VM wrote, absent or zeros when never written. Core reports the counts while `at` is younger than 30 seconds and the worker is awake |
+| `POST /_docs/host/revisions/sync` | Runs the gate, deletes a remaining intent, closes due groups, deletes unreferenced staged texts older than one hour. Returns `{store, ready, intent, quiescent, presence}`: `ready` is the number of unacknowledged entries, `intent` the id of the remaining intent or null, `quiescent` true when there is no dirty document, live group, intent or obsolete generation, `presence` the last `{guests, viewers, at}` (`at` in Unix milliseconds) the WebSocket VM wrote, absent or zeros when never written. Core reports the counts while `at` is younger than 30 seconds and the worker is awake |
 | `GET /_docs/host/revisions/outbox?after=` | Entries with `seq > after`, oldest first, read with one SQL statement per entry and stopping before the page's document lists pass 4 MiB of JSON (always at least one entry): `{store, entries: [{seq, created_at, kind, authors, guests, guests_more, message, rollback_of?, op?, source, documents: [{path, hash, size, guest_lines}]}], more}`; `guests` names up to 5 guests, `guest_lines` are the merged 1-based line ranges guests wrote |
 | `POST /_docs/host/revisions/access` | `{level, epoch}` (`edit`, `view` or `""`, and `flats.access_seq`): writes `meta.access` and signals the WebSocket VM; at a level other than `edit` it closes the guests' group. Returns `{level, epoch}`. Core calls it after every committed level change of a running worker and on every wake, before any request reaches the worker |
 | `POST /_docs/host/revisions/safe_point` | `{prev: {source, documents: [{path, hash}]} \| null}`: in one transaction, runs the gate, records dirty groups as a `person` entry and deletes all groups, then compares the flat with `prev`. Equal returns `{seq: 0, reuse: true}`; otherwise a forced `safe_point` entry and `{seq, reuse: false}` |
@@ -948,6 +950,7 @@ even while an activation keeps failing.
 | `GET /_docs/host/revisions/op?id=` | `{committed, seq?}`: whether a rollback with this id committed and its entry is still unacknowledged |
 | `POST /_docs/host/revisions/checkpoint` | `PRAGMA wal_checkpoint(TRUNCATE)` outside a transaction; returns `{busy}` (true when a reader kept it from finishing) |
 | `POST /_docs/host/revisions/budget` | `{quota, other, ttl_ms, stored?}` (non-negative integers, `ttl_ms` 1 ms to 24 hours; `stored` at most 10,000 text hashes whose host blobs `other` includes): sets `meta.budget` for the [disk quota](#disk-quota) check and deletes the `stored` texts from `unimported`; quota 0 turns the check off and deletes `meta.pending` |
+| `POST /_docs/host/revisions/budget/revoke` | `{}`: removes `meta.budget` and keeps the pending reservations, so every edit is refused until the next `budget` call; returns `{ok: true}`. Core calls it before every [wake preparation](docs-worker-idle.md#wake-preparation) and again after a failed budget installation |
 
 Refusals are `{code, message}` with 400 `invalid`, 404 `not_found`, 409
 `conflict`, 422 `capacity` or 503 `unavailable`.
@@ -1222,37 +1225,7 @@ dialogs and header in `guest-ui.js`. Member pages change only in sending
 
 ## Idle worker lifecycle
 
-Only live built-in docs use managed workers. After two minutes without a
-foreground request or WebSocket connection, a maintenance tick reserves the
-child, syncs/imports and confirms an empty outbox, no dirty groups/intent and
-no unresolved holds. Failed drains back off from 30 seconds to five minutes; ordinary maintenance
-continues, and foreground use resets the cooldown. Physical shutdown is asynchronous; its logical route,
-provider grants and materialized runtime remain. Static attachments and
-history/quota polling do not wake it. Normal JavaScript/WASI apps and scratch
-activation trials keep their existing lifecycle.
-
-First demand uses one storage-locked start/preparation; ready requests use a
-short lease fast path. Leases span response streaming and upgraded WebSocket
-connections. `running` denotes a logical live document, including a lazy
-restored document before first physical startup. Failed wake produces a
-retryable error and an event. The management-only `budget/revoke` operation
-removes a persisted budget without clearing reservations. Wake explicitly
-revokes, tells the worker the stored public access level and epoch (`access`;
-a failure is an event, and the worker keeps an older pair that no request's
-headers match), syncs/imports, and installs a fresh budget before normal mutations;
-failed budget installation leaves reads/recovery available with writes refused.
-Import backlog or capacity errors do not themselves make a document unreadable.
-
-The internal sync response includes `quiescent` (no dirty document, live group,
-intent or obsolete generation); clean sleep additionally requires `ready == 0`
-and resolved host holds. Clean certificates are process-local, invalidated
-before replacement builds (including a later commit failure), and installed
-only after confirmed child exit. They allow retention/sweep while cleanly asleep;
-a lazy-restored document without a certificate defers worker-dependent sweep.
-
-Changed-save scratch checks remain eager. The new live child's activation and
-readiness run only after the durable live-version commit, so failed commits
-cannot stale the old document. A successful commit followed by readiness failure
-keeps the new content committed and retries serving on later demand. Replacement
-retires old admission immediately while existing requests drain under generation
-guards. No worker restart of one logical instance overlaps its unconfirmed exit.
+Live built-in documents sleep when idle and wake on demand. The lifecycle design is in
+[Idle document worker internals](docs-worker-idle.md). The host operations it relies on,
+`budget/revoke`, `access` and the `quiescent` field of `sync`, are in the table under
+[Host operations](#host-operations).
