@@ -18,7 +18,7 @@ termination) and, for the optional interfaces and the `RuntimeSpec` fields,
 request ─► docsDemand ─► TryAcquire ─► lease ─► child (ready)
                 │ no ready child
                 └─► storage lock ─► Wake ─► spawn ─► prepare ─► lease
-                                                  (revoke, sync, import, budget)
+                                                  (revoke, access, sync, import, budget)
 
 TickDocs (15 s) ─► idleDocsLocked ─► TryQuiesce ─► drain (sync, import, sync, holds)
                         ├─ clean ─► Suspend(true) ─► finishStop ─► sleeping, certificate
@@ -212,9 +212,13 @@ lazy one included, calls the ownership-checked `NextGeneration`.
 `TickDocs` calls `idleDocsLocked` for each running document whose lock is free,
 before it refreshes the document. The idle timeout is two minutes
 (`docsIdleTimeout`; tests inject the clock through `RuntimeSpec.Now`). It
-exceeds the 30-second idle time of a document's edit group (`GROUP_IDLE`); a
+exceeds the 30-second idle time of a member's edit group (`GROUP_IDLE`); a
 group also closes five minutes after it began (`GROUP_MAX_AGE`), and the tests
-keep both boundaries. Under the storage lock `TryQuiesce` reserves the
+keep both boundaries. The guests' group of a Public document at level `edit`
+never closes for idleness: `sync` closes it only when its five-minute window
+ends, so a document that guests edited cannot sleep cleanly before then unless
+an explicit operation closes the group first (leaving `edit`, a safe point, or
+another forced boundary such as an agent edit or a rollback). Under the storage lock `TryQuiesce` reserves the
 quiescence only if no lease exists and the deadline has passed. With a
 foreground operation in flight, sleep is skipped and tried again at the next
 tick.
@@ -281,13 +285,24 @@ public-visibility approval, a content revision or a deployment (spec rule 7).
 ## Wake preparation
 
 Every transition into ready (a first wake, a retry after a failure, an aborted
-sleep) runs the same steps under the storage lock: revoke the stored budget with
-the host-only `budget/revoke` operation, sync, import, settle holds and install
-a fresh budget. Revocation sets the budget aside so that mutation checks fail
+sleep) runs the same steps under the storage lock (`prepareDocsLocked`): revoke
+the stored budget with the host-only `budget/revoke` operation, tell the worker
+the flat's stored public access level and epoch with `access`, sync, import,
+settle holds and install a fresh budget. Revocation sets the budget aside so that mutation checks fail
 closed, and it keeps the reservations. It needs an acknowledgement before any
 admission. Budgets persist in SQLite, so a fresh process is not proof that a
 budget is missing, and an old TTL is never relied on after a skipped quota
 update.
+
+The `access` step sends level `""` for a Private flat and the stored level
+(`view` or `edit`) and `flats.access_seq` for a Public one, before any request
+reaches the child ([Public editing](docs-app.md#public-editing)). Its failure
+does not fail the preparation: core records a `visibility` event, and the
+worker keeps the level and epoch it last stored. Guest admission compares that
+stored pair with the request's headers. If the stored pair is still current,
+guests join as before; if the level changed while the document slept, the
+stored epoch is older than the headers' and guests cannot join until a later
+wake or level change succeeds.
 
 | Outcome | Admission and cleanup |
 | --- | --- |
@@ -313,6 +328,8 @@ forge a recovery mode with a header.
 | `GetDocument`, `UpdateDocument`, polling of an uncertain-edit receipt | A foreground locked acquisition that pins the whole operation. No lease is held across a recursive acquisition; an internal lease context or the direct instance is passed instead. |
 | Revision restore, save and activation intent, same-shape rollback | A foreground lease across the full existing locked operation. The 12-second restore and uncertain-commit protocols are unchanged. |
 | `catchUpDocs`, `ListRevisions`, `GetRevision`, `PinRevision`, `SetRevisionQuotas`, `RevisionQuotas`, history routes | A no-wake refresh through acquire-if-running. They neither wake nor reset the foreground idle time. A sleeping document's history is its durable imported history, and startup recovery may add pending entries on the next real demand. Ordinary listing, settings and provider work do not wake. |
+| Approving level `edit` on a Public document | A foreground locked acquisition (`prepareDocsSafePointLocked`) that wakes a sleeper for the safe point and keeps the lease until `access` has applied the new level to the same child. |
+| Leaving level `edit`, and other level changes (`applyLevelLocked`) | Acquire-if-running. A sleeping document is left alone and takes the stored level at its next wake. |
 | `TickDocs` and quota propagation | Acquire-if-running. An instance without a child or in a transition is skipped and its idle deadline is not refreshed. Awake documents, open WebSocket included, still get the 15-second refresh and quota updates. |
 | Startup `startDocsRevisions`, `retainAllRevisions` and blob sweeps | Restoring does not become a mass startup. If no child can be pinned, the worker-dependent recovery, the retention or source deletion and the blob sweep are deferred. The durable outbox, source and hold protections stay until the first wake. Lazy startup does not mean that pending work was imported. |
 | `prepareDocsSweepLocked` | Pin if running, or accept the in-memory clean certificate ("Clean sleep and retention"). It returns false for a lazily restored sleeping instance without a certificate, a transitional, incomplete or crashed instance, and an unconfirmed exit. |
@@ -387,7 +404,8 @@ the saved content is committed even if the first serving is unavailable. A later
 changed save is still a repair path.
 
 Routing and provider handles stay installed through a sleep. A change of
-visibility never wakes a document just to reconcile exposure. A rename, a
+visibility never wakes a document just to reconcile exposure; approving level
+`edit` wakes it for its safe point (see "Callers"). A rename, a
 replacement or a deletion retires the logical instance and not only its current
 process, so a queued request cannot start old content against renamed or deleted
 storage. Rename and restart rebuilds are lazy, so a rebuild does not leave a
@@ -469,6 +487,8 @@ the grants and the materialized runtime files all stay, so the memory that a
 sleep frees is the child's. `running` in the console and the API keeps meaning a
 logical live document, a lazily restored one before its first physical start
 included (spec rule 11). The diagnostic worker state shows the physical side.
+Core clears the public presence counts that the last `sync` reported whenever
+it suspends the child, so a sleeping document reports no guests or viewers.
 
 The host also keeps one pre-started worker while it has any server flat or
 document, asleep or not ([Fast worker cold start](../spec/worker-cold-start.md)).
