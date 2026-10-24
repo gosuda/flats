@@ -218,10 +218,10 @@ keep both boundaries. The guests' group of a Public document at level `edit`
 never closes for idleness: `sync` closes it only when its five-minute window
 ends, so a document that guests edited cannot sleep cleanly before then unless
 an explicit operation closes the group first (leaving `edit`, a safe point, or
-another forced boundary such as an agent edit or a rollback). Under the storage lock `TryQuiesce` reserves the
-quiescence only if no lease exists and the deadline has passed. With a
-foreground operation in flight, sleep is skipped and tried again at the next
-tick.
+another forced boundary such as an agent edit or a rollback). Under the storage
+lock `TryQuiesce` reserves the quiescence only if no lease exists and the
+deadline has passed. With a foreground operation in flight, sleep is skipped
+and tried again at the next tick.
 
 The final drain uses the normal bounded sync and import: sync, import, settle
 holds, sync again. It runs through the handler of the transition itself
@@ -231,8 +231,9 @@ acknowledgement or a sync fails, anything is left pending, or the outbox is not
 empty. The host verifies that the worker's outbox is empty after the
 acknowledgements and does not infer it from the bytes it imported. The second
 sync must report `quiescent` (see [Docs app internals](docs-app.md#host-operations))
-and `ready == 0`, and the store must hold no host hold. Nothing persisted
-changes and no group boundary is forced early.
+and `ready == 0`, and the store must hold no host hold. The drain writes only
+what the normal sync and import write. It adds no history of its own and
+forces no group boundary early.
 
 After a successful drain core calls `Suspend(true)`: the stopping state commits
 under the Manager mutex, the storage lock is released, and one goroutine per
@@ -288,11 +289,11 @@ Every transition into ready (a first wake, a retry after a failure, an aborted
 sleep) runs the same steps under the storage lock (`prepareDocsLocked`): revoke
 the stored budget with the host-only `budget/revoke` operation, tell the worker
 the flat's stored public access level and epoch with `access`, sync, import,
-settle holds and install a fresh budget. Revocation sets the budget aside so that mutation checks fail
-closed, and it keeps the reservations. It needs an acknowledgement before any
-admission. Budgets persist in SQLite, so a fresh process is not proof that a
-budget is missing, and an old TTL is never relied on after a skipped quota
-update.
+settle holds and install a fresh budget. Revocation sets the budget aside so
+that mutation checks fail closed, and it keeps the reservations. It needs an
+acknowledgement before any admission. Budgets persist in SQLite, so a fresh
+process is not proof that a budget is missing, and an old TTL is never relied
+on after a skipped quota update.
 
 The `access` step sends level `""` for a Private flat and the stored level
 (`view` or `edit`) and `flats.access_seq` for a Public one, before any request
