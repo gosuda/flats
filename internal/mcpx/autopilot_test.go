@@ -136,7 +136,8 @@ func agentSurface(t *testing.T, e *env, approvalID string) map[string]string {
 
 // Principle 2: with Autopilot off, every agent-visible output is today's,
 // whether Autopilot was never on or was turned on, fully configured and
-// turned off again.
+// turned off again in the console. The operator's decisions then keep
+// today's records.
 func TestAutopilotOffIdentity(t *testing.T) {
 	stubHostAddrs(t)
 	e := newEnv(t)
@@ -154,14 +155,14 @@ func TestAutopilotOffIdentity(t *testing.T) {
 		t.Fatalf("topic.autopilot exists while off: %s", never[`guide map[items:[topic.autopilot]]`])
 	}
 
-	setAutopilot(t, e, "Approve PR previews.\n```\n## heading", core.AutopilotOps...)
+	consoleAutopilotOn(t, e, "Approve PR previews.\n```\n## heading", core.AutopilotOps...)
 	on := agentSurface(t, e, id)
 	for _, key := range []string{"instructions", "tools/list", `guide map[items:[topic.approvals]]`, `get_approval map[id:` + id + `]`} {
 		if on[key] == never[key] {
 			t.Errorf("%s did not change while on", key)
 		}
 	}
-	autopilotOff(t, e)
+	consoleAutopilotOff(t, e)
 
 	again := agentSurface(t, e, id)
 	if len(again) != len(never) {
@@ -171,6 +172,19 @@ func TestAutopilotOffIdentity(t *testing.T) {
 		if again[key] != want {
 			t.Errorf("%s differs after on and off:\nnever on: %.400s\non-off:   %.400s", key, want, again[key])
 		}
+	}
+
+	var saved saveFixtureOut
+	if text, failed := call(t, e.local, "save_draft", map[string]any{"slug": "ap-identity-site", "files": []any{file("index.html", "hi", "")}, "deploy": true}, &saved); failed {
+		t.Fatal(text)
+	}
+	e.approve(t, saved.Deploy.ApprovalID)
+	if a, _ := e.svc.GetApproval(context.Background(), saved.Deploy.ApprovalID); a.DecidedBy != "console" {
+		t.Errorf("operator decided_by = %q", a.DecidedBy)
+	}
+	events := eventMessages(t, e, "ap-identity-site")
+	if !containsLine(events, "create_version approved by the operator: saved version 1") || !containsLine(events, "saved version 1", "via console") || containsLine(events, "autopilot") {
+		t.Errorf("operator events after Autopilot was on and off: %q", events)
 	}
 }
 

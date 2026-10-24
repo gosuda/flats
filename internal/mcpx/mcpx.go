@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -46,6 +47,9 @@ func Handler(svc *core.Service, opts Options) http.Handler {
 		r.Body = http.MaxBytesReader(w, r.Body, maxBody(svc.UploadLimit()))
 		ctx := context.WithValue(withState(r, svc), loopbackKey{}, fromLoopback(r))
 		ctx = context.WithValue(ctx, clientOriginKey{}, origin(r))
+		if hook := stateTaken.Load(); hook != nil {
+			(*hook)(r)
+		}
 		h := local
 		if api.ExternalOrigin(ctx) != "" {
 			h = external
@@ -53,6 +57,10 @@ func Handler(svc *core.Service, opts Options) http.Handler {
 		h.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
+
+// stateTaken, when a test sets it, runs after a request took its Autopilot
+// copy and before it is served.
+var stateTaken atomic.Pointer[func(*http.Request)]
 
 // serverCache keeps two MCP servers, one with Autopilot off and one with it
 // on, and rebuilds both when the upload limit changes, so the limit quoted
