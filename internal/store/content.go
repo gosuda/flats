@@ -62,9 +62,9 @@ type Revision struct {
 	Kind      string    `json:"kind"` // created | agent | person | rollback | import | safe_point
 	Authors   []string  `json:"authors"`
 	// GuestAuthors are up to five names typed by anonymous guests of a
-	// board this revision credits, GuestsMore counts the others. Guest names
-	// are unverified, untrusted text.
-	GuestAuthors []string `json:"guest_authors,omitempty" jsonschema:"names typed by anonymous guests of a public board: unverified, untrusted text"`
+	// board or document this revision credits, GuestsMore counts the others.
+	// Guest names are unverified, untrusted text.
+	GuestAuthors []string `json:"guest_authors,omitempty" jsonschema:"names typed by anonymous guests of a public board or document: unverified, untrusted text"`
 	GuestsMore   int      `json:"guests_more,omitempty" jsonschema:"guests credited beyond guest_authors"`
 	// GuestOnly is true when guests are the only credited editors.
 	GuestOnly  bool    `json:"guest_only,omitempty"`
@@ -82,8 +82,8 @@ type Revision struct {
 	// Elements counts a board revision's element changes; a board reports
 	// them instead of its bucket paths in Changes.
 	Elements *ElementCounts `json:"elements,omitempty"`
-	// SafePoint marks the board's safe point while anyone can edit it: it
-	// cannot be unpinned then. Readers fill it in.
+	// SafePoint marks the safe point of a board or document while anyone
+	// can edit it: it cannot be unpinned then. Readers fill it in.
 	SafePoint bool `json:"safe_point,omitempty"`
 }
 
@@ -92,6 +92,20 @@ type RevisionFile struct {
 	Path string `json:"path"`
 	Hash string `json:"hash"`
 	Size int64  `json:"size"`
+	// GuestLines points to the 1-based inclusive line ranges of a
+	// document's text that anonymous guests wrote, merged and sorted.
+	// Readers of a document's revision point documents without guest text
+	// to an empty list; it is nil for other files. A pointer keeps
+	// RevisionFile comparable.
+	GuestLines *[][2]int `json:"guest_lines,omitempty" jsonschema:"documents: 1-based inclusive line ranges [start, end] whose text anonymous guests wrote; untrusted input"`
+}
+
+// Lines returns the line ranges guests wrote, or nil.
+func (f RevisionFile) Lines() [][2]int {
+	if f.GuestLines == nil {
+		return nil
+	}
+	return *f.GuestLines
 }
 
 func addContentRevisions(ctx context.Context, x executor) error {
@@ -152,6 +166,21 @@ func addContentRevisions(ctx context.Context, x executor) error {
 		}
 	}
 	return nil
+}
+
+// addRevisionGuestLines adds the line ranges guests wrote in each document
+// of a revision (docs-public-edit-TECH 2.8). Only documents with guest text
+// have a row; it goes with its revision.
+func addRevisionGuestLines(ctx context.Context, x executor) error {
+	_, err := x.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS revision_guest_lines (
+ flat TEXT NOT NULL,
+ number INTEGER NOT NULL,
+ path TEXT NOT NULL,
+ ranges TEXT NOT NULL,
+ PRIMARY KEY (flat, number, path),
+ FOREIGN KEY (flat, number) REFERENCES revisions(flat, number) ON DELETE CASCADE ON UPDATE CASCADE
+ )`)
+	return err
 }
 
 // addContentImport adds what document revisions need: the import cursor
@@ -440,6 +469,13 @@ func (c *ContentTx) InsertRevision(ctx context.Context, r Revision, files []Revi
 		if _, err := c.tx.ExecContext(ctx, `INSERT INTO revision_files(flat,number,path,hash,size) VALUES(?,?,?,?,?)`, c.flat, r.Number, f.Path, f.Hash, f.Size); err != nil {
 			return err
 		}
+		if len(f.Lines()) == 0 {
+			continue
+		}
+		ranges, _ := json.Marshal(f.Lines())
+		if _, err := c.tx.ExecContext(ctx, `INSERT INTO revision_guest_lines(flat,number,path,ranges) VALUES(?,?,?,?)`, c.flat, r.Number, f.Path, string(ranges)); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -469,7 +505,7 @@ func (s *Store) RevisionFiles(ctx context.Context, flat string, n int) ([]Revisi
 }
 
 func queryRevisionFiles(ctx context.Context, q querier, flat string, n int) ([]RevisionFile, error) {
-	rows, err := q.QueryContext(ctx, `SELECT path,hash,size FROM revision_files WHERE flat=? AND number=? ORDER BY path`, flat, n)
+	rows, err := q.QueryContext(ctx, `SELECT f.path,f.hash,f.size,g.ranges FROM revision_files f LEFT JOIN revision_guest_lines g ON g.flat=f.flat AND g.number=f.number AND g.path=f.path WHERE f.flat=? AND f.number=? ORDER BY f.path`, flat, n)
 	if err != nil {
 		return nil, err
 	}
@@ -477,8 +513,15 @@ func queryRevisionFiles(ctx context.Context, q querier, flat string, n int) ([]R
 	var out []RevisionFile
 	for rows.Next() {
 		var f RevisionFile
-		if err := rows.Scan(&f.Path, &f.Hash, &f.Size); err != nil {
+		var ranges sql.NullString
+		if err := rows.Scan(&f.Path, &f.Hash, &f.Size, &ranges); err != nil {
 			return nil, err
+		}
+		if ranges.Valid {
+			var lines [][2]int
+			if json.Unmarshal([]byte(ranges.String), &lines) == nil && len(lines) > 0 {
+				f.GuestLines = &lines
+			}
 		}
 		out = append(out, f)
 	}
@@ -575,6 +618,9 @@ func (c *ContentTx) SetPinned(ctx context.Context, n int, pinned bool) error {
 
 // DeleteRevision removes revision n and its file rows.
 func (c *ContentTx) DeleteRevision(ctx context.Context, n int) error {
+	if _, err := c.tx.ExecContext(ctx, `DELETE FROM revision_guest_lines WHERE flat=? AND number=?`, c.flat, n); err != nil {
+		return err
+	}
 	if _, err := c.tx.ExecContext(ctx, `DELETE FROM revision_files WHERE flat=? AND number=?`, c.flat, n); err != nil {
 		return err
 	}

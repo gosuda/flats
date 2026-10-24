@@ -87,7 +87,7 @@ func (s *Service) docsHost(ctx context.Context, slugName, method, op string, bod
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	req := httptest.NewRequestWithContext(ctx, method, "http://docs.internal/_docs/host/revisions/"+op, r)
-	req = trustedAccess(req, false)
+	req = withRouteHeaders(req, false)
 	req.Header.Set("X-Flats-Host-Op", "revisions")
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")
@@ -218,10 +218,40 @@ func (s *Service) revisionFiles(ctx context.Context, slugName string, r store.Re
 // --- sync and import ---
 
 type docsSyncResult struct {
-	Quiescent bool    `json:"quiescent"`
-	Store     string  `json:"store"`
-	Ready     int     `json:"ready"`
-	Intent    *string `json:"intent"`
+	Quiescent bool          `json:"quiescent"`
+	Store     string        `json:"store"`
+	Ready     int           `json:"ready"`
+	Intent    *string       `json:"intent"`
+	Presence  *docsPresence `json:"presence"`
+}
+
+// docsPresence counts a document worker's Public connections, as its
+// WebSocket VM last wrote them at At (Unix milliseconds) (TECH 2.7).
+type docsPresence struct {
+	Guests  int   `json:"guests"`
+	Viewers int   `json:"viewers"`
+	At      int64 `json:"at"`
+}
+
+// docsPresenceFresh is how long reported presence counts stay current: the
+// worker writes them at least every 10 seconds while a Public socket is open.
+const docsPresenceFresh = 30 * time.Second
+
+// docsPresenceNow returns the presence counts of a document, when the
+// worker reported them less than docsPresenceFresh ago and has not slept
+// since. It never wakes the worker.
+func (s *Service) docsPresenceNow(slugName string) (guests, viewers int, ok bool) {
+	s.mu.Lock()
+	lf := s.live[slugName]
+	s.mu.Unlock()
+	if lf == nil {
+		return 0, 0, false
+	}
+	p := lf.docsPresence.Load()
+	if p == nil || s.now().Sub(time.UnixMilli(p.At)) >= docsPresenceFresh {
+		return 0, 0, false
+	}
+	return p.Guests, p.Viewers, true
 }
 
 type docsEntry struct {
@@ -229,6 +259,8 @@ type docsEntry struct {
 	CreatedAt  int64                `json:"created_at"`
 	Kind       string               `json:"kind"`
 	Authors    []string             `json:"authors"`
+	Guests     []string             `json:"guests"`
+	GuestsMore int                  `json:"guests_more"`
 	Message    string               `json:"message"`
 	RollbackOf int                  `json:"rollback_of"`
 	Op         string               `json:"op"`
@@ -252,11 +284,21 @@ type docsImport struct {
 	// entry it cannot finish yet. The next budget reports them, so the worker
 	// stops reserving what the measured flat directory already holds.
 	stored map[string]bool
+	// safePoint is the revision pinned as the safe point, pinsFull reports
+	// that the pin quota left it unpinned (importDocsPinLocked).
+	safePoint int
+	pinsFull  bool
 }
 
+// syncDocsLocked runs the worker's sync and keeps the presence counts it
+// reports.
 func (s *Service) syncDocsLocked(ctx context.Context, slugName string) (docsSyncResult, error) {
 	var out docsSyncResult
 	err := s.docsHost(ctx, slugName, http.MethodPost, "sync", map[string]any{}, &out)
+	if err == nil && out.Presence != nil {
+		p := *out.Presence
+		s.state(slugName).docsPresence.Store(&p)
+	}
 	return out, err
 }
 
@@ -264,6 +306,14 @@ func (s *Service) syncDocsLocked(ctx context.Context, slugName string) (docsSync
 // within docsImportBudget of fetched text, and acknowledges it. The caller
 // holds the flat lock.
 func (s *Service) importDocsLocked(ctx context.Context, slugName string) (docsImport, error) {
+	return s.importDocsPinLocked(ctx, slugName, 0)
+}
+
+// importDocsPinLocked is importDocsLocked that also pins the revision of
+// outbox entry pinSeq as the safe point, in the transaction that inserts it
+// and before retention runs, as importBoardSafePointLocked does (TECH 2.3).
+// A full pin quota leaves it unpinned.
+func (s *Service) importDocsPinLocked(ctx context.Context, slugName string, pinSeq int64) (docsImport, error) {
 	res := docsImport{byOp: map[string]int{}, stored: map[string]bool{}}
 	st, err := s.st.ContentState(ctx, slugName)
 	if err != nil && !errors.Is(err, store.ErrNotFound) {
@@ -345,7 +395,7 @@ func (s *Service) importDocsLocked(ctx context.Context, slugName string) (docsIm
 			ready = append(ready, e)
 		}
 		if len(ready) > 0 {
-			if err := s.commitDocsEntries(ctx, slugName, page.Store, ready, sources, &res); err != nil {
+			if err := s.commitDocsEntries(ctx, slugName, page.Store, ready, sources, pinSeq, &res); err != nil {
 				return res, err
 			}
 			last := ready[len(ready)-1].Seq
@@ -374,8 +424,9 @@ func (s *Service) importDocsLocked(ctx context.Context, slugName string) (docsIm
 
 // commitDocsEntries inserts imported entries as revisions in one
 // transaction, skipping entries the cursor already passed. sources holds
-// the files of every source the entries name.
-func (s *Service) commitDocsEntries(ctx context.Context, slugName, outbox string, entries []docsEntry, sources map[string][]store.RevisionFile, res *docsImport) error {
+// the files of every source the entries name. The entry pinSeq, when
+// present, is pinned as the safe point if a pin is free.
+func (s *Service) commitDocsEntries(ctx context.Context, slugName, outbox string, entries []docsEntry, sources map[string][]store.RevisionFile, pinSeq int64, res *docsImport) error {
 	// The previous revision, read before the transaction: the store has
 	// one connection, and the flat lock keeps it current.
 	var prev []store.RevisionFile
@@ -388,6 +439,7 @@ func (s *Service) commitDocsEntries(ctx context.Context, slugName, outbox string
 	}
 	var imported []int
 	byOp := map[string]int{}
+	safePoint, pinsFull := 0, false
 	err := s.st.ContentTx(ctx, slugName, func(tx *store.ContentTx) error {
 		st, err := tx.State(ctx)
 		if errors.Is(err, store.ErrNotFound) {
@@ -408,6 +460,12 @@ func (s *Service) commitDocsEntries(ctx context.Context, slugName, outbox string
 				continue
 			}
 			docs := slices.Clone(e.Documents)
+			for i := range docs {
+				docs[i].GuestLines = nil
+				if lines := lineRanges(e.Documents[i].Lines()); lines != nil {
+					docs[i].GuestLines = &lines
+				}
+			}
 			sort.Slice(docs, func(i, j int) bool { return docs[i].Path < docs[j].Path })
 			all := append(slices.Clone(docs), sources[e.Source]...)
 			sort.Slice(all, func(i, j int) bool { return all[i].Path < all[j].Path })
@@ -416,16 +474,31 @@ func (s *Service) commitDocsEntries(ctx context.Context, slugName, outbox string
 				size += f.Size
 			}
 			latest++
+			authors, guests := dedupe(e.Authors), dedupe(e.Guests)
 			r := store.Revision{
-				Number: latest, CreatedAt: time.UnixMilli(e.CreatedAt), Kind: e.Kind, Authors: dedupe(e.Authors),
+				Number: latest, CreatedAt: time.UnixMilli(e.CreatedAt), Kind: e.Kind, Authors: authors,
+				GuestAuthors: guests, GuestsMore: max(e.GuestsMore, 0), GuestOnly: len(authors) == 0 && (len(guests) > 0 || e.GuestsMore > 0),
 				Message: truncate(e.Message, 500), RollbackOf: e.RollbackOf, Changes: diffFiles(prev, all),
 				Files: len(all), Size: size, Source: e.Source,
 			}
 			if r.Kind == "" {
 				r.Kind = "person"
 			}
+			if pinSeq > 0 && e.Seq == pinSeq {
+				free, err := pinFree(ctx, tx, s.quotas)
+				if err != nil {
+					return err
+				}
+				r.Pinned, pinsFull = free, !free
+			}
 			if err := tx.InsertRevision(ctx, r, docs); err != nil {
 				return err
+			}
+			if r.Pinned {
+				if err := tx.SetSafePoint(ctx, latest); err != nil {
+					return err
+				}
+				safePoint = latest
 			}
 			if e.Op != "" {
 				if err := tx.DeleteHold(ctx, e.Op); err != nil {
@@ -446,7 +519,23 @@ func (s *Service) commitDocsEntries(ctx context.Context, slugName, outbox string
 	for k, v := range byOp {
 		res.byOp[k] = v
 	}
+	if safePoint > 0 {
+		res.safePoint = safePoint
+	}
+	res.pinsFull = res.pinsFull || pinsFull
 	return nil
+}
+
+// lineRanges keeps the valid ranges of a worker's guest line list: 1-based
+// [start, end] pairs with start <= end.
+func lineRanges(ranges [][2]int) [][2]int {
+	var out [][2]int
+	for _, r := range ranges {
+		if r[0] >= 1 && r[1] >= r[0] {
+			out = append(out, r)
+		}
+	}
+	return out
 }
 
 // refreshDocsLocked syncs a running document, imports its outbox, settles

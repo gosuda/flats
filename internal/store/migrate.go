@@ -56,6 +56,7 @@ var migrations = []migration{
 	{17, "flat usage", addUsageDays},
 	{18, "board revision imports", addBoardRevisions},
 	{19, "public access level", addPublicAccess},
+	{20, "document guest lines", addRevisionGuestLines},
 }
 
 func latestVersion() int { return migrations[len(migrations)-1].version }

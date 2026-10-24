@@ -3,7 +3,7 @@
 import { h, clear, icon, timeEl, relTime, visibilityBadge } from './dom.js';
 import { api, thumbnail } from './api.js';
 import { menu, errorPanel, loading, busy, openLinks, openPrimary, openMenuItems } from './ui.js';
-import { saveVersion, publishVersion, nextVersion } from './actions.js';
+import { saveVersion, publishVersion, nextVersion, deleteInPlace } from './actions.js';
 import { shareDialog } from './share.js';
 import { describeApproval } from './approval.js';
 
@@ -46,9 +46,23 @@ export function mount(main, _params, ctx) {
   const gridBtn = h('button', { type: 'button', class: 'seg', 'aria-label': 'Grid view', title: 'Grid view' }, icon('grid'));
   const results = h('div', { class: 'results' }, loading());
   const count = h('p', { class: 'sr-only', role: 'status', 'aria-live': 'polite' });
+  const heading = h('h1', { text: 'Flats', tabindex: '-1' });
+  // The "…" button of each shown row, by slug, to move focus after a delete.
+  let menuButtons = new Map();
+  // While a delete from a row menu is pending the list is not redrawn, so
+  // the menu holding it stays; a redraw asked for meanwhile happens after.
+  // shownAtDelete is the order of the rows when it started, for focus after.
+  let deleting = 0;
+  let redrawLater = false;
+  let shownAtDelete = null;
+  const deletePending = (on) => {
+    if (on && !deleting) shownAtDelete = [...menuButtons.keys()];
+    deleting += on ? 1 : -1;
+    if (!deleting && redrawLater) { redrawLater = false; draw(); }
+  };
 
   main.appendChild(h('section', { class: 'page' },
-    h('div', { class: 'page-head' }, h('h1', { text: 'Flats' })),
+    h('div', { class: 'page-head' }, heading),
     approvalAnnouncement, approvalFeedback, banner,
     h('div', { class: 'toolbar' },
       h('div', { class: 'search' },
@@ -74,16 +88,59 @@ export function mount(main, _params, ctx) {
     return refreshApprovals(afterAction);
   }
 
+  // loadSeq numbers the loads; only the latest one's answer is used, so an
+  // older answer cannot bring back a flat a later load no longer has.
+  let loadSeq = 0;
   async function loadFlats() {
+    const seq = ++loadSeq;
     try {
       const fl = await api.flats();
-      if (!alive()) return;
+      if (!alive() || seq !== loadSeq) return;
       flats = fl.flats || [];
       draw();
     } catch (err) {
-      if (!alive()) return;
+      if (!alive() || seq !== loadSeq) return;
+      // Keep a row menu that holds a delete; the next load reports the error.
+      if (deleting) { redrawLater = true; return; }
+      menuButtons = new Map();
       clear(results).appendChild(errorPanel(err, 'Cannot load flats'));
     }
+  }
+
+  // focusAfterDelete puts focus where the operator can carry on after the
+  // row menu of f closed: f's own "…" button when the flat is still listed,
+  // otherwise the row that took its place, the row above, or the page
+  // heading. It leaves focus alone while another delete is pending.
+  function focusAfterDelete(f, shownBefore) {
+    if (deleting) return;
+    if (menuButtons.has(f.slug)) {
+      menuButtons.get(f.slug).focus();
+      return;
+    }
+    const i = shownBefore.indexOf(f.slug);
+    const next = [...shownBefore.slice(i + 1), ...shownBefore.slice(0, Math.max(i, 0)).reverse()]
+      .find((slug) => menuButtons.has(slug));
+    (next ? menuButtons.get(next) : heading).focus();
+  }
+
+  // afterDelete runs once the row menu of f has closed after a delete. gone
+  // means the flat is known to be gone, so its row goes at once. Focus moves
+  // right away, without waiting for the refresh, and again after it if the
+  // refresh redrew the focused button away.
+  async function afterDelete(f, gone) {
+    if (!alive()) return;
+    const shownBefore = shownAtDelete || [...menuButtons.keys()];
+    shownAtDelete = null;
+    if (gone) {
+      flats = flats.filter((x) => x.slug !== f.slug);
+      draw();
+    }
+    focusAfterDelete(f, shownBefore);
+    refreshApprovals(true);
+    await loadFlats();
+    if (!alive()) return;
+    const a = document.activeElement;
+    if (!a || a === document.body || a.isConnected === false) focusAfterDelete(f, shownBefore);
   }
 
   function scheduleApprovals() {
@@ -171,9 +228,13 @@ export function mount(main, _params, ctx) {
   }
 
   function draw() {
+    if (deleting) { redrawLater = true; return; }
+    // A focused "…" button keeps focus across the redraw.
+    const focused = [...menuButtons].find(([, b]) => b === document.activeElement)?.[0];
     const q = search.value.trim().toLowerCase();
     const shown = flats.filter((f) => !q || f.slug.includes(q) || (f.name || '').toLowerCase().includes(q));
     clear(results);
+    menuButtons = new Map();
     count.textContent = q ? `${shown.length} of ${flats.length} flats match` : '';
     if (!flats.length) {
       results.appendChild(emptyState());
@@ -190,6 +251,7 @@ export function mount(main, _params, ctx) {
     }
     for (const f of shown) list.appendChild(row(f));
     results.appendChild(list);
+    if (focused && menuButtons.has(focused)) menuButtons.get(focused).focus();
   }
 
   function row(f) {
@@ -243,13 +305,20 @@ export function mount(main, _params, ctx) {
       const primary = openPrimary(f);
       if (primary) actions.appendChild(primary);
     }
-    actions.appendChild(menu(`More actions for ${f.name || f.slug}`, [
+    const more = menu(`More actions for ${f.name || f.slug}`, [
       ...(openable ? openMenuItems(f) : []),
       { label: 'Share', onSelect: () => shareDialog(f, () => load()) },
       { label: docs ? 'Overview' : 'Deployments', onSelect: () => ctx.navigate(href) },
       { label: 'Analytics', onSelect: () => ctx.navigate(href + '/analytics') },
       { label: 'Settings', onSelect: () => ctx.navigate(href + '/settings') },
-    ]));
+      { separator: true },
+      {
+        label: 'Delete', danger: true,
+        inPlace: (ctl) => deleteInPlace(f, ctl, { pending: deletePending, gone: () => afterDelete(f, true), unknown: () => afterDelete(f, false) }),
+      },
+    ]);
+    menuButtons.set(f.slug, more.firstChild);
+    actions.appendChild(more);
     return h('li', { class: 'flat' },
       view === 'grid' ? preview(f) : null,
       typeIcon(f),

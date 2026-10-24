@@ -153,10 +153,10 @@ func TestGuestIdentityEveryFrame(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	alice := connect(t, b.priv, map[string]any{"editor": "alice", "name": "Alice Secret"},
+	alice := connect(t, b.priv, map[string]any{"editor": "alice", "name": "Alice Secret", "nick": "Ally"},
 		map[string]string{"Tailscale-User-Login": "alice@example.com", "Tailscale-User-Name": "Alice Secret"})
 	alice.snapshot()
-	bob := connect(t, b.priv, map[string]any{"editor": "bobby", "name": "Bob Hidden"}, nil)
+	bob := connect(t, b.priv, map[string]any{"editor": "bobby", "name": "Bob Hidden", "nick": "Bobo"}, nil)
 	bob.snapshot()
 	el := eid()
 	alice.settle(1, sticky(el, "member note", 0))
@@ -177,6 +177,10 @@ func TestGuestIdentityEveryFrame(t *testing.T) {
 	agent("scan-agent-1", `[{"op":"add","el":{"type":"sticky","x":0,"y":-300,"w":100,"h":100,"text":"agent note"}}]`)
 	g1.settle(1, sticky(eid(), "guest note", 400))
 	g1.send(map[string]any{"t": "pres", "c": []float64{5, 6}})
+	// Guests see both members under their nicknames.
+	for _, nick := range []string{"Bobo", "Ally"} {
+		g2.expectPres(func(m map[string]any) bool { return m["name"] == nick && m["verified"] == false })
+	}
 	g2.batch(1, map[string]any{"op": "bogus"}) // a recorded refusal
 	// A transient refusal: the board's guest operations are used up.
 	b.limits(func(p *publicLimits) { p.guestOps = newBucket(0.001, 1) })

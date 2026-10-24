@@ -18,6 +18,46 @@ export const LIMITS = Object.freeze({
   activations: 1000,
   sendBytes: 4 * 1024 * 1024,
   flatSendBytes: 16 * 1024 * 1024,
+  // Guests and viewers together (docs/spec/docs-public-edit-TECH.md 3.3).
+  publicSendBytes: 4 * 1024 * 1024,
+});
+// Anonymous public editing (docs/spec/docs-public-edit-TECH.md 3.3 to 3.8).
+export const GUEST = Object.freeze({
+  // Connections: guests, and viewers as the earlier reader pool.
+  connections: 30,
+  perRoom: 20,
+  startsPerMinute: 30,
+  rooms: 4,
+  viewers: 40,
+  viewersPerRoom: 10,
+  viewerRooms: 4,
+  // Per guest socket.
+  update: 64 * 1024,
+  frames: 8,
+  framesBurst: 16,
+  bytes: 128 * 1024,
+  bytesBurst: 256 * 1024,
+  presence: 10,
+  // All guests of the flat.
+  flatUpdates: 200,
+  flatBytes: 2 * 1024 * 1024,
+  flatPresence: 100,
+  // The room members keep (3.5, 3.8).
+  share: 0.9,
+  clients: 768,
+  guestClients: 400,
+  flatClients: 5000,
+  stateVector: 6144,
+  receiptsReserve: 20000,
+  totalReceiptsReserve: 40000,
+  charge: 256 * 1024 * 1024,
+  // Revision credits (3.9).
+  names: 64,
+  credited: 5,
+  // Names (rule 8) and viewer numbers (rule 9).
+  nameLength: 40,
+  viewerHold: 60 * 1000,
+  viewersListed: 20,
 });
 const alphabet =
   "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -141,6 +181,55 @@ export const cleanName = (name) =>
     .replace(/[\u0000-\u001f\u007f]/g, "")
     .trim()
     .slice(0, 64) || "Guest";
+// cleanGuestName is a guest's name or a member's nickname (rule 8): control
+// and invisible formatting characters removed, trimmed, 1 to 40 code points.
+// It returns null for anything else.
+export function cleanGuestName(name) {
+  if (typeof name !== "string" || name.length > 4 * GUEST.nameLength + 64)
+    return null;
+  if (/\p{Cs}/u.test(name)) return null;
+  const s = name.replace(/[\p{Cc}\p{Cf}]/gu, "").trim(),
+    n = [...s].length;
+  return n >= 1 && n <= GUEST.nameLength ? s : null;
+}
+// Bucket is a token bucket on the wall clock.
+export class Bucket {
+  constructor(rate, burst) {
+    this.rate = rate;
+    this.burst = burst;
+    this.tokens = burst;
+    this.last = 0;
+  }
+  refill(now) {
+    if (this.last)
+      this.tokens = Math.min(
+        this.burst,
+        this.tokens + ((now - this.last) / 1000) * this.rate,
+      );
+    this.last = now;
+  }
+  // take takes n tokens when the bucket holds them.
+  take(n, now = Date.now()) {
+    this.refill(now);
+    if (this.tokens < n) return false;
+    this.tokens -= n;
+    return true;
+  }
+  // count takes n tokens whether or not the bucket holds them, down to one
+  // burst of debt, and reports whether it held them: refused traffic counts
+  // too.
+  count(n, now = Date.now()) {
+    this.refill(now);
+    const ok = this.tokens >= n;
+    this.tokens = Math.max(this.tokens - n, -this.burst);
+    return ok;
+  }
+  // empty reports whether the bucket is in debt.
+  empty(now = Date.now()) {
+    this.refill(now);
+    return this.tokens < 0;
+  }
+}
 // Relay only valid Yjs relative positions for the single Markdown text.
 export function safeCursor(cursor) {
   if (cursor == null) return null;

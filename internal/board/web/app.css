@@ -235,10 +235,6 @@ body.history-open .banners { right: 380px; }
 .facts dd { margin: 0; }
 .alt-pop { width: 380px; padding: 12px; }
 .alt-pop .acts { border: 0; padding: 0; margin-top: 10px; }
-/* Join panel for a viewer when the board becomes editable (rule 11). */
-.join { left: 50%; bottom: 72px; transform: translateX(-50%); width: min(560px, calc(100vw - 32px)); padding: 14px 16px; display: grid; gap: 10px; }
-.join p { margin: 0; }
-.join-row { display: flex; align-items: flex-end; gap: 8px; }
 .findbar { left: 50%; top: calc(var(--top) + 12px); transform: translateX(-50%); display: flex; align-items: center; gap: 6px; padding: 5px 6px 5px 10px;
   width: min(480px, calc(100vw - 32px)); }
 .findbar input { border: 0; flex: 1; min-width: 0; background: none; font-size: 14px; outline: none; }
@@ -301,7 +297,6 @@ body.history-open .banners { right: 380px; }
   body.history-open .board, body.frames-open .board { left: 0; right: 0; }
   .people-pop, .share-pop, .locked-pop { left: 8px !important; right: 8px; width: auto; }
   .me .you { display: none; }
-  .join { bottom: 80px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

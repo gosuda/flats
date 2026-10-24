@@ -291,7 +291,7 @@ func TestPublicEditOnlyThroughApproval(t *testing.T) {
 	}
 }
 
-// Only a board can be edited by anyone.
+// Only a board or a document can be edited by anyone.
 func TestPublicEditRefusesOtherTypes(t *testing.T) {
 	ctx := context.Background()
 	s, _ := newPublicBoard(t)
@@ -702,22 +702,32 @@ func TestPublicEditRealBoard(t *testing.T) {
 	}
 }
 
-// A client cannot send the public access level; core sets it only for a
-// running board on a Public route.
+// A client cannot send the public access level or its epoch; core sets the
+// level for a running board, and both for a document, on a Public route.
 func TestPublicAccessHeaderIsTrusted(t *testing.T) {
 	s, _ := newPublicBoard(t)
 	r, _ := http.NewRequest("GET", "http://plan.test/", nil)
 	r.Header.Set("x-flats-public-access", "edit")
-	clean := trustedAccess(r, true)
-	if v := clean.Header.Get(board.PublicAccessHeader); v != "" {
-		t.Fatalf("forged level kept: %q", v)
+	r.Header.Set("x-flats-access-epoch", "99")
+	clean := withRouteHeaders(r, true)
+	if v, e := clean.Header.Get(board.PublicAccessHeader), clean.Header.Get(AccessEpochHeader); v != "" || e != "" {
+		t.Fatalf("forged level kept: %q epoch %q", v, e)
 	}
 	in := s.liveBoard("plan")
-	if got := withPublicAccess(trustedAccess(r, true), &deployed{inst: in}, store.AccessView).Header.Get(board.PublicAccessHeader); got != store.AccessView {
-		t.Fatalf("board header = %q", got)
+	got := withPublicAccess(withRouteHeaders(r, true), &deployed{inst: in}, store.AccessView, 4).Header
+	if got.Get(board.PublicAccessHeader) != store.AccessView || got.Get(AccessEpochHeader) != "" {
+		t.Fatalf("board headers = %v", got)
 	}
-	if got := withPublicAccess(trustedAccess(r, true), &deployed{}, store.AccessView).Header.Get(board.PublicAccessHeader); got != "" {
-		t.Fatalf("non-board header = %q", got)
+	docs := &deployed{inst: contentInstance{}, version: store.Version{Manifest: []byte(`{"type":"docs"}`)}}
+	got = withPublicAccess(withRouteHeaders(r, true), docs, store.AccessEdit, 4).Header
+	if got.Get(board.PublicAccessHeader) != store.AccessEdit || got.Get(AccessEpochHeader) != "4" {
+		t.Fatalf("document headers = %v", got)
+	}
+	if got := withPublicAccess(withRouteHeaders(r, false), docs, "", 4).Header; got.Get(board.PublicAccessHeader) != "" || got.Get(AccessEpochHeader) != "" {
+		t.Fatalf("private document headers = %v", got)
+	}
+	if got := withPublicAccess(withRouteHeaders(r, true), &deployed{}, store.AccessView, 4).Header; got.Get(board.PublicAccessHeader) != "" || got.Get(AccessEpochHeader) != "" {
+		t.Fatalf("website headers = %v", got)
 	}
 }
 

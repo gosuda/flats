@@ -1,6 +1,6 @@
 // Approval page: what an agent asked for and the operator's decision.
 
-import { h, clear, dateTime, timeEl, visibilityOf, accessKey, accessOf, accessLabel, visibilityBadge, becomingNoticeFor } from './dom.js';
+import { h, clear, dateTime, timeEl, visibilityOf, accessKey, accessOf, accessLabel, editWords, visibilityBadge, becomingNoticeFor } from './dom.js';
 import { api } from './api.js';
 import { confirmDialog, errorPanel, loading, toast, busy } from './ui.js';
 
@@ -107,7 +107,7 @@ export function mount(main, [id], ctx) {
     const grantsEdit = a.action === 'set_visibility' && p.access === 'edit';
     const notice = a.action === 'set_visibility' && !grantsEdit ? becomingNoticeFor(p.visibility) : '';
     if (notice && a.status === 'pending') body.appendChild(h('p', { class: 'alert alert-warn', text: notice }));
-    if (grantsEdit && a.status === 'pending') body.appendChild(guestEditNotes());
+    if (grantsEdit && a.status === 'pending') body.appendChild(guestEditNotes(flat));
     if (a.action === 'delete_version' && a.status === 'pending') {
       body.appendChild(h('p', { class: 'alert alert-warn', text: `Approving permanently deletes version ${p.version} and closes its open previews. Server data and data snapshots are kept. The live version cannot be deleted.` }));
     }
@@ -124,7 +124,7 @@ export function mount(main, [id], ctx) {
     }
     const approve = h('button', { type: 'button', class: 'btn btn-primary', text: 'Approve…' });
     const reject = h('button', { type: 'button', class: 'btn', text: 'Reject…' });
-    approve.addEventListener('click', () => busy(approve, () => decide(a, true)));
+    approve.addEventListener('click', () => busy(approve, () => decide(a, true, flat)));
     reject.addEventListener('click', () => busy(reject, () => decide(a, false)));
     body.appendChild(h('div', { class: 'actions' }, reject, approve));
   }
@@ -135,10 +135,10 @@ export function mount(main, [id], ctx) {
     return b;
   }
 
-  async function decide(a, yes) {
+  async function decide(a, yes, flat) {
     const p = params(a);
     const notice = !yes || a.action !== 'set_visibility' ? ''
-      : p.access === 'edit' ? 'Anyone on the internet who has the link will be able to add, change and delete everything on this board.' : becomingNoticeFor(p.visibility);
+      : p.access === 'edit' ? `Anyone on the internet who has the link will be able to add, change and delete ${editWords(flat).everything}.` : becomingNoticeFor(p.visibility);
     const ok = await confirmDialog({
       title: yes ? `Approve: ${describeApproval(a)}?` : `Reject: ${describeApproval(a)}?`,
       body: [
@@ -178,12 +178,13 @@ export function expired(a, p, flat) {
 }
 
 // guestEditNotes says what approving "anyone can edit" grants and keeps.
-function guestEditNotes() {
+function guestEditNotes(flat) {
+  const words = editWords(flat);
   const li = (...text) => h('li', { class: 'check ok' }, h('span', { class: 'tick', 'aria-hidden': 'true', text: '✓' }), h('span', null, ...text));
   return h('div', null,
-    h('p', { class: 'alert alert-warn' }, h('strong', { text: 'If you approve,' }), ' anyone on the internet who has the link can add, change and delete everything on this board. Nobody checks who they are.'),
+    h('p', { class: 'alert alert-warn' }, h('strong', { text: 'If you approve,' }), ` anyone on the internet who has the link can add, change and delete ${words.everything}. Nobody checks who they are.`),
     h('ul', { class: 'checks' },
-      li("A safe point of the board will be pinned first. It can't be unpinned while guests can edit."),
+      li(`A safe point of ${words.the} will be pinned first. It can't be unpinned while guests can edit.`),
       li('You can end guest editing at any time with ', h('strong', { text: 'Stop guest editing' }), '.'),
       li('This approval is only for the state above. If the visibility changes before you approve, it expires.')));
 }

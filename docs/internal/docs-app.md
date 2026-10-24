@@ -98,6 +98,13 @@ its receipt lookup, `revisions` for the [revision host
 operations](#host-operations). Private access by itself authorizes neither
 health activation nor a host operation.
 
+On a `public` request of a Public document, core also sets
+`X-Flats-Public-Access` to the flat's public access level (`view` or
+`edit`) and `X-Flats-Access-Epoch` to `flats.access_seq`, the counter of
+visibility and level changes ([docs-public-edit.md](../spec/docs-public-edit.md)).
+It strips every client spelling of both first; `private` requests carry
+neither.
+
 ## Docs app contract (internal/apps/docs)
 
 The app owns the flat's whole origin. Reserved paths start with `/_docs/`.
@@ -116,7 +123,7 @@ at runtime. `dist/THIRD_PARTY_LICENSES.txt` contains bundled licenses and
 | `GET /<path>` | exact Markdown path, or `<path>.md` / `<path>.markdown` |
 | `GET /_docs/healthz` | Cheap `200 ok` without DB access for visitors; only trusted host health trials activate all documents atomically |
 | `GET /_docs/api/documents` | `{format:1, entry, title, documents: [{path, title}]}` |
-| `GET /_docs/api/document?doc=<path>` | `{format:1, doc, markdown, hash, epoch, seq, chain, source:"live"}`; private/host reads with `blocks=1` add one page (1,000 blocks from `block_offset`) of the block outline `blocks:[{hash,kind,level?,line,preview}]` plus `blocks_total`; default doc is entry |
+| `GET /_docs/api/document?doc=<path>` | `{format:1, doc, markdown, hash, epoch, seq, chain, source:"live"}`; private/host reads add `guest_text` (guests own a Yjs client id in the document) and `guest_lines` (merged 1-based inclusive line ranges of guest-inserted text), and with `blocks=1` one page (1,000 blocks from `block_offset`) of the block outline `blocks:[{hash,kind,level?,line,preview}]` plus `blocks_total`; default doc is entry |
 | `POST /_docs/api/edit?doc=<path>` | Host management only (`private` plus `X-Flats-Host-Op: edit`, see below): guarded live edit; others receive 403 |
 | `GET /_docs/api/receipt?doc=<path>&id=<id>` | Host management only: `{committed, seq?, chain?}` for a live-edit receipt id |
 | `/_docs/api/revisions…` | Served by the host before the worker (private only): the document page's history; see [history routes](#history-routes) |
@@ -149,6 +156,26 @@ rendered in the client; assets in `content.assets` are still the host's responsi
   text and emoji remain Markdown source. The client uses CodeMirror 6,
   `y-codemirror.next`, and a `Y.UndoManager` that tracks only its local binding
   origin (including its own undo/redo), never remote or activation changes.
+* The editor keeps up with remote changes (spec rule 21b, TECH 3.11):
+  * Its Markdown language (`_web/src/markdown-inline.js`,
+    `editorMarkdown()`) is `@lezer/markdown` 1.7.2 GFM with linear-time
+    replacements for link closing, emphasis resolution, unclosed inline HTML
+    and link destination/title scans; its trees equal the stock parser's.
+  * A paragraph whose text (without container markers, with line breaks) is
+    longer than 20,000 characters is not inline parsed in Edit mode: its
+    links, emphasis and other inline syntax show as source. View mode
+    (markdown-it) and the stored text are unaffected.
+  * `Provider` hands remote `update` frames to a `RemoteBatcher`
+    (`_web/src/remote-batch.js`) instead of applying each at once. An
+    update arriving while the page is idle applies at once; after each batch
+    (the queued updates merged with `Y.mergeUpdates` and applied as one) is
+    applied and its frame rendered, the next waits at least as long as that
+    batch took, at most 1 s. Only applying to the `Y.Doc` (and so the editor
+    and View render) waits: known history positions, ACKs, receipts, pacing
+    and sending happen as frames arrive, and local typing never waits. The
+    queue is applied first on a new connection's open (so its hello's state
+    vector covers it), before a welcome and on a stop; an invalid batch stops
+    sync as an invalid frame does.
 * The serial WebSocket VM has one room per connected document. HTTP VMs load
   committed state per API request and keep no mutable document replicas.
   The last connection leaving destroys its room. The server creates no
@@ -162,7 +189,8 @@ rendered in the client; assets in `content.assets` are still the host's responsi
   No ACK or document broadcast is emitted before COMMIT. Transient database, catch-up, obsolete-worker and COMMIT failures roll back,
   drop the room and close its clients with 1012 for resync. Deterministic
   client rejections send `error` (`capacity`, `invalid_update`, `readonly`,
-  or `disk_quota`, see [disk quota](#disk-quota)) then close only that
+  or `disk_quota`, see [disk quota](#disk-quota); guests have more codes,
+  see [guest limits](#guest-limits)) then close only that
   socket with 1008; healthy peers stay connected.
   Bounded binary/type properties are checked before applying. A deterministic
   rejection after applying invalidates only the room's cached document; peers
@@ -246,17 +274,22 @@ rendered in the client; assets in `content.assets` are still the host's responsi
 * Presence is ephemeral and owned by one awareness client id per socket.
   Other sockets cannot replace that id's state. The server validates cursor
   positions, overwrites user identity/color, relays states, and broadcasts
-  removal on close. Tailscale name/login is shown with `verified:true`;
-  otherwise the hello name is shown with `verified:false`. Presence is relayed
-  only to private editors; public/read-only sockets receive no presence and
-  cannot submit it. The browser asks
-  once per visit when no saved name exists; localStorage is best-effort.
-* Only `x-flats-access: private` may submit document updates. Missing,
-  unknown, or public values are read-only. Public viewers receive live
-  Markdown rendering without constructing an editor. Private pages open in
+  removal on close. Members see a member's Tailscale name or login with
+  `verified:true`, otherwise its hello name with `verified:false`, and a
+  guest under its typed name with `guest:true`. Guests see the
+  [guest projection](#guest-projection). Viewers receive no presence, and a
+  viewer that sends it is closed with `readonly`. A member's page does not
+  ask for a name: it picks a random two-word name and keeps it in
+  `localStorage` (`flats-docs-name`), best effort.
+* Members (`x-flats-access: private`) and guests may submit document
+  updates; viewers are read-only. Missing or unknown values count as
+  public, and a Public connection is a viewer unless the flat is at level
+  `edit` ([public editing](#public-editing)). Viewers receive live
+  Markdown rendering without constructing an editor. Members and guests open in
   Edit and can toggle to View, the same rendered surface, without
   reconnecting; View is presentation only and the socket stays writable. Authorization remains
-  the host's trusted route decision for the lifetime of that connection;
+  the host's trusted route decision for the lifetime of that connection,
+  and a guest's also needs the stored access epoch at every commit;
   core cancels the public route epoch when exposure is withdrawn, including
   Private transitions, route stops, deletion and rename. The runtime proxy
   closes upgraded connections on request cancellation. Preview closure cancels
@@ -269,6 +302,160 @@ rendered in the client; assets in `content.assets` are still the host's responsi
   Divergence or an unrecoverable rejection stops sync, disables editing and
   offers local Markdown download and reload; buffered edits are retained,
   and the page warns before a reload or close would lose them.
+
+### Public editing
+
+A Public document at level `edit` lets anyone with the link edit after
+typing a name ([docs-public-edit.md](../spec/docs-public-edit.md); design in
+[docs-public-edit-TECH.md](../spec/docs-public-edit-TECH.md)). Core stores
+the level and its epoch (`flats.access_seq`); this section is the worker
+and runtime side.
+
+**Connection kinds.** The WebSocket VM gives every socket one kind:
+
+| Kind | When | Can |
+|---|---|---|
+| member | `X-Flats-Access: private` | edit, presence, history |
+| guest | Public, guest-capable, and the hello has a valid `guest` object | edit and presence; no history, host operations or agent routes |
+| viewer | Public otherwise | read; no presence |
+
+A Public socket is guest-capable when its request carried
+`X-Flats-Public-Access: edit` and `X-Flats-Access-Epoch: E`, and
+`meta.access`, read at the hello after this VM applied it to every open
+socket, is `{level: "edit", epoch: E}`. A guest hello on a socket that is
+not guest-capable makes it a viewer.
+
+* **Guest key and name.** `guest.token` is 32 lowercase hex digits; the
+  server issues one in `welcome.guest_token` when it is absent or
+  malformed and keeps no session table. The key is `guest:` plus the first
+  16 hex digits of SHA-256 of the token. The name is cleaned by
+  `cleanGuestName` (Cc and Cf characters removed, trimmed, 1 to 40 code
+  points, lone surrogates refused); anything else gets fatal
+  `name_invalid`. The same function cleans members' nicknames.
+* **Viewer numbers.** The WebSocket VM maps `viewer_token` (issued in the
+  welcome when unknown) to the lowest free number N, one numbering for the
+  flat, in memory. A number whose last socket closed is held for 60 seconds
+  for a reconnect. The welcome's `me.label` is "Viewer N".
+
+**Worker pools.** Each kind has its own pool, so a full Public side never
+takes member capacity:
+
+| Kind | Connections | Rooms |
+|---|---|---|
+| member | 200, 50 per document | 8 documents; member rooms together 4 MiB of state, 30,000 structs |
+| guest | 30, 20 per document; 30 new guests per minute | 4 guest rooms |
+| viewer | 40, 10 per document | 4 documents; reader rooms together 2 MiB, 20,000 structs |
+
+Members' outstanding output shares 16 MiB per worker; guests and viewers
+share a separate 4 MiB. A member socket's pool is checked at `open`, a
+Public socket's at its hello, once its kind is known. A guest over its
+pool, over the guest rooms or over the join rate gets fatal `full`; a
+viewer over its pool is closed with `1008 connection capacity`.
+
+**Room classes.** A room is a guest room once a guest joined it, until its
+last socket leaves, even after every guest left. Guest rooms count toward
+neither sum above, for members' edits as well; per-document limits and the
+guests' reserve bound them. A member room has a member and never had a
+guest; a reader room only ever had viewers and becomes a member or guest
+room when one joins.
+
+**Runtime pools.** A module that sets `websocket.publicPools: true` (only
+this app) gets separate runtime capacity for connections whose trusted
+`X-Flats-Access` is not `private` (`internal/runtime/ws.go`):
+
+* 80 Public slots beside the 256 member slots, and 4 MiB of queued output
+  beside the member 16 MiB.
+* At most 20 new Public connections per second (burst 40), checked before
+  the upgrade. A Public request over the slots or this rate gets HTTP 503.
+* A Public connection's `open`, frames and `close` go to their own event
+  queue of 16 events. The loop takes a Public event only while the member
+  queue is empty, so a member event waits for at most one Public event.
+* Before posting a frame, each Public reader waits on its own buckets
+  (20 frames/s, burst 40; 256 KiB/s, burst 512 KiB) and on buckets shared
+  by all Public readers (400 frames/s, 4 MiB/s). Nothing is dropped.
+
+User server flats keep runtime API v1's single pool.
+
+#### Guest projection
+
+* **Welcome.** Every welcome carries `access_epoch`, `access` (`view` or
+  `edit`, absent unless Public) and `guest_text`. A guest also gets
+  `me: {kind: "guest", name}` and `you.verified: false`; a viewer gets
+  `me: {kind: "viewer", label}` and `viewer_token`.
+* **Presence.** States are built once per audience. Members get every
+  state, guest states with `guest: true`. Guests get a member's state with
+  `user.name` set to that member's nickname (`hello.nick`, cleaned, else
+  "Member") and `verified: false`. Tailscale names and logins, `browser:`
+  editor ids and agent labels never reach a guest.
+* **Viewers.** Members and guests get a `viewers` frame for their room:
+  the viewer numbers, or only a count above 20. It is sent on join when the
+  room has viewers, then at most once a second when the set changed.
+* **Current text only.** The welcome is a diff of the server document,
+  which Yjs garbage collects, and checkpoints use the same encoding. Every
+  update, a member's too, must leave the document without pending structs
+  or a pending delete set, otherwise `invalid_update`. Pending state stored
+  before this check is dropped when a document loads, with a log line; the
+  next commit compacts, so no checkpoint keeps it.
+
+#### Text guests may write
+
+`flats_docs_guest_clients(doc, client, owner)` lists the Yjs client ids
+guests own, per document.
+
+* A guest update may insert with client id C only when C is its own in the
+  document, or in neither that table nor the server document's struct
+  store; such a C becomes the guest's in the same transaction. Otherwise
+  fatal `guest_client`. So existing text never becomes guest-written, and
+  `guest_lines` stay exact. A guest's awareness id follows the same rule.
+* A member update that inserts with a guest-owned id is refused with
+  `invalid_update`.
+* **Handshake reserve.** A hello allows 1,024 clients and 8 KiB of state
+  vector. Guest updates may not hold `GC` structs (clock jumps), may add a
+  new client id only while the document's store holds fewer than 768 ids,
+  the document fewer than 400 guest-owned ids and the flat fewer than
+  5,000, and must leave the state vector at most 6,144 bytes. Each refusal
+  is fatal `guest_room` and rolls back, so members keep 256 ids and 2 KiB.
+* Resetting a document deletes its rows.
+
+#### Guest limits
+
+| Limit | Value | Refusal |
+|---|---|---|
+| Update frames per guest socket | 8/s, burst 16; 128 KiB/s, burst 256 KiB | fatal `guest_rate` |
+| All guests of the flat | 200 updates/s; 2 MiB/s of frames read, refused frames included | `busy` |
+| Decoded update | 64 KiB | fatal `guest_size` |
+| Presence | 10/s per guest socket, 100/s for all guests | excess dropped |
+| Document size | 90% of `LIMITS.text` (1 MiB), `LIMITS.state` (1.5 MiB) and `LIMITS.structs` (20,000); text and structs only when the update grows them | fatal `guest_room` |
+| Lifetime | a document's `seq` below 80,000; the flat's receipts below 160,000 | fatal `guest_room` |
+| Disk | 90% of the quota; a 256 MiB byte budget ([disk quota](#disk-quota)) | fatal `disk_quota`, `guest_room` |
+
+Guest updates do not use the room's shared member update bucket. When the
+flat's guest buckets are empty the server answers `{t: "busy", id}`
+instead of applying, and answers every later update from that socket with
+`busy` until one arrives with `retry: true`. Committed ids are acknowledged
+as duplicates, so a resend applies nothing twice. Every other guest
+refusal sends `error` and closes the socket with `1008 <code>`; besides
+the codes above it can be `capacity` or `editing_ended`.
+
+#### Access level and the kill switch
+
+* The `access` [host operation](#host-operations) writes `meta.access` and
+  raises the `access` signal. A stored epoch newer than the request's is
+  refused with 409.
+* Every guest update transaction reads `meta.access` first and refuses with
+  `editing_ended` unless it is still `edit` at the socket's epoch, in
+  whichever VM commits. An update in flight when the level drops never
+  commits.
+* The signal (`__flats_docsSignal("access")`) coalesces by name and is
+  never lost while the worker runs. The WebSocket VM handles it with
+  `websocket.signal`: it rereads `meta.access`, closes every guest of
+  another level or epoch with `editing_ended`, and sends
+  `{t: "level", access, access_epoch}` to every joined socket that knows
+  another level, members included.
+* Each `ping` and each hello does the same reconciliation, so a
+  missed signal is applied within one heartbeat (15 s). Because a guest is
+  admitted only after that, every open page has the `level: edit` frame
+  before a guest's text can reach it.
 
 ### Agent live edits (MCP `update_document`)
 
@@ -380,7 +567,12 @@ and `ws.runtimeGeneration`, supplied from `RuntimeSpec.Generation`, and
 method). The codec's `digests(list)` returns the concatenated SHA-256 hex digests of
 up to 1,048,576 strings (8 MiB of JSON input) in one host call.
 `globalThis.__flats_docsWake(doc)` (non-enumerable, every JS VM) and the
-`wake` WebSocket event it produces are internal in the same way.
+`wake` WebSocket event it produces are internal in the same way, and so are
+`globalThis.__flats_docsSignal(name)` with the `websocket.signal(name, env)`
+handler it reaches, and the module flag `websocket.publicPools`
+([runtime pools](#public-editing)). Unlike a wake, which a full queue drops,
+a signal stays pending in the hub until the loop handles it after its next
+event.
 These are host internals for built-in apps, **not part of runtime API
 v1** and not supported APIs for agent-authored server flats. They are visible
 in JavaScript but do not change existing v1 request fields or queue defaults.
@@ -396,23 +588,26 @@ Binary fields are canonical RFC 4648 base64. Client → server:
 
 | `t` | Fields | Meaning |
 |---|---|---|
-| `hello` | `v:1, doc, sv, known?:{epoch,seq,chain}, name?, editor?` | join; client state vector, last observed committed history, and the browser's random editor id that groups its edits into revisions |
-| `update` | `id, u` | local update, resent unchanged until ACK |
+| `hello` | `v:1, doc, sv, known?:{epoch,seq,chain}, name?, editor?, nick?, guest?:{name, token?}, viewer_token?` | join; client state vector, last observed committed history, and the browser's random editor id that groups its edits into revisions. `nick` is the name guests see for a member; `guest` asks a Public socket to join as a guest ([public editing](#public-editing)) |
+| `update` | `id, u, retry?` | local update, resent unchanged until ACK; `retry: true` on a guest's first resend after `busy` |
 | `aw` | `u` | one awareness client id, owned by the socket |
 | `ping` | — | heartbeat/catch-up, about every 15 seconds |
 | `received` | `n` | cumulative server-envelope delivery receipt; releases app output credit, never acknowledges a document edit |
 
-Every server envelope has a monotonically increasing per-socket `n`:
+Every server envelope except `viewers` has a monotonically increasing per-socket `n`:
 
 | `t` | Fields (besides `n`) | Meaning |
 |---|---|---|
-| `welcome` | `v:1, doc, epoch, seq, chain, readonly, u, sv, you:{name,verified}` | server diff missing from client sv and server vector |
+| `welcome` | `v:1, doc, epoch, seq, chain, readonly, u, sv, you:{name,verified}, access?, access_epoch, guest_text, me?, guest_token?, viewer_token?` | server diff missing from client sv and server vector; the flat's public level and epoch, whether diagrams draw on request; `me` is `{kind:"guest", name}` or `{kind:"viewer", label}` on a Public socket |
 | `update` | `u, seq, chain` | committed peer update or catch-up/full checkpoint |
 | `ack` | `id, seq, chain` | exact id durably committed; a retry can ACK an older seq |
 | `aw` | `u` | relayed/rewritten awareness state or removal |
 | `pong` | `epoch, seq, chain` | catch-up watermark |
+| `level` | `access?, access_epoch` | the flat's public level or epoch changed |
+| `busy` | `id` | guests together are over the flat's limit; nothing applied, resend in order later |
+| `viewers` | `n:[1, 2, ...]` or `count` | the room's viewer numbers, or a count above 20; to members and guests, with no `n` serial and no output credit |
 | `diverged` | `epoch, seq` | known epoch/seq/chain is absent from retained committed history; do not push local state |
-| `error` | `code, message` | rejected message; fatal rejection closes socket |
+| `error` | `code, message` | rejected message; fatal rejection closes socket. Guest and viewer codes: `full`, `name_invalid`, `editing_ended`, `guest_rate`, `guest_size`, `guest_room`, `guest_client` |
 
 The provider merges the welcome diff and resends every pending id; all local
 changes are already represented in that buffer, so no replacement snapshot
@@ -429,12 +624,12 @@ Final application limits (bytes mean UTF-8 or decoded binary as indicated):
 | Decoded document update | 256 KiB; 4,096 structs; 1,024 delete-set clients / 4,096 ranges |
 | Markdown per document | 1 MiB UTF-8 |
 | Encoded Yjs state | 1.5 MiB; 20,000 integrated structs per document |
-| Active rooms | editors: 8 / 4 MiB / 30,000 structs; public: separate 4 / 2 MiB / 20,000 structs |
-| Connections | editors: 50 per document / 200 per instance; public: separate 10 / 40 |
-| Awareness | 8 KiB decoded; one id per socket; 2 KiB cursor; 20/s with burst 20 per connection |
+| Active rooms | member rooms: 8 / 4 MiB / 30,000 structs; reader rooms: separate 4 / 2 MiB / 20,000 structs; guest rooms: separate 4 ([worker pools](#public-editing)) |
+| Connections | members: 50 per document / 200 per instance; viewers: separate 10 / 40; guests: separate 20 / 30 |
+| Awareness | 8 KiB decoded; one id per socket; 2 KiB cursor; 20/s with burst 20 per member connection; guests in [guest limits](#guest-limits) |
 | Incoming connection rate | 60 frames/s, burst 120; 256 KiB/s, burst 1 MiB |
 | Document update room rate | 40/s, burst 80; 512 KiB/s, burst 512 KiB (wire bytes) |
-| App outstanding output / native queued output | 4 MiB per connection, 16 MiB per worker instance, including native in-flight frames |
+| App outstanding output / native queued output | 4 MiB per connection; 16 MiB per worker instance for members and a separate 4 MiB for guests and viewers, including native in-flight frames |
 | Browser pending update buffer / WebSocket bufferedAmount | 2 MiB each; one edit still must fit decoded update limit |
 | Revision capture | Pending outbox entries and their texts until the host imports them; recorded texts of current documents |
 | Persistent admissions | Upload validates at most 128 Markdown documents (with a fix hint); 128 stored documents; seq <= 100,000 per document; 200,000 total receipts; 1,000 content hashes per document |
@@ -497,15 +692,22 @@ meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)
   -- 'active': JSON {hash, generation, docs: [path]}: the version whose flat activation last ran
   -- 'intent': JSON, at most one (see Intents)
   -- 'budget', 'pending', 'wal_truncate', 'wal_generation': the disk quota check (see Disk quota)
-recorded(doc TEXT PRIMARY KEY, epoch TEXT NOT NULL, seq INTEGER NOT NULL, hash TEXT NOT NULL, bytes INTEGER NOT NULL)
-  -- each document's committed position when last recorded, and its text hash there
-groups(editor TEXT PRIMARY KEY, label TEXT NOT NULL, started_at INTEGER NOT NULL, last_at INTEGER NOT NULL, dirty INTEGER NOT NULL)
+  -- 'access': {level, epoch}, the public access level core stored (see Public editing)
+  -- 'presence': {guests, viewers, at}, written by the WebSocket VM for core
+  -- 'guest_charge', 'guest_measure': the guests' byte budget (see Disk quota)
+recorded(doc TEXT PRIMARY KEY, epoch TEXT NOT NULL, seq INTEGER NOT NULL, hash TEXT NOT NULL, bytes INTEGER NOT NULL, guest_lines TEXT)
+  -- each document's committed position when last recorded, its text hash and guest line ranges there
+groups(editor TEXT PRIMARY KEY, label TEXT NOT NULL, started_at INTEGER NOT NULL, last_at INTEGER NOT NULL, dirty INTEGER NOT NULL,
+       names TEXT, fixed INTEGER)
   -- open edit groups; dirty: edited since the last entry
+  -- fixed = 1 only for the guests' group; names: JSON guest names since the last entry
 outbox(seq INTEGER PRIMARY KEY AUTOINCREMENT, created_at INTEGER NOT NULL,
        kind TEXT NOT NULL, authors TEXT NOT NULL, message TEXT NOT NULL,
-       rollback_of INTEGER, op TEXT, source TEXT NOT NULL, documents TEXT NOT NULL)
+       rollback_of INTEGER, op TEXT, source TEXT NOT NULL, documents TEXT NOT NULL,
+       guests TEXT, guests_more INTEGER)
   -- source: content hash of the version whose non-document files the entry has
-  -- documents: JSON [{path, hash, size}], at most 129 (128 plus a migration override)
+  -- documents: JSON [{path, hash, size, guest_lines}], at most 129 (128 plus a migration override)
+  -- guests: JSON, the first 5 guest names; guests_more counts the rest
 texts(hash TEXT PRIMARY KEY, text TEXT NOT NULL, refs INTEGER NOT NULL, staged_at INTEGER)
   -- the payload only; refs and staged_at here are unused (0 and NULL)
 text_refs(hash TEXT PRIMARY KEY, refs INTEGER NOT NULL, staged_at INTEGER)
@@ -514,6 +716,8 @@ unimported(hash TEXT PRIMARY KEY, size INTEGER NOT NULL)
   -- texts whose host blobs may not exist yet (see Disk quota)
 ops(id TEXT PRIMARY KEY, seq INTEGER NOT NULL)
   -- rollbacks that committed, with their entry; deleted when that entry is acknowledged
+guest_clients(doc TEXT NOT NULL, client INTEGER NOT NULL, owner TEXT NOT NULL, PRIMARY KEY(doc,client))
+  -- Yjs client ids guests own (see Public editing)
 ```
 
 The store is initialized once `meta.store` exists.
@@ -553,13 +757,22 @@ for a shape (a source and a list of document paths):
    `meta.newest`, delete `meta.pending` and stop: no entry.
 4. Otherwise insert the entry, add a reference to each listed text, add
    the texts `meta.newest` did not list to `unimported`, delete
-   `meta.pending`, set `meta.newest`, clear `dirty` on every group, and for a
+   `meta.pending`, set `meta.newest`, clear `dirty` and the guest names on
+   every group (the guests' group keeps its `started_at`), and for a
    rollback record its operation id in `ops` with the entry's seq.
 
 Authors are the given label (an agent's or a rollback's), else the labels of
-the groups that are `dirty` at that moment, in first-edit order; at most 32,
-each at most 200 characters. The message is at most 500 characters. Entry
-kinds are `created`, `agent`, `person`, `rollback` and `recovered`.
+the member groups that are `dirty` at that moment, in first-edit order; at most 32,
+each at most 200 characters. Guests are credited apart: the names of the
+dirty guests' group, the first 5 in `guests` and the rest counted in
+`guests_more`. The message is at most 500 characters. Entry
+kinds are `created`, `agent`, `person`, `rollback`, `recovered` and
+`safe_point`.
+
+Each entry document carries `guest_lines`, the merged 1-based inclusive line
+ranges whose visible characters were inserted with a guest-owned client id,
+at most 1,024 ranges (more are merged into wider ones). The `recorded` row
+keeps them, so an unchanged document reuses them.
 
 Shapes:
 
@@ -616,28 +829,39 @@ of the active worker.
 
 | Boundary | Where | In the same transaction |
 |---|---|---|
-| a person's update | WebSocket `update` (not a duplicate) | upsert `groups[editor]`: `started_at` kept or set, `last_at` = now, label = the editor's shown name, `dirty` = 1 |
+| a member's update | WebSocket `update` (not a duplicate) | upsert `groups[editor]`: `started_at` kept or set, `last_at` = now, label = the editor's shown name, `dirty` = 1 |
+| a guest's update | WebSocket `update` (not a duplicate) | upsert the fixed group `guests`: `started_at` kept or set, `last_at` = now, `dirty` = 1, the guest's name added to `names` (first-edit order, at most 64) |
 | an agent live edit | `POST /_docs/api/edit` | when text dirty, a `person` entry (current shape); delete all groups; apply the edit; when the text changed, an `agent` entry crediting the request's `label`, with the edit's receipt id as its operation |
 | a new version | flat activation | see above |
-| edit groups closing | `POST /_docs/host/revisions/sync` | when a group is due (idle 30 s, or begun 5 minutes ago) and text dirty: a `person` entry (current shape); then delete the due groups |
+| edit groups closing | `POST /_docs/host/revisions/sync` | a member group is due when idle 30 s or begun 5 minutes ago, the guests' group only when begun 5 minutes ago; when some due group is `dirty`: a `person` entry (current shape); then delete the due groups |
 | a rollback within the running version | `POST /_docs/host/revisions/restore` | when text dirty, a `person` entry; delete all groups; restore every document; a forced `rollback` entry with its operation id |
+| guest editing ends | `POST /_docs/host/revisions/access` with a level other than `edit` | when the guests' group is `dirty`, a `person` entry; delete that group. Best effort: a failure is logged and the level still commits |
+| guest editing starts | `POST /_docs/host/revisions/safe_point` | when text dirty, a `person` entry; delete all groups; a forced `safe_point` entry unless the flat equals the earlier safe point |
 
 * Person and agent entries are not forced: identical content makes none.
+* `sync` records only when a due group is `dirty`; a due group without
+  edits since the last entry is just deleted. An entry made because a
+  member's group closed credits that member and the guests since the last
+  entry. A guest-only entry comes only at the end of the guests' window or
+  at a boundary that closes it: an agent edit, a rollback, an activation
+  or a safe point closes every group, and leaving `edit` closes the
+  guests' group.
 * An agent edit that changes nothing records nothing. The groups it deleted
   had no unrecorded edits.
 * Groups that are not due survive a `person` entry but lose `dirty`, so a
-  later entry credits them again only after they edit again. A due group
-  without unrecorded edits is just deleted.
+  later entry credits them again only after they edit again.
 * The host calls `sync` every 15 seconds for each awake document. Sleeping
   documents are not woken by maintenance; groups/outbox are drained before
   clean sleep. After host restart, pending recovery waits for demand.
 
 **Editor identity.** `hello` carries `editor`, a random id (8–64 characters
 of `A-Z a-z 0-9 _ -`) the page keeps in local storage next to its
-collaborator name. The group key is `ts:<login>` for a verified Tailscale
+collaborator name. A member's group key is `ts:<login>` for a verified Tailscale
 login (`Tailscale-User-Login`), else `browser:<editor id>`; the label is the
 verified name or login, else the collaborator name. A connection without a
-valid id gets a random one.
+valid id gets a random one. Guests ignore `editor`: all guests share the
+one group `guests`, and the server-issued guest key, not the name, owns
+their client ids ([public editing](#public-editing)).
 
 ### Intents
 
@@ -712,8 +936,10 @@ even while an activation keeps failing.
 
 | Route | Purpose |
 |---|---|
-| `POST /_docs/host/revisions/sync` | Runs the gate, deletes a remaining intent, closes due groups, deletes unreferenced staged texts older than one hour. Returns `{store, ready, intent}`: `ready` is the number of unacknowledged entries, `intent` the id of the remaining intent or null |
-| `GET /_docs/host/revisions/outbox?after=` | Entries with `seq > after`, oldest first, read with one SQL statement per entry and stopping before the page's document lists pass 4 MiB of JSON (always at least one entry): `{store, entries: [{seq, created_at, kind, authors, message, rollback_of?, op?, source, documents}], more}` |
+| `POST /_docs/host/revisions/sync` | Runs the gate, deletes a remaining intent, closes due groups, deletes unreferenced staged texts older than one hour. Returns `{store, ready, intent, presence}`: `ready` is the number of unacknowledged entries, `intent` the id of the remaining intent or null, `presence` the last `{guests, viewers, at}` (`at` in Unix milliseconds) the WebSocket VM wrote, absent or zeros when never written. Core reports the counts while `at` is younger than 30 seconds and the worker is awake |
+| `GET /_docs/host/revisions/outbox?after=` | Entries with `seq > after`, oldest first, read with one SQL statement per entry and stopping before the page's document lists pass 4 MiB of JSON (always at least one entry): `{store, entries: [{seq, created_at, kind, authors, guests, guests_more, message, rollback_of?, op?, source, documents: [{path, hash, size, guest_lines}]}], more}`; `guests` names up to 5 guests, `guest_lines` are the merged 1-based line ranges guests wrote |
+| `POST /_docs/host/revisions/access` | `{level, epoch}` (`edit`, `view` or `""`, and `flats.access_seq`): writes `meta.access` and signals the WebSocket VM; at a level other than `edit` it closes the guests' group. Returns `{level, epoch}`. Core calls it after every committed level change of a running worker and on every wake, before any request reaches the worker |
+| `POST /_docs/host/revisions/safe_point` | `{prev: {source, documents: [{path, hash}]} \| null}`: in one transaction, runs the gate, records dirty groups as a `person` entry and deletes all groups, then compares the flat with `prev`. Equal returns `{seq: 0, reuse: true}`; otherwise a forced `safe_point` entry and `{seq, reuse: false}` |
 | `GET /_docs/host/revisions/text?hash=` | `{hash, text}` from `texts`; 404 when absent |
 | `POST /_docs/host/revisions/ack` | `{store, through, budget?}`: deletes entries up to `through` with their `ops` rows and their texts' `unimported` rows, releasing their texts, and installs `budget` (as `budget` below) in the same transaction. Idempotent; another `store` is refused with 409 |
 | `POST /_docs/host/revisions/stage` | `{text}` (at most 1 MiB UTF-8): stores it with `staged_at`; returns `{hash}` |
@@ -776,7 +1002,8 @@ disk quota; the host side, what it measures and when, is in the
   documents allocates, never counting pages it frees: per document its
   overflow pages rounded up, one leaf and 16 pages of B-tree splits, and per
   entry twice the pages of `meta.newest` (×3 + 300 bytes per document +
-  4 KiB), a page per listed document whose
+  16 KiB of guest line ranges for each pending document, up to the number of
+  documents with guest-owned client ids, + 4 KiB), a page per listed document whose
   reference count changes and 16 pages. The log's bound at rest is
   32 + 64 × (`page_size` + 24) bytes.
 * When that total exceeds the quota, every size that is still a bound is
@@ -785,6 +1012,17 @@ disk quota; the host side, what it measures and when, is in the
 * Over the quota it refuses with `disk_quota` and the transaction rolls
   back, so a refused edit records and changes nothing. `restore`, rollback
   intents and activations are not checked.
+* **Guests.** A guest's update is refused with `disk_quota` when the
+  total exceeds 90% of the quota, so members keep the rest. It is also
+  charged to the guests' byte budget: `meta.guest_charge` grows by what the
+  update grew the measured part (`page_count` × `page_size` plus
+  `unimported`), and a charge above 256 MiB refuses the update with
+  `guest_room`, with or without a quota. Each budget installation compares
+  `other` plus the measured part with the previous installation's total
+  (`meta.guest_measure`) and lowers the charge by any drop, not below 0.
+  Guests also keep within 90% of each document's text, state and struct
+  limits and leave members 20,000 seqs of each document and 40,000 receipts
+  of the flat ([guest limits](#guest-limits)).
 * After every commit of a transaction, `PRAGMA wal_checkpoint(NOOP)`
   reports the frames in the log without copying them; with more than 64,
   or while `meta.wal_truncate` is set, `PRAGMA wal_checkpoint(TRUNCATE)`
@@ -816,7 +1054,11 @@ and empties `documents.seed_text`. Creating `unimported` also reserves in
 it every text the unacknowledged outbox entries list, since the host may
 not have stored their blobs yet; it reads the outbox one entry at a time,
 so a large backlog stays within the query result limit. A table's existence marks its move as done;
-references, staging and merge bases then behave exactly as before.
+references, staging and merge bases then behave exactly as before. The same
+transaction creates `guest_clients` and adds the guest columns
+(`groups.names`, `groups.fixed`, `outbox.guests`, `outbox.guests_more`,
+`recorded.guest_lines`) to tables that lack them, found with
+`PRAGMA table_info`.
 
 A database without `meta.store` is initialized by the first transaction that
 passes the activation gate, before anything else in it:
@@ -869,8 +1111,8 @@ front of the worker and only on the live data directory. Every route sends
 
 ### History panel
 
-Private pages only; a public page has no history control and calls none of
-the history routes. The panel follows `_web/DESIGN.md`.
+Members only; a guest or viewer page has no history control and calls none
+of the history routes. The panel follows `_web/DESIGN.md`.
 
 * **History button** in the header after the Edit | View group, shown while
   the connection is writable. It opens the history panel: a 320 px
@@ -878,11 +1120,17 @@ the history routes. The panel follows `_web/DESIGN.md`.
   closes it.
 * **Entries**, newest first, 50 per page with "Load more":
   * who and what: the authors ("Quiet Otter, Lucky Fox"), "Agent",
-    "Restored revision 12", "Created", "Recovered text";
+    "Restored revision 12", "Created", "Recovered text", "Safe point before
+    guest editing";
+  * guests after the member authors, from the revision's `guest_authors`,
+    each name drawn as text followed by the guest badge, then "and N more
+    guests" for `guests_more`, with the note "Names were typed by guests.";
   * relative time (absolute in the tooltip) and the documents it changed, by
     title, with "this document" for the open one;
   * a pin toggle (`aria-pressed`). A full pin quota shows its refusal in the
-    panel;
+    panel. The safe point is marked `safe_point` while the flat is at level
+    `edit`; its pin toggle is then disabled, with "Can't be unpinned while
+    guests can edit.";
   * the panel refreshes every 10 seconds while open and visible, and after
     its own actions.
 * **Viewing a revision** replaces the document surface with a read-only
@@ -911,6 +1159,67 @@ the history routes. The panel follows `_web/DESIGN.md`.
   shows "Restored revision 12". The text arrives through the normal sync,
   or, after a reset, through the page's reload offer.
 
+## Guest and viewer pages
+
+A Public page is served read-only and decides from each welcome whether it
+reads or edits as a guest. The decisions are in `guest.js` (node tests), the
+dialogs and header in `guest-ui.js`. Member pages change only in sending
+`hello.nick`, their stored collaborator name.
+
+* **Name popup.** A dialog over the live document: "Join <flat>", a name
+  field with a count up to 40 and a preview ("Shown as <name> [guest] to
+  other editors. Nobody checks it."), a note that guests can change text in
+  every document but cannot see history or restore earlier text, and
+  **View only** and **Join and edit**. It opens when a viewer arrives at
+  level `edit`, when a `level` frame opens editing ("The owner just opened
+  these documents for editing."), and from **Join to edit**. A remembered
+  name (`localStorage` `flats-docs-guest-name`) only fills the field.
+* **The tab's choice.** View only, or closing the popup, stores the current
+  `access_epoch` in `sessionStorage` `flats-docs-view-only`; the popup stays
+  closed until a newer epoch. Joining stores the epoch in
+  `flats-docs-rejoin`, so the tab stays a guest across reloads and other
+  documents within that epoch. A guest page admitted as a viewer, or one
+  that joined in an earlier epoch, reads and asks again. Guest and viewer
+  tokens are kept in `sessionStorage`.
+* **Header.** A viewer sees "You are Viewer N" and, at level `edit`,
+  **Join to edit**. A guest sees "You are <name>" with the guest badge and
+  **Change name**, which reconnects with the new name. The people list
+  shows guests with the badge, then the room's viewers as "Viewer N"
+  entries, or "N viewers" above 20. Remote carets show the badge too
+  (`remote-cursors.js`).
+* **Guest editor.** The member editor with Edit and View, without History.
+  Unsent updates are merged with `Y.mergeUpdates` while the result stays
+  within 64 KiB, and sent at most 4 frames and 64 KiB per second. On
+  `busy` the page waits one second, then resends every unacknowledged
+  update in order, the first with `retry: true`.
+* **Refusal.** A fatal guest code stops syncing and makes the editor
+  read-only, with a notice such as "This change is too large for a guest,
+  so editing stopped.", **Download local text** and **Rejoin**. Rejoin
+  reloads the page, which joins with the remembered name without the popup.
+  `name_invalid` instead forgets the name, reads on and reopens the popup
+  with the reason.
+* **Editing ended.** On `editing_ended`, or a welcome that no longer admits
+  the page as a guest, the page drops its replica and reads on from a new
+  one. The notice says "The owner turned off guest editing. N of your
+  latest changes weren't saved. You can keep reading live." with
+  **Download local text** for the old replica's text.
+* **Full.** Fatal `full` shows "This document is full" with **Read** and
+  **Try again**. A viewer closed with `connection capacity` sees "Too many
+  readers right now" with **Try again** only.
+* **No longer public.** After three failed handshakes the page fetches
+  `/_docs/api/documents`. When that succeeds, the Public side is full and
+  the page shows the readers dialog. When it answers with an error, the
+  page stops reconnecting, makes the editor read-only and says "These
+  documents are no longer public.", offering **Download local text** when
+  a guest has unsaved changes. A network error keeps retrying.
+* **Diagrams on request.** When a welcome has `guest_text: true` or
+  `access: "edit"`, or a `level` frame says `edit`, every Mermaid block
+  shows its source and a **Show diagram** button and draws only when
+  clicked; the page keeps this until it reloads. A changed diagram asks
+  again. A diagram drawn this way runs with `maxTextSize: 20000` and
+  `maxEdges: 500`; a larger one is not drawn and says "Too large to draw".
+  Other pages draw diagrams as before.
+
 ## Idle worker lifecycle
 
 Only live built-in docs use managed workers. After two minutes without a
@@ -928,7 +1237,9 @@ connections. `running` denotes a logical live document, including a lazy
 restored document before first physical startup. Failed wake produces a
 retryable error and an event. The management-only `budget/revoke` operation
 removes a persisted budget without clearing reservations. Wake explicitly
-revokes, syncs/imports, and installs a fresh budget before normal mutations;
+revokes, tells the worker the stored public access level and epoch (`access`;
+a failure is an event, and the worker keeps an older pair that no request's
+headers match), syncs/imports, and installs a fresh budget before normal mutations;
 failed budget installation leaves reads/recovery available with writes refused.
 Import backlog or capacity errors do not themselves make a document unreadable.
 

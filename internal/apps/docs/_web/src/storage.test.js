@@ -5,6 +5,9 @@ import {
   validateState,
   validateIncremental,
   validateUpdate,
+  guestLines,
+  insertedClients,
+  hasGC,
 } from "./storage.js";
 test("incremental bound covers real encoded state with concurrent clients, deletes and pending updates", () => {
   const authority = new Y.Doc();
@@ -65,4 +68,62 @@ test("updates reject truncated or trailing binary data", () => {
   const trailing = new Uint8Array(update.length + 1);
   trailing.set(update);
   assert.throws(() => validateUpdate(trailing), /trailing/);
+});
+test("guest lines mark the lines holding a guest's characters", () => {
+  const doc = new Y.Doc();
+  doc.clientID = 1;
+  const t = doc.getText("markdown");
+  t.insert(0, "one\ntwo\nthree\nfour\nfive\n");
+  const guest = new Y.Doc();
+  guest.clientID = 7;
+  Y.applyUpdate(guest, Y.encodeStateAsUpdate(doc));
+  const g = guest.getText("markdown");
+  g.insert(4, "G1"); // line 2
+  g.insert(g.toString().indexOf("four") + 2, "x\ny"); // lines 4 and 5
+  Y.applyUpdate(doc, Y.encodeStateAsUpdate(guest, Y.encodeStateVector(doc)));
+  assert.equal(t.toString(), "one\nG1two\nthree\nfox\nyur\nfive\n");
+  assert.deepEqual(guestLines(doc, new Set([7])), [
+    [2, 2],
+    [4, 5],
+  ]);
+  assert.deepEqual(guestLines(doc, new Set()), []);
+  // A member deleting the guest's characters unmarks them; text around
+  // them does not.
+  t.delete(4, 2);
+  t.insert(0, "new\n");
+  assert.deepEqual(guestLines(doc, new Set([7])), [[5, 6]]);
+  // A guest newline alone marks the line it ends; adjacent ranges merge.
+  const d2 = new Y.Doc();
+  d2.clientID = 7;
+  d2.getText("markdown").insert(0, "a\nb\n");
+  assert.deepEqual(guestLines(d2, new Set([7])), [[1, 2]]);
+});
+test("guest lines stay bounded by merging, never unmarking", () => {
+  const doc = new Y.Doc();
+  doc.clientID = 1;
+  const t = doc.getText("markdown");
+  t.insert(0, "m\n".repeat(5000));
+  const guest = new Y.Doc();
+  guest.clientID = 7;
+  Y.applyUpdate(guest, Y.encodeStateAsUpdate(doc));
+  for (let line = 4999; line >= 0; line -= 2)
+    guest.getText("markdown").insert(line * 2, "g");
+  Y.applyUpdate(doc, Y.encodeStateAsUpdate(guest, Y.encodeStateVector(doc)));
+  const ranges = guestLines(doc, new Set([7]));
+  assert.ok(ranges.length <= 1024, String(ranges.length));
+  const marked = (n) => ranges.some(([a, b]) => a <= n && n <= b);
+  for (let line = 2; line <= 5000; line += 2) assert.ok(marked(line), line);
+});
+test("updates name the client ids they insert with and GC structs", () => {
+  const d = new Y.Doc();
+  d.clientID = 42;
+  d.getText("markdown").insert(0, "abc");
+  const decoded = validateUpdate(Y.encodeStateAsUpdate(d));
+  assert.deepEqual([...insertedClients(decoded)], [42]);
+  assert.equal(hasGC(decoded), false);
+  // A content-less clock jump: one GC struct.
+  const gc = Uint8Array.from([1, 1, 42, 3, 0, 5, 0]);
+  const withGC = validateUpdate(gc);
+  assert.equal(hasGC(withGC), true);
+  assert.equal(insertedClients(withGC).size, 0);
 });

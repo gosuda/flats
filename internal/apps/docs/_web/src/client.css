@@ -9,6 +9,8 @@
   --active: #f3f6f1;
   --selection: #c8dfd0;
   --error: #8a3b24;
+  --guest: #7a4a00;
+  --guest-bg: #fff1d6;
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   color: var(--ink);
   background: var(--paper);
@@ -24,6 +26,8 @@
     --active: #263028;
     --selection: #385b43;
     --error: #ffb498;
+    --guest: #f1c27a;
+    --guest-bg: #3a2b10;
   }
 }
 * {
@@ -150,6 +154,152 @@ header h1 {
   justify-content: center;
   font-weight: 600;
   font-size: 12px;
+}
+/* Public pages: who this page is, the guest badge and viewer entries. */
+#me {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+#me strong {
+  color: var(--ink);
+}
+button.link {
+  font-size: inherit;
+  padding: 0;
+  border: 0;
+  color: var(--accent);
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+button.link:hover {
+  background: transparent;
+}
+.guest-badge {
+  display: inline-block;
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.5;
+  padding: 0 6px;
+  border-radius: 99px;
+  border: 1px solid var(--guest);
+  color: var(--guest);
+  background: var(--guest-bg);
+  white-space: nowrap;
+}
+.cm-ySelectionInfo .guest-badge {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  font-size: 10px;
+  padding: 0 4px;
+}
+.viewers {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.viewer {
+  font-size: 11px;
+  font-weight: 700;
+  line-height: 1.5;
+  padding: 0 6px;
+  border-radius: 99px;
+  border: 1px solid var(--line);
+  color: var(--muted);
+  white-space: nowrap;
+}
+/* The name popup and the full-document dialogs, over the live document. */
+.guest-dialog {
+  width: min(500px, calc(100vw - 32px));
+  padding: 24px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--paper);
+  color: var(--ink);
+  font-size: 14px;
+  line-height: 1.5;
+}
+.guest-dialog::backdrop {
+  background: rgb(10 12 9 / 38%);
+}
+.guest-dialog h2 {
+  margin: 0 0 8px;
+  font-size: 17px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.guest-dialog form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.guest-describe,
+.guest-preview {
+  margin: 0;
+  color: var(--muted);
+}
+.guest-dialog > .guest-describe {
+  margin-bottom: 16px;
+}
+.guest-preview {
+  margin-top: 6px;
+  font-size: 12px;
+}
+.guest-preview strong {
+  color: var(--ink);
+  overflow-wrap: anywhere;
+}
+.guest-label {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+.guest-label label {
+  font-weight: 600;
+}
+.guest-count {
+  font-size: 12px;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.guest-count.over,
+.guest-error {
+  color: var(--error);
+}
+.guest-error:empty {
+  display: none;
+}
+.guest-error,
+.guest-note {
+  margin: 0;
+}
+.guest-note {
+  padding: 10px 12px;
+  background: var(--canvas);
+  border-radius: 5px;
+}
+.guest-dialog input {
+  width: 100%;
+  font: inherit;
+  font-size: 16px;
+  padding: 8px 12px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--paper);
+  color: var(--ink);
+}
+.guest-dialog input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+.guest-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+}
+.guest-actions .primary {
+  color: var(--paper);
+  background: var(--accent);
+  border-color: var(--accent);
 }
 .workspace {
   display: flex;
@@ -728,6 +878,9 @@ main {
   .person {
     font-size: 0;
     gap: 0;
+  }
+  .person .guest-badge {
+    margin-left: 4px;
   }
   .workspace {
     flex-direction: column;

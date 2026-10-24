@@ -2,7 +2,6 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { EditorState, EditorSelection } from "@codemirror/state";
 import { ensureSyntaxTree } from "@codemirror/language";
-import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import {
   activeLines,
   diagramBlocks,
@@ -12,6 +11,7 @@ import {
   tableBlocks,
 } from "./live.js";
 import { createMarkdown, linkRules } from "./markdown.js";
+import { editorMarkdown } from "./markdown-inline.js";
 
 const links = linkRules(createMarkdown());
 
@@ -20,7 +20,7 @@ function decorate(text, cursor) {
     doc: text,
     selection:
       cursor === undefined ? undefined : EditorSelection.cursor(cursor),
-    extensions: [markdown({ base: markdownLanguage })],
+    extensions: [editorMarkdown()],
   });
   ensureSyntaxTree(state, state.doc.length, 5000);
   const active = activeLines(state, cursor !== undefined);
@@ -119,7 +119,7 @@ test("tables are found as whole lines and reveal under the selection", () => {
     const s = EditorState.create({
       doc: text,
       selection: EditorSelection.cursor(cursor),
-      extensions: [markdown({ base: markdownLanguage })],
+      extensions: [editorMarkdown()],
     });
     ensureSyntaxTree(s, s.doc.length, 5000);
     return s;
@@ -140,7 +140,7 @@ test("mermaid fences are found as whole lines and reveal under the selection", (
     const s = EditorState.create({
       doc: text,
       selection: EditorSelection.cursor(cursor),
-      extensions: [markdown({ base: markdownLanguage })],
+      extensions: [editorMarkdown()],
     });
     ensureSyntaxTree(s, s.doc.length, 5000);
     return s;
@@ -198,7 +198,7 @@ test("line decorations stay within the visible range", () => {
   const text = "```\n" + body + "\n```\n";
   const state = EditorState.create({
     doc: text,
-    extensions: [markdown({ base: markdownLanguage })],
+    extensions: [editorMarkdown()],
   });
   ensureSyntaxTree(state, state.doc.length, 5000);
   const visible = {
@@ -313,7 +313,7 @@ test("tables carry the document's reference definitions", () => {
   const text = "| a |\n| - |\n| [docs][id] |\n\n[id]: https://e.example\n";
   const s = EditorState.create({
     doc: text,
-    extensions: [markdown({ base: markdownLanguage })],
+    extensions: [editorMarkdown()],
   });
   ensureSyntaxTree(s, s.doc.length, 5000);
   const [table] = tableBlocks(s, false, referenceDefinitions(s.doc, links));
@@ -348,7 +348,7 @@ test("tables carry only the definitions the renderer accepts", () => {
     "| a |\n| - |\n| [x][ok] |\n\n[ok]: https://e.example\n[bad]: javascript:alert(1)\n";
   const s = EditorState.create({
     doc: text,
-    extensions: [markdown({ base: markdownLanguage })],
+    extensions: [editorMarkdown()],
   });
   ensureSyntaxTree(s, s.doc.length, 5000);
   assert.equal(
@@ -361,7 +361,7 @@ test("linkAt finds the link under the cursor for the keyboard", () => {
   const text = "see [docs](guide.md) and https://e.example\n\nz";
   const s = EditorState.create({
     doc: text,
-    extensions: [markdown({ base: markdownLanguage })],
+    extensions: [editorMarkdown()],
   });
   ensureSyntaxTree(s, s.doc.length, 5000);
   const refs = referenceDefinitions(s.doc, links);
@@ -464,4 +464,46 @@ test("Mermaid source ranges handle open fences, blank lines and multiple blocks"
   assert.equal(blocks[1].edit, text.indexOf("sequenceDiagram"));
   assert.equal(blocks[1].code, "sequenceDiagram\nAlice->>Bob: Hello");
   assert.ok(blocks[0].to < blocks[1].from);
+});
+
+test("a paragraph over 20,000 characters shows as its source", () => {
+  const unit = "a *b* [c](https://d/) <i>e</i> `h` ",
+    long = unit.repeat(Math.ceil(20001 / unit.length)).slice(0, 20001),
+    text = "# Title\n\n" + long + "\n\nafter *e* [x](https://y/)",
+    start = text.indexOf(long),
+    end = start + long.length;
+  // decorate parses the whole document, as a page does in time; the state
+  // then carries the complete tree.
+  const decorateAll = (cursor) => {
+    let state = EditorState.create({
+      doc: text,
+      selection:
+        cursor === undefined ? undefined : EditorSelection.cursor(cursor),
+      extensions: [editorMarkdown()],
+    });
+    ensureSyntaxTree(state, state.doc.length, 5000);
+    state = state.update({}).state;
+    return liveDecorations(
+      state,
+      [{ from: 0, to: state.doc.length }],
+      activeLines(state, cursor !== undefined),
+      links,
+      referenceDefinitions(state.doc, links),
+    ).map((d) => ({ ...d, text: text.slice(d.from, d.to) }));
+  };
+  const ds = decorateAll();
+  // Nothing inside the long paragraph is hidden, marked or linked.
+  assert.deepEqual(
+    ds.filter((d) => d.from < end && d.to > start),
+    [],
+  );
+  // The blocks around it still render.
+  assert.ok(ds.some((d) => d.kind === "line" && d.cls === "cm-h1"));
+  assert.deepEqual(
+    hidden(ds.filter((d) => d.from >= end)).sort(),
+    ["*", "*", "[", "](https://y/)"].sort(),
+  );
+  assert.ok(ds.some((d) => d.kind === "mark" && d.href === "https://y/"));
+  // With the cursor inside it, decorating still works.
+  assert.doesNotThrow(() => decorateAll(start + 100));
 });

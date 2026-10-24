@@ -79,8 +79,8 @@ viewing/copying, and SVG or PNG download. The expanded view supports keyboard us
 Escape to close, and restoring focus to its opener. In the expanded view the
 mouse wheel pans, Shift plus the wheel pans sideways, and Ctrl or ⌘ plus the
 wheel zooms. The wheel mapping is the design canvas's `createWheelPan`
-(`internal/design/web/wheel.js`), so both screens treat Shift plus the wheel the
-same way. In Edit mode, Edit source opens the editable fence and Done returns to
+(`internal/design/web/wheel.js`). The diagram viewer retains both mapped axes;
+the design canvas opts into horizontal-only Shift panning. In Edit mode, Edit source opens the editable fence and Done returns to
 the rendered diagram; there is no duplicate read-only Source toggle. View mode
 keeps that Source toggle. Loading and syntax errors are distinguished, source is
 preserved on failure, and failed loads can be retried. The live-preview editor

@@ -1,5 +1,22 @@
+// Size caps for a diagram drawn on request (docs-public-edit-TECH 3.10):
+// what one click on a diagram anyone may have written can cost.
+export const DIAGRAM_CAPS = Object.freeze({
+  maxTextSize: 20000,
+  maxEdges: 500,
+});
+
+// tooLarge is the reason a capped diagram is not drawn, or "".
+export function tooLarge(source, error = "") {
+  if (source.length > DIAGRAM_CAPS.maxTextSize)
+    return `Too large to draw: over ${DIAGRAM_CAPS.maxTextSize.toLocaleString("en-US")} characters.`;
+  if (/^Edge limit exceeded/.test(error))
+    return `Too large to draw: over ${DIAGRAM_CAPS.maxEdges} connections.`;
+  return "";
+}
+
 // Serialize Mermaid's global configuration, share in-flight work, and bound
-// retained strings by bytes as well as entry count.
+// retained strings by bytes as well as entry count. A capped request runs
+// with DIAGRAM_CAPS.
 export function createDiagramRuntime(
   load,
   freshID,
@@ -11,8 +28,9 @@ export function createDiagramRuntime(
     initialized = "",
     bytes = 0;
   return {
-    request(source, theme, current = () => true) {
-      const key = theme + "\n" + source;
+    request(source, theme, current = () => true, capped = false) {
+      const config = theme + (capped ? " capped" : ""),
+        key = config + "\n" + source;
       if (cache.has(key)) {
         const entry = cache.get(key);
         cache.delete(key);
@@ -31,14 +49,15 @@ export function createDiagramRuntime(
           if (!active()) return null;
           const mermaid = await load();
           if (!active()) return null;
-          if (initialized !== theme) {
+          if (initialized !== config) {
             mermaid.initialize({
               startOnLoad: false,
               securityLevel: "strict",
               suppressErrorRendering: true,
               theme,
+              ...(capped ? DIAGRAM_CAPS : {}),
             });
-            initialized = theme;
+            initialized = config;
           }
           const id = freshID();
           let result;

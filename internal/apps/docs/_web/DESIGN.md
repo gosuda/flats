@@ -11,6 +11,8 @@ colors:
   active: "#f3f6f1"
   selection: "#c8dfd0"
   error: "#8a3b24"
+  guest: "#7a4a00"
+  guest-bg: "#fff1d6"
   paper-dark: "#1c211e"
   canvas-dark: "#171b18"
   ink-dark: "#e3e9e2"
@@ -20,6 +22,8 @@ colors:
   active-dark: "#263028"
   selection-dark: "#385b43"
   error-dark: "#ffb498"
+  guest-dark: "#f1c27a"
+  guest-bg-dark: "#3a2b10"
 typography:
   body:
     fontFamily: "-apple-system, BlinkMacSystemFont, \"Segoe UI\", sans-serif"
@@ -44,6 +48,7 @@ typography:
 rounded:
   control: "5px"
   avatar: "50%"
+  pill: "99px"
 spacing:
   compact: "8px"
   mobile-gutter: "16px"
@@ -67,6 +72,21 @@ components:
     textColor: "{colors.ink}"
     rounded: "{rounded.control}"
     padding: "10px 12px"
+  guest-badge:
+    backgroundColor: "{colors.guest-bg}"
+    textColor: "{colors.guest}"
+    rounded: "{rounded.pill}"
+    padding: "0 6px"
+  viewer-entry:
+    backgroundColor: "transparent"
+    textColor: "{colors.muted}"
+    rounded: "{rounded.pill}"
+    padding: "0 6px"
+  dialog:
+    backgroundColor: "{colors.paper}"
+    textColor: "{colors.ink}"
+    rounded: "{rounded.control}"
+    padding: "24px"
 ---
 
 # Design System: Flats Docs
@@ -75,7 +95,7 @@ components:
 
 **Creative North Star: "Operate / Read"**
 
-Operate / Read is a quiet document workspace: compact controls frame a spacious reading surface. System typography, restrained green, and thin dividers keep Markdown and collaboration state legible. Editing and reading share one document surface: private links open in Edit, where editors edit the rendered document in place, and can switch to View to read it rendered; the public read-only view shows only that rendered surface, without an editor or mode controls.
+Operate / Read is a quiet document workspace: compact controls frame a spacious reading surface. System typography, restrained green, and thin dividers keep Markdown and collaboration state legible. Editing and reading share one document surface: private links open in Edit, where editors edit the rendered document in place, and can switch to View to read it rendered; the public read-only view shows only that rendered surface, without an editor or mode controls. When the operator lets anyone edit, a public visitor chooses a name in a popup over the live document and then edits like a private editor, without History; until then, and after choosing View only, the visitor reads.
 
 **Key Characteristics:**
 
@@ -88,7 +108,7 @@ Operate / Read is a quiet document workspace: compact controls frame a spacious 
 
 ### Primary
 
-Restrained green (`accent`) marks links, saved state, the selected mode and keyboard focus. Warm earth (`error`) marks interruption notices.
+Restrained green (`accent`) marks links, saved state, the selected mode and keyboard focus. Warm earth (`error`) marks interruption notices. Amber (`guest` on `guest-bg`) is reserved for the guest badge.
 
 ### Neutral
 
@@ -119,16 +139,22 @@ Controls, navigation items, and code blocks share gently curved corners. Collabo
 ## Components
 
 - **Header:** ellipsized document title (no brand, no file path), the Edit | View control and the History button on private links, live save/connection state, and collaborator presence. Saved state combines text with accent color; presence retains accessible names and verification descriptions.
-- **Live-preview editor:** CodeMirror over the document's Markdown. Headings, emphasis, strikethrough, inline code, links, lists, quotes, code blocks, rules, images and tables appear rendered. Markdown syntax is hidden except on the lines a cursor or selection touches while the editor has focus, where it shows for editing; a table shows its source while the selection is inside it, and clicking a rendered table moves the cursor into it. A plain click on a link places the cursor; Cmd/Ctrl-click opens it, and Cmd/Ctrl-Enter opens the link under the cursor for keyboard users. Away from the cursor, ordered items show their rendered numbers, escapes and entities show the characters they stand for, accepted reference definitions collapse, and reference links resolve against single-line definitions anywhere in the document; anything the renderer leaves as text stays visible as written.
-- **Edit | View:** a two-button group with `aria-pressed` selection, private links only; public links never render it. Private links always open in Edit. View shows the rendered document a Public visitor sees, kept live; the connection stays writable, so returning to Edit needs no reload. Selected mode uses the active surface and green text.
-- **History button:** a compact 12px button after the Edit | View control, shown only while the connection is writable; `aria-expanded` reflects the panel, and while it is open the button uses the active surface and green text.
-- **History panel:** an `aside` on the paper surface with a sticky head (a semibold "History" heading and Close) above a 1px `line` divider. Each revision is a row with its muted tabular number, a semibold author line, muted 12px time and changed documents, and a Pin toggle with `aria-pressed` (green text and a `line` border when pinned). The selected revision uses the active surface; refusals show as `error` text on canvas. "Load more" ends the list. Escape closes the panel.
+- **Live-preview editor:** CodeMirror over the document's Markdown. Headings, emphasis, strikethrough, inline code, links, lists, quotes, code blocks, rules, images and tables appear rendered. Markdown syntax is hidden except on the lines a cursor or selection touches while the editor has focus, where it shows for editing; a table shows its source while the selection is inside it, and clicking a rendered table moves the cursor into it. A plain click on a link places the cursor; Cmd/Ctrl-click opens it, and Cmd/Ctrl-Enter opens the link under the cursor for keyboard users. Away from the cursor, ordered items show their rendered numbers, escapes and entities show the characters they stand for, accepted reference definitions collapse, and reference links resolve against single-line definitions anywhere in the document; anything the renderer leaves as text stays visible as written. A single paragraph longer than 20,000 characters is shown entirely as its Markdown source, so that very long guest text cannot slow the editor; View renders it normally. Other people's changes reach the editor in batches no more often than the page's own measured work allows, while local typing appears at once.
+- **Edit | View:** a two-button group with `aria-pressed` selection, on private links and for guests; readers never get it. Private links always open in Edit. View shows the rendered document a Public visitor sees, kept live; the connection stays writable, so returning to Edit needs no reload. Selected mode uses the active surface and green text.
+- **History button:** a compact 12px button after the Edit | View control, shown only on private links while the connection is writable, never to guests; `aria-expanded` reflects the panel, and while it is open the button uses the active surface and green text.
+- **History panel:** an `aside` on the paper surface with a sticky head (a semibold "History" heading and Close) above a 1px `line` divider. Each revision is a row with its muted tabular number, a semibold author line, muted 12px time and changed documents, and a Pin toggle with `aria-pressed` (green text and a `line` border when pinned). The selected revision uses the active surface; refusals show as `error` text on canvas. "Load more" ends the list. Escape closes the panel. Guest names in a credit each carry the guest badge, then "and N more guests", and the row notes "Names were typed by guests."; the safe point reads "Safe point before guest editing" and its Pin is disabled while anyone can edit.
 - **Revision view:** replaces the document surface with a read-only render under a canvas banner with a 1px `line` border: the revision title, the comparison modes as `aria-pressed` buttons, Restore this revision (confirmed inline, with an accent primary button) and Back to live. Changes are tinted with the accent and underlined, so they do not rely on color alone; every mark has a screen-reader label.
 - **Document navigation:** muted links on canvas; the current document uses a paper surface, ink text, semibold weight, and `aria-current`.
 - **Buttons:** restrained borders; hover uses the active surface. Keyboard focus is a 2px accent outline offset by 3px. Disabled buttons have 0.55 opacity.
-- **Collaborator name:** no join prompt. Each browser gets a random two-word name (for example "Quiet Otter"), kept in local storage; a verified tailnet identity replaces it.
+- **Collaborator name:** no join prompt on private links. Each browser gets a random two-word name (for example "Quiet Otter"), kept in local storage; a verified tailnet identity replaces it. Guests see a private editor under this name.
+- **Guest badge:** a 11px bold amber pill reading "guest", drawn by the page after a guest's name, never inside the name text: in the people list, cursor labels and History credits (each name gets its own badge). Names are always text.
+- **You are:** on public links, muted 12px text before the people list with the name in ink: "You are Viewer 3" and a **Join to edit** link button while anyone can edit, or "You are Mina", the guest badge and **Change name**.
+- **Viewer entries:** the viewers of the open document follow the people list as muted pills with a 1px `line` border ("Viewer 1", "Viewer 2", …); above 20 one pill gives the count ("21 viewers"). They have no avatar or cursor.
+- **Name popup:** a modal `dialog` on the paper surface (24px padding, 1px `line` border, scrim behind) over the live document, which keeps updating. "Join <flat>" with one line of description, the "Your name" field with a tabular "N/40" counter (earth above 40), a muted preview "Shown as **Mina** [guest] to other editors. Nobody checks it.", a canvas note on what guests can do, and **View only** and the accent **Join and edit**. Escape counts as View only. "Change your name" is the same popup with **Save name** only.
+- **Full dialogs:** "This document is full" (**Read**, **Try again**) and "Too many readers right now" (**Try again**, no other way out), as alert dialogs with the popup's shape.
 - **Footer:** "Powered by Flats" with a GitHub link, placed after the document inside the scrolling page, so it appears only at the end of the document, both while editing and when reading. It is not fixed to the viewport.
-- **Interruption notice:** earth-colored text on canvas, with Download local text and Reload actions. Keep state copy concrete.
+- **Interruption notice:** earth-colored text on canvas, with Download local text and Reload actions. A guest's notice starts with the reason in bold ("This change is too large for a guest, so editing stopped.") and offers Download local text and Rejoin; when guest editing ends it says how many changes were not saved and offers Download local text while the page reads on. Keep state copy concrete.
+- **Diagram on request:** in a document a guest wrote in, or while anyone can edit, a Mermaid block shows its source with a **Show diagram** button in its toolbar and draws only when clicked; an oversized one keeps its source with an earth note.
 - **Reading surface:** responsive images, horizontally scrollable code and tables, a muted blockquote rule, and thin horizontal dividers.
 
 ## Do's and Don'ts
@@ -146,3 +172,4 @@ Controls, navigation items, and code blocks share gently curved corners. Collabo
 - Don't communicate saved state or the selected mode through color alone.
 - Don't reintroduce split or source-only panes, or more modes than Edit and View.
 - Don't expose mode controls in the public read-only view.
+- Don't draw a guest's name inside a badge or let a name stand in for one; the badge is always a separate element.

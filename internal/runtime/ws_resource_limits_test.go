@@ -23,11 +23,11 @@ func TestWebSocketAdmissionCeiling(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			ok := h.admit()
+			ok := h.admit(false)
 			results <- ok
 			if ok {
 				<-release
-				h.releaseSlot()
+				h.releaseSlot(false)
 			}
 		}()
 	}
@@ -49,7 +49,7 @@ func TestWebSocketAdmissionCeiling(t *testing.T) {
 	if active != 0 {
 		t.Fatalf("%d slots leaked", active)
 	}
-	if h.admit() {
+	if h.admit(false) {
 		t.Fatal("admitted during shutdown")
 	}
 }
@@ -66,7 +66,7 @@ func TestWebSocketRejectedUpgrade(t *testing.T) {
 	}
 	h.active = 0
 	h.stopping = true
-	if h.admit() {
+	if h.admit(false) {
 		t.Fatal("admitted during shutdown")
 	}
 }
@@ -117,7 +117,7 @@ func TestWebSocketDefaultByteLimits(t *testing.T) {
 	h.budget.Lower(MaxWSQueuedBytesPerFlat)
 	upgraded := make(chan *wsconn.Conn, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		c, err := h.upgrade(w, r)
+		c, err := h.upgrade(w, r, false)
 		if err != nil {
 			t.Error(err)
 			close(upgraded)

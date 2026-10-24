@@ -2,9 +2,9 @@
 // confirmation first and reports the outcome; they resolve true when the
 // server state changed.
 
-import { h, dateTime, bytes, VISIBILITY, visibilityOf, accessOf, accessLabel, ACCESS, becomingNoticeFor, publicURL, publicNoticeOf, PUBLIC_NETWORKS } from './dom.js';
-import { api } from './api.js';
-import { confirmDialog, infoDialog, errorPanel, toast, extLink } from './ui.js';
+import { h, dateTime, bytes, VISIBILITY, visibilityOf, accessOf, accessLabel, editWords, ACCESS, becomingNoticeFor, publicURL, publicNoticeOf, PUBLIC_NETWORKS } from './dom.js';
+import { api, ApiError } from './api.js';
+import { confirmDialog, infoDialog, errorPanel, toast, extLink, privateURL, slideConfirm } from './ui.js';
 import { isLive } from './list.js';
 
 const label = (f) => f.name || f.slug;
@@ -17,9 +17,9 @@ async function report(title, err) {
 // publishing, rollbacks, visibility changes and deletion wait for the operator's
 // approval; the confirm dialog before each request is that decision, so the
 // pending request is approved at once. Resolves to the decided approval.
-async function approve(res) {
+async function approve(res, signal) {
   if (res?.status !== 'pending_approval' || !res.approval?.id) return res;
-  return api.decide(res.approval.id, true);
+  return api.decide(res.approval.id, true, signal);
 }
 
 // restoreBox is the opt-in "restore data" checkbox shown on rollbacks.
@@ -97,7 +97,7 @@ async function showLive(slug, what) {
   if (!f) { toast('Done.', 'success'); return; }
   const pub = publicURL(f);
   await infoDialog(`Version ${f.live_version} ${what}`, [
-    f.private_url ? h('p', null, 'Private URL: ', extLink(f.private_url)) : null,
+    f.private_url ? h('p', null, 'Private URL: ', extLink(privateURL(f))) : null,
     pub ? h('p', null, 'Public URL: ', extLink(pub)) : null,
     pub ? h('p', { class: 'notice-text', text: publicNoticeOf(f) }) : null,
   ]);
@@ -201,8 +201,117 @@ export async function deleteFlat(flat) {
   }
 }
 
+// The delete request's answer is classified by what the console can observe
+// (docs/spec/console-row-delete.md, Result). A host error is a non-2xx answer
+// with the host's error body; anything without it leaves the result unknown.
+const isHostError = (err) => err instanceof ApiError && err.status > 0 && typeof err.body.error === 'string';
+const isNotFound = (err) => isHostError(err) && err.status === 404 && err.body.category === 'not_found';
+
+// The longest the console waits for the delete request and for the list read
+// that follows a host error before it reports an unknown result.
+const DELETE_WAIT_MS = 30000;
+const LIST_WAIT_MS = 10000;
+
+// withDeadline runs call(signal) and gives up after ms: it aborts the call
+// and rejects with an Error naming the wait. An answer that comes later is
+// ignored.
+async function withDeadline(ms, what, call) {
+  const controller = new AbortController();
+  let timer;
+  const late = new Promise((_, reject) => {
+    timer = setTimeout(() => {
+      controller.abort();
+      reject(new Error(`no answer to the ${what} within ${ms / 1000} seconds`));
+    }, ms);
+  });
+  const answer = call(controller.signal);
+  answer.catch(() => {}); // a call that fails after the deadline is ignored
+  try {
+    return await Promise.race([answer, late]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+// deleteInPlace turns the list menu's Delete item into a slide control and
+// deletes the flat once the handle reaches the end
+// (docs/spec/console-row-delete.md). The menu stays open; outcomes show in
+// the track's label and in toasts. on.pending(true) marks the start of the
+// deletion and on.pending(false) the closing of its menu (or the flat being
+// gone), so the list is not redrawn under the control. on.gone runs after the
+// menu closes because the flat is gone; on.unknown runs when the menu closes
+// after an unknown result.
+export function deleteInPlace(flat, ctl, on) {
+  const name = label(flat);
+  const slide = slideConfirm({
+    text: 'Slide to delete', name, busyText: 'Deleting…', busyAnnouncement: `Deleting ${name}…`, onEnd: run,
+  });
+  ctl.replace(slide.el);
+  slide.handle.focus();
+  let started = false;
+  const release = () => {
+    if (started) { started = false; on.pending(false); }
+  };
+
+  function gone(message, kind) {
+    ctl.hold(false);
+    ctl.close(false);
+    release();
+    toast(message, kind);
+    on.gone();
+  }
+  function unknown(...errs) {
+    ctl.hold(false);
+    slide.lock('Not confirmed');
+    toast(`Could not confirm whether ${name} was deleted; the deletion may still finish. ` + errs.map((e) => e.message || String(e)).join(' '), 'error');
+    ctl.onClose(on.unknown);
+  }
+  async function run() {
+    ctl.hold(true);
+    if (!started) {
+      started = true;
+      on.pending(true);
+      ctl.onClose(release);
+    }
+    let err;
+    try {
+      // The deadline covers the approval this console decides, if any.
+      const res = await withDeadline(DELETE_WAIT_MS, 'delete request', async (signal) => approve(await api.remove(flat.slug, signal), signal));
+      // Only a Flats answer confirms: a proxy's page can also be a 200.
+      if (res && (res.status === 'done' || res.status === 'approved')) {
+        gone(`${name} was deleted.`, 'success');
+        return;
+      }
+      err = new Error('the answer did not come from the Flats host');
+    } catch (e) { err = e; }
+    if (isNotFound(err)) { gone(`${name} was already deleted.`, 'success'); return; }
+    if (!isHostError(err)) { unknown(err); return; }
+    // The host answered with an error; the flat's record may still be gone.
+    let listed;
+    try {
+      const fl = await withDeadline(LIST_WAIT_MS, 'flat list', (signal) => api.flats('', signal));
+      // flats: null is an empty list; a list only counts when every entry
+      // names its flat.
+      const entries = fl && fl.flats === null ? [] : fl && fl.flats;
+      if (!Array.isArray(entries) || !entries.every((f) => f && typeof f === 'object' && typeof f.slug === 'string' && f.slug)) {
+        throw new Error('the flat list could not be read');
+      }
+      listed = (fl.flats || []).some((f) => f.slug === flat.slug);
+    } catch (e) { unknown(err, e); return; }
+    if (!listed) {
+      gone(`${name} was deleted, but the host reported a problem: ${err.message}`, 'error');
+      return;
+    }
+    ctl.hold(false);
+    slide.reset('Failed. Slide to retry');
+    slide.handle.focus();
+    toast(`Delete failed: ${err.message}`, 'error');
+  }
+}
+
 // setVisibility changes visibility after a confirm; widening shows the notice.
-// access ('view' or 'edit') is the public access level of a board. Stopping
+// access ('view' or 'edit') is the public access level of a board or a
+// document flat. Stopping
 // guest editing and allowing it have their own steps.
 export async function setVisibility(flat, vis, access) {
   const fromKey = accessOf(flat);
@@ -258,12 +367,14 @@ function confirmed(res) {
   throw Object.assign(new Error(res?.result || res?.error || 'Flats did not confirm the change.'), { body: {} });
 }
 
-// stopGuestEditing sets a board to Public, view only at once, with no
-// confirmation (rule 5). The console's request is its own approval.
+// stopGuestEditing sets a board or document flat to Public, view only at
+// once, with no confirmation (rule 5). The console's request is its own
+// approval.
 export async function stopGuestEditing(flat) {
+  const words = editWords(flat);
   try {
     const res = confirmed(await approve(await api.setVisibility(flat.slug, 'public', 'view')));
-    toast('Guest editing stopped. Viewers can still watch.', 'success');
+    toast(`Guest editing stopped. Viewers can still ${words.watch}.`, 'success');
     return res;
   } catch (err) {
     await report('Stop guest editing failed', err);
@@ -271,10 +382,11 @@ export async function stopGuestEditing(flat) {
   }
 }
 
-// allowGuestEditing widens a board to Public, anyone can edit: it reads the
-// preflight first and shows either what must change or the confirmation of
-// what the change grants (rules 3, 6, 6a).
+// allowGuestEditing widens a board or document flat to Public, anyone can
+// edit: it reads the preflight first and shows either what must change or
+// the confirmation of what the change grants (rules 3, 6, 6a).
 export async function allowGuestEditing(flat) {
+  const words = editWords(flat);
   if (visibilityOf(flat.visibility) === 'private' && !(await canGoPublic(flat))) return null;
   let pre;
   try {
@@ -288,10 +400,10 @@ export async function allowGuestEditing(flat) {
   const ok = await confirmDialog({
     title: `Let anyone on the internet edit ${label(flat)}?`,
     body: [
-      h('p', { text: 'Anyone who opens the link can add, change and delete everything on this board. They type a name first, but nobody checks who they are.' }),
+      h('p', { text: `Anyone who opens the link can add, change and delete ${words.everything}. They type a name first, but nobody checks who they are.` }),
       h('ul', { class: 'checks' },
-        check(true, 'You can restore any earlier state from History. Flats pins a ', h('strong', { text: 'safe point' }), " of the board as it is now, and it can't be unpinned while guests can edit."),
-        check(true, "Guests can't see history, import, upload images or send selections to an agent."),
+        check(true, 'You can restore any earlier state from History. Flats pins a ', h('strong', { text: 'safe point' }), ` of ${words.the} as it is now, and it can't be unpinned while guests can edit.`),
+        check(true, words.cannot),
         check(true, `Guest activity is limited, and the disk quota (${bytes(pre.disk_quota)}) and the revision quota (${pre.revision_quota}) stay in force.`)),
       h('p', { class: 'alert alert-warn' },
         pre.listed ? 'This flat is also listed publicly by a relay, so strangers can find it. ' : '',
@@ -302,7 +414,7 @@ export async function allowGuestEditing(flat) {
   if (!ok) return null;
   try {
     const res = confirmed(await approve(await api.setVisibility(flat.slug, 'public', 'edit')));
-    toast('Anyone with the link can now edit this board.', 'success');
+    toast(`Anyone with the link can now edit ${words.this}.`, 'success');
     return res;
   } catch (err) {
     if (err?.body?.category === 'public_edit_blocked') { await blockedDialog(flat, pre, err.problems); return null; }
@@ -337,7 +449,7 @@ function blockedDialog(flat, pre, problems) {
     const targets = {
       limits: h('a', { class: 'btn', href: '/settings/limits', 'data-nav': true, text: 'Open Limits' }),
       revisions: h('a', { class: 'btn', href: base + '/settings#revisions', 'data-nav': true, text: 'Open revision settings' }),
-      history: flat.private_url ? extLink(flat.private_url, 'Open History', 'btn') : null,
+      history: flat.private_url ? extLink(privateURL(flat), 'Open History', 'btn') : null,
     };
     const actions = [...new Set(problems.map((p) => PROBLEMS[p.code]?.action).filter(Boolean))].map((a) => targets[a]).filter(Boolean);
     const cancel = h('button', { type: 'button', class: 'btn', text: 'Cancel' });

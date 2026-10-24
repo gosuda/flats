@@ -118,9 +118,10 @@ an approval.
 
 ## Joining the board
 
-8. **Anyone can edit: ask for a name.** A visitor who opens a Public board at
-   level `edit` is asked for a name before taking part, and cannot edit
-   without one. The name is 1 to 40 characters after trimming, plain text,
+8. **Anyone can edit: ask for a name, or watch without one.** A visitor who
+   opens a Public board at level `edit` gets the name popup with **Join and
+   edit** and **View only**. View only makes the visitor Viewer N (rule 9);
+   nobody edits without a name. The name is 1 to 40 characters after trimming, plain text,
    with control and invisible formatting characters removed. The browser
    remembers the name and lets the guest change it. Names are not unique.
 9. **View only: never ask.** A visitor who opens a Public board at level
@@ -134,10 +135,15 @@ an approval.
     count when there are more than 20). A viewer's browser sends nothing but its
     connection and its reconnect token, and receives no presence, as today. A viewer has no cursor,
     selection or visible viewport.
-11. **The prompt is an overlay on the live board.** The name prompt appears
-    over the live view, not instead of it. A viewer who has the board open
-    when the level goes to `edit` gets the same prompt and is not made a guest
-    until they type a name; until then they can only watch.
+11. **One popup, shown over the live board.** The name popup appears over the
+    live view, not instead of it, and is the only way to start editing. It
+    opens on arrival at level `edit`, from **Join to edit** in the top bar,
+    and for every viewer without a guest session when the level goes from
+    `view` to `edit`. A remembered name fills the field but the popup still
+    opens once. View only (or closing it) keeps the visitor watching for the
+    rest of that tab's visit, without reopening on its own until the level
+    changes to `edit` again. (This replaces the bottom join panel; see
+    [Current state](#current-state).)
 12. **Guest presence.** At level `edit`, guests and Private editors see each
     other's cursors, selections and "is editing" marks
     ([board rules 22 to 25](board.md#collaboration)).
@@ -162,11 +168,13 @@ an approval.
     public view projection.
 15. **Identity in it.** Every author or editor key in the guest projection is
     replaced: who made an element or change is reduced to its kind (member,
-    guest or agent), and people on the board now get short labels that last
-    while they are connected. A verified Tailscale login, a typed name of a
-    Private editor and an agent label never appear in it. Private editors
-    appear to guests only as **Member 1, 2, …** with their cursor and
-    selection.
+    guest or agent). People on the board now appear under nicknames: a
+    Private editor under their page nickname (the name they typed on the
+    board, or the one the page chose), with their cursor and selection. A
+    verified Tailscale login or display name and an agent label never appear
+    in it, so a member on Tailscale appears to guests under their page
+    nickname. Nicknames are unverified text; the guest badge, not the name,
+    tells a guest from a member.
 16. **Guest keys are issued by the server.** A guest's editor key is a random
     value assigned by the host in a separate namespace. The client cannot
     choose it, so a guest cannot claim another editor's key or undo their
@@ -329,7 +337,7 @@ Reference: a board with 20 guests editing continuously for an hour.
 | Approval | A board cannot reach level `edit` without a confirmation or approval that states it. A pending view-only approval cannot apply as `edit`. A pending `edit` approval fails as stale after **Stop guest editing**. |
 | Name rules | A guest edit is accepted only after a valid name. A view-only visitor is never asked and is named Viewer N, and sees that name. |
 | Boundary | On a Public route, history, recovery, import, upload, Send to agent and assets that exist only in earlier revisions are refused at both levels. A forged edit at `view` and a forged Private-only operation from a guest change nothing. |
-| Identity | A scan of every frame sent to a guest, including snapshots, deltas, acknowledgements, presence and exported data, finds no Tailscale login, no Private typed name and no agent label (exports are the public view projection). |
+| Identity | A scan of every frame sent to a guest, including snapshots, deltas, acknowledgements, presence and exported data, finds no Tailscale login or display name and no agent label (exports are the public view projection); a member on Tailscale appears under their page nickname. |
 | Limits | While guests send operations at the per-guest limit on every allowed connection, a Private editor can still connect, edit, roll back and save, and remote display keeps the board's p95 of 200 ms. At the reserved disk and element room and at the guest byte budget, guests are refused and Private edits succeed. |
 | Revisions | However 20 guests edit for an hour (continuously or in pauses of any length), they create at most 12 revisions plus forced boundaries. The pinned safe point is retained and cannot be unpinned while the level is `edit`. Guest-only revisions hold at most half of the revision quota (the newest revision is always kept, so with a quota of 1 it may be guest-only), so member and agent revisions keep at least the other half. Re-enabling editing on an unchanged board adds no revision. |
 | Kill switch | After **Stop guest editing**, no edit from a guest connection commits. The console confirms only after the stored level is saved and the epoch is bumped. If the board instance is not running, the stored level alone is changed and applies on the next start. |
@@ -347,8 +355,8 @@ Board spec ([board.md](board.md)):
 - Rules 22 to 25 (collaboration): guests take part at level `edit`; viewers
   appear as entries only.
 - Rule 23 (identity): guests are a third kind; their names are unverified,
-  server-keyed and badged. Private editors are shown to guests only as
-  Member N.
+  server-keyed and badged. Private editors are shown to guests under their
+  page nicknames, never under a Tailscale identity.
 - Rule 41 (revision unit): guest edits share one group.
 - Rule 51 (write access): Private routes and MCP, **and Public routes at level
   `edit` for the element operations of rule 17 only**.
@@ -399,7 +407,11 @@ Other docs:
 
 Implemented end to end: the stored level and its approvals, the safe point,
 guests and viewers on the board, the guest projection and limits, revision
-grouping and retention, authorship, the board app and the console. Not done
+grouping and retention, authorship, the board app and the console. The
+changes decided with [docs-public-edit.md](docs-public-edit.md) on
+2026-10-22 are implemented too: the popup's **View only** choice and **Join
+to edit** (rules 8 and 11) replace the bottom join panel, and guests see
+members under their page nicknames instead of Member N (rule 15). Not done
 or not measured:
 
 - Remote display under load is measured as delivery to the other
@@ -408,23 +420,17 @@ or not measured:
 - No guest edit can reach the asset room refusal today, because guests can
   only reuse assets live elements already use. The check stays as a second
   line of defense, for example if guests may add images later (open
-  question 4), and a unit test calls it directly.
+  question 2), and a unit test calls it directly.
 
 ## Open questions
 
-1. **Just look.** The owner asked that visitors to an editable board be asked
-   for a name. Whether an editable board also offers a way to watch without a
-   name is undecided; as written, there is none.
-2. **Show typed names of Private editors to guests?** Rule 15 shows only
-   "Member N" so that nothing identifying leaves the tailnet. A member could
-   instead choose to show a display name.
-3. **Stronger guest identity.** Names are not unique, and there is no way to
+1. **Stronger guest identity.** Names are not unique, and there is no way to
    remove or block a single guest, because an anonymous visitor can open a new
    session. Whether to add a passphrase on the link, or per-guest removal, is
    decided after real use. This page adds no accounts.
-4. **Guest images.** Whether guests may add images later, behind an operator
+2. **Guest images.** Whether guests may add images later, behind an operator
    switch, is decided after the disk and abuse limits have been measured.
-5. **Numbers.** The rate limits, the guest and viewer limits, the reserved
+3. **Numbers.** The rate limits, the guest and viewer limits, the reserved
    room shares and the guest state caps are fixed by measurement in the
    technical design.
-6. **Other types.** Whether documents and designs get the same level later.
+4. **Other types.** Documents get the same level ([docs-public-edit.md](docs-public-edit.md)); whether designs do is undecided.

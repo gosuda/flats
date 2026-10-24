@@ -3,6 +3,7 @@ package store
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"time"
@@ -10,8 +11,9 @@ import (
 	"github.com/gosuda/flats/internal/contenttype"
 )
 
-// Public access levels of a Public flat (docs/spec/board-public-edit.md).
-// A Private flat has none; only a board can be AccessEdit.
+// Public access levels of a Public flat (docs/spec/board-public-edit.md,
+// docs-public-edit.md). A Private flat has none; only a board or a document
+// can be AccessEdit.
 const (
 	AccessNone = ""
 	AccessView = "view"
@@ -135,12 +137,20 @@ func (c *ContentTx) RetainCandidates(ctx context.Context) ([]RetainCandidate, er
 	return out, rows.Err()
 }
 
-// isBoardTx reports whether flat's content state marks it as a board.
-func isBoardTx(ctx context.Context, tx *sql.Tx, flat string) (bool, error) {
+// publicEditableTx reports whether flat is a board or a document, the types
+// that can be edited by anyone. The type comes from its content state, or
+// from its live version's manifest while that row does not exist yet: a
+// document gets its row at its first revision import.
+func publicEditableTx(ctx context.Context, tx *sql.Tx, flat string) (bool, error) {
 	var typ string
 	err := tx.QueryRowContext(ctx, `SELECT type FROM content_state WHERE flat=?`, flat).Scan(&typ)
 	if errors.Is(err, sql.ErrNoRows) {
-		return false, nil
+		var manifest sql.NullString
+		err = tx.QueryRowContext(ctx, `SELECT v.manifest FROM flats f JOIN versions v ON v.flat=f.slug AND v.number=f.live_version WHERE f.slug=?`, flat).Scan(&manifest)
+		if errors.Is(err, sql.ErrNoRows) {
+			return false, nil
+		}
+		typ = contenttype.FromManifest(json.RawMessage(manifest.String))
 	}
-	return typ == contenttype.Board, err
+	return typ == contenttype.Board || typ == contenttype.Docs, err
 }

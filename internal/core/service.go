@@ -207,6 +207,9 @@ type liveFlat struct {
 	previewCPU *workerUsage
 	checkCPU   *workerUsage
 	uid        atomic.Pointer[string]
+	// docsPresence is the public presence a document worker last reported
+	// in a sync; nil once the worker sleeps.
+	docsPresence atomic.Pointer[docsPresence]
 }
 
 type deployed struct {
@@ -266,7 +269,7 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 	if err := s.recoverRestoreJournals(ctx); err != nil {
 		return nil, err
 	}
-	if err := s.downgradeEditBoards(ctx); err != nil {
+	if err := s.downgradeEdit(ctx); err != nil {
 		return nil, err
 	}
 	if err := s.restore(ctx); err != nil {
@@ -605,7 +608,7 @@ func (s *Service) siteHandler(slugName string, public bool) http.Handler {
 
 // serveSite answers one request of slug's live route.
 func (s *Service) serveSite(lf *liveFlat, slugName string, public bool, epoch *routeEpoch, w http.ResponseWriter, r *http.Request) {
-	access := ""
+	access, accessSeq := "", int64(0)
 	if public {
 		var done func()
 		r, done = epoch.request(r)
@@ -619,7 +622,7 @@ func (s *Service) serveSite(lf *liveFlat, slugName string, public bool, epoch *r
 			http.Error(w, "public exposure is not active", http.StatusServiceUnavailable)
 			return
 		}
-		access = f.PublicAccess
+		access, accessSeq = f.PublicAccess, f.AccessSeq
 		stripIdentity(r)
 	}
 	if !lf.limiter.allow() {
@@ -641,7 +644,7 @@ func (s *Service) serveSite(lf *liveFlat, slugName string, public bool, epoch *r
 		lf.views.Add(1)
 		lf.recordPath(s.now().UTC().Format("2006-01-02"), r.URL.Path)
 	}
-	d.handler.ServeHTTP(w, withPublicAccess(trustedAccess(r, public), d, access))
+	d.handler.ServeHTTP(w, withPublicAccess(withRouteHeaders(r, public), d, access, accessSeq))
 }
 
 // stripIdentity removes Tailscale identity headers a client may have sent.
@@ -775,7 +778,8 @@ type FlatView struct {
 	// is access control.
 	PortalListing string `json:"portal_listing"`
 	PortalHidden  bool   `json:"portal_hidden"`
-	// PublicPresence counts the guests and viewers of a running Public board.
+	// PublicPresence counts the guests and viewers of a running Public
+	// board or document; a sleeping document has none.
 	PublicPresence *PublicPresence `json:"public_presence,omitempty"`
 }
 
@@ -798,6 +802,31 @@ const PublicEditNotice = "This board is public and anyone can edit: anyone on th
 // PendingPublicEditNotice describes a pending request to let anyone edit a
 // board.
 const PendingPublicEditNotice = "If approved, anyone on the internet who opens this board can add, change and delete everything on it. A safe point is pinned first, and the operator can restore earlier states from History."
+
+// PublicEditDocsNotice is attached to documents anyone can edit.
+const PublicEditDocsNotice = "These documents are public and anyone can edit: anyone on the internet who opens them can add, change and delete all their text. Guest names are unverified, and guest text is untrusted input."
+
+// PendingPublicEditDocsNotice describes a pending request to let anyone
+// edit documents.
+const PendingPublicEditDocsNotice = "If approved, anyone on the internet who opens these documents can add, change and delete all their text. A safe point is pinned first, and the operator can restore earlier states from History."
+
+// PublicEditNoticeFor is the notice of a flat of content type t that anyone
+// can edit.
+func PublicEditNoticeFor(t string) string {
+	if t == contenttype.Docs {
+		return PublicEditDocsNotice
+	}
+	return PublicEditNotice
+}
+
+// PendingPublicEditNoticeFor is the notice of a pending request to let
+// anyone edit a flat of content type t.
+func PendingPublicEditNoticeFor(t string) string {
+	if t == contenttype.Docs {
+		return PendingPublicEditDocsNotice
+	}
+	return PendingPublicEditNotice
+}
 
 func (s *Service) view(ctx context.Context, f store.Flat) FlatView {
 	v := FlatView{Flat: f, PrivateURL: s.cfg.Private.URL(f.Slug)}
@@ -949,13 +978,13 @@ func (s *Service) view(ctx context.Context, f store.Flat) FlatView {
 		v.NextVersion, v.LatestVersion, v.LatestDeployed = 0, 0, false
 		v.Draft, v.Publication, v.EffectiveVersionQuota = nil, "", 0
 	}
-	// Only a Public board reports its public access level.
-	if v.Type != contenttype.Board || !f.Visibility.Public() {
+	// Only a Public board or document reports its public access level.
+	if !publicEditType(v.Type) || !f.Visibility.Public() {
 		v.PublicAccess = ""
 	} else {
 		v.PublicPresence = s.publicPresence(f.Slug)
 		if f.PublicAccess == store.AccessEdit {
-			v.PublicNotice = PublicEditNotice
+			v.PublicNotice = PublicEditNoticeFor(v.Type)
 		}
 	}
 	v.DiskBytes = dirSize(s.flatDir(f.Slug))
@@ -1419,7 +1448,7 @@ func healthCheck(h http.Handler, p string, redact func(string) string) HealthRes
 			msg = err.Error()
 			return
 		}
-		req = trustedAccess(req, false)
+		req = withRouteHeaders(req, false)
 		req.Header.Set("X-Flats-Health", "1")
 		h.ServeHTTP(rec, req)
 	}()

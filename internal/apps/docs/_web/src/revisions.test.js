@@ -707,14 +707,15 @@ test("documents with one text count as separate copies", () => {
   fits(db, quota);
 });
 
-test("text an update makes visible by completing an earlier one counts", () => {
+test("stored pending update data never becomes visible or counts", () => {
   const db = database(),
     c = content("v1", doc("a.md", "x\n"));
   transaction(db, () => revisions.ensureFlat(db, c, next()));
   budget(db, 1 << 30);
   ackAll(db);
-  // A remote replica inserts a character, then 200 KB after it; the
-  // second update arrives first and stays pending (invisible).
+  // A remote replica inserts a character, then 200 KB after it; the second
+  // update was stored first, before updates leaving pending data were
+  // refused (docs-public-edit-TECH.md 3.7).
   const remote = new Y.Doc();
   const s = current(db, c.documents[0], c.hash, undefined, generation);
   Y.applyUpdate(remote, Y.encodeStateAsUpdate(s.doc));
@@ -726,28 +727,13 @@ test("text an update makes visible by completing an earlier one counts", () => {
   sv = Y.encodeStateVector(remote);
   t.insert(t.length, "z".repeat(200_000));
   const second = Y.encodeStateAsUpdate(remote, sv);
-  // An unrelated small edit, made before the pending update arrives (a
-  // later local edit would carry the pending structs along).
-  const control = editUpdate(db, c, "a.md", "q");
   transaction(db, () => applyBody(db, c, "a.md", second));
   assert.equal(committed(db, c, "a.md"), "x\n");
-  // Room for the visible text and another small edit, but not for the
-  // 200 KB the small first update makes visible.
+  // Loading drops the pending data: completing it shows only the first
+  // update's text, within a quota without room for the 200 KB.
   budget(db, MIN_WAL + dbBytes(db) + 400 * 1024);
-  const undo = new Error("undo");
-  assert.throws(
-    () =>
-      transaction(db, () => {
-        applyBody(db, c, "a.md", control);
-        throw undo;
-      }),
-    (e) => e === undo,
-  );
-  assert.throws(
-    () => transaction(db, () => applyBody(db, c, "a.md", first)),
-    refused,
-  );
-  assert.equal(committed(db, c, "a.md"), "x\n");
+  transaction(db, () => applyBody(db, c, "a.md", first));
+  assert.equal(committed(db, c, "a.md"), "x\np");
 });
 
 test("near the quota only the edited text is sized; others once", () => {
@@ -1236,4 +1222,658 @@ test("a truncation's success never clears a later failure's generation", () => {
   atRest(a);
   assert.equal(revisions.getMeta(a, "wal_truncate"), null);
   assert.equal(revisions.getMeta(a, "wal_generation"), 2);
+});
+
+// --- anonymous public editing (docs-public-edit-TECH.md 3) ---
+
+// timedEdit appends text to a document at now, as a member (editor and
+// label) or as a guest (guest: name), with the guest's client id claimed.
+function timedEdit(db, c, path, text, now, who) {
+  transaction(db, () => {
+    const s = activate(
+      db,
+      c.documents.find((d) => d.path === path),
+      c.hash,
+      undefined,
+      generation,
+    );
+    try {
+      const sv = Y.encodeStateVector(s.doc),
+        t = s.doc.getText("markdown");
+      const editor = new Y.Doc();
+      Y.applyUpdate(editor, Y.encodeStateAsUpdate(s.doc));
+      // Set after loading: Yjs picks a new id when a loaded update has its own.
+      editor.clientID = who.client ?? 9000;
+      editor.getText("markdown").insert(t.length, text);
+      const update = Y.encodeStateAsUpdate(editor, sv);
+      editor.destroy();
+      if (who.guest)
+        revisions.claimClients(
+          db,
+          path,
+          who.key,
+          new Set([editor.clientID]),
+          s.doc,
+        );
+      Y.applyUpdate(s.doc, update);
+      append(
+        db,
+        s,
+        "u:" + Math.random().toString(36).slice(2),
+        base64(update),
+        !!who.guest,
+      );
+      compact(db, s);
+      if (who.guest) revisions.touchGuestGroup(db, who.guest, now);
+      else revisions.touchGroup(db, who.editor, who.label, now);
+    } finally {
+      s.doc.destroy();
+    }
+  });
+}
+const guestOnly = (e) =>
+  e.kind === "person" && !e.authors.length && e.guests.length;
+
+test("pending data stored earlier is dropped on load, and the next write compacts it away", () => {
+  const db = database(),
+    c = content("v1", doc("a.md", "seen\n"));
+  transaction(db, () => revisions.ensureFlat(db, c, next()));
+  budget(db, 0);
+  // A checkpoint written by an earlier app, holding a struct waiting for a
+  // missing client and a deletion of a missing client's text.
+  const s = current(db, c.documents[0], c.hash, undefined, generation);
+  const hidden = new Y.Doc();
+  hidden.clientID = 51;
+  hidden.getText("markdown").insert(0, "HIDDEN-ROOT ");
+  const child = new Y.Doc();
+  child.clientID = 50;
+  Y.applyUpdate(child, Y.encodeStateAsUpdate(hidden));
+  child.getText("markdown").insert(12, "HIDDEN-PENDING");
+  Y.applyUpdate(
+    s.doc,
+    Y.encodeStateAsUpdate(child, Y.encodeStateVector(hidden)),
+  );
+  const deleter = new Y.Doc();
+  deleter.clientID = 52;
+  Y.applyUpdate(deleter, Y.encodeStateAsUpdate(hidden));
+  deleter.getText("markdown").delete(0, 3);
+  Y.applyUpdate(
+    s.doc,
+    Y.encodeStateAsUpdate(deleter, Y.encodeStateVector(hidden)),
+  );
+  assert.ok(s.doc.store.pendingStructs && s.doc.store.pendingDs);
+  const state = Y.encodeStateAsUpdate(s.doc);
+  assert.ok(Buffer.from(state).includes("HIDDEN-PENDING"));
+  s.doc.destroy();
+  db.exec("UPDATE flats_docs_checkpoints SET state=? WHERE doc='a.md'", [
+    base64(state),
+  ]);
+  const loaded = current(db, c.documents[0], c.hash, undefined, generation);
+  assert.equal(loaded.doc.getText("markdown").toString(), "seen\n");
+  assert.equal(loaded.doc.store.pendingStructs, null);
+  assert.equal(loaded.doc.store.pendingDs, null);
+  assert.ok(!Buffer.from(Y.encodeStateAsUpdate(loaded.doc)).includes("HIDDEN"));
+  loaded.doc.destroy();
+  // A later edit commits, and its write replaces the checkpoint; the
+  // missing root arriving afterwards reveals nothing.
+  timedEdit(db, c, "a.md", "more\n", Date.now(), {
+    editor: "browser:a",
+    label: "Ada",
+    client: 60,
+  });
+  const cp = db.query(
+    "SELECT state FROM flats_docs_checkpoints WHERE doc='a.md'",
+  )[0].state;
+  assert.ok(!Buffer.from(cp, "base64").includes("HIDDEN"));
+  transaction(db, () => {
+    const t = activate(db, c.documents[0], c.hash, undefined, generation);
+    Y.applyUpdate(t.doc, Y.encodeStateAsUpdate(hidden));
+    append(db, t, "root", base64(Y.encodeStateAsUpdate(hidden)));
+    t.doc.destroy();
+  });
+  assert.equal(committed(db, c, "a.md"), "HIDDEN-ROOT seen\nmore\n");
+});
+
+test("guests may insert only with client ids that are theirs or new", () => {
+  const db = database(),
+    c = content("v1", doc("a.md", "seed\n"));
+  transaction(db, () => revisions.ensureFlat(db, c, next()));
+  timedEdit(db, c, "a.md", "member\n", Date.now(), {
+    editor: "browser:a",
+    label: "Ada",
+    client: 70,
+  });
+  const claim = (key, client) =>
+    transaction(db, () => {
+      const s = activate(db, c.documents[0], c.hash, undefined, generation);
+      try {
+        revisions.claimClients(db, "a.md", key, new Set([client]), s.doc);
+      } finally {
+        s.doc.destroy();
+      }
+    });
+  const code = (fn) => {
+    try {
+      fn();
+      return "";
+    } catch (e) {
+      return e.code;
+    }
+  };
+  const seedClient = [
+    ...current(
+      db,
+      c.documents[0],
+      c.hash,
+      undefined,
+      generation,
+    ).doc.store.clients.keys(),
+  ].find((k) => k !== 70);
+  assert.equal(
+    code(() => claim("guest:a", 70)),
+    "guest_client",
+    "a member's id",
+  );
+  assert.equal(
+    code(() => claim("guest:a", seedClient)),
+    "guest_client",
+    "the seed's id",
+  );
+  assert.equal(
+    code(() => claim("guest:a", 2 ** 53 - 1)),
+    "",
+  );
+  assert.equal(
+    code(() => claim("guest:a", 2 ** 53 - 1)),
+    "",
+    "its own again",
+  );
+  assert.equal(
+    code(() => claim("guest:b", 2 ** 53 - 1)),
+    "guest_client",
+    "another guest's id",
+  );
+  assert.deepEqual([...revisions.ownedClients(db, "a.md")], [2 ** 53 - 1]);
+  // A member reusing a guest's id is refused, so attribution stays exact.
+  assert.throws(
+    () => revisions.checkMemberClients(db, "a.md", new Set([2 ** 53 - 1])),
+    (e) => e.code === "invalid_update",
+  );
+  revisions.checkMemberClients(db, "a.md", new Set([71]));
+  // At most 400 guest-owned ids in a document, 5,000 in the flat.
+  for (let i = 0; i < 399; i++)
+    db.exec("INSERT INTO flats_docs_guest_clients VALUES('a.md',?,?)", [
+      1000 + i,
+      "guest:a",
+    ]);
+  assert.equal(
+    code(() => claim("guest:a", 99999)),
+    "guest_room",
+  );
+  db.exec(
+    "DELETE FROM flats_docs_guest_clients WHERE client BETWEEN 1000 AND 1398",
+  );
+  for (let i = 0; i < 4999; i++)
+    db.exec("INSERT INTO flats_docs_guest_clients VALUES(?,?,?)", [
+      "other" + (i % 20) + ".md",
+      i,
+      "guest:a",
+    ]);
+  assert.equal(
+    code(() => claim("guest:a", 99999)),
+    "guest_room",
+  );
+});
+
+test("a guest may add a client id only while the document holds fewer than 768", () => {
+  const db = database(),
+    c = content("v1", doc("a.md", "seed\n"));
+  transaction(db, () => revisions.ensureFlat(db, c, next()));
+  transaction(db, () => {
+    const s = activate(db, c.documents[0], c.hash, undefined, generation);
+    const many = new Y.Doc();
+    Y.applyUpdate(many, Y.encodeStateAsUpdate(s.doc));
+    const sv = Y.encodeStateVector(s.doc);
+    for (let i = 0; i < 766; i++) {
+      many.clientID = 10000 + i;
+      many.getText("markdown").insert(0, "x");
+    }
+    const u = Y.encodeStateAsUpdate(many, sv);
+    Y.applyUpdate(s.doc, u);
+    append(db, s, "many", base64(u));
+    compact(db, s);
+    s.doc.destroy();
+  });
+  const claim = (client) =>
+    transaction(db, () => {
+      const s = activate(db, c.documents[0], c.hash, undefined, generation);
+      try {
+        assert.equal(s.doc.store.clients.size, 767);
+        revisions.claimClients(
+          db,
+          "a.md",
+          "guest:a",
+          new Set([client, client + 1]),
+          s.doc,
+        );
+      } finally {
+        s.doc.destroy();
+      }
+    });
+  assert.throws(
+    () => claim(50),
+    (e) => e.code === "guest_room",
+  );
+  assert.equal(revisions.ownedClients(db, "a.md").size, 0);
+});
+
+test("the guests' group has one window, names its guests and is due only at its end", () => {
+  const db = database(),
+    c = content("v1", doc("a.md", "x\n"));
+  transaction(db, () => revisions.ensureFlat(db, c, next()));
+  const t0 = 1_000_000_000_000;
+  for (let i = 0; i < 70; i++)
+    timedEdit(db, c, "a.md", "g", t0 + i, {
+      guest: "Guest " + i,
+      key: "guest:" + i,
+      client: 20000 + i,
+    });
+  const group = db.query(
+    "SELECT * FROM flats_docs_groups WHERE editor='guests'",
+  )[0];
+  assert.equal(group.fixed, 1);
+  assert.equal(JSON.parse(group.names).length, 64);
+  // Idle for longer than a member group's gap: not due.
+  transaction(db, () => revisions.sync(db, c, generation, t0 + 4 * 60 * 1000));
+  assert.equal(entries(db).length, 1);
+  transaction(db, () =>
+    revisions.sync(db, c, generation, t0 + revisions.GROUP_MAX_AGE),
+  );
+  const e = entries(db).at(-1);
+  assert.ok(guestOnly(e));
+  assert.deepEqual(e.authors, []);
+  assert.deepEqual(e.guests, [
+    "Guest 0",
+    "Guest 1",
+    "Guest 2",
+    "Guest 3",
+    "Guest 4",
+  ]);
+  assert.equal(e.guests_more, 59);
+  assert.deepEqual(e.documents[0].guest_lines, [[2, 2]]);
+  assert.equal(db.query("SELECT count(*) AS n FROM flats_docs_groups")[0].n, 0);
+});
+
+test("a member's closing group credits the member and the guests since the last entry", () => {
+  const db = database(),
+    c = content("v1", doc("a.md", "x\n"));
+  transaction(db, () => revisions.ensureFlat(db, c, next()));
+  const t0 = 1_000_000_000_000,
+    ada = { editor: "browser:a", label: "Ada", client: 31 },
+    mina = { guest: "Mina", key: "guest:m", client: 32 };
+  timedEdit(db, c, "a.md", "g\n", t0, mina);
+  timedEdit(db, c, "a.md", "a\n", t0 + 1000, ada);
+  transaction(db, () =>
+    revisions.sync(db, c, generation, t0 + 1000 + revisions.GROUP_IDLE),
+  );
+  let e = entries(db).at(-1);
+  assert.deepEqual([e.authors, e.guests], [["Ada"], ["Mina"]]);
+  // The guests' window stays open and clean; Ada's next group goes clean
+  // after a guest window entry and later expires without one.
+  const group = db.query(
+    "SELECT * FROM flats_docs_groups WHERE editor='guests'",
+  )[0];
+  assert.equal(group.started_at, t0);
+  assert.equal(group.dirty, 0);
+  timedEdit(db, c, "a.md", "a2\n", t0 + 60_000, ada);
+  timedEdit(db, c, "a.md", "g2\n", t0 + 70_000, mina);
+  transaction(db, () =>
+    revisions.sync(db, c, generation, t0 + revisions.GROUP_MAX_AGE),
+  );
+  e = entries(db).at(-1);
+  assert.deepEqual(
+    [e.authors, e.guests],
+    [["Ada"], ["Mina"]],
+    "the window's end credits both dirty groups",
+  );
+  const count = entries(db).length;
+  transaction(db, () =>
+    revisions.sync(
+      db,
+      c,
+      generation,
+      t0 + revisions.GROUP_MAX_AGE + revisions.GROUP_IDLE,
+    ),
+  );
+  assert.equal(entries(db).length, count, "a due clean group records nothing");
+});
+
+test("an hour of guests and a member with 31-second pauses records few guest-only entries", () => {
+  const db = database(),
+    c = content("v1", doc("a.md", "a\n"), doc("b.md", "b\n"));
+  transaction(db, () => revisions.ensureFlat(db, c, next()));
+  const t0 = 1_000_000_000_000,
+    ada = { editor: "browser:a", label: "Ada", client: 41 };
+  let cycles = 0,
+    adaDirty = false;
+  for (let t = 0; t <= 3600; t += 5) {
+    const now = t0 + t * 1000;
+    // 20 guests across both documents: continuously in the first half
+    // hour, then in pauses.
+    if (t < 1800 || Math.floor(t / 120) % 2 === 0)
+      timedEdit(db, c, t % 10 ? "a.md" : "b.md", ".", now, {
+        guest: "Guest " + (t % 20),
+        key: "guest:" + (t % 20),
+        client: 42 + (t % 20),
+      });
+    // Ada edits for 15 seconds, then pauses for 31 or more.
+    if (t % 50 < 15) {
+      timedEdit(db, c, t % 2 ? "b.md" : "a.md", "m", now, ada);
+      adaDirty = true;
+    } else if (adaDirty && t % 50 === 45) {
+      cycles++;
+      adaDirty = false;
+    }
+    transaction(db, () => revisions.sync(db, c, generation, now));
+  }
+  const e = entries(db).slice(1);
+  assert.ok(
+    e.filter(guestOnly).length <= 12,
+    `${e.filter(guestOnly).length} guest-only entries`,
+  );
+  const credited = e.filter((x) => x.authors.includes("Ada")).length;
+  assert.ok(
+    credited >= cycles - 1,
+    `${credited} entries credit the member over ${cycles} pauses`,
+  );
+  for (const x of e)
+    assert.ok(x.authors.length || x.guests.length, "an entry credits someone"); // Another hour of guests alone: one entry per window at most.
+  const start = entries(db).length;
+  for (let t = 3605; t <= 7200; t += 5) {
+    const now = t0 + t * 1000;
+    if (t < 5400 || Math.floor(t / 120) % 2 === 0)
+      timedEdit(db, c, "a.md", ".", now, {
+        guest: "Guest " + (t % 20),
+        key: "guest:" + (t % 20),
+        client: 42 + (t % 20),
+      });
+    transaction(db, () => revisions.sync(db, c, generation, now));
+  }
+  // Ada's last group may still close in it.
+  const alone = entries(db)
+    .slice(start)
+    .filter((x) => !x.authors.includes("Ada"));
+  assert.ok(alone.every(guestOnly));
+  assert.ok(alone.length >= 10 && alone.length <= 12, String(alone.length));
+});
+
+test("access stores the level and epoch, and leaving edit closes the guests' group", () => {
+  const db = database(),
+    c = content("v1", doc("a.md", "x\n"));
+  transaction(db, () => revisions.ensureFlat(db, c, next()));
+  const set = (body) =>
+    transaction(db, () => revisions.setAccess(db, c, generation, body));
+  for (const bad of [
+    { level: "admin", epoch: 1 },
+    { level: "edit", epoch: -1 },
+    { level: "edit", epoch: 1.5 },
+    { level: "edit" },
+  ])
+    assert.throws(
+      () => set(bad),
+      (e) => e.code === "invalid",
+    );
+  assert.deepEqual(revisions.accessOf(db), { level: "", epoch: 0 });
+  assert.deepEqual(set({ level: "edit", epoch: 7 }), {
+    level: "edit",
+    epoch: 7,
+  });
+  assert.throws(
+    () => set({ level: "view", epoch: 6 }),
+    (e) => e.code === "conflict",
+  );
+  timedEdit(db, c, "a.md", "guest\n", Date.now(), {
+    guest: "Mina",
+    key: "guest:m",
+    client: 77,
+  });
+  const before = entries(db).length;
+  set({ level: "view", epoch: 8 });
+  assert.deepEqual(revisions.accessOf(db), { level: "view", epoch: 8 });
+  const e = entries(db);
+  assert.equal(e.length, before + 1);
+  assert.deepEqual([e.at(-1).kind, e.at(-1).guests], ["person", ["Mina"]]);
+  assert.equal(db.query("SELECT count(*) AS n FROM flats_docs_groups")[0].n, 0);
+  // Leaving a clean group records nothing.
+  set({ level: "", epoch: 9 });
+  assert.equal(entries(db).length, before + 1);
+});
+
+test("a safe point records people's edits first and is reused when nothing changed", () => {
+  const db = database(),
+    c = content("v1", doc("a.md", "a\n"), doc("b.md", "b\n"));
+  transaction(db, () => revisions.ensureFlat(db, c, next()));
+  timedEdit(db, c, "a.md", "ada\n", Date.now(), {
+    editor: "browser:a",
+    label: "Ada",
+    client: 81,
+  });
+  const point = (prev) =>
+    transaction(db, () => revisions.safePoint(db, c, generation, prev));
+  assert.throws(
+    () => point({ source: 1 }),
+    (e) => e.code === "invalid",
+  );
+  const first = point(null);
+  const e = entries(db);
+  assert.deepEqual(
+    e.slice(-2).map((x) => [x.kind, x.authors]),
+    [
+      ["person", ["Ada"]],
+      ["safe_point", []],
+    ],
+  );
+  assert.equal(first.reuse, false);
+  assert.equal(first.seq, e.at(-1).seq);
+  assert.equal(e.at(-1).message, "Safe point before guest editing");
+  assert.equal(db.query("SELECT count(*) AS n FROM flats_docs_groups")[0].n, 0);
+  const prev = {
+    source: "v1",
+    documents: e
+      .at(-1)
+      .documents.map(({ path, hash }) => ({ path, hash }))
+      .reverse(),
+  };
+  assert.deepEqual(point(prev), { seq: 0, reuse: true });
+  assert.deepEqual(point({ ...prev, source: "" }), { seq: 0, reuse: true });
+  assert.equal(entries(db).length, e.length);
+  timedEdit(db, c, "b.md", "bo\n", Date.now(), {
+    editor: "browser:b",
+    label: "Bo",
+    client: 82,
+  });
+  const again = point(prev);
+  assert.equal(again.reuse, false);
+  assert.deepEqual(
+    entries(db)
+      .slice(-2)
+      .map((x) => x.kind),
+    ["person", "safe_point"],
+  );
+});
+
+test("guests' growth is charged to their byte budget and refunded when space is freed", () => {
+  const db = database(),
+    c = content("v1", doc("a.md", "x\n"));
+  transaction(db, () => revisions.ensureFlat(db, c, next()));
+  budget(db, 1 << 30);
+  ackAll(db);
+  const before = revisions.measuredBytes(db);
+  transaction(db, () => {
+    db.exec("CREATE TABLE IF NOT EXISTS filler(x TEXT)");
+    db.exec("INSERT INTO filler VALUES(?)", ["f".repeat(200_000)]);
+    revisions.chargeGuest(db, before);
+  });
+  const charged = revisions.getMeta(db, "guest_charge");
+  assert.ok(charged >= 200_000, String(charged));
+  // A budget installation reports the measured total; when it falls, the
+  // charge falls by as much.
+  budget(db, 1 << 30, 1000);
+  budget(db, 1 << 30, 0, DAY / 2);
+  assert.equal(revisions.getMeta(db, "guest_charge"), charged - 1000);
+  revisions.setMeta(db, "guest_charge", 256 * 1024 * 1024 - 10);
+  assert.throws(
+    () =>
+      transaction(db, () => {
+        const start = revisions.measuredBytes(db);
+        db.exec("INSERT INTO filler VALUES(?)", ["g".repeat(200_000)]);
+        revisions.chargeGuest(db, start);
+      }),
+    (e) => e.code === "guest_room",
+  );
+});
+
+test("guests leave members a tenth of the disk quota", () => {
+  const db = database(),
+    c = content("v1", doc("a.md", "x\n"));
+  transaction(db, () => revisions.ensureFlat(db, c, next()));
+  budget(db, 1 << 30);
+  ackAll(db);
+  const check = (guest) =>
+    transaction(db, () => {
+      const s = activate(db, c.documents[0], c.hash, undefined, generation);
+      try {
+        revisions.checkDiskQuota(
+          db,
+          { path: "a.md", text: s.doc.getText("markdown") },
+          guest,
+        );
+      } finally {
+        s.doc.destroy();
+      }
+    });
+  // The total the check computes, read from its refusal under a tiny quota.
+  budget(db, 1);
+  let used;
+  try {
+    check(false);
+  } catch (e) {
+    used = Number(/would use (\d+) bytes/.exec(e.message)[1]);
+  }
+  budget(db, Math.ceil(used / 0.95));
+  check(false);
+  assert.throws(
+    () => check(true),
+    (e) => e.code === "disk_quota",
+  );
+});
+
+test("guests may not use the last share of a document's lifetime", () => {
+  const db = database(),
+    c = content("v1", doc("a.md", "x\n"));
+  transaction(db, () => revisions.ensureFlat(db, c, next()));
+  db.exec("UPDATE flats_docs_documents SET seq=? WHERE doc='a.md'", [80_000]);
+  const add = (guest) =>
+    transaction(db, () => {
+      const s = activate(db, c.documents[0], c.hash, undefined, generation);
+      append(db, s, "id-" + guest + Math.random(), "", guest);
+      s.doc.destroy();
+    });
+  assert.throws(
+    () => add(true),
+    (e) => e.code === "guest_room",
+  );
+  add(false);
+});
+
+test("a document reset to a fresh state holds no guest's text", () => {
+  const db = database(),
+    c = content("v1", doc("a.md", "x\n"));
+  transaction(db, () => revisions.ensureFlat(db, c, next()));
+  timedEdit(db, c, "a.md", "guest\n", Date.now(), {
+    guest: "Mina",
+    key: "guest:m",
+    client: 91,
+  });
+  assert.equal(revisions.hasGuestText(db, "a.md"), true);
+  db.exec("UPDATE flats_docs_documents SET seq=? WHERE doc='a.md'", [100_000]);
+  transaction(db, () =>
+    revisions.restoreText(
+      db,
+      c,
+      c.documents[0],
+      "restored\n",
+      "op-reset-001",
+      generation,
+    ),
+  );
+  assert.equal(committed(db, c, "a.md"), "restored\n");
+  assert.equal(revisions.hasGuestText(db, "a.md"), false);
+});
+
+test("a database from before guest editing gains its columns and table", () => {
+  const db = database({ schema: false });
+  db.exec(
+    "CREATE TABLE flats_docs_groups(editor TEXT PRIMARY KEY, label TEXT NOT NULL, started_at INTEGER NOT NULL, last_at INTEGER NOT NULL, dirty INTEGER NOT NULL)",
+  );
+  db.exec("INSERT INTO flats_docs_groups VALUES('browser:a','Ada',1,2,1)");
+  db.exec(
+    "CREATE TABLE flats_docs_outbox(seq INTEGER PRIMARY KEY AUTOINCREMENT, created_at INTEGER NOT NULL, kind TEXT NOT NULL, authors TEXT NOT NULL, message TEXT NOT NULL, rollback_of INTEGER, op TEXT, source TEXT NOT NULL, documents TEXT NOT NULL)",
+  );
+  db.exec(
+    "CREATE TABLE flats_docs_recorded(doc TEXT PRIMARY KEY, epoch TEXT NOT NULL, seq INTEGER NOT NULL, hash TEXT NOT NULL, bytes INTEGER NOT NULL)",
+  );
+  schema(db);
+  const columns = (table) =>
+    db.query(`PRAGMA table_info(${table})`).map((x) => x.name);
+  assert.deepEqual(columns("flats_docs_groups").slice(-2), ["names", "fixed"]);
+  assert.deepEqual(columns("flats_docs_outbox").slice(-2), [
+    "guests",
+    "guests_more",
+  ]);
+  assert.equal(columns("flats_docs_recorded").at(-1), "guest_lines");
+  assert.equal(revisions.hasGuestText(db, "a.md"), false);
+  assert.equal(db.query("SELECT label FROM flats_docs_groups")[0].label, "Ada");
+});
+
+test("a member's announced presence id cannot be claimed by a guest before the member's first edit", () => {
+  const db = database(),
+    c = content("v1", doc("a.md", "seed\n"));
+  transaction(db, () => revisions.ensureFlat(db, c, next()));
+  const claim = (key, client) =>
+    transaction(db, () => {
+      const s = activate(db, c.documents[0], c.hash, undefined, generation);
+      try {
+        revisions.claimClients(db, "a.md", key, new Set([client]), s.doc);
+      } finally {
+        s.doc.destroy();
+      }
+    });
+  const code = (fn) => {
+    try {
+      fn();
+      return "";
+    } catch (e) {
+      return e.code;
+    }
+  };
+  // The member's page announced presence id 91 and has not edited yet.
+  revisions.reserveMemberClient(db, "a.md", 91, "browser:ada");
+  assert.equal(
+    code(() => claim("guest:aaaa", 91)),
+    "guest_client",
+  );
+  // The reservation is not guest text and does not count toward guest caps.
+  assert.equal(revisions.ownedClients(db, "a.md").size, 0);
+  assert.equal(revisions.hasGuestText(db, "a.md"), false);
+  // The member's own first edit with that id is not refused.
+  revisions.checkMemberClients(db, "a.md", new Set([91]));
+  // A guest's own fresh id still works, and a member reserving it later
+  // leaves the guest's ownership alone.
+  assert.equal(
+    code(() => claim("guest:aaaa", 92)),
+    "",
+  );
+  revisions.reserveMemberClient(db, "a.md", 92, "browser:ada");
+  assert.deepEqual([...revisions.ownedClients(db, "a.md")], [92]);
 });

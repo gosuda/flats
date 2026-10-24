@@ -48,6 +48,6 @@ func (s *Service) previewHandler(p *preview) http.Handler {
 		}
 		p.last.Store(s.now().UnixMilli())
 		w.Header().Set("X-Robots-Tag", "noindex")
-		p.handler.ServeHTTP(w, trustedAccess(r, false))
+		p.handler.ServeHTTP(w, withRouteHeaders(r, false))
 	})
 }

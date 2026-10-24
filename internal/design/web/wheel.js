@@ -2,7 +2,8 @@
 // Choosing the dominant axis on every sample reverses diagonal trackpad pans
 // when quantization changes which axis is larger. Event creation times keep
 // delayed handling from splitting a gesture; coalesced samples keep its mapping.
-export function createWheelPan() {
+// horizontalOnly constrains the design canvas; other viewers retain both axes.
+export function createWheelPan({ horizontalOnly = false } = {}) {
   let swapped = null, last = null;
   const reset = () => { swapped = null; last = null; };
   const pan = (e) => {
@@ -14,7 +15,7 @@ export function createWheelPan() {
     if (swapped === null) swapped = Math.abs(dy) > Math.abs(dx);
     // Missing or backwards timestamps must not force a new mapping.
     if (Number.isFinite(time) && (last === null || time >= last)) last = time;
-    return swapped ? { x: dy, y: dx } : { x: dx, y: dy };
+    return { x: swapped ? dy : dx, y: horizontalOnly ? 0 : swapped ? dx : dy };
   };
   return { pan, reset };
 }

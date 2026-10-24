@@ -1,4 +1,4 @@
-import { h, icon, visibilityOf, accessOf, ACCESS, PUBLIC_ACCESS_NOTICE, PUBLIC_NETWORKS, plural } from './dom.js';
+import { h, icon, visibilityOf, accessOf, publicEditOf, ACCESS, PUBLIC_ACCESS_NOTICE, PUBLIC_NETWORKS, plural } from './dom.js';
 import { api } from './api.js';
 import { setVisibility, stopGuestEditing } from './actions.js';
 import { busy, fill, toast, extLink, serverOnly, loopbackHost, SERVER_ONLY } from './ui.js';
@@ -13,19 +13,21 @@ export function shareDialog(initial, onChange = () => {}) {
   const previousFocus = document.activeElement;
   const id = 'share-' + Math.random().toString(36).slice(2);
   const close = h('button', { type: 'button', class: 'icon-btn', 'aria-label': 'Close share dialog' }, icon('close'));
-  // Link access is one radio group: Private and Public, or for a board
-  // Private, Public view only and Public anyone can edit (rule 32).
-  const choices = flat.type === 'board' ? ['private', 'view', 'edit'] : ['private', 'public'];
+  // Link access is one radio group: Private and Public, or for a board or
+  // document Private, Public view only and Public anyone can edit (rule 32).
+  const words = publicEditOf(flat);
+  const choices = words ? ['private', 'view', 'edit'] : ['private', 'public'];
   const radios = choices.map((value) => h('input', { type: 'radio', name: id + '-access', id: `${id}-${value}`, value }));
+  const desc = (value) => (value === 'view' && words ? words.viewDesc : ACCESS[value].desc);
   const access = h('div', { class: 'share-choices', role: 'radiogroup', 'aria-labelledby': id + '-access' },
     choices.map((value, i) => h('label', { class: 'share-choice', for: `${id}-${value}` }, radios[i],
-      h('span', null, h('strong', { text: ACCESS[value].label }), h('span', { class: 'muted small', text: ACCESS[value].desc })))));
+      h('span', null, h('strong', { text: ACCESS[value].label }), h('span', { class: 'muted small', text: desc(value) })))));
   const notice = h('p', { class: 'muted small share-notice' });
   const explanation = h('p', { class: 'muted small' });
   const networks = h('div', { class: 'muted small' });
   const internetRow = h('div', { class: 'share-person' });
   const guestNote = h('p', { class: 'alert alert-warn small', hidden: true },
-    h('strong', { text: "Guests can't see history." }), " They can't roll back, import, upload images or send selections to an agent. You can restore any earlier state from History.");
+    h('strong', { text: "Guests can't see history." }), ` ${words?.guestsCannot || ''} You can restore any earlier state from History.`);
   const stop = h('button', { type: 'button', class: 'btn btn-danger btn-small', text: 'Stop guest editing' });
   const stopRow = h('div', { class: 'share-stop', hidden: true }, h('span', { class: 'muted small', text: 'Ends editing for guests at once. Viewers stay.' }), stop);
   const link = h('div', { class: 'share-link muted small' });
@@ -48,7 +50,7 @@ export function shareDialog(initial, onChange = () => {}) {
           h('span', { class: 'muted small', text: 'Owner' })),
         h('div', { class: 'share-person' }, h('span', { class: 'share-avatar' }, icon('lock')),
           h('div', null, h('div', { text: 'People on your networks' }), networks),
-          h('span', { class: 'muted small', text: flat.type === 'board' ? 'Can edit' : 'Can open' })),
+          h('span', { class: 'muted small', text: words ? 'Can edit' : 'Can open' })),
         internetRow,
         explanation),
       guestNote,
@@ -70,15 +72,18 @@ export function shareDialog(initial, onChange = () => {}) {
     notice.textContent = vis === 'private' ? '' : (flat.public_notice || PUBLIC_ACCESS_NOTICE);
     explanation.textContent = vis === 'private' ? 'Other permitted networks may provide additional private links.' : 'Public links can be opened by anyone.';
     status.textContent = refreshError ? 'Could not refresh. Showing the last known state: ' + route.message + ' Try Refresh again.' : route.message;
-    link.textContent = route.url || '';
+    // A Local link seen from another device is not shown: the status
+    // explains where it opens.
+    link.textContent = serverOnly(route.url) ? '' : route.url || '';
     copy.disabled = !route.usable || serverOnly(route.url) || pending;
     if (copy.disabled) copy.setAttribute('disabled', '');
     else copy.removeAttribute('disabled');
     copy.title = serverOnly(route.url) ? SERVER_ONLY : '';
-    const nextVisitKey = route.usable ? route.url : '';
+    const visible = route.usable && !serverOnly(route.url);
+    const nextVisitKey = visible ? route.url : '';
     if (nextVisitKey !== visitKey) {
       const hadFocus = visit.firstChild && document.activeElement === visit.firstChild;
-      fill(visit, route.usable ? extLink(route.url, [icon('external'), 'Visit'], 'btn btn-small') : null);
+      fill(visit, visible ? extLink(route.url, [icon('external'), 'Visit'], 'btn btn-small') : null);
       visitKey = nextVisitKey;
       if (hadFocus) {
         if (visit.firstChild?.tagName === 'A') visit.firstChild.focus();
@@ -87,14 +92,14 @@ export function shareDialog(initial, onChange = () => {}) {
     }
   }
   // drawInternet is the "Anyone on the internet" row with the live guest and
-  // viewer counts of a running Public board.
+  // viewer counts of a running Public board or document.
   function drawInternet(key) {
     internetRow.hidden = key === 'private';
     if (internetRow.hidden) return;
     const edit = key === 'edit';
     const p = flat.public_presence;
-    const now = !p ? '' : edit ? ` ${plural(p.guests, 'guest')} and ${plural(p.viewers, 'viewer')} on the board now.`
-      : flat.type === 'board' ? ` ${plural(p.viewers, 'viewer')} on the board now.` : '';
+    const now = !p || !words ? '' : edit ? ` ${plural(p.guests, 'guest')} and ${plural(p.viewers, 'viewer')} ${words.on} now.`
+      : ` ${plural(p.viewers, 'viewer')} ${words.on} now.`;
     fill(internetRow, h('span', { class: 'share-avatar' }, icon('globe')),
       h('div', null, h('div', { text: 'Anyone on the internet' }), h('div', { class: 'muted small', text: (edit ? 'Can edit.' : 'Can view.') + now })),
       h('span', { class: 'badge' + (edit ? ' badge-warn' : ''), text: edit ? 'can edit' : 'can view' }));
@@ -109,7 +114,7 @@ export function shareDialog(initial, onChange = () => {}) {
     refresh.className = 'btn btn-small is-disabled';
     try {
       const result = next === 'stop' ? await stopGuestEditing(flat)
-        : await setVisibility(flat, next === 'private' ? 'private' : 'public', flat.type === 'board' && next !== 'private' ? next : undefined);
+        : await setVisibility(flat, next === 'private' ? 'private' : 'public', words && next !== 'private' ? next : undefined);
       if (result) {
         changed = true;
         flat = await api.flat(flat.slug);

@@ -3,7 +3,7 @@
 // host imports the outbox into its revision store and acknowledges it.
 // See docs/spec/document-revisions-TECH.md.
 import * as Y from "yjs";
-import { base64, utf8Bytes, LIMITS } from "./protocol.js";
+import { base64, utf8Bytes, LIMITS, GUEST } from "./protocol.js";
 import { applyText } from "./merge.js";
 import {
   load,
@@ -13,6 +13,7 @@ import {
   digest,
   validateIncremental,
   setSeed,
+  guestLines,
   WAL_REST_FRAMES,
 } from "./storage.js";
 
@@ -28,7 +29,7 @@ export function getMeta(db, key) {
   ])[0];
   return row ? JSON.parse(row.value) : null;
 }
-function setMeta(db, key, value) {
+export function setMeta(db, key, value) {
   if (value === null) db.exec("DELETE FROM flats_docs_meta WHERE key=?", [key]);
   else {
     const json = JSON.stringify(value);
@@ -100,7 +101,12 @@ function documentFile(db, path, known) {
     path,
   ])[0];
   if (rec && rec.epoch === pos.epoch && rec.seq === pos.seq)
-    return { path, hash: rec.hash, size: rec.bytes };
+    return {
+      path,
+      hash: rec.hash,
+      size: rec.bytes,
+      guest_lines: rec.guest_lines ? JSON.parse(rec.guest_lines) : [],
+    };
   const given = known && Object.hasOwn(known, path) ? known[path] : undefined;
   let hash, size;
   if (given && typeof given === "object") {
@@ -113,14 +119,127 @@ function documentFile(db, path, known) {
     addRef(db, hash, text);
   }
   if (rec) release(db, rec.hash);
-  db.exec("INSERT OR REPLACE INTO flats_docs_recorded VALUES(?,?,?,?,?)", [
+  const lines = committedGuestLines(db, path);
+  db.exec(
+    "INSERT OR REPLACE INTO flats_docs_recorded(doc,epoch,seq,hash,bytes,guest_lines) VALUES(?,?,?,?,?,?)",
+    [
+      path,
+      pos.epoch,
+      pos.seq,
+      hash,
+      size,
+      lines.length ? JSON.stringify(lines) : null,
+    ],
+  );
+  return { path, hash, size, guest_lines: lines };
+}
+
+// --- guest text (docs-public-edit-TECH.md 3.5, 3.9) ---
+
+// flats_docs_guest_clients holds the Yjs client ids guests own and, so a
+// guest cannot claim one first, the presence ids members announced (owner
+// is the editor key: guest:, ts: or browser:). ownedClients are the guests'
+// ids in a document. A database from before guest editing may not have the
+// table yet.
+export function ownedClients(db, path) {
+  return new Set(
+    guestRows(
+      db,
+      "SELECT client FROM flats_docs_guest_clients WHERE doc=? AND owner LIKE 'guest:%'",
+      [path],
+    ).map((r) => r.client),
+  );
+}
+// reserveMemberClient records the presence id a member's page announced, so
+// no guest can insert with it before the member's first edit commits
+// (TECH 3.5). A guest's own row is left alone.
+export function reserveMemberClient(db, path, client, key) {
+  db.exec("INSERT OR IGNORE INTO flats_docs_guest_clients VALUES(?,?,?)", [
     path,
-    pos.epoch,
-    pos.seq,
-    hash,
-    size,
+    client,
+    key,
   ]);
-  return { path, hash, size };
+}
+export const hasGuestText = (db, path) =>
+  guestRows(
+    db,
+    "SELECT 1 AS x FROM flats_docs_guest_clients WHERE doc=? AND owner LIKE 'guest:%' LIMIT 1",
+    [path],
+  ).length > 0;
+function guestRows(db, sql, params) {
+  try {
+    return db.query(sql, params);
+  } catch (e) {
+    if (String(e?.message).includes("no such table")) return [];
+    throw e;
+  }
+}
+// committedGuestLines are the guest line ranges of a document's committed
+// text; it is loaded only when guests own a client id in it.
+function committedGuestLines(db, path) {
+  if (!hasGuestText(db, path)) return [];
+  const s = load(db, path);
+  if (!s) return [];
+  try {
+    return guestLines(s.doc, ownedClients(db, path));
+  } finally {
+    s.doc.destroy();
+  }
+}
+// claimClients checks, before a guest's update applies, that every client id
+// it inserts with is this guest's in the document or new to it, and stores
+// the new ones as the guest's (TECH 3.5). doc is the server document.
+export function claimClients(db, path, owner, clients, doc) {
+  let added = 0;
+  for (const client of clients) {
+    const row = db.query(
+      "SELECT owner FROM flats_docs_guest_clients WHERE doc=? AND client=?",
+      [path, client],
+    )[0];
+    if (row) {
+      if (row.owner !== owner)
+        throw coded("guest_client", "this change uses another editor's id");
+      continue;
+    }
+    if (doc.store.clients.has(client))
+      throw coded(
+        "guest_client",
+        "this change extends text a guest did not write",
+      );
+    if (doc.store.clients.size + added >= GUEST.clients)
+      throw coded("guest_room", "this document has room for no more editors");
+    const owned = db.query(
+      "SELECT count(*) AS n FROM flats_docs_guest_clients WHERE doc=? AND owner LIKE 'guest:%'",
+      [path],
+    )[0].n;
+    if (owned >= GUEST.guestClients)
+      throw coded("guest_room", "this document has room for no more guests");
+    if (
+      db.query(
+        "SELECT count(*) AS n FROM flats_docs_guest_clients WHERE owner LIKE 'guest:%'",
+      )[0].n >= GUEST.flatClients
+    )
+      throw coded("guest_room", "these documents have room for no more guests");
+    db.exec("INSERT INTO flats_docs_guest_clients VALUES(?,?,?)", [
+      path,
+      client,
+      owner,
+    ]);
+    added++;
+  }
+}
+// checkMemberClients refuses a member's update that inserts with a client id
+// a guest owns, so authorship stays exact.
+export function checkMemberClients(db, path, clients) {
+  if (!hasGuestText(db, path)) return;
+  for (const client of clients)
+    if (
+      db.query(
+        "SELECT 1 AS x FROM flats_docs_guest_clients WHERE doc=? AND client=? AND owner LIKE 'guest:%'",
+        [path, client],
+      ).length
+    )
+      throw coded("invalid_update", "this change reuses a guest's editor id");
 }
 
 // textDirty reports whether a document of the newest entry moved since.
@@ -142,16 +261,40 @@ export function textDirty(db) {
 
 export function touchGroup(db, editor, label, now = Date.now()) {
   db.exec(
-    "INSERT INTO flats_docs_groups VALUES(?,?,?,?,1) ON CONFLICT(editor) DO UPDATE SET label=excluded.label,last_at=excluded.last_at,dirty=1",
+    "INSERT INTO flats_docs_groups(editor,label,started_at,last_at,dirty) VALUES(?,?,?,?,1) ON CONFLICT(editor) DO UPDATE SET label=excluded.label,last_at=excluded.last_at,dirty=1",
     [editor, String(label).slice(0, 200), now, now],
   );
 }
+// GUEST_GROUP is the one group every guest's edits join. It has no idle
+// close: it is due only when its window ends (TECH 3.9).
+const GUEST_GROUP = "guests";
+export function touchGuestGroup(db, name, now = Date.now()) {
+  const g = db.query("SELECT names FROM flats_docs_groups WHERE editor=?", [
+    GUEST_GROUP,
+  ])[0];
+  const names = g?.names ? JSON.parse(g.names) : [];
+  if (!names.includes(name) && names.length < GUEST.names) names.push(name);
+  db.exec(
+    "INSERT INTO flats_docs_groups(editor,label,started_at,last_at,dirty,names,fixed) VALUES(?,?,?,?,1,?,1) ON CONFLICT(editor) DO UPDATE SET last_at=excluded.last_at,dirty=1,names=excluded.names",
+    [GUEST_GROUP, GUEST_GROUP, now, now, JSON.stringify(names)],
+  );
+}
+// Member groups' labels are authors; guests are credited by name apart.
 function dirtyLabels(db) {
   return db
     .query(
-      "SELECT label FROM flats_docs_groups WHERE dirty=1 ORDER BY started_at,editor",
+      "SELECT label FROM flats_docs_groups WHERE dirty=1 AND coalesce(fixed,0)=0 ORDER BY started_at,editor",
     )
     .map((g) => g.label);
+}
+function dirtyGuests(db) {
+  const out = [];
+  for (const g of db.query(
+    "SELECT names FROM flats_docs_groups WHERE dirty=1 AND fixed=1 ORDER BY started_at,editor",
+  ))
+    for (const name of g.names ? JSON.parse(g.names) : [])
+      if (!out.includes(name)) out.push(name);
+  return out;
 }
 
 // --- recording ---
@@ -198,8 +341,9 @@ export function record(db, o) {
     .filter((a) => typeof a === "string" && a)
     .map((a) => a.slice(0, 200))
     .slice(0, MAX_AUTHORS);
+  const guests = dirtyGuests(db);
   db.exec(
-    "INSERT INTO flats_docs_outbox(created_at,kind,authors,message,rollback_of,op,source,documents) VALUES(?,?,?,?,?,?,?,?)",
+    "INSERT INTO flats_docs_outbox(created_at,kind,authors,message,rollback_of,op,source,documents,guests,guests_more) VALUES(?,?,?,?,?,?,?,?,?,?)",
     [
       Date.now(),
       o.kind,
@@ -208,7 +352,11 @@ export function record(db, o) {
       o.rollbackOf ?? null,
       o.op ?? null,
       o.source,
-      JSON.stringify(documents),
+      JSON.stringify(
+        documents.map((d) => ({ ...d, guest_lines: d.guest_lines || [] })),
+      ),
+      JSON.stringify(guests.slice(0, GUEST.credited)),
+      Math.max(0, guests.length - GUEST.credited),
     ],
   );
   const seq = db.query("SELECT last_insert_rowid() AS seq")[0].seq;
@@ -225,8 +373,12 @@ export function record(db, o) {
         d.size,
       ]);
   clearReservations(db);
-  setMeta(db, "newest", { source: o.source, documents });
-  db.exec("UPDATE flats_docs_groups SET dirty=0");
+  setMeta(db, "newest", {
+    source: o.source,
+    documents: documents.map(({ path, hash, size }) => ({ path, hash, size })),
+  });
+  // Recording keeps the guests' window open (its started_at).
+  db.exec("UPDATE flats_docs_groups SET dirty=0, names=NULL");
   if (o.op && o.kind === "rollback")
     db.exec("INSERT OR REPLACE INTO flats_docs_ops VALUES(?,?)", [o.op, seq]);
   return seq;
@@ -438,6 +590,8 @@ function resetDocument(db, content, source, text, generation) {
     "flats_docs_receipts",
     "flats_docs_activations",
     "flats_docs_documents",
+    // A fresh state holds no guest's text.
+    "flats_docs_guest_clients",
   ])
     db.exec(`DELETE FROM ${table} WHERE doc=?`, [source.path]);
   activate(
@@ -495,11 +649,17 @@ export function sync(db, content, generation, now = Date.now()) {
   const intent = getMeta(db, "intent");
   if (intent && !stale(db, generation)) releaseIntent(db, intent);
   const groups = db.query("SELECT * FROM flats_docs_groups");
-  const due = groups.filter(
-    (g) => now - g.last_at >= GROUP_IDLE || now - g.started_at >= GROUP_MAX_AGE,
+  // A member group is due after an idle gap or at its maximum age; the
+  // guests' group only when its window ends. Only a due group with edits
+  // since the last entry records one (TECH 3.9).
+  const due = groups.filter((g) =>
+    g.fixed
+      ? now - g.started_at >= GROUP_MAX_AGE
+      : now - g.last_at >= GROUP_IDLE || now - g.started_at >= GROUP_MAX_AGE,
   );
   if (due.length && !stale(db, generation)) {
-    if (textDirty(db)) record(db, { kind: "person", ...currentShape(content) });
+    if (due.some((g) => g.dirty))
+      record(db, { kind: "person", ...currentShape(content) });
     for (const g of due)
       db.exec("DELETE FROM flats_docs_groups WHERE editor=?", [g.editor]);
   }
@@ -513,10 +673,119 @@ export function sync(db, content, generation, now = Date.now()) {
     store: getMeta(db, "store"),
     ready: db.query("SELECT count(*) AS n FROM flats_docs_outbox")[0].n,
     intent: getMeta(db, "intent")?.id ?? null,
-    quiescent: !stale(db, generation) && !textDirty(db) &&
+    quiescent:
+      !stale(db, generation) &&
+      !textDirty(db) &&
       !getMeta(db, "intent") &&
       db.query("SELECT count(*) AS n FROM flats_docs_groups")[0].n === 0,
+    presence: getMeta(db, "presence") || { guests: 0, viewers: 0, at: 0 },
   };
+}
+
+// --- public access (docs-public-edit-TECH.md 3.1, 3.6) ---
+
+const ACCESS_LEVELS = ["", "view", "edit"];
+// accessOf is the stored public access level and its epoch.
+export function accessOf(db) {
+  const a = getMeta(db, "access");
+  return a && ACCESS_LEVELS.includes(a.level) && Number.isSafeInteger(a.epoch)
+    ? { level: a.level, epoch: a.epoch }
+    : { level: "", epoch: 0 };
+}
+// setAccess stores the level core committed with its epoch. Leaving edit
+// closes the guests' group, with a person entry when it has edits.
+export function setAccess(db, content, generation, body) {
+  const level = body?.level,
+    epoch = body?.epoch;
+  if (
+    !ACCESS_LEVELS.includes(level) ||
+    !Number.isSafeInteger(epoch) ||
+    epoch < 0
+  )
+    throw coded("invalid", "invalid access");
+  const old = accessOf(db);
+  if (epoch < old.epoch)
+    throw coded("conflict", "an access level with a newer epoch is stored");
+  // Core repeats the stored level on every wake; an idle document's log
+  // does not grow for it.
+  if (old.level !== level || old.epoch !== epoch)
+    setMeta(db, "access", { level, epoch });
+  if (level !== "edit") {
+    // The level is what must commit; recording is best effort.
+    db.exec("SAVEPOINT flats_docs_access");
+    try {
+      closeGuestGroup(db, content, generation);
+      db.exec("RELEASE flats_docs_access");
+    } catch (e) {
+      db.exec("ROLLBACK TO flats_docs_access");
+      db.exec("RELEASE flats_docs_access");
+      if (
+        e?.name === "InternalError" ||
+        /out of memory/i.test(String(e?.message))
+      )
+        throw e;
+      console.warn("docs guest group not recorded:", String(e?.message));
+    }
+  }
+  return { level, epoch };
+}
+function closeGuestGroup(db, content, generation) {
+  const g = db.query("SELECT dirty FROM flats_docs_groups WHERE editor=?", [
+    GUEST_GROUP,
+  ])[0];
+  if (!g) return;
+  if (
+    g.dirty &&
+    !tryEnsureFlat(db, content, generation) &&
+    !stale(db, generation)
+  )
+    record(db, { kind: "person", ...currentShape(content) });
+  db.exec("DELETE FROM flats_docs_groups WHERE editor=?", [GUEST_GROUP]);
+  dropUnused(db);
+}
+function validPrev(prev) {
+  if (prev === null || prev === undefined) return null;
+  if (
+    typeof prev !== "object" ||
+    typeof prev.source !== "string" ||
+    !Array.isArray(prev.documents) ||
+    prev.documents.length > 128 ||
+    !prev.documents.every(
+      (d) => typeof d?.path === "string" && typeof d?.hash === "string",
+    )
+  )
+    throw coded("invalid", "invalid earlier safe point");
+  return prev;
+}
+const byPath = (list) =>
+  [...list].sort((a, b) => (a.path < b.path ? -1 : a.path > b.path ? 1 : 0));
+// safePoint records the flat before guest editing: people's unrecorded
+// edits first, then, unless the flat equals the earlier safe point prev, a
+// forced safe_point entry. It returns that entry's seq, or reuse.
+export function safePoint(db, content, generation, prev) {
+  prev = validPrev(prev);
+  ensureFlat(db, content, generation);
+  if (stale(db, generation)) throw coded("unavailable", "obsolete worker");
+  const shape = currentShape(content);
+  recordPeople(db, shape);
+  const files = shape.paths.map((p) => documentFile(db, p)).filter(Boolean);
+  if (
+    prev &&
+    (prev.source === "" || prev.source === shape.source) &&
+    sameDocuments(byPath(files), byPath(prev.documents))
+  ) {
+    dropUnused(db);
+    return { seq: 0, reuse: true };
+  }
+  const seq = record(db, {
+    kind: "safe_point",
+    message: "Safe point before guest editing",
+    ...shape,
+    force: true,
+    authors: [],
+  });
+  dropUnused(db);
+  return { seq, reuse: false };
 }
 
 export function outbox(db, after) {
@@ -534,7 +803,11 @@ export function outbox(db, after) {
       more = true;
       break;
     }
-    bytes += row.documents.length + row.authors.length + row.message.length;
+    bytes +=
+      row.documents.length +
+      row.authors.length +
+      row.message.length +
+      (row.guests?.length || 0);
     entries.push({
       seq: row.seq,
       created_at: row.created_at,
@@ -544,7 +817,12 @@ export function outbox(db, after) {
       rollback_of: row.rollback_of ?? undefined,
       op: row.op ?? undefined,
       source: row.source,
-      documents: JSON.parse(row.documents),
+      documents: JSON.parse(row.documents).map((d) => ({
+        ...d,
+        guest_lines: d.guest_lines || [],
+      })),
+      guests: row.guests ? JSON.parse(row.guests) : [],
+      guests_more: row.guests_more || 0,
     });
     seq = row.seq;
   }
@@ -741,6 +1019,7 @@ export function setBudget(db, body) {
     throw coded("invalid", "invalid budget");
   // other was measured with these blobs in place.
   forgetUnimported(db, stored);
+  refundGuests(db, other + measuredBytes(db));
   const old = getMeta(db, "budget"),
     now = Date.now(),
     until = now + ttl;
@@ -760,6 +1039,39 @@ export function setBudget(db, body) {
     setMeta(db, "pending", Object.keys(pending).length ? pending : null);
   }
   setMeta(db, "budget", { quota, other, until });
+}
+// --- the guests' byte budget (docs-public-edit-TECH.md 3.8) ---
+
+// measuredBytes is the part of the disk check this database determines:
+// its pages and the texts recorded but not imported yet.
+export function measuredBytes(db) {
+  return pageCount(db) * pageSizeOf(db) + unimportedBytes(db);
+}
+// chargeGuest charges the guests' byte budget with what a guest's update
+// grew the measured part by since before, and refuses it over the budget.
+export function chargeGuest(db, before) {
+  const grew = measuredBytes(db) - before;
+  if (grew <= 0) return;
+  const charge = (getMeta(db, "guest_charge") || 0) + grew;
+  if (charge > GUEST.charge)
+    throw coded(
+      "guest_room",
+      "guests have used all the space these documents give them",
+    );
+  setMeta(db, "guest_charge", charge);
+}
+// refundGuests lowers the charge by how much a budget installation's
+// measured total fell since the previous one.
+function refundGuests(db, total) {
+  const charge = getMeta(db, "guest_charge") || 0,
+    previous = getMeta(db, "guest_measure");
+  if (!charge) {
+    if (previous !== null) setMeta(db, "guest_measure", null);
+    return;
+  }
+  if (previous !== null && total < previous)
+    setMeta(db, "guest_charge", Math.max(0, charge - (previous - total)));
+  if (total !== previous) setMeta(db, "guest_measure", total);
 }
 // unrecordedBytes maps every document people edited since it was last
 // recorded to its committed text's exact size.
@@ -836,7 +1148,16 @@ function recordingPages(db, pending, listed) {
   let pages = ENTRY_SLACK_PAGES + listed;
   for (const p of docs)
     pages += valuePages(p.bytes, pageSize) + DOC_SLACK_PAGES;
-  const list = 3 * metaLength(db, "newest") + 300 * docs.length + 4096;
+  // An entry's document list also holds guest line ranges, at most about
+  // 16 KiB a document (MAX_GUEST_RANGES in storage.js).
+  const guestDocs = db.query(
+      "SELECT count(DISTINCT doc) AS n FROM flats_docs_guest_clients WHERE owner LIKE 'guest:%'",
+    )[0].n,
+    list =
+      3 * metaLength(db, "newest") +
+      300 * docs.length +
+      16384 * Math.min(guestDocs, docs.length) +
+      4096;
   return pages + 2 * valuePages(list, pageSize);
 }
 // walReserve is the write-ahead log at rest: its 32-byte header and
@@ -858,7 +1179,7 @@ export const quotaStats = { sized: 0, loaded: 0 };
 // the bounds would not fit. A budget the host has not refreshed in time
 // admits nothing: the edit fails as transient, so editors resend it and
 // update_document can retry. A rollback never calls this.
-export function checkDiskQuota(db, edited) {
+export function checkDiskQuota(db, edited, guest = false) {
   const budget = getMeta(db, "budget");
   if (!budget || !(Date.now() <= budget.until))
     throw Object.assign(
@@ -898,6 +1219,12 @@ export function checkDiskQuota(db, edited) {
     throw coded(
       "disk_quota",
       `the flat would use ${used} bytes, over its ${budget.quota}-byte disk quota`,
+    );
+  // Guests leave members the rest of the quota.
+  if (guest && used > budget.quota * GUEST.share)
+    throw coded(
+      "disk_quota",
+      "the rest of the disk quota is kept for these documents' owners",
     );
 }
 

@@ -29,6 +29,7 @@ list.
 | [Design content type](design-type.md) | implemented | `type: "design"`: a canvas of HTML artboards people and agents edit live, with revisions |
 | [Board content type](board.md) | partly implemented | `type: "board"`: an infinite-canvas whiteboard of native elements people and agents edit together live, with revisions |
 | [Anonymous public editing for boards](board-public-edit.md) | partly implemented | A Public board level where anyone with the link can edit after typing a name, viewers named automatically, and the Share and Permissions controls |
+| [Anonymous public editing for documents](docs-public-edit.md) | partly implemented | The board's "anyone can edit" Public level for documents: guest names, viewers, the guest projection, limits, guest revisions and the shared console controls |
 | [Page content type](page-type.md) | implemented | `type: "page"`: one static HTML document with assets, on the website lifecycle |
 | [Operator keys and console domains](console-settings.md) | implemented | One model for the keys Flats needs, and the console's Tailscale domains as an add/remove list |
 | [Console listener address](console-address.md) | implemented | Rename the listener configuration key to `host.console_addr` with a behavior-preserving schema 5 migration |
@@ -36,6 +37,7 @@ list.
 | [Agent self-update](agent-self-update.md) | implemented | Client compatibility checks and explicit updates of the CLI, connection skill and guidance |
 | [Fast worker cold start](worker-cold-start.md) | implemented | Pre-started worker process and saved document images so workers and sleeping documents answer within 50 ms |
 | [Metrics](metrics.md) | implemented | Configurable Prometheus exposure, optional per-flat series, and independent Analytics usage (requests, errors, response time, worker CPU and memory, disk) |
+| [Delete from the flat list](console-row-delete.md) | implemented | A Delete item in each flat's "…" menu that turns into a slide control in place; dragging its handle to the end deletes the flat |
 | [Flats behind a reverse proxy](reverse-proxy-sites.md) | implemented | `proxy` and `proxy-public` providers that serve flats through an operator's reverse proxy, address selection by host default, and rename redirects on the arrival network |
 
 ## Where the technical designs live

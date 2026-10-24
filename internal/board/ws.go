@@ -2,6 +2,7 @@ package board
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -374,6 +375,8 @@ type conn struct {
 	color    string
 	verified bool
 	session  string // set by the apply loop at welcome
+	// nick is a member's page nickname (hello.nick), the name guests see.
+	nick string
 	// epoch is the access epoch at a guest's welcome; a guest batch from
 	// another epoch is refused (TECH public edit 6.1).
 	epoch int64
@@ -1241,6 +1244,9 @@ type helloMsg struct {
 	} `json:"guest"`
 	// ViewerToken is a viewer's reconnect token (spec rule 9).
 	ViewerToken string `json:"viewer_token"`
+	// Nick is the page's collaborator name; guests see a member under it
+	// (docs-public-edit-TECH 5.1).
+	Nick string `json:"nick"`
 }
 
 func validEditor(s string) bool {
@@ -1445,6 +1451,9 @@ func (in *Instance) welcome(r *http.Request, c *conn, h helloMsg) error {
 		}
 		return in.viewerWelcome(r, c, h)
 	}
+	// Both kinds of member get the nickname they sent, never a Tailscale
+	// display name: that one must not reach guests.
+	c.nick, _ = model.CleanGuestName(h.Nick)
 	if login := tailscaleLogin(r); login != "" {
 		c.key, c.verified, c.label = "ts:"+login, true, login
 		c.name = cleanName(r.Header.Get("Tailscale-User-Name"))
@@ -1489,7 +1498,7 @@ func (in *Instance) welcome(r *http.Request, c *conn, h helloMsg) error {
 		c.session = res.Session
 		in.hub.join(c)
 		c.send(map[string]any{"t": "welcome", "session": res.Session, "expires": now + engine.SessionTTL, "access": "private",
-			"level": in.level, "me": map[string]any{"key": c.key, "name": c.name, "verified": c.verified, "color": c.color}})
+			"level": in.level, "access_epoch": in.accessSeq.Load(), "me": map[string]any{"key": c.key, "name": c.name, "verified": c.verified, "color": c.color}})
 		seq := st.Seq()
 		// Catching up through the delta log is limited to half the queue
 		// cap; a longer gap gets a snapshot instead of a closed socket.
@@ -1934,14 +1943,15 @@ func (in *Instance) onPres(c *conn, raw string) bool {
 
 // presFrames builds a presence frame of c as members and as guests see it
 // (TECH public edit 3.3): members see a guest's key and name with guest
-// set; guests see connection labels, a member as "Member N", unverified.
+// set; guests see connection labels, a member under its nickname or as
+// "Member N" without one, unverified.
 func (c *conn) presFrames(fields map[string]json.RawMessage) (forMembers, forGuests []byte) {
 	m := map[string]any{"t": "pres", "key": c.key, "name": c.name, "color": c.color, "verified": c.verified}
 	g := map[string]any{"t": "pres", "key": c.plabel, "name": c.name, "color": c.color, "verified": false}
 	if c.guest {
 		m["guest"], g["guest"] = true, true
 	} else {
-		g["name"] = "Member " + strconv.Itoa(c.plabelN)
+		g["name"] = cmp.Or(c.nick, "Member "+strconv.Itoa(c.plabelN))
 	}
 	for k, v := range fields {
 		m[k], g[k] = v, v

@@ -241,6 +241,9 @@ function expand(el, trigger) {
   fit();
   viewport.focus();
 }
+// diagramTools adds a diagram's toolbar once and updates what it offers.
+// retry draws the diagram: after a load failure, or as Show diagram while
+// it waits for the reader to ask (diagrams.js).
 export function diagramTools(el, retry) {
   let bar = el.querySelector(".mermaid-tools");
   if (!bar) {
@@ -330,6 +333,9 @@ export function diagramTools(el, retry) {
     open.dataset.diagramAction = "expand";
     const retryButton = button("Retry", () => retry());
     retryButton.className = "mermaid-retry";
+    const show = button("Show diagram", () => retry());
+    show.className = "mermaid-show";
+    bar.append(show);
     if (el.dataset.editable !== "true") bar.append(source);
     bar.append(copy, download, png, open, retryButton);
     el.prepend(bar);
@@ -337,4 +343,5 @@ export function diagramTools(el, retry) {
   for (const control of bar.querySelectorAll("[data-diagram-action]"))
     control.disabled = !el.querySelector(".mermaid-svg svg");
   bar.querySelector(".mermaid-retry").hidden = el.dataset.error !== "load";
+  bar.querySelector(".mermaid-show").hidden = el.dataset.state !== "request";
 }

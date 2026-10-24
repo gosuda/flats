@@ -1561,7 +1561,7 @@ func (s *Service) pinLocked(ctx context.Context, slugName string, n int, pinned 
 			return err
 		}
 		if !pinned && f.PublicAccess == store.AccessEdit && st.SafePointRev == n {
-			return fmt.Errorf("%w: revision %d is the safe point and stays pinned while anyone can edit this board; stop guest editing first", ErrConflict, n)
+			return fmt.Errorf("%w: revision %d is the safe point and stays pinned while anyone can edit %s; stop guest editing first", ErrConflict, n, editNoun(st.Type))
 		}
 		if pinned {
 			_, quota := s.quotas(st)
@@ -1632,13 +1632,21 @@ func (s *Service) GetRevision(ctx context.Context, slugName string, n int) (stor
 	if err != nil {
 		return r, nil, err
 	}
+	revs := []store.Revision{r}
 	if st.Type == contenttype.Board {
-		revs := []store.Revision{r}
 		s.boardRevisionStats(ctx, slugName, revs)
-		s.markSafePoint(ctx, slugName, st, revs)
-		r = revs[0]
 	}
+	s.markSafePoint(ctx, slugName, st, revs)
+	r = revs[0]
 	files, err := s.revisionFiles(ctx, slugName, r)
+	if st.Type == contenttype.Docs {
+		// Every document says whether guests wrote any of its lines.
+		for i := range files {
+			if bundle.IsMarkdown(files[i].Path) && files[i].GuestLines == nil {
+				files[i].GuestLines = &[][2]int{}
+			}
+		}
+	}
 	return r, files, err
 }
 
@@ -1710,7 +1718,7 @@ func (s *Service) SetRevisionQuotas(ctx context.Context, slugName string, revisi
 	}
 	if f.PublicAccess == store.AccessEdit && effective <= 0 {
 		unlock()
-		return fmt.Errorf("%w: anyone can edit this board, so its revision quota cannot be unlimited (0); set a number, or stop guest editing first", ErrConflict)
+		return fmt.Errorf("%w: anyone can edit %s, so the revision quota cannot be unlimited (0); set a number, or stop guest editing first", ErrConflict, editNoun(st.Type))
 	}
 	err = s.st.ContentTx(ctx, slugName, func(tx *store.ContentTx) error { return tx.SetQuotas(ctx, revisions, pins) })
 	unlock()

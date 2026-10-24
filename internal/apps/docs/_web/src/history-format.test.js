@@ -1,6 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { ago, who, changed, changeLines } from "./history-format.js";
+import { ago, credit, changed, changeLines } from "./history-format.js";
+
+// who is a credit as text, with "[guest]" for the badge.
+const who = (r) =>
+  credit(r)
+    .map((p) => (typeof p === "string" ? p : `${p.guest} [guest]`))
+    .join("");
 
 test("revisions say who made them", () => {
   assert.equal(who({ kind: "created" }), "Created");
@@ -16,6 +22,48 @@ test("revisions say who made them", () => {
     "Restored revision 12 · Ada",
   );
   assert.equal(who({ kind: "recovered", authors: [] }), "Recovered text");
+});
+
+test("guest credits name each guest with the badge and count the rest", () => {
+  const guestOnly = {
+    kind: "person",
+    authors: [],
+    guest_authors: ["Mina", "Rui", "Kai", "Sol", "Jo"],
+    guests_more: 3,
+  };
+  assert.deepEqual(credit(guestOnly), [
+    { guest: "Mina" },
+    ", ",
+    { guest: "Rui" },
+    ", ",
+    { guest: "Kai" },
+    ", ",
+    { guest: "Sol" },
+    ", ",
+    { guest: "Jo" },
+    " and 3 more guests",
+  ]);
+  assert.deepEqual(
+    credit({ kind: "person", authors: ["Jun Park"], guest_authors: ["Mina"] }),
+    ["Jun Park", ", ", { guest: "Mina" }],
+  );
+  assert.equal(
+    who({
+      kind: "person",
+      authors: ["Jun Park"],
+      guest_authors: ["Mina"],
+      guests_more: 1,
+    }),
+    "Jun Park, Mina [guest] and 1 more guest",
+  );
+  // A name that looks like a badge stays text.
+  assert.deepEqual(credit({ kind: "person", guest_authors: ["guest"] }), [
+    { guest: "guest" },
+  ]);
+  assert.equal(
+    who({ kind: "safe_point", authors: [] }),
+    "Safe point before guest editing",
+  );
 });
 
 test("changed documents are named by title, the open one as this document", () => {

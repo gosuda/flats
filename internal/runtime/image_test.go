@@ -450,6 +450,14 @@ func TestImageStartupErrorsUnchanged(t *testing.T) {
 				}
 				msgs = append(msgs, err.Error())
 			}
+			// Unbounded recursion overruns the C stack and traps the VM. The
+			// call that traps depends on the memory layout, which differs
+			// between a fresh and a restored runtime and with any change to
+			// the prelude, so only the trap itself must match.
+			const trap = "wasm error: out of bounds memory access"
+			if name == "recursion" && strings.Contains(msgs[0], trap) && strings.Contains(msgs[1], trap) {
+				msgs[1] = msgs[0]
+			}
 			if msgs[0] != msgs[1] {
 				t.Fatalf("without images: %q\nwith images:    %q", msgs[0], msgs[1])
 			}

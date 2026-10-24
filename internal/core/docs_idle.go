@@ -268,10 +268,13 @@ func withRunningDocs(ctx context.Context, d *deployed) (context.Context, func(),
 
 // prepareDocsLocked preserves reads/recovery on import or capacity failures.
 // A revoked budget blocks writes until an explicit installation succeeds.
+// The stored public access level and its epoch reach the worker before any
+// request does (docs-public-edit-TECH 2.4).
 func (s *Service) prepareDocsLocked(ctx context.Context, slug string, d *deployed) error {
 	if err := s.docsHost(ctx, slug, http.MethodPost, "budget/revoke", map[string]any{}, nil); err != nil {
 		return err
 	}
+	s.pushDocsAccessLocked(ctx, slug, d)
 	syncResult, syncErr := s.syncDocsLocked(ctx, slug)
 	if syncErr != nil && !errors.Is(syncErr, ErrDocumentCapacity) {
 		return syncErr
@@ -294,6 +297,24 @@ func (s *Service) prepareDocsLocked(ctx context.Context, slug string, d *deploye
 	return nil
 }
 
+// pushDocsAccessLocked tells a waking worker the flat's stored public
+// access level and access_seq. A worker that misses it keeps its older pair,
+// which matches no request's headers, so guests cannot join until a later
+// wake or level change succeeds.
+func (s *Service) pushDocsAccessLocked(ctx context.Context, slug string, d *deployed) {
+	f, err := s.st.GetFlat(ctx, slug)
+	if err == nil {
+		level := ""
+		if f.Visibility.Public() {
+			level = f.PublicAccess
+		}
+		err = docsTarget{s: s, slug: slug}.SetPublicAccess(ctx, level, f.AccessSeq)
+	}
+	if err != nil {
+		s.Event(ctx, slug, "warn", "visibility", "the document did not take its public access level yet: "+d.redact(err.Error()), nil)
+	}
+}
+
 // idleDocsLocked reserves admission before draining; physical exit happens
 // asynchronously after this method releases the flat lock.
 func (s *Service) idleDocsLocked(ctx context.Context, slug string, d *deployed) bool {
@@ -307,23 +328,28 @@ func (s *Service) idleDocsLocked(ctx context.Context, slug string, d *deployed) 
 	}
 	ctx = withDocsDispatch(ctx, d, q)
 	clean := false
+	suspend := func(clean bool) {
+		// A sleeping document has no public presence.
+		s.state(slug).docsPresence.Store(nil)
+		q.Suspend(clean)
+	}
 	defer func() {
 		defer func() {
 			if failure := recover(); failure != nil {
-				q.Suspend(false)
+				suspend(false)
 				panic(failure)
 			}
 		}()
 		if clean {
-			q.Suspend(true)
+			suspend(true)
 			return
 		}
 		if err := s.prepareDocsLocked(ctx, slug, d); err != nil {
-			q.Suspend(false)
+			suspend(false)
 			return
 		}
 		if err := q.Resume(); err != nil {
-			q.Suspend(false)
+			suspend(false)
 		}
 	}()
 	synced, err := s.syncDocsLocked(ctx, slug)

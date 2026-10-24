@@ -86,12 +86,12 @@ A `rollback_revision` is never refused for the disk quota.
 
 ## public_edit_blocked
 
-A board cannot become editable by anyone yet, so the `set_visibility`
-approval with `access: "edit"` failed and nothing changed: the board kept
-its visibility and level. The message and `problems` list each reason:
+A board or document cannot become editable by anyone yet, so the
+`set_visibility` approval with `access: "edit"` failed and its visibility
+and level did not change. The message and `problems` list each reason:
 `disk_quota_off` (the host disk quota is 0), `revision_quota_unlimited`
-(the board's revision quota is 0) or `pin_quota_full` (no pin is free for
-the safe point). Tell the user what the operator must change (a disk quota,
+(the flat's revision quota is 0) or `pin_quota_full` (no pin is free for
+the safe point; a document may then hold an unpinned safe point revision). Tell the user what the operator must change (a disk quota,
 a revision quota, or a free pin), then request the change again.
 
 ## no_revisions
@@ -126,8 +126,8 @@ different request. An expired `get_board` cursor is `conflict` too. Nothing in
 the call applied. Read `get_board` again (from the first page for a cursor),
 rebuild the call against what people wrote, and retry with a new `op_id`.
 
-While anyone can edit a board, unpinning its safe point is `conflict`; it
-stays pinned until the operator stops guest editing.
+While anyone can edit a board or document, unpinning its safe point is
+`conflict`; it stays pinned until the operator stops guest editing.
 
 ## stale_approval
 

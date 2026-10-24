@@ -15,7 +15,7 @@ numbers such as (3.2) refer to this page.
 | Telling the board | Core adds the trusted header `X-Flats-Public-Access` on Public requests and pushes the level to a running instance with `Instance.SetPublicAccess`. The instance keeps an access epoch |
 | Safe point | Applying `edit` asks the instance for a forced `safe_point` revision, imports it synchronously, pins it and stores its number in `content_state.safe_point_rev`, all before the level commits |
 | Guest identity | The server issues a random guest token; the key is `guest:` plus a hash of the token. The client never chooses the key |
-| Guest projection | Private wire form with every author key and name rewritten by a per-instance label map (`member:N`, `guest:N`, `agent`) |
+| Guest projection | Private wire form with stored authors reduced to their kind (`member`, `guest`, `agent`, `system`) and live identity under per-instance connection labels (`p:N`); members appear under their page nickname |
 | Limits | Guests have their own rate, size, connection, server-state and room limits, checked in the reader and again in the apply loop |
 | Revisions | One shared `guests` group on fixed 5-minute windows. Outbox entries carry guest names separately; core marks guest-only revisions and retires them first above half the quota |
 | Authorship | Two new element content fields: `ta` (per text bundle: kind of the last writer, and the guest name) and `lk` (kind of the last change) |
@@ -149,7 +149,7 @@ epoch as today, closing every public socket.
 
 ### 2.6 Telling the board instance
 
-- `trustedAccess` deletes any client `X-Flats-Public-Access`. `serveSite`, on
+- `withRouteHeaders` deletes any client `X-Flats-Public-Access`. `serveSite`, on
   a Public request, sets it from the flat it already re-reads per request:
   `view` or `edit`.
 - `board.Options` gains `PublicAccess string`, so an instance opened later
@@ -255,9 +255,14 @@ people apart, so it uses connection labels:
   socket: the hub checks and queues it under the lock a new socket's join
   takes, so a reconnected editor's presence always follows it. The map therefore holds at most the live members and guests
   (64 + 50); it does not grow with guest churn.
-- Members appear to guests as `Member N` with `verified: false` (a guest is
-  never told a member is verified); guests appear with their name. A member
-  who reconnects after closing every tab may get a different N.
+- Members appear to guests under their page nickname with `verified: false`
+  (a guest is never told a member is verified); guests appear with their
+  name. Every page sends `hello.nick`; the server cleans it with the guest
+  name rules (`model.CleanGuestName`) for both kinds of member and keeps it
+  only for the guest presence frame. A Tailscale member's display name or
+  login is never used as a nickname. A member without a usable nickname
+  appears as `Member N`, after its label; one who reconnects after closing
+  every tab may get a different N.
 - Rewritten in agent activity notices: the label becomes `Agent`.
 - Not sent to guests: shares, `welcome.me` of others, session labels, the
   History and recovery routes.
@@ -491,16 +496,32 @@ a revision through `board_imports`.
 - `welcome.access` gains `guest`. A new `body.guest` class: guests see the
   tools, undo, presence and avatars; `.priv-only` items (History, Send to
   agent) and upload, import and the image tool stay hidden.
-- At level `edit`, a visitor without a stored guest name sees the name prompt
-  (a dialog over the live canvas): name input with a 40-character counter,
-  the guest badge preview and the notes of the design. Joining restarts the
-  socket with `hello.guest`. The stored name lives in `localStorage`
-  `flats-board-guest-name`, the token in `sessionStorage`.
-- Viewers show "You are Viewer N" and a View only chip; `level: edit` shows the
-  join prompt as a non-modal panel at the bottom.
+- Welcomes of every kind and `level` frames carry `access_epoch`, the flat's
+  `access_seq`, which core gives the instance with `Instance.SetAccessEpoch`
+  after opening it and before every `SetPublicAccess`. It tells a new `edit`
+  period from a reconnect.
+- At level `edit` a viewer gets the name popup, a dialog over the live
+  canvas: name input with a 40-character counter, the guest badge preview
+  ("Shown as *name* [guest] to other editors. Nobody checks it."), the notes
+  of the design, **View only** and **Join and edit**. It opens on arrival,
+  from **Join to edit** in the top bar, and on a `level` frame that makes the
+  level `edit`. View only or closing the popup stores the current
+  `access_epoch` in `sessionStorage` `flats-board-view-only`; the popup does
+  not open on its own again until a newer `access_epoch` arrives with level
+  `edit`. Joining restarts the socket with `hello.guest`.
+- A remembered name (`localStorage` `flats-board-guest-name`) only fills the
+  field. A tab with a live guest session (the guest token in
+  `sessionStorage` and `flats-board-joined`, set when it joins and cleared
+  when its guest editing ends or it chooses View only) rejoins without the
+  popup. Change name opens the same popup without View only.
+- Every page sends `hello.nick`: the typed name (a member's
+  `flats-board-name`), else a generated two-word name kept in `localStorage`
+  `flats-board-nick`.
+- Viewers show "You are Viewer N" and a View only chip, and **Join to edit** at
+  level `edit`.
 - The guest badge (`.badge.guest`) is drawn next to every guest name: cursor
   tags, the people list, "is editing" marks and notices. Member entries seen
-  by a guest show "Member N" with a member badge.
+  by a guest show the member's nickname (or "Member N") with a member badge.
 - Rejects `guest_rate`, `guest_size`, `guest_room`, `guest_asset` and
   `permission` map to error toasts. Fatal `editing_ended` shows the banner
   "The owner turned off guest editing" with "Save my changes to a file", then
@@ -508,7 +529,8 @@ a revision through `board_imports`.
   that were not saved stay downloadable from a kept notice. Fatal `full`
   shows the Watch / Try again dialog, with a viewer's header when it refuses
   the first hello.
-  Fatal `name_invalid` reopens the name prompt with the reason.
+  Watch counts as View only. Fatal `name_invalid` reopens the name popup with
+  the reason.
 
 ### 8.2 Console (`internal/console/static`)
 

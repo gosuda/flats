@@ -2,12 +2,15 @@ import * as Y from "yjs";
 import { sha256 } from "@noble/hashes/sha256";
 import { bytesToHex } from "@noble/hashes/utils";
 import { encodeUtf8 } from "lib0/string";
-import { base64, unbase64, utf8Bytes, LIMITS } from "./protocol.js";
+import { base64, unbase64, utf8Bytes, LIMITS, GUEST } from "./protocol.js";
 import { mergeText, applyText } from "./merge.js";
 export const digest = (s) =>
   globalThis.__flats_docsCodec
     ? globalThis.__flats_docsCodec.digest(s)
     : bytesToHex(sha256(encodeUtf8(s)));
+// Yjs client ids guests own, per document (docs-public-edit-TECH.md 3.5).
+const GUEST_CLIENTS =
+  "CREATE TABLE IF NOT EXISTS flats_docs_guest_clients(doc TEXT NOT NULL, client INTEGER NOT NULL, owner TEXT NOT NULL, PRIMARY KEY(doc,client))";
 export function schema(db) {
   db.exec(
     "CREATE TABLE IF NOT EXISTS flats_docs_conflicts(doc TEXT NOT NULL, generation INTEGER NOT NULL, markdown TEXT NOT NULL, PRIMARY KEY(doc,generation))",
@@ -33,14 +36,17 @@ export function schema(db) {
     "CREATE TABLE IF NOT EXISTS flats_docs_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)",
   );
   db.exec(
-    "CREATE TABLE IF NOT EXISTS flats_docs_recorded(doc TEXT PRIMARY KEY, epoch TEXT NOT NULL, seq INTEGER NOT NULL, hash TEXT NOT NULL, bytes INTEGER NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS flats_docs_recorded(doc TEXT PRIMARY KEY, epoch TEXT NOT NULL, seq INTEGER NOT NULL, hash TEXT NOT NULL, bytes INTEGER NOT NULL, guest_lines TEXT)",
+  );
+  // The guests' group is fixed; names lists the guests who edited since the
+  // last entry.
+  db.exec(
+    "CREATE TABLE IF NOT EXISTS flats_docs_groups(editor TEXT PRIMARY KEY, label TEXT NOT NULL, started_at INTEGER NOT NULL, last_at INTEGER NOT NULL, dirty INTEGER NOT NULL, names TEXT, fixed INTEGER)",
   );
   db.exec(
-    "CREATE TABLE IF NOT EXISTS flats_docs_groups(editor TEXT PRIMARY KEY, label TEXT NOT NULL, started_at INTEGER NOT NULL, last_at INTEGER NOT NULL, dirty INTEGER NOT NULL)",
+    "CREATE TABLE IF NOT EXISTS flats_docs_outbox(seq INTEGER PRIMARY KEY AUTOINCREMENT, created_at INTEGER NOT NULL, kind TEXT NOT NULL, authors TEXT NOT NULL, message TEXT NOT NULL, rollback_of INTEGER, op TEXT, source TEXT NOT NULL, documents TEXT NOT NULL, guests TEXT, guests_more INTEGER)",
   );
-  db.exec(
-    "CREATE TABLE IF NOT EXISTS flats_docs_outbox(seq INTEGER PRIMARY KEY AUTOINCREMENT, created_at INTEGER NOT NULL, kind TEXT NOT NULL, authors TEXT NOT NULL, message TEXT NOT NULL, rollback_of INTEGER, op TEXT, source TEXT NOT NULL, documents TEXT NOT NULL)",
-  );
+  db.exec(GUEST_CLIENTS);
   db.exec(
     "CREATE TABLE IF NOT EXISTS flats_docs_texts(hash TEXT PRIMARY KEY, text TEXT NOT NULL, refs INTEGER NOT NULL, staged_at INTEGER)",
   );
@@ -147,6 +153,12 @@ function loadCommitted(db, path, cached) {
     Y.applyUpdate(doc, bytes);
     added += bytes.length + 64;
   }
+  // Pending data stored before such updates were refused is dropped; the
+  // next write compacts, so no later row can complete and reveal it.
+  if (dropPending(doc)) {
+    doc._flatsDropped = true;
+    console.warn("docs dropped pending update data of", path);
+  }
   if (rows.length || reloaded) validateIncremental(doc, added);
   return {
     doc,
@@ -155,15 +167,24 @@ function loadCommitted(db, path, cached) {
     reset: cached && cached.row.seq < cp.seq,
   };
 }
-export function append(db, s, id, data) {
-  if (
-    s.row.seq >= LIMITS.receipts ||
-    db.query("SELECT count(*) AS n FROM flats_docs_receipts")[0].n >=
-      LIMITS.totalReceipts
-  )
+// append adds one update to a document's log. A guest's update must leave
+// members a share of the document's and the flat's lifetime capacity.
+export function append(db, s, id, data, guest = false) {
+  const receipts = db.query("SELECT count(*) AS n FROM flats_docs_receipts")[0]
+    .n;
+  if (s.row.seq >= LIMITS.receipts || receipts >= LIMITS.totalReceipts)
     throw Object.assign(new Error("history capacity reached"), {
       code: "capacity",
     });
+  if (
+    guest &&
+    (s.row.seq >= LIMITS.receipts - GUEST.receiptsReserve ||
+      receipts >= LIMITS.totalReceipts - GUEST.totalReceiptsReserve)
+  )
+    throw Object.assign(
+      new Error("the rest of this document's history is kept for its owners"),
+      { code: "guest_room" },
+    );
   const seq = s.row.seq + 1,
     chain = digest(s.row.chain + "\n" + id),
     now = Date.now();
@@ -195,8 +216,9 @@ export function compact(db, s, state) {
     "SELECT count(*) AS n,coalesce(sum(size),0) AS bytes FROM flats_docs_updates WHERE doc=?",
     [s.row.doc],
   )[0];
-  if (stats.n >= 64 || stats.bytes >= 512 * 1024) {
+  if (stats.n >= 64 || stats.bytes >= 512 * 1024 || s.doc._flatsDropped) {
     const encoded = base64(state || validateState(s.doc));
+    s.doc._flatsDropped = false;
     db.exec("INSERT OR REPLACE INTO flats_docs_checkpoints VALUES(?,?,?,?,?)", [
       s.row.doc,
       s.row.seq,
@@ -208,6 +230,19 @@ export function compact(db, s, state) {
       s.row.doc,
       s.row.seq,
     ]);
+    // A member's presence reservation is redundant once its id is in the
+    // struct store, which keeps guests out by itself (TECH 3.5).
+    for (const r of hasTable(db, "flats_docs_guest_clients")
+      ? db.query(
+          "SELECT client FROM flats_docs_guest_clients WHERE doc=? AND owner NOT LIKE 'guest:%'",
+          [s.row.doc],
+        )
+      : [])
+      if (s.doc.store.clients.has(r.client))
+        db.exec(
+          "DELETE FROM flats_docs_guest_clients WHERE doc=? AND client=?",
+          [s.row.doc, r.client],
+        );
   }
 }
 export function activate(db, source, versionHash, cached, runtimeGeneration) {
@@ -326,6 +361,23 @@ const hasTable = (db, name) =>
   db.query("SELECT 1 AS x FROM sqlite_master WHERE type='table' AND name=?", [
     name,
   ]).length > 0;
+// Columns added after their tables, each to a table that may predate it.
+const ADDED_COLUMNS = [
+  ["flats_docs_groups", "names", "TEXT"],
+  ["flats_docs_groups", "fixed", "INTEGER"],
+  ["flats_docs_outbox", "guests", "TEXT"],
+  ["flats_docs_outbox", "guests_more", "INTEGER"],
+  ["flats_docs_recorded", "guest_lines", "TEXT"],
+];
+function missingColumns(db) {
+  const out = [];
+  for (const [table, column, type] of ADDED_COLUMNS) {
+    if (!hasTable(db, table)) continue;
+    const columns = db.query(`PRAGMA table_info(${table})`).map((c) => c.name);
+    if (!columns.includes(column)) out.push([table, column, type]);
+  }
+  return out;
+}
 // migrate keeps large payloads in rows nothing rewrites often:
 // * flats_docs_text_refs holds revision text references and staging times,
 //   apart from the text rows, so a reference change never rewrites a large
@@ -342,10 +394,16 @@ export function migrate(db) {
   if (
     !hasTable(db, "flats_docs_text_refs") ||
     !hasTable(db, "flats_docs_seeds") ||
-    !hasTable(db, "flats_docs_unimported")
+    !hasTable(db, "flats_docs_unimported") ||
+    !hasTable(db, "flats_docs_guest_clients") ||
+    missingColumns(db).length
   ) {
     db.exec("BEGIN IMMEDIATE");
     try {
+      // Another runtime may have added them meanwhile.
+      for (const [table, column, type] of missingColumns(db))
+        db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+      db.exec(GUEST_CLIENTS);
       if (!hasTable(db, "flats_docs_unimported")) {
         db.exec(
           "CREATE TABLE flats_docs_unimported(hash TEXT PRIMARY KEY, size INTEGER NOT NULL)",
@@ -533,6 +591,64 @@ export function validateUpdate(bytes) {
       throw new Error("only plain Markdown text is supported");
   }
   return decoded;
+}
+// insertedClients are the Yjs client ids an update inserts with.
+export function insertedClients(decoded) {
+  const out = new Set();
+  for (const s of decoded.structs)
+    if (!(s instanceof Y.GC)) out.add(s.id.client);
+  return out;
+}
+// hasGC reports an update holding GC structs: content-less clock jumps a
+// browser's incremental updates never contain.
+export const hasGC = (decoded) =>
+  decoded.structs.some((s) => s instanceof Y.GC);
+// hasPending reports structs or deletions a document holds back for missing
+// dependencies; they are never visible.
+export const hasPending = (doc) =>
+  !!(doc.store.pendingStructs || doc.store.pendingDs);
+// dropPending removes them, so they are never encoded into welcomes or
+// checkpoints (docs-public-edit-TECH.md 3.7).
+export function dropPending(doc) {
+  if (!hasPending(doc)) return false;
+  doc.store.pendingStructs = null;
+  doc.store.pendingDs = null;
+  return true;
+}
+// MAX_GUEST_RANGES bounds the line ranges of one document; more are merged
+// into wider ones, which mark more lines, never fewer.
+const MAX_GUEST_RANGES = 1024;
+// guestLines lists the 1-based inclusive line ranges of a document's text
+// that hold characters inserted with a client id in owned, merged and
+// sorted.
+export function guestLines(doc, owned) {
+  const ranges = [];
+  if (!owned.size) return ranges;
+  let line = 1;
+  for (let item = doc.getText("markdown")._start; item; item = item.right) {
+    if (item.deleted || !item.countable) continue;
+    const str = item.content.str;
+    if (typeof str !== "string") continue;
+    let breaks = 0;
+    for (let i = str.indexOf("\n"); i >= 0; i = str.indexOf("\n", i + 1))
+      breaks++;
+    if (owned.has(item.id.client)) {
+      const end = line + breaks - (str.endsWith("\n") ? 1 : 0),
+        last = ranges[ranges.length - 1];
+      if (last && line <= last[1] + 1) last[1] = Math.max(last[1], end);
+      else ranges.push([line, end]);
+    }
+    line += breaks;
+  }
+  while (ranges.length > MAX_GUEST_RANGES) {
+    const merged = [];
+    for (let i = 0; i < ranges.length; i += 2)
+      merged.push(
+        i + 1 < ranges.length ? [ranges[i][0], ranges[i + 1][1]] : ranges[i],
+      );
+    ranges.splice(0, ranges.length, ...merged);
+  }
+  return ranges;
 }
 export function structureCount(doc) {
   let n = 0;
