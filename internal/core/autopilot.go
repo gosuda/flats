@@ -199,6 +199,17 @@ func (s *Service) Autopilot() Autopilot {
 	return s.cachedAutopilot()
 }
 
+// StoredAutopilot reads the settings from the database, bypassing the
+// cache. The console uses it so that a store it cannot read is an error
+// there rather than Autopilot shown off.
+func (s *Service) StoredAutopilot(ctx context.Context) (Autopilot, error) {
+	row, err := s.autopilotStore().GetAutopilot(ctx)
+	if err != nil {
+		return Autopilot{}, fmt.Errorf("read the Autopilot settings: %w", err)
+	}
+	return autopilotOf(row), nil
+}
+
 func (s *Service) cachedAutopilot() Autopilot {
 	if a := s.autopilot.Load(); a != nil {
 		return *a

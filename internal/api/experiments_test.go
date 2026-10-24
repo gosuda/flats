@@ -1,11 +1,13 @@
 package api_test
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
@@ -15,6 +17,8 @@ import (
 
 	"github.com/gosuda/flats/internal/api"
 	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/expose/local"
+	"github.com/gosuda/flats/internal/store"
 )
 
 const autopilotPath = "/console/api/experiments/autopilot"
@@ -335,8 +339,8 @@ func TestAutopilotHostLog(t *testing.T) {
 	}
 }
 
-// The host log names the tailnet user, the NetBird peer or the external
-// origin a change came through (TECH 4.3).
+// The host log names the tailnet user, the NetBird peer, the external
+// origin or the console listener's remote caller a change came through.
 func TestAutopilotChangedBy(t *testing.T) {
 	srv, svc, logs := setupAutopilot(t)
 	handler := (&api.Server{Svc: svc}).Handler()
@@ -369,6 +373,12 @@ func TestAutopilotChangedBy(t *testing.T) {
 	}
 	allow(external, "https://flats.example.org", consoleHeaders("https://flats.example.org"), "rollback")
 
+	// A caller on another machine reaching a non-loopback console listener;
+	// a forwarding header does not change where the connection came from.
+	remote := consoleHeaders("http://console.example")
+	remote["X-Forwarded-For"] = "127.0.0.1"
+	allow(handler, "http://console.example", remote, "make_private")
+
 	if code, out := putAutopilot(t, srv, "/operations/make_public", `{"allowed":true}`); code != 200 {
 		t.Fatalf("loopback: %d %v", code, out)
 	}
@@ -378,9 +388,39 @@ func TestAutopilotChangedBy(t *testing.T) {
 		`autopilot: agents may now decide delete_version; changed by tailnet user "mallory\nautopilot: turned off"`,
 		`autopilot: agents may now decide deploy; changed by NetBird peer "laptop.netbird.cloud"`,
 		`autopilot: agents may now decide rollback; changed by the console via external origin https://flats.example.org (no authenticated identity)`,
+		`autopilot: agents may now decide make_private; changed by the console listener from 192.0.2.1 (no authenticated identity)`,
 		`autopilot: agents may now decide make_public; changed by the console on the loopback listener (no tailnet identity)`,
 	}
 	if got := logs.autopilot(); !slices.Equal(got, want) {
 		t.Fatalf("host log:\n%s\nwant:\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// The console shows an error, not Autopilot off, when the stored settings
+// cannot be read.
+func TestAutopilotUnreadableStore(t *testing.T) {
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "f.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	priv, _ := local.Listen("127.0.0.1:0")
+	t.Cleanup(func() { priv.Close() })
+	svc, err := core.New(context.Background(), core.Config{DataDir: dir, Store: st, Private: priv, Logf: t.Logf})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := httptest.NewServer((&api.Server{Svc: svc}).Handler())
+	t.Cleanup(func() { srv.Close(); svc.Close() })
+	if code, out := putAutopilot(t, srv, "", `{"enabled":true,"confirmed_allowed":[]}`); code != 200 {
+		t.Fatalf("turn on: %d %v", code, out)
+	}
+	st.Close()
+	code, out := req(t, "GET", srv.URL+autopilotPath, nil, map[string]string{"X-Flats-Console": "1"})
+	if code != 500 || out["autopilot"] != nil || !strings.Contains(fmt.Sprint(out["error"]), "read the Autopilot settings") {
+		t.Fatalf("unreadable store: %d %v", code, out)
+	}
+	if code, out := putAutopilot(t, srv, "", `{"enabled":false}`); code != 500 || out["autopilot"] != nil {
+		t.Fatalf("turn off on an unreadable store: %d %v", code, out)
 	}
 }

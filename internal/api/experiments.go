@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/netip"
 	"strconv"
 	"strings"
 	"time"
@@ -34,24 +35,60 @@ func invalidBody(w http.ResponseWriter, format string, args ...any) {
 	writeErr(w, http.StatusBadRequest, fmt.Errorf("%w: "+format, append([]any{core.ErrInvalid}, args...)...))
 }
 
-// consoleActor names who sent a console request, for the host log: the
-// identity the console records for decisions, quoted.
+// consoleActor names who sent a console request, for the host log, from
+// the network it arrived on as agent decisions are classified: the external
+// origin, the tailnet user or node and the NetBird peer of a console domain,
+// else the console listener's caller by its socket address. Identities are
+// quoted.
 func consoleActor(r *http.Request) string {
-	who := approverOf(r.Context())
+	ctx := r.Context()
+	if origin := ExternalOrigin(ctx); origin != "" {
+		return "the console via external origin " + origin + " (no authenticated identity)"
+	}
+	who := approverOf(ctx)
 	if fqdn, ok := strings.CutPrefix(who, "netbird:"); ok {
 		return "NetBird peer " + strconv.Quote(fqdn)
 	}
 	if who != "" {
 		return "tailnet user " + strconv.Quote(who)
 	}
-	if origin := ExternalOrigin(r.Context()); origin != "" {
-		return "the console via external origin " + origin + " (no authenticated identity)"
+	if prov, _, ok := core.ConsoleDomainOf(ctx); ok {
+		if prov == "netbird" {
+			if peer := core.NetbirdPeerOf(ctx); peer != "" {
+				return "NetBird peer " + strconv.Quote(peer)
+			}
+			return "the console on a NetBird console domain (unknown peer)"
+		}
+		login, node := core.TailnetPeerOf(ctx)
+		switch {
+		case login != "":
+			return "tailnet user " + strconv.Quote(login)
+		case node != "":
+			return "tailnet node " + strconv.Quote(node)
+		}
+		return "the console on a Tailscale console domain (no tailnet identity)"
 	}
-	return "the console on the loopback listener (no tailnet identity)"
+	src, err := netip.ParseAddrPort(r.RemoteAddr)
+	if err != nil {
+		return "the console listener from an unknown address (no authenticated identity)"
+	}
+	addr := src.Addr().Unmap()
+	switch {
+	case addr.IsLoopback():
+		return "the console on the loopback listener (no tailnet identity)"
+	case isHostAddr(addr):
+		return "the console on this host from " + addr.String() + " (no tailnet identity)"
+	}
+	return "the console listener from " + addr.String() + " (no authenticated identity)"
 }
 
-func (s *Server) getAutopilot(w http.ResponseWriter, _ *http.Request, _ core.Via) {
-	writeAutopilot(w, s.Svc.Autopilot())
+func (s *Server) getAutopilot(w http.ResponseWriter, r *http.Request, _ core.Via) {
+	a, err := s.Svc.StoredAutopilot(r.Context())
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writeAutopilot(w, a)
 }
 
 // setAutopilotEnabled turns Autopilot on, with the operations the
