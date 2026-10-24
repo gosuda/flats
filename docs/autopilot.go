@@ -64,6 +64,7 @@ var topicReplacements = []topicReplacement{
 	{"board", replacement{"deleting it waits for the operator (`topic.approvals`).", "deleting it waits for approval (`topic.approvals`)."}},
 	{"board", replacement{"It waits for the operator's\n  approval like every visibility change", "It waits for\n  approval like every visibility change"}},
 	{"docs", replacement{"wait for the operator's approval (`topic.approvals`).", "wait for approval (`topic.approvals`)."}},
+	{"docs", replacement{"It waits for the operator's\n  approval like every visibility change", "It waits for\n  approval like every visibility change"}},
 	{"static", replacement{"requests operator approval; share its", "requests approval; share its"}},
 	{"client-update", replacement{"never replace the operator approval flow", "never replace the approval flow"}},
 }

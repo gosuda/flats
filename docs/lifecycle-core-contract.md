@@ -247,7 +247,8 @@ with its `user_version`, so a failed step leaves no trace:
 | 17 | flat usage: per-day usage of each flat |
 | 18 | board revision imports |
 | 19 | public access level |
-| 20 | Autopilot settings and their change log ([Autopilot settings](configuration.md#autopilot-settings)) |
+| 20 | document guest lines |
+| 21 | Autopilot settings and their change log ([Autopilot settings](configuration.md#autopilot-settings)) |
 
 A database newer than the binary is refused untouched.
 

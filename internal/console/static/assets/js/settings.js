@@ -1852,7 +1852,7 @@ export const OPERATIONS = [
   { group: 'Versions and deployments', id: 'delete_version', label: 'Delete versions', desc: 'Delete a saved version that is not live (`delete_version`).' },
   { group: 'Visibility', id: 'make_public', label: 'Make Public', desc: 'Change a flat from Private to Public, where anyone on the internet can open it.' },
   { group: 'Visibility', id: 'make_private', label: 'Make Private', desc: 'Change a Public flat back to Private.' },
-  { group: 'Visibility', id: 'public_editing', label: 'Public editing', desc: 'Let anyone on the internet edit a Public board, or stop it.' },
+  { group: 'Visibility', id: 'public_editing', label: 'Public editing', desc: 'Let anyone on the internet edit a Public board or document, or stop it.' },
   { group: 'Data and deletion', id: 'rollback_restore_data', label: 'Roll back with data restore', tag: 'replaces data', desc: 'Roll back and replace the live data with the snapshot from before the current version (`rollback` with `restore_data`).' },
   { group: 'Data and deletion', id: 'delete_flat', label: 'Delete flats', tag: 'permanent', desc: 'Permanently delete a flat with its versions and data.' },
 ];

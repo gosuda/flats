@@ -116,7 +116,7 @@ Restore with the same or a newer Flats release: an older binary refuses a newer
 The [Autopilot](spec/autopilot.md) settings live only in `flats.db`. They
 have no `config.json` key, environment variable, `flats serve` flag, CLI
 command or MCP tool; only the console's Experiments page changes them
-([routes](surfaces.md#experiments-routes)). Database step 20 creates two
+([routes](surfaces.md#experiments-routes)). Database step 21 creates two
 tables on new and upgraded hosts, with Autopilot off, no operation allowed
 and an empty guide:
 
@@ -126,8 +126,8 @@ and an empty guide:
 | `autopilot_changes` | The host log line of each committed change (`seq`, `at` in Unix milliseconds, `line`, `logged`) until it is logged; the newest 100 logged lines stay |
 
 Nothing in them is secret, so they are not encrypted. Because every database
-from step 20 on has the `autopilot` row, that row does not count when Flats
-checks whether a database already holds data. A release older than step 20
+from step 21 on has the `autopilot` row, that row does not count when Flats
+checks whether a database already holds data. A release older than step 21
 refuses the database; going back means restoring the backup taken before the
 migration, which loses the agent decisions made since. To stop Autopilot
 without going back, turn it off in the console, or stop Flats.
