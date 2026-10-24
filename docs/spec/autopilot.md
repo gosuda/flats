@@ -23,6 +23,8 @@ Autopilot is the first entry of a new Settings tab, **Experiments**, for
 features whose behavior and names may still change. The tab is changed only
 in the console.
 
+The technical design is in [autopilot-TECH.md](autopilot-TECH.md).
+
 ## Principles
 
 1. **Explicit opt-in, off by default.** A new or upgraded host has
@@ -178,9 +180,10 @@ in the console.
     CLI or API) and whether it was requested before or after Autopilot was
     turned on. Flats has no identity for agents, so it does not tell one
     agent's requests from another's.
-19. Every network the MCP endpoint is served on may use the tools: Local
-    loopback, Tailscale and NetBird console domains, and the operator's
-    configured external origins.
+19. Every network the MCP endpoint is served on may use the tools: the
+    console listener on whatever address the operator bound it to,
+    Tailscale and NetBird console domains, and the operator's configured
+    external origins.
 20. Deciding through the tools then behaves like deciding in the console:
     the approval is claimed, the frozen state is checked, the operation is
     applied, and the result is what `get_approval` returns today. Of several
@@ -214,7 +217,11 @@ in the console.
     - guide `topic.autopilot` holds the rules of this mode, the operations
       currently allowed and the operation guide in full;
     - `check_client` reports that Autopilot is on, the operations allowed
-      and that the agent should read `topic.autopilot`.
+      and that the agent should read `topic.autopilot`;
+    - `get_approval` on a pending approval that agents may decide says
+      that the operator or the agent can decide it, with `approve_request`
+      or `reject_request`. For any other pending approval its text is
+      today's.
 24. With Autopilot off, `topic.autopilot` does not exist and none of the
     texts above change (principle 2).
 25. The console's Agents page describes what agents can do, and its text
@@ -233,17 +240,23 @@ in the console.
 26. An agent decision is recorded in the approval's `decided_by` as an
     Autopilot decision with:
     - the agent name of rule 16;
-    - the network the request arrived on: Local, Tailscale, NetBird or the
-      external origin;
+    - the network the request arrived on: Local, for a connection from
+      the host itself to the console listener; the console listener with
+      the caller's IP address, for a connection from another machine when
+      the operator bound the listener to a non-loopback address; Tailscale;
+      NetBird; or the external origin;
     - over Tailscale, the tailnet login or node name of the calling device,
-      as the console records an operator's tailnet login today.
+      as the console records an operator's tailnet login today;
+    - over NetBird, the calling peer's name, as the console records an
+      operator's NetBird peer today.
 27. The approval page in the console shows who decided an approval
     ("Decided by"): the operator's tailnet login or "the console" as
     recorded today, or Autopilot with the details of rule 26. The approvals
     list does not change.
 28. The flat's event log says the operation was approved or rejected by
     Autopilot, with the same details, where it says "by the operator" for a
-    console decision. Deleting a flat deletes its events, as today, so for
+    console decision. The events of the operation it applies say "via
+    autopilot" where they say "via console" for a console decision. Deleting a flat deletes its events, as today, so for
     an approved deletion the approval's record of rule 26 is the record:
     approvals are kept after their flat is deleted.
 29. Content is not marked: a version, revision or visibility set by an agent
