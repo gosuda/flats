@@ -852,6 +852,8 @@ const DOMAINS = { providers: { tailscale: { domains: [], retiring: [], on: false
 const dview = (ts, nb, extra) => ({ ...DOMAINS, ...extra, providers: {
   tailscale: { domains: [], retiring: [], on: false, ...ts }, netbird: { domains: [], retiring: [], on: false, ...nb } } });
 routes['GET /console/api/console-domains'] = DOMAINS;
+// Autopilot is off (Settings › Experiments; experiments_test.mjs covers it).
+routes['GET /console/api/experiments/autopilot'] = { autopilot: { enabled: false, allowed: [], guide: '', guide_max: 4000 } };
 // mountSettings opens a settings page: [] is Networks, ['limits'], ['networks', 'portal'] and so on.
 const mountSettings = async (params = []) => {
   const main = new Element('main');
@@ -862,11 +864,11 @@ const mountSettings = async (params = []) => {
 const puts = () => calls.filter((c) => c.key === 'PUT /console/api/settings');
 const savebarOf = (root) => all(root, (e) => ['savebar', 's-inline-actions'].includes(e.getAttribute('class') || ''))[0];
 
-// The left nav names the four sections; Approvals is not a settings section.
+// The left nav names the five sections; Approvals is not a settings section.
 let page = await mountSettings();
 const navLinks = all(all(page, (e) => e.tagName === 'NAV')[0], (e) => e.tagName === 'A');
 assert.deepEqual(navLinks.map((a) => [a.textContent, a.getAttribute('href')]),
-  [['Networks', '/settings/networks'], ['Console', '/settings/console'], ['Limits', '/settings/limits'], ['Agents', '/settings/agents']]);
+  [['Networks', '/settings/networks'], ['Console', '/settings/console'], ['Limits', '/settings/limits'], ['Agents', '/settings/agents'], ['Experiments', '/settings/experiments']]);
 assert.equal(navLinks[0].getAttribute('aria-current'), 'page');
 assert.equal((await mountSettings(['nowhere'])).textContent.includes('No such settings page'), true);
 

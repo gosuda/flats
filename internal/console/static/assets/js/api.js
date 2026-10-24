@@ -99,6 +99,12 @@ export const api = {
   // save since then makes the server refuse with 412.
   saveSettings: (values, etag) => request('PUT', '/settings', values, etag ? { 'If-Match': `"${etag}"` } : undefined),
   settingsImpact: (values) => post('/settings/impact', values),
+  // Autopilot (Settings › Experiments). Turning it on sends the operations
+  // the confirmation listed; the server refuses with 409 if they changed.
+  autopilot: () => get('/experiments/autopilot'),
+  setAutopilot: (enabled, confirmedAllowed) => request('PUT', '/experiments/autopilot', enabled ? { enabled, confirmed_allowed: confirmedAllowed } : { enabled }),
+  setAutopilotOperation: (id, allowed) => request('PUT', `/experiments/autopilot/operations/${enc(id)}`, { allowed }),
+  setAutopilotGuide: (guide) => request('PUT', '/experiments/autopilot/guide', { guide }),
 };
 
 // Thumbnails are version files behind the console API, which needs the

@@ -1,14 +1,14 @@
-// Settings: four sections behind a left nav (Networks, Console, Limits,
-// Agents). Networks lists the providers, each with a detail page that also
-// holds its key. Every setting, provider, key, address and fact is the same
-// row; fields stage changes for one save bar per page, while buttons such as
-// Turn on, Add, Replace and Delete act at once.
+// Settings: five sections behind a left nav (Networks, Console, Limits,
+// Agents, Experiments). Networks lists the providers, each with a detail page
+// that also holds its key. Every setting, provider, key, address and fact is
+// the same row; fields stage changes for one save bar per page, while buttons
+// such as Turn on, Add, Replace and Delete act at once.
 
 import { h, dateTime, relTime, plural } from './dom.js';
 import { api } from './api.js';
 import { errorPanel, loading, toast, extLink, busy, fill, confirmDialog, infoDialog, setHostProviders } from './ui.js';
 
-export const SECTIONS = [['networks', 'Networks'], ['console', 'Console'], ['limits', 'Limits'], ['agents', 'Agents']];
+export const SECTIONS = [['networks', 'Networks'], ['console', 'Console'], ['limits', 'Limits'], ['agents', 'Agents'], ['experiments', 'Experiments']];
 
 // Limits shown in human units; values are stored as integers in base units.
 // Byte sizes (bytes: true) have a unit menu; unit and factor name the unit
@@ -125,6 +125,7 @@ export function mount(main, [section, sub], ctx) {
     else if (active === 'networks') run = networksPage(page, saved, load);
     else if (active === 'console') run = consolePage(page, saved, load);
     else if (active === 'limits') run = limitsPage(page, saved, load);
+    else if (active === 'experiments') run = experimentsPage(page, load);
     else run = agentsPage(page);
     return Promise.resolve(run).then(done);
   };
@@ -1708,9 +1709,23 @@ export function impactPanel(impact, onConfirm, onCancel) {
 
 // --- agents ---
 
-function agentsPage(page) {
-  if (page.token) page.token.drawn = true;
+// agentsPage says how to connect an agent and what agents can do. Its text
+// follows Autopilot: while it is on, agents decide the operations it allows
+// (docs/spec/autopilot.md rule 25).
+async function agentsPage(page) {
   page.ctx.setTitle('Agents · Settings');
+  const token = page.token;
+  let autopilot = null;
+  let autopilotError = null;
+  try {
+    autopilot = (await api.autopilot()).autopilot;
+  } catch (err) {
+    autopilotError = err;
+  }
+  if (!page.ctx.alive() || page.token !== token) return;
+  if (token) token.drawn = true;
+  const on = !!(autopilot && autopilot.enabled);
+  const allowed = on ? (autopilot.allowed || []) : [];
   const url = location.origin + '/mcp';
   // The plugin and the CLI use the host saved with `flats connect`, or
   // CLI_DEFAULT_ORIGIN when none is saved. Any other page address, from another
@@ -1769,18 +1784,33 @@ function agentsPage(page) {
   });
   // The snippets for every client stay in the page for search and copy.
   const all = h('div', { class: 'sr-only' }, snippets.map(({ label, blocks }) => h('pre', null, `${label}: ${blocks.map((b) => b.text).join('\n')}`)));
+  const approvalsLink = h('a', { href: '/approvals', 'data-nav': true, text: 'Approvals' });
+  const approvalsButton = () => h('a', { class: 'btn btn-small', href: '/approvals', 'data-nav': true, text: 'Approvals' });
+  let intro = 'Saving versions, deploying, visibility changes and deleting wait for your approval under ';
+  if (on && allowed.length) intro = 'Autopilot is on: agents decide requests of the operations under What agents can decide themselves. Every other request to save a version, deploy, change visibility or delete waits for your approval under ';
+  else if (on) intro = 'Autopilot is on, but it allows no operation yet, so every request to save a version, deploy, change visibility or delete waits for your approval under ';
+  const decide = on ? group('agent-decide', 'What agents can decide', 'Autopilot', list(
+    row({ title: 'Decide approvals',
+      desc: allowed.length ? `Agents may approve and reject requests for ${andList(allowed.map(opLabel))}. Every other request waits for you.` : 'None yet. Every request waits for you.',
+      ctl: h('a', { class: 'btn btn-small', href: '/settings/experiments', 'data-nav': true, text: 'Experiments' }) })))
+    : null;
   fill(page.content,
-    pageHead({ title: 'Agents', intro: ['Agents can create flats, save Drafts, open previews and read logs. Saving versions, deploying, visibility changes and deleting wait for your approval under ', h('a', { href: '/approvals', 'data-nav': true, text: 'Approvals' }), '.'] }),
+    pageHead({ title: 'Agents', status: on ? pill('Autopilot on', 'on') : null,
+      intro: ['Agents can create flats, save Drafts, open previews and read logs. ' + intro, approvalsLink, '.'] }),
+    autopilotError ? errorPanel(autopilotError, 'Cannot load Autopilot') : null,
     group('connect', 'Connect an agent', 'MCP over Streamable HTTP', list(
       row({ title: 'MCP address', meta: ['Uses the address you’re on now'], ctl: [h('code', { text: url }), copyButton(() => url, 'MCP address')] }),
       h('div', { class: 's-row stack' }, tablist, panel, note),
       row({ title: 'Check the connection', desc: ['Restart or reconnect the agent and list its tools. Its first call is ', h('code', { text: 'check_client' }), '. In a terminal, ', h('code', { text: 'flats status' }), ' checks that the CLI reaches this host, and ', h('code', { text: 'flats mcp-config' }), ' prints the setup commands for the host the CLI uses.'] }))),
+    decide,
     group('agent-limits', 'What the agent tools can’t do', 'MCP tools and the agent API', list(
       row({ title: 'Read or set keys', desc: ['No agent tool reads or sets a network key. Keys are set here, under each network, or with ', h('code', { text: 'flats key set' }), ' on the host.'],
         ctl: h('a', { class: 'btn btn-small', href: '/settings/networks', 'data-nav': true, text: 'Networks' }) }),
       row({ title: 'Set secret values', desc: ['No agent tool sets a secret. Set them in a flat’s settings, or with ', h('code', { text: 'flats secret set' }), ' on the Flats host.'] }),
-      row({ title: 'Approve requests', desc: 'No agent tool decides an approval; every approval link opens in this console.',
-        ctl: h('a', { class: 'btn btn-small', href: '/approvals', 'data-nav': true, text: 'Approvals' }) })),
+      on
+        ? row({ title: 'Decide other requests', desc: 'Agent tools decide only the operations listed above; you decide the rest under Approvals.', ctl: approvalsButton() })
+        : row({ title: 'Approve requests', desc: 'No agent tool decides an approval; every approval link opens in this console.', ctl: approvalsButton() }),
+      row({ id: 'agent-limit-experiments', title: 'Change Experiments', desc: 'No agent tool changes Experiments. Agents are told never to change them, also not through a browser; Flats cannot tell them apart from you.' })),
       callout('info', 'These limits apply to the agent tools. The console itself has no login yet: it only refuses requests from other websites, so a program on a machine that can reach its management address can call it as this page does. Keep that address private.')),
     all);
 }
@@ -1808,4 +1838,204 @@ function copyButton(text, label) {
     }
   });
   return btn;
+}
+
+// --- experiments ---
+
+// OPERATIONS are the operations agents may decide under Autopilot, in the
+// server's order (docs/spec/autopilot-TECH.md 2.2). Text in backticks is
+// shown as code.
+export const OPERATIONS = [
+  { id: 'create_version', label: 'Create versions', desc: 'Save a Draft as a new numbered version (`create_version`).' },
+  { id: 'delete_version', label: 'Delete versions', desc: 'Delete a saved version that is not live (`delete_version`).' },
+  { id: 'deploy', label: 'Deploy', desc: 'Activate or redeploy a saved version (`deploy`).' },
+  { id: 'rollback', label: 'Roll back', desc: 'Activate an earlier version and keep the current data (`rollback`).' },
+  { id: 'rollback_restore_data', label: 'Roll back with data restore', tag: 'replaces data', desc: 'Roll back and replace the live data with the snapshot from before the current version (`rollback` with `restore_data`).' },
+  { id: 'make_public', label: 'Make Public', desc: 'Change a flat from Private to Public, where anyone on the internet can open it.' },
+  { id: 'make_private', label: 'Make Private', desc: 'Change a Public flat back to Private.' },
+  { id: 'public_editing', label: 'Public editing', desc: 'Let anyone on the internet edit a Public board, or stop it.' },
+  { id: 'delete_flat', label: 'Delete flats', tag: 'permanent', desc: 'Permanently delete a flat with its versions and data.' },
+];
+
+// opLabel names an operation; an ID this console does not know shows as is.
+const opLabel = (id) => (OPERATIONS.find((o) => o.id === id) || { label: id }).label;
+
+// andList joins words as "A, B and C".
+function andList(words) {
+  return words.length < 2 ? words.join('') : `${words.slice(0, -1).join(', ')} and ${words[words.length - 1]}`;
+}
+
+// withCode renders text with `code` spans.
+const withCode = (text) => text.split('`').map((part, i) => (i % 2 ? h('code', { text: part }) : part));
+
+// experimentsHead is the Experiments title and the warning that only people
+// change the page (docs/spec/autopilot.md rule 2).
+function experimentsHead() {
+  return [
+    pageHead({ title: 'Experiments', intro: 'These features may change or be removed.' }),
+    callout('warn', h('strong', { text: 'Only people change this page:' }),
+      ' agents must never change it, including through a browser or by calling the console. Flats cannot enforce that. The console has no login and only refuses requests from other websites, so a program that can reach this address can do what this page does.'),
+  ];
+}
+
+// experimentsPage holds Autopilot: on or off, the operations agents may
+// decide and the operation guide. Every control acts at once except the
+// guide, which has its own Save button.
+async function experimentsPage(page, reload) {
+  page.ctx.setTitle('Experiments · Settings');
+  const token = page.token;
+  let view;
+  let error;
+  try {
+    view = (await api.autopilot()).autopilot;
+  } catch (err) {
+    error = err;
+  }
+  if (!page.ctx.alive() || page.token !== token) return;
+  if (token) token.drawn = true;
+  if (error) fill(page.content, experimentsHead(), errorPanel(error, 'Cannot load Autopilot'));
+  else drawAutopilot(page, view, reload);
+}
+
+function drawAutopilot(page, view, reload) {
+  const allowed = () => view.allowed || [];
+  const on = view.enabled;
+  const toggle = h('button', { type: 'button', class: 'btn btn-small' + (on ? ' btn-danger-text' : ' btn-primary'),
+    text: on ? 'Turn off' : 'Turn on', 'aria-label': `${on ? 'Turn off' : 'Turn on'} Autopilot` });
+  toggle.addEventListener('click', () => busy(toggle, on ? turnOff : turnOn));
+
+  // change sends a Turn on or Turn off and draws the result. A failure is
+  // shown and the page reloads, since the stored state may differ from it.
+  async function change(send, done, failed) {
+    let res;
+    try {
+      res = await send();
+    } catch (err) {
+      await infoDialog(err.status === 409 ? 'The allowed operations changed' : failed, errorPanel(err));
+      if (page.ctx.alive()) reload();
+      return;
+    }
+    if (!page.ctx.alive()) return;
+    toast(done, 'success');
+    drawAutopilot(page, res.autopilot, reload);
+  }
+  async function turnOn() {
+    const listed = allowed().slice();
+    const ok = await confirmDialog({
+      title: 'Turn on Autopilot?',
+      body: [
+        h('p', { text: 'Agents that reach this host’s MCP address will be able to approve and reject pending requests for the operations you allow.' }),
+        listed.length
+          ? [h('p', { text: 'Allowed now:' }), h('ul', { class: 'compact', id: 'autopilot-confirm-allowed' }, listed.map((id) => h('li', { text: opLabel(id) })))]
+          : h('p', { text: 'No operation is allowed yet; agents can decide nothing until you turn one on.' }),
+        h('p', { class: 'alert alert-warn', text: 'Anyone on the internet can open a Public flat.' }),
+        h('p', { text: 'Agents follow the operation guide, but Flats does not enforce it.' }),
+      ],
+      confirmLabel: 'Turn on',
+    });
+    if (!ok) return;
+    await change(() => api.setAutopilot(true, listed), 'Autopilot is on.', 'Cannot turn on Autopilot');
+  }
+  function turnOff() {
+    return change(() => api.setAutopilot(false), 'Autopilot is off.', 'Cannot turn off Autopilot');
+  }
+
+  const autopilot = group('autopilot', 'Autopilot', 'Agents approve or reject pending approvals for the operations you allow.', list(
+    row({ id: 'autopilot-state', title: ['Autopilot', ' ', on ? pill('On', 'on') : pill('Off', 'off')],
+      desc: 'While it is off, agents see Flats exactly as without Autopilot.',
+      meta: [h('span', null, 'Agents get the tools ', h('code', { text: 'approve_request' }), ' and ', h('code', { text: 'reject_request' })), 'They see a change when they reconnect'],
+      ctl: toggle })));
+  if (!on) {
+    fill(page.content, experimentsHead(), autopilot);
+    return;
+  }
+
+  // Each switch applies at once. A failed change returns the switch to the
+  // stored value; the stored state is then read again, since a change can
+  // commit and still report an error.
+  const switches = new Map();
+  const update = (next) => {
+    view = next;
+    if (!view.enabled) { drawAutopilot(page, view, reload); return; }
+    for (const [id, input] of switches) input.checked = allowed().includes(id);
+  };
+  const reread = () => api.autopilot()
+    .then((r) => { if (page.ctx.alive()) update(r.autopilot); })
+    // The failure was already reported; the switch keeps the last known value.
+    .catch(() => {});
+  const opRows = OPERATIONS.map((op) => {
+    const id = 'autopilot-op-' + op.id;
+    const input = h('input', { id, type: 'checkbox', role: 'switch', class: 'switch' });
+    input.checked = allowed().includes(op.id);
+    switches.set(op.id, input);
+    input.addEventListener('change', async () => {
+      const want = input.checked;
+      input.disabled = true;
+      try {
+        const res = await api.setAutopilotOperation(op.id, want);
+        if (!page.ctx.alive()) return;
+        toast(want ? `Agents may now decide ${op.label}.` : `Agents can no longer decide ${op.label}.`, 'success');
+        update(res.autopilot);
+      } catch (err) {
+        input.checked = allowed().includes(op.id);
+        toast(`${op.label} was not changed: ${err.message}`, 'error');
+        reread();
+      } finally {
+        input.disabled = false;
+      }
+    });
+    return row({ id: 'row-' + id, title: [op.label, op.tag ? tag(op.tag, 'solid') : null], labelFor: id, desc: withCode(op.desc), ctl: input });
+  });
+
+  fill(page.content, experimentsHead(), autopilot,
+    group('autopilot-ops', 'Operations agents may decide', 'Each switch applies as soon as you change it.', list(...opRows)),
+    group('autopilot-guide', 'Operation guide', 'Agents read it while Autopilot is on.', list(guideRow(view))));
+}
+
+// guideRow edits the operation guide: a counter of the characters used
+// (code points, as the server counts them) and its own Save button. Unsaved
+// text is dropped when the page is left, as in the other forms.
+function guideRow(view) {
+  let saved = view.guide;
+  const max = view.guide_max;
+  const area = h('textarea', { id: 'autopilot-guide-text', rows: '7', 'aria-describedby': 'autopilot-guide-help autopilot-guide-count',
+    placeholder: 'How agents should use Autopilot on this host: when to approve, how to name flats, when to clean up.' });
+  area.value = saved;
+  const count = h('span', { id: 'autopilot-guide-count' });
+  const save = h('button', { type: 'button', class: 'btn btn-small btn-primary', text: 'Save guide' });
+  const discard = h('button', { type: 'button', class: 'btn btn-small btn-ghost', text: 'Discard' });
+  const error = h('div');
+  function sync() {
+    const used = [...area.value].length;
+    const over = used > max;
+    count.textContent = `${used.toLocaleString('en-US')} / ${max.toLocaleString('en-US')} characters`;
+    count.className = over ? 'field-error' : 'muted small';
+    if (over) area.setAttribute('aria-invalid', 'true');
+    else area.removeAttribute('aria-invalid');
+    const dirty = area.value !== saved;
+    save.disabled = !dirty || over;
+    discard.hidden = !dirty;
+  }
+  area.addEventListener('input', sync);
+  discard.addEventListener('click', () => { area.value = saved; fill(error); sync(); });
+  save.addEventListener('click', async () => {
+    await busy(save, async () => {
+      fill(error);
+      try {
+        saved = (await api.setAutopilotGuide(area.value)).autopilot.guide;
+        toast('Operation guide saved.', 'success');
+      } catch (err) {
+        fill(error, errorPanel(err, 'Cannot save the operation guide'));
+      }
+    });
+    sync();
+  });
+  sync();
+  return h('div', { class: 's-row stack' },
+    h('div', { class: 's-row-main' },
+      h('div', { class: 's-row-title' }, h('label', { for: 'autopilot-guide-text', text: 'Guide for agents' })),
+      h('p', { class: 's-row-desc', id: 'autopilot-guide-help' }, 'Agents receive this text in the guide topic ', h('code', { text: 'topic.autopilot' }), '. Flats does not enforce it: it is your policy for agents.')),
+    area,
+    h('div', { class: 's-guide-foot' }, count, h('span', { class: 's-guide-acts' }, discard, save)),
+    error);
 }

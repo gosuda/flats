@@ -1,4 +1,4 @@
-// Approval page: what an agent asked for and the operator's decision.
+// Approval page: what an agent asked for and who decided it.
 
 import { h, clear, dateTime, timeEl, visibilityOf, accessKey, accessOf, accessLabel, editWords, visibilityBadge, becomingNoticeFor } from './dom.js';
 import { api } from './api.js';
@@ -50,6 +50,46 @@ export function statusBadge(status) {
 
 const SURFACES = { mcp: 'an MCP client', cli: 'the flats CLI', api: 'the HTTP API', console: 'the console' };
 
+// ARRIVALS describe the network an Autopilot decision arrived on
+// (docs/spec/autopilot-TECH.md 3.4).
+const ARRIVALS = {
+  local: () => 'Local',
+  listener: (d) => (d.ip ? `the console listener from ${d.ip}` : 'the console listener'),
+  tailscale: (d) => (d.login ? `Tailscale (${d.login})` : d.node ? `Tailscale node ${d.node}` : 'Tailscale'),
+  netbird: (d) => (d.peer ? `NetBird peer ${d.peer}` : 'NetBird'),
+  external: (d) => (d.origin ? `external origin ${d.origin}` : 'external origin'),
+};
+const AGENT_PREFIX = 'autopilot:';
+
+// agentDecider parses an Autopilot decided_by value, or returns null for an
+// operator value or a malformed one.
+function agentDecider(decidedBy) {
+  if (!decidedBy.startsWith(AGENT_PREFIX)) return null;
+  let d;
+  try { d = JSON.parse(decidedBy.slice(AGENT_PREFIX.length)); } catch { return null; }
+  if (!d || typeof d !== 'object' || Array.isArray(d)) return null;
+  if (typeof d.agent !== 'string' || !d.agent.trim() || !Object.hasOwn(ARRIVALS, d.network)) return null;
+  if (['ip', 'login', 'node', 'peer', 'origin'].some((k) => k in d && typeof d[k] !== 'string')) return null;
+  return d;
+}
+
+// decidedBy describes who decided an approval: the console, a tailnet login
+// or NetBird peer as recorded, or Autopilot with the agent and its network.
+// Anything else is shown as stored.
+export function decidedBy(value) {
+  if (value === 'console') return 'the console';
+  if (value.startsWith('netbird:')) return 'NetBird peer ' + value.slice('netbird:'.length);
+  const d = agentDecider(value);
+  if (!d) return value;
+  return `Autopilot: agent ${JSON.stringify(d.agent)} via ${ARRIVALS[d.network](d)}`;
+}
+
+function decidedByCell(value) {
+  if (!agentDecider(value)) return decidedBy(value);
+  return h('span', null, decidedBy(value),
+    h('div', { class: 'muted small', text: 'The agent named itself; Flats did not verify the name.' }));
+}
+
 export function mount(main, [id], ctx) {
   ctx.setTitle('Approval');
   const body = h('div', null, loading());
@@ -92,6 +132,7 @@ export function mount(main, [id], ctx) {
     }
     rows.push(['Status', statusBadge(a.status)]);
     if (a.decided_at) rows.push(['Decided', dateTime(a.decided_at)]);
+    if (a.decided_by) rows.push(['Decided by', decidedByCell(a.decided_by)]);
     if (a.result) rows.push(['Result', a.result]);
     body.appendChild(h('dl', { class: 'facts' }, rows.map(([k, v]) => [h('dt', { text: k }), h('dd', null, v)])));
 

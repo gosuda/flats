@@ -793,6 +793,10 @@ input::placeholder { color: var(--muted); opacity: 1; }
 .s-form-note { flex-basis: 100%; }
 .s-add-form .s-row-title { margin-right: 4px; }
 .s-row textarea { font-family: var(--mono); font-size: 13px; }
+/* The operation guide's counter and its Save button (Settings › Experiments). */
+.s-guide-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
+.s-guide-acts { display: flex; gap: 8px; }
+.s-guide-acts .btn[hidden] { display: none; }
 
 .pill {
   display: inline-flex; align-items: center; gap: 6px; padding: 1px 8px 1px 7px; border-radius: 999px;
