@@ -1729,7 +1729,9 @@ function agentsPage(page) {
       { title: 'Without the plugin: register the MCP address in ~/.codex/config.toml', copy: 'MCP registration', text: `[mcp_servers.flats]\nurl = "${url}"\n# needed for \`codex exec\`; interactive sessions can prompt instead\ndefault_tools_approval_mode = "approve"\n# or: codex mcp add flats --url ${url}` },
     ], note: 'Client auto-approval permits Draft edits and pending requests. It does not make a version live or give an agent operator authority. Use it only with trusted agents.' },
     { label: 'Cursor', blocks: [
-      { title: pluginTitle, copy: 'plugin commands', text: `${chooseHost}cursor-agent plugin marketplace add https://github.com/gosuda/flats\n# then install Flats from Cursor's plugin list` },
+      // Interactive zsh runs a pasted # line as a command, so the follow-up
+      // step is in the title, which is not copied.
+      { title: `${pluginTitle}. Then install Flats from the Cursor plugin list.`, copy: 'plugin commands', text: `${chooseHost}cursor-agent plugin marketplace add https://github.com/gosuda/flats` },
       { title: 'Without the plugin: register the MCP address in ~/.cursor/mcp.json or .cursor/mcp.json', copy: 'MCP registration', text: JSON.stringify({ mcpServers: { flats: { url } } }, null, 2) },
     ] },
     { label: 'CLI', blocks: [
