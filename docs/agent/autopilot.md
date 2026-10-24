@@ -57,10 +57,11 @@ poll `get_approval`.
   returns it unchanged, so you may retry. A decision in the other direction,
   or any decision while the approval is `applying`, is refused as
   `refusal.conflict`.
-* An approved operation can still fail. If what the approval froze changed
-  before the decision, it fails as `stale_approval`, as for the operator
-  (`topic.approvals`). The result then has `status: failed` and
-  `result_data.failure_code`.
+* An approved operation can still fail. Then the result has `status: failed`
+  and `result_data.failure_code`. If what the approval froze changed before
+  the decision, the call is instead refused as `refusal.stale_approval`, as
+  for the operator (`topic.approvals`), and `get_approval` shows the approval
+  `failed`.
 * Flats checks Autopilot and the operation's switch when the decision takes
   effect. If the operator turned it off before that, the call is refused and
   nothing changes.

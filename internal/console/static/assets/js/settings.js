@@ -1742,7 +1742,9 @@ async function agentsPage(page) {
     { label: 'Codex', blocks: [
       { title: pluginTitle, copy: 'plugin commands', text: `${chooseHost}codex plugin marketplace add gosuda/flats && codex plugin add flats@flats` },
       { title: 'Without the plugin: register the MCP address in ~/.codex/config.toml', copy: 'MCP registration', text: `[mcp_servers.flats]\nurl = "${url}"\n# needed for \`codex exec\`; interactive sessions can prompt instead\ndefault_tools_approval_mode = "approve"\n# or: codex mcp add flats --url ${url}` },
-    ], note: 'Client auto-approval permits Draft edits and pending requests. It does not make a version live or give an agent operator authority. Use it only with trusted agents.' },
+    ], note: on
+      ? 'Client auto-approval permits Draft edits and pending requests. While Autopilot is on, it also lets the agent decide requests of the operations under What agents can decide, so the agent can make those live without you. Use it only with trusted agents.'
+      : 'Client auto-approval permits Draft edits and pending requests. It does not make a version live or give an agent operator authority. Use it only with trusted agents.' },
     { label: 'Cursor', blocks: [
       // Interactive zsh runs a pasted # line as a command, so the follow-up
       // step is in the title, which is not copied.

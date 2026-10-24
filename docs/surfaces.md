@@ -359,7 +359,9 @@ Both are idempotent; `approve_request` is marked destructive. They decide
 only approvals whose operations the operator allows
 ([Autopilot](design.md#autopilot)). An approval that the decision claimed but
 whose operation failed is a normal result with `status: "failed"`, and its
-text names the `failure_code`. Other refusals are tool errors with category
+text names the `failure_code`. A stale approval is the exception: as in the
+console, the call is a tool error with category `stale_approval`, and the
+approval is recorded `failed`. Other refusals are tool errors with category
 `invalid`, `not_found`, `conflict`, `autopilot_off` or
 `autopilot_not_allowed`. Every network that serves `/mcp` reaches the tools;
 there is no loopback check. MCP keeps no sessions: a client sees a changed

@@ -414,7 +414,9 @@ Codex (~/.codex/config.toml):
   Flats requires operator approval for every version creation, deployment, rollback,
   deletion and visibility change in both directions. Client auto-approval
   permits Draft edits and pending requests; it does not make a version live
-  or grant operator authority. Use only with trusted agents.
+  or grant operator authority. Exception: while Autopilot (console Settings >
+  Experiments) is on, agents may decide requests of the operations it allows,
+  so an auto-approved agent can make those live. Use only with trusted agents.
   Discover runtime APIs: read flats://docs/runtime-api/v1 or call
   get_runtime_reference with {} (no installed skill required).
 

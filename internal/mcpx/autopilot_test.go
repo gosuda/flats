@@ -467,6 +467,11 @@ func TestAutopilotFailedDecisionIsAResult(t *testing.T) {
 	if !failed || !strings.Contains(text, `"category":"stale_approval"`) {
 		t.Fatalf("stale approval: %s", text)
 	}
+	// The refused call still claimed the approval, as a console decision does.
+	if text, failed := call(t, e.local, "get_approval", map[string]any{"id": out.Deploy.ApprovalID}, &a); failed ||
+		a.Status != "failed" || a.ResultData == nil || a.ResultData.FailureCode != "stale_approval" {
+		t.Fatalf("stale approval after decision: %v %s", failed, text)
+	}
 }
 
 func TestAutopilotGetApprovalApplyingText(t *testing.T) {

@@ -350,7 +350,9 @@ and upgrades from older hosts.
   browser request. That is CSRF protection, not authentication: a local
   process that sends those headers can decide
   approvals. Run only trusted agents on the host and restrict console access
-  with tailnet ACLs.
+  with tailnet ACLs. Autopilot, an opt-in experiment that is off by default,
+  also lets agents decide approvals of the operations the operator allows, over
+  MCP ([Autopilot](docs/spec/autopilot.md)).
 - **Local secrets.** Secrets are encrypted with the local `secret.key`; secret
   APIs expose names only. A flat can read and return its own secrets, so
   deploy code you trust with them. Anyone who can read the data directory
