@@ -59,8 +59,9 @@ secret, so it is not encrypted.
 
 ### 2.2 Operation bits
 
-Bit positions are stable identifiers and never reused. The order is also the
-display order.
+Bit positions are stable identifiers and never reused. Server lists, such
+as `allowed` (4.1), follow the bit order. The bit order is not the display
+order: the console shows the operations in the groups of 6.1.
 
 | Bit | ID | Console label |
 |---|---|---|
@@ -937,15 +938,27 @@ With `st` nil, `guide` and `guidePage` run today's code unchanged.
   "No operation is allowed yet; agents can decide nothing until you turn one
   on.", then an `alert-warn` paragraph "Anyone on the internet can open a
   Public flat." and "Agents follow the operation guide, but Flats does not
-  enforce it." Confirm sends `confirmed_allowed` with exactly the listed IDs.
+  enforce it." The dialog lists them in the display order below. Confirm
+  sends `confirmed_allowed` with exactly the listed IDs, in the order the
+  server returned them.
   A 409 shows `infoDialog` with the server message and reloads the page
   (rule 10).
 - Turn off sends `{enabled: false}` at once, without a dialog, and toasts
   "Autopilot is off." (rule 10).
 - On: the row shows Turn off, followed by group "Operations agents may
-  decide" with nine rows from an `OPERATIONS` table (ID, label, description)
-  in the order of 2.2, each with a `role="switch"` checkbox like the staged
-  toggle (`settings.js:1383`), and group "Operation guide" (rule 11).
+  decide" with nine rows from an `OPERATIONS` table (group, ID, label,
+  description), each with a `role="switch"` checkbox like the staged toggle
+  (`settings.js:1383`), and group "Operation guide" (rule 11). The rows are
+  under three sub-headings, in this display order, which differs from the
+  bit order of 2.2:
+  - "Versions and deployments": `create_version`, `deploy`, `rollback`,
+    `delete_version`;
+  - "Visibility": `make_public`, `make_private`, `public_editing`;
+  - "Data and deletion": `rollback_restore_data` (tag "replaces data"),
+    `delete_flat` (tag "permanent").
+
+  The confirmation dialog and the Agents page (6.2) list allowed operations
+  in the same display order.
 - A switch acts on `change`: it is disabled during the request; on success it
   takes the returned value and toasts "Agents may now decide Deploy." or
   "Agents can no longer decide Deploy."; on failure it returns to the stored
@@ -1151,9 +1164,10 @@ management API server for console calls:
   the message (rule 12);
 - the counter counts an emoji as one; Save is disabled when unchanged or over
   4,000 (rule 13);
-- the nine `OPERATIONS` IDs equal the server's list (a fixture taken from
-  `core.AutopilotOps` through a Go-generated JSON file in the test's temp
-  directory);
+- the nine `OPERATIONS` IDs equal the server's list as a set (a fixture
+  taken from `core.AutopilotOps` through a Go-generated JSON file in the
+  test's temp directory), and the switches appear under the sub-headings and
+  in the display order of 6.1;
 - Agents page: the exact introduction text off, on with operations allowed
   and on with none allowed, the pill and groups of 6.2 (rule 25);
 - approval page "Decided by" for each value form of 6.3, including the console

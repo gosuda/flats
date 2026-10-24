@@ -1791,7 +1791,7 @@ async function agentsPage(page) {
   else if (on) intro = 'Autopilot is on, but it allows no operation yet, so every request to save a version, deploy, change visibility or delete waits for your approval under ';
   const decide = on ? group('agent-decide', 'What agents can decide', 'Autopilot', list(
     row({ title: 'Decide approvals',
-      desc: allowed.length ? `Agents may approve and reject requests for ${andList(allowed.map(opLabel))}. Every other request waits for you.` : 'None yet. Every request waits for you.',
+      desc: allowed.length ? `Agents may approve and reject requests for ${andList(displayOrder(allowed).map(opLabel))}. Every other request waits for you.` : 'None yet. Every request waits for you.',
       ctl: h('a', { class: 'btn btn-small', href: '/settings/experiments', 'data-nav': true, text: 'Experiments' }) })))
     : null;
   fill(page.content,
@@ -1842,23 +1842,30 @@ function copyButton(text, label) {
 
 // --- experiments ---
 
-// OPERATIONS are the operations agents may decide under Autopilot, in the
-// server's order (docs/spec/autopilot-TECH.md 2.2). Text in backticks is
-// shown as code.
+// OPERATIONS are the operations agents may decide under Autopilot, in
+// display order under their sub-headings (docs/spec/autopilot-TECH.md 6.1),
+// which is not the server's bit order. Text in backticks is shown as code.
 export const OPERATIONS = [
-  { id: 'create_version', label: 'Create versions', desc: 'Save a Draft as a new numbered version (`create_version`).' },
-  { id: 'delete_version', label: 'Delete versions', desc: 'Delete a saved version that is not live (`delete_version`).' },
-  { id: 'deploy', label: 'Deploy', desc: 'Activate or redeploy a saved version (`deploy`).' },
-  { id: 'rollback', label: 'Roll back', desc: 'Activate an earlier version and keep the current data (`rollback`).' },
-  { id: 'rollback_restore_data', label: 'Roll back with data restore', tag: 'replaces data', desc: 'Roll back and replace the live data with the snapshot from before the current version (`rollback` with `restore_data`).' },
-  { id: 'make_public', label: 'Make Public', desc: 'Change a flat from Private to Public, where anyone on the internet can open it.' },
-  { id: 'make_private', label: 'Make Private', desc: 'Change a Public flat back to Private.' },
-  { id: 'public_editing', label: 'Public editing', desc: 'Let anyone on the internet edit a Public board, or stop it.' },
-  { id: 'delete_flat', label: 'Delete flats', tag: 'permanent', desc: 'Permanently delete a flat with its versions and data.' },
+  { group: 'Versions and deployments', id: 'create_version', label: 'Create versions', desc: 'Save a Draft as a new numbered version (`create_version`).' },
+  { group: 'Versions and deployments', id: 'deploy', label: 'Deploy', desc: 'Activate or redeploy a saved version (`deploy`).' },
+  { group: 'Versions and deployments', id: 'rollback', label: 'Roll back', desc: 'Activate an earlier version and keep the current data (`rollback`).' },
+  { group: 'Versions and deployments', id: 'delete_version', label: 'Delete versions', desc: 'Delete a saved version that is not live (`delete_version`).' },
+  { group: 'Visibility', id: 'make_public', label: 'Make Public', desc: 'Change a flat from Private to Public, where anyone on the internet can open it.' },
+  { group: 'Visibility', id: 'make_private', label: 'Make Private', desc: 'Change a Public flat back to Private.' },
+  { group: 'Visibility', id: 'public_editing', label: 'Public editing', desc: 'Let anyone on the internet edit a Public board, or stop it.' },
+  { group: 'Data and deletion', id: 'rollback_restore_data', label: 'Roll back with data restore', tag: 'replaces data', desc: 'Roll back and replace the live data with the snapshot from before the current version (`rollback` with `restore_data`).' },
+  { group: 'Data and deletion', id: 'delete_flat', label: 'Delete flats', tag: 'permanent', desc: 'Permanently delete a flat with its versions and data.' },
 ];
 
 // opLabel names an operation; an ID this console does not know shows as is.
 const opLabel = (id) => (OPERATIONS.find((o) => o.id === id) || { label: id }).label;
+
+// displayOrder sorts operation IDs as the page shows them; IDs this console
+// does not know come last, in the order given.
+function displayOrder(ids) {
+  const at = (id) => { const i = OPERATIONS.findIndex((o) => o.id === id); return i < 0 ? OPERATIONS.length : i; };
+  return [...ids].sort((a, b) => at(a) - at(b));
+}
 
 // andList joins words as "A, B and C".
 function andList(words) {
@@ -1920,13 +1927,14 @@ function drawAutopilot(page, view, reload) {
     drawAutopilot(page, res.autopilot, reload);
   }
   async function turnOn() {
+    // confirmed_allowed is sent as the server listed it; only the display is sorted.
     const listed = allowed().slice();
     const ok = await confirmDialog({
       title: 'Turn on Autopilot?',
       body: [
         h('p', { text: 'Agents that reach this host’s MCP address will be able to approve and reject pending requests for the operations you allow.' }),
         listed.length
-          ? [h('p', { text: 'Allowed now:' }), h('ul', { class: 'compact', id: 'autopilot-confirm-allowed' }, listed.map((id) => h('li', { text: opLabel(id) })))]
+          ? [h('p', { text: 'Allowed now:' }), h('ul', { class: 'compact', id: 'autopilot-confirm-allowed' }, displayOrder(listed).map((id) => h('li', { text: opLabel(id) })))]
           : h('p', { text: 'No operation is allowed yet; agents can decide nothing until you turn one on.' }),
         h('p', { class: 'alert alert-warn', text: 'Anyone on the internet can open a Public flat.' }),
         h('p', { text: 'Agents follow the operation guide, but Flats does not enforce it.' }),
@@ -1963,7 +1971,7 @@ function drawAutopilot(page, view, reload) {
     .then((r) => { if (page.ctx.alive()) update(r.autopilot); })
     // The failure was already reported; the switch keeps the last known value.
     .catch(() => {});
-  const opRows = OPERATIONS.map((op) => {
+  const opRow = (op) => {
     const id = 'autopilot-op-' + op.id;
     const input = h('input', { id, type: 'checkbox', role: 'switch', class: 'switch' });
     input.checked = allowed().includes(op.id);
@@ -1985,10 +1993,12 @@ function drawAutopilot(page, view, reload) {
       }
     });
     return row({ id: 'row-' + id, title: [op.label, op.tag ? tag(op.tag, 'solid') : null], labelFor: id, desc: withCode(op.desc), ctl: input });
-  });
+  };
+  const subgroups = [...new Set(OPERATIONS.map((op) => op.group))].map((name) =>
+    h('div', { class: 's-sub' }, h('h4', { text: name }), list(...OPERATIONS.filter((op) => op.group === name).map(opRow))));
 
   fill(page.content, experimentsHead(), autopilot,
-    group('autopilot-ops', 'Operations agents may decide', 'Each switch applies as soon as you change it.', list(...opRows)),
+    group('autopilot-ops', 'Operations agents may decide', 'Each switch applies as soon as you change it.', subgroups),
     group('autopilot-guide', 'Operation guide', 'Agents read it while Autopilot is on.', list(guideRow(view))));
 }
 

@@ -29,6 +29,7 @@ const calls = [];
 // answers maps a request to a status and body, or a function returning a
 // promise for a deferred answer; the stored state is then not changed.
 const answers = {};
+const serverOps = JSON.parse(readFileSync('./autopilot_ops.json', 'utf8'));
 const approvals = {};
 const json = (status, body) => ({ ok: status < 400, status, json: async () => body });
 globalThis.fetch = async (url, opts) => {
@@ -51,7 +52,7 @@ globalThis.fetch = async (url, opts) => {
   }
   const op = url.startsWith(BASE + '/operations/') && decodeURIComponent(url.slice((BASE + '/operations/').length));
   if (op && opts.method === 'PUT') {
-    const ids = OPERATIONS.map((o) => o.id).filter((id) => (id === op ? body.allowed : stored.allowed.includes(id)));
+    const ids = serverOps.filter((id) => (id === op ? body.allowed : stored.allowed.includes(id)));
     stored = { ...stored, allowed: ids };
     return json(200, { autopilot: stored });
   }
@@ -72,10 +73,16 @@ async function open(section) {
   return { main, stop };
 }
 
-// The page lists the server's operations in the server's order.
-const serverOps = JSON.parse(readFileSync('./autopilot_ops.json', 'utf8'));
-assert.deepEqual(OPERATIONS.map((o) => o.id), serverOps);
+// The page has every operation of the server (whose list is in bit order),
+// shown in its own groups and order (docs/spec/autopilot-TECH.md 6.1).
+assert.deepEqual(OPERATIONS.map((o) => o.id).sort(), [...serverOps].sort());
 assert.equal(new Set(OPERATIONS.map((o) => o.label)).size, OPERATIONS.length);
+const DISPLAY = [
+  ['Versions and deployments', ['create_version', 'deploy', 'rollback', 'delete_version']],
+  ['Visibility', ['make_public', 'make_private', 'public_editing']],
+  ['Data and deletion', ['rollback_restore_data', 'delete_flat']],
+];
+const DISPLAY_IDS = DISPLAY.flatMap(([, ids]) => ids);
 
 // --- Experiments, off ---
 reset({ allowed: ['deploy', 'make_public'] });
@@ -124,10 +131,27 @@ assert.equal(stored.enabled, true);
 assert.equal(lastToast().textContent, 'Autopilot is on.');
 assert.equal(byText(main, 'Turn off').length, 1);
 assert.ok(byId(main, 'autopilot-state').textContent.includes('On'));
-// While on: nine switches in the server's order and the guide (rule 11).
-assert.deepEqual(switches(main).map((s) => s.getAttribute('id')), OPERATIONS.map((o) => 'autopilot-op-' + o.id));
+// While on: nine switches under three sub-headings and the guide (rule 11).
+assert.deepEqual(switches(main).map((s) => s.getAttribute('id')), DISPLAY_IDS.map((id) => 'autopilot-op-' + id));
+const ops = byId(main, 'autopilot-ops');
+assert.deepEqual(all(ops, (e) => e.tagName === 'DIV' && e.getAttribute('class') === 's-sub').map((sub) =>
+  [all(sub, (e) => e.tagName === 'H4')[0].textContent, switches(sub).map((s) => s.getAttribute('id').slice('autopilot-op-'.length))]), DISPLAY);
+assert.ok(byId(main, 'row-autopilot-op-rollback_restore_data').textContent.includes('replaces data'));
+assert.ok(byId(main, 'row-autopilot-op-delete_flat').textContent.includes('permanent'));
 assert.deepEqual(switches(main).filter((s) => s.checked).map((s) => s.getAttribute('id')), ['autopilot-op-deploy', 'autopilot-op-make_public']);
 assert.ok(byId(main, 'autopilot-guide-text'));
+stop();
+
+// The confirmation lists in display order and sends the server's order.
+reset({ allowed: ['delete_version', 'deploy', 'make_public'] });
+({ main, stop } = await open('experiments'));
+byText(main, 'Turn on')[0].dispatch('click');
+await tick();
+assert.deepEqual(all(byId(openDialogs()[0], 'autopilot-confirm-allowed'), (e) => e.tagName === 'LI').map((li) => li.textContent), ['Deploy', 'Delete versions', 'Make Public']);
+openDialogs()[0].close('ok');
+await tick();
+assert.deepEqual(sent('').at(-1).body, { enabled: true, confirmed_allowed: ['delete_version', 'deploy', 'make_public'] });
+assert.equal(stored.enabled, true);
 stop();
 
 // With nothing allowed, the confirmation says so and sends an empty list.
@@ -299,7 +323,7 @@ assert.ok(byId(main, 'agent-limit-experiments').textContent.includes('Change Exp
 assert.ok(main.textContent.includes('No agent tool changes Experiments. Agents are told never to change them, also not through a browser; Flats cannot tell them apart from you.'));
 stop();
 
-reset({ enabled: true, allowed: ['create_version', 'deploy', 'make_public'] });
+reset({ enabled: true, allowed: ['create_version', 'delete_version', 'deploy', 'make_public'] });
 ({ main, stop } = await open('agents'));
 assert.equal(intro(main).textContent, BEGIN + 'Autopilot is on: agents decide requests of the operations under What agents can decide themselves. Every other request to save a version, deploy, change visibility or delete waits for your approval under Approvals.');
 assert.equal(all(intro(main), (e) => e.tagName === 'A')[0].getAttribute('href'), '/approvals');
@@ -308,7 +332,7 @@ assert.equal(pill.textContent, 'Autopilot on');
 assert.equal(pill.getAttribute('class'), 'pill pill-on');
 const decide = byId(main, 'agent-decide');
 assert.ok(decide.textContent.includes('What agents can decide'));
-assert.ok(decide.textContent.includes('Agents may approve and reject requests for Create versions, Deploy and Make Public. Every other request waits for you.'), decide.textContent);
+assert.ok(decide.textContent.includes('Agents may approve and reject requests for Create versions, Deploy, Delete versions and Make Public. Every other request waits for you.'), decide.textContent);
 assert.equal(all(decide, (e) => e.tagName === 'A')[0].getAttribute('href'), '/settings/experiments');
 assert.ok(!main.textContent.includes('Approve requests'));
 assert.ok(main.textContent.includes('Decide other requests') && main.textContent.includes('Agent tools decide only the operations listed above; you decide the rest under Approvals.'));
