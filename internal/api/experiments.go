@@ -76,7 +76,7 @@ func consoleActor(r *http.Request) string {
 	switch {
 	case addr.IsLoopback():
 		return "the console on the loopback listener (no tailnet identity)"
-	case isHostAddr(addr):
+	case IsHostAddr(addr):
 		return "the console on this host from " + addr.String() + " (no tailnet identity)"
 	}
 	return "the console listener from " + addr.String() + " (no authenticated identity)"

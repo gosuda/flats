@@ -11,7 +11,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -48,25 +47,16 @@ func autopilotOff(t *testing.T, e *env) {
 	}
 }
 
-// stubHostAddrs makes addrs this host's interface addresses.
+// stubHostAddrs makes addrs this host's own addresses.
 func stubHostAddrs(t *testing.T, addrs ...string) {
 	t.Helper()
 	var parsed []netip.Addr
 	for _, a := range addrs {
 		parsed = append(parsed, netip.MustParseAddr(a))
 	}
-	old := hostAddrs
-	hostAddrs = func() []netip.Addr { return parsed }
-	reset := func() {
-		localAddrs.mu.Lock()
-		localAddrs.at = time.Time{}
-		localAddrs.mu.Unlock()
-	}
-	reset()
-	t.Cleanup(func() {
-		hostAddrs = old
-		reset()
-	})
+	old := isHostAddr
+	isHostAddr = func(src netip.Addr) bool { return slices.Contains(parsed, src) }
+	t.Cleanup(func() { isHostAddr = old })
 }
 
 // pendingDelete creates a website flat and requests its deletion.
@@ -535,8 +525,10 @@ func TestAutopilotCheckClient(t *testing.T) {
 	}
 }
 
+// The address matching itself (zones, IPv4 link-local, re-reading the
+// interfaces) is tested with api.IsHostAddr.
 func TestHostOrigin(t *testing.T) {
-	stubHostAddrs(t, "192.168.1.10", "2001:db8::10", "fe80::10%en0", "169.254.1.10")
+	stubHostAddrs(t, "192.168.1.10", "2001:db8::10", "fe80::10%en0")
 	for _, c := range []struct {
 		remote string
 		want   core.Arrival
@@ -549,7 +541,6 @@ func TestHostOrigin(t *testing.T) {
 		{"[fe80::10%en0]:4000", core.Arrival{Network: "local"}},
 		{"[fe80::10%en1]:4000", core.Arrival{Network: "listener", IP: "fe80::10%en1"}},
 		{"[fe80::20%en0]:4000", core.Arrival{Network: "listener", IP: "fe80::20%en0"}},
-		{"169.254.1.10:4000", core.Arrival{Network: "listener", IP: "169.254.1.10"}},
 		{"192.168.1.20:4000", core.Arrival{Network: "listener", IP: "192.168.1.20"}},
 		{"[::ffff:192.168.1.20]:4000", core.Arrival{Network: "listener", IP: "192.168.1.20"}},
 		{"[2001:db8::20]:4000", core.Arrival{Network: "listener", IP: "2001:db8::20"}},
@@ -562,17 +553,6 @@ func TestHostOrigin(t *testing.T) {
 		if got := hostOrigin(r); got != c.want {
 			t.Errorf("%s: %+v, want %+v", c.remote, got, c.want)
 		}
-	}
-	// An address the host gained since the last read is found.
-	stubHostAddrs(t)
-	r := httptest.NewRequest("POST", "/mcp", nil)
-	r.RemoteAddr = "10.0.0.5:4000"
-	if got := hostOrigin(r); got.Network != "listener" {
-		t.Fatalf("before: %+v", got)
-	}
-	hostAddrs = func() []netip.Addr { return []netip.Addr{netip.MustParseAddr("10.0.0.5")} }
-	if got := hostOrigin(r); got.Network != "local" {
-		t.Fatalf("new address: %+v", got)
 	}
 }
 

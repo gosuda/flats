@@ -7,8 +7,6 @@ import (
 	"net/http"
 	"net/netip"
 	"strings"
-	"sync"
-	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
@@ -82,80 +80,15 @@ func hostOrigin(r *http.Request) core.Arrival {
 		return core.Arrival{Network: "listener", IP: host}
 	}
 	src := ap.Addr().Unmap()
-	if src.IsLoopback() || localAddrs.has(src) {
+	if src.IsLoopback() || isHostAddr(src) {
 		return core.Arrival{Network: "local"}
 	}
 	return core.Arrival{Network: "listener", IP: src.String()}
 }
 
-// hostAddrs lists this host's interface addresses; link-local addresses
-// carry their interface name as zone. Tests replace it.
-var hostAddrs = func() []netip.Addr {
-	ifaces, err := net.Interfaces()
-	if err != nil {
-		return nil
-	}
-	var out []netip.Addr
-	for _, ifc := range ifaces {
-		addrs, err := ifc.Addrs()
-		if err != nil {
-			continue
-		}
-		for _, a := range addrs {
-			n, ok := a.(*net.IPNet)
-			if !ok {
-				continue
-			}
-			ip, ok := netip.AddrFromSlice(n.IP)
-			if !ok {
-				continue
-			}
-			ip = ip.Unmap()
-			if ip.IsLinkLocalUnicast() && ip.Is6() {
-				ip = ip.WithZone(ifc.Name)
-			}
-			out = append(out, ip)
-		}
-	}
-	return out
-}
-
-// addrCache keeps hostAddrs for 10 seconds and reads it again once when an
-// address is not found, so an address DHCP or SLAAC just added is found.
-type addrCache struct {
-	mu    sync.Mutex
-	at    time.Time
-	addrs []netip.Addr
-}
-
-var localAddrs = &addrCache{}
-
-func (c *addrCache) has(src netip.Addr) bool {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if !c.at.IsZero() && time.Since(c.at) <= 10*time.Second && hostAddrIn(c.addrs, src) {
-		return true
-	}
-	c.addrs, c.at = hostAddrs(), time.Now()
-	return hostAddrIn(c.addrs, src)
-}
-
-// hostAddrIn compares without zones, except for link-local addresses: those
-// match only on the interface that holds them, since the same link-local
-// address on another link is another machine. An IPv4 source carries no
-// interface, so it never matches a link-local host address.
-func hostAddrIn(addrs []netip.Addr, src netip.Addr) bool {
-	for _, a := range addrs {
-		if a.IsLinkLocalUnicast() {
-			if a.Zone() != "" && a == src {
-				return true
-			}
-		} else if a.WithZone("") == src.WithZone("") {
-			return true
-		}
-	}
-	return false
-}
+// isHostAddr reports whether an address is one of this host's own. Tests
+// replace it.
+var isHostAddr = api.IsHostAddr
 
 // autopilotToolReplacements turn tool descriptions into their on text. Each
 // old text occurs exactly once in the off description (a test checks it).

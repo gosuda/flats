@@ -7,8 +7,8 @@ import (
 	"time"
 )
 
-// hostAddrs returns this host's interface addresses, each link-local one
-// carrying its interface name as zone. Tests replace it.
+// hostAddrs returns this host's interface addresses, each IPv6 link-local
+// one carrying its interface name as zone. Tests replace it.
 var hostAddrs = interfaceAddrs
 
 func interfaceAddrs() []netip.Addr {
@@ -32,7 +32,7 @@ func interfaceAddrs() []netip.Addr {
 				continue
 			}
 			ip = ip.Unmap()
-			if ip.IsLinkLocalUnicast() {
+			if ip.IsLinkLocalUnicast() && ip.Is6() {
 				ip = ip.WithZone(ifc.Name)
 			}
 			out = append(out, ip)
@@ -47,28 +47,35 @@ var hostAddrCache struct {
 	read  time.Time
 }
 
-// isHostAddr reports whether src, a connection's source address, is one of
-// this host's own addresses: a process on the host that connects through
-// its LAN or global address. A link-local address matches only on the
-// interface its zone names; the same address on another link is another
-// machine. The addresses are cached for 10 seconds and read again once on
-// a miss, so a newly assigned address is found.
-func isHostAddr(src netip.Addr) bool {
-	match := func(addrs []netip.Addr) bool {
-		for _, a := range addrs {
-			if src.IsLinkLocalUnicast() && src == a || !src.IsLinkLocalUnicast() && src.WithZone("") == a.WithZone("") {
-				return true
-			}
-		}
-		return false
-	}
+// IsHostAddr reports whether src, a connection's unmapped source address,
+// is one of this host's own addresses: a process on the host that connects
+// through its LAN or global address. The addresses are cached for 10
+// seconds and read again once on a miss, so a newly assigned address is
+// found.
+func IsHostAddr(src netip.Addr) bool {
 	c := &hostAddrCache
 	c.Lock()
 	defer c.Unlock()
-	fresh := time.Since(c.read) < 10*time.Second
-	if fresh && match(c.addrs) {
+	if time.Since(c.read) < 10*time.Second && hostAddrIn(c.addrs, src) {
 		return true
 	}
 	c.addrs, c.read = hostAddrs(), time.Now()
-	return match(c.addrs)
+	return hostAddrIn(c.addrs, src)
+}
+
+// hostAddrIn compares without zones, except for link-local addresses: those
+// match only on the interface their zone names, since the same link-local
+// address on another link is another machine. An IPv4 link-local address
+// carries no interface, so it never matches.
+func hostAddrIn(addrs []netip.Addr, src netip.Addr) bool {
+	for _, a := range addrs {
+		if a.IsLinkLocalUnicast() {
+			if a.Zone() != "" && a == src {
+				return true
+			}
+		} else if a.WithZone("") == src.WithZone("") {
+			return true
+		}
+	}
+	return false
 }

@@ -19,7 +19,7 @@ func TestConsoleActorArrival(t *testing.T) {
 	hostAddrs = func() []netip.Addr {
 		return []netip.Addr{
 			netip.MustParseAddr("127.0.0.1"), netip.MustParseAddr("192.168.1.5"),
-			netip.MustParseAddr("2001:db8::5"), netip.MustParseAddr("fe80::5%en0"),
+			netip.MustParseAddr("2001:db8::5"), netip.MustParseAddr("fe80::5%en0"), netip.MustParseAddr("169.254.1.5"),
 		}
 	}
 	hostAddrCache.read = time.Time{}
@@ -38,7 +38,10 @@ func TestConsoleActorArrival(t *testing.T) {
 		{"host global ipv6", "[2001:db8::5]:5000", nil, "the console on this host from 2001:db8::5 (no tailnet identity)"},
 		{"host link-local", "[fe80::5%en0]:5000", nil, "the console on this host from fe80::5%en0 (no tailnet identity)"},
 		{"same link-local on another link", "[fe80::5%en1]:5000", nil, "the console listener from fe80::5%en1 (no authenticated identity)"},
+		{"other link-local on the host's link", "[fe80::20%en0]:5000", nil, "the console listener from fe80::20%en0 (no authenticated identity)"},
+		{"ipv4 link-local", "169.254.1.5:5000", nil, "the console listener from 169.254.1.5 (no authenticated identity)"},
 		{"other machine", "192.168.1.20:5000", nil, "the console listener from 192.168.1.20 (no authenticated identity)"},
+		{"mapped other machine", "[::ffff:192.168.1.20]:5000", nil, "the console listener from 192.168.1.20 (no authenticated identity)"},
 		{"other machine ipv6", "[2001:db8::20]:5000", nil, "the console listener from 2001:db8::20 (no authenticated identity)"},
 		{"unparsable source", "somewhere", nil, "the console listener from an unknown address (no authenticated identity)"},
 		{"external origin", "127.0.0.1:5000", func(c context.Context) context.Context {
@@ -91,11 +94,11 @@ func TestHostAddrRereadOnMiss(t *testing.T) {
 	hostAddrs = func() []netip.Addr { return addrs }
 	hostAddrCache.read = time.Time{}
 	added := netip.MustParseAddr("10.0.0.7")
-	if isHostAddr(added) {
+	if IsHostAddr(added) {
 		t.Fatal("unknown address matched")
 	}
 	addrs = append(addrs, added)
-	if !isHostAddr(added) {
+	if !IsHostAddr(added) {
 		t.Fatal("address added after the cache was read is not found")
 	}
 }
