@@ -50,9 +50,147 @@ export function infoDialog(title, body) {
   return confirmDialog({ title, body, confirmLabel: 'Close', noCancel: true });
 }
 
+// slideConfirm builds a "slide to unlock" control for an action that cannot
+// be undone (docs/spec/console-row-delete.md). Only the handle drags, a
+// release before the end returns it, and each Right or Left press moves it a
+// tenth (held-key repeats are ignored); Up and Down are left to the menu
+// around it. onEnd runs once the handle reaches the end; the caller then
+// calls reset(text) to allow another try or lock(text) to leave it disabled.
+export function slideConfirm({ text, name, busyText, busyAnnouncement, onEnd }) {
+  const fill = h('div', { class: 'slide-fill' });
+  const label = h('div', { class: 'slide-label', 'aria-hidden': 'true' });
+  const status = h('p', { class: 'sr-only', role: 'status', 'aria-live': 'polite' });
+  const handle = h('div', {
+    class: 'slide-handle', role: 'slider', tabindex: '0', 'aria-label': `${text} ${name}`,
+    'aria-valuemin': '0', 'aria-valuemax': '100', 'aria-valuenow': '0', 'aria-valuetext': '0%',
+  });
+  const el = h('div', { class: 'slide', 'data-state': 'idle' }, fill, label, handle, status);
+  let p = 0;
+  let pointer = null;
+  let startX = 0;
+  let startP = 0;
+  let returning;
+  const state = () => el.getAttribute('data-state');
+  const setState = (s) => el.setAttribute('data-state', s);
+  const settled = () => state() === 'busy' || state() === 'locked';
+  // travel is how far the handle moves, in pixels, from start to end.
+  const travel = () => {
+    const t = el.clientWidth - handle.offsetWidth - 2 * handle.offsetLeft;
+    return t > 0 ? t : 0;
+  };
+  function show(value) {
+    p = Math.min(1, Math.max(0, value));
+    el.style.setProperty('--p', String(p));
+    el.style.setProperty('--travel', travel() + 'px');
+    // Floor, so 100% is announced only at the end, where deletion starts.
+    const pct = Math.floor(p * 100);
+    handle.setAttribute('aria-valuenow', String(pct));
+    handle.setAttribute('aria-valuetext', pct + '%');
+  }
+  function idleLabel(failed) {
+    clear(label).appendChild(failed ? h('span', { class: 'slide-failed', text: failed }) : h('span', { class: 'slide-shine', text }));
+  }
+  function reached() {
+    if (p < 1 || settled()) return false;
+    pointer = null;
+    window.removeEventListener('blur', cancel);
+    setState('busy');
+    clear(label).appendChild(h('span', { text: busyText }));
+    clear(handle).appendChild(icon('spinner'));
+    handle.setAttribute('aria-disabled', 'true');
+    status.textContent = busyAnnouncement;
+    onEnd();
+    return true;
+  }
+  // cancel ends an unfinished drag: a release, a lost pointer, or focus
+  // leaving the handle or the window. Later events of that drag do nothing.
+  function cancel() {
+    if (pointer !== null) {
+      try { handle.releasePointerCapture(pointer); } catch { /* already released */ }
+      pointer = null;
+    }
+    window.removeEventListener('blur', cancel);
+    if (!settled() && (p > 0 || state() === 'dragging')) back(true);
+  }
+  function back(animate) {
+    clearTimeout(returning);
+    setState(animate ? 'returning' : 'idle');
+    show(0);
+    if (animate) returning = setTimeout(() => { if (state() === 'returning') setState('idle'); }, 240);
+  }
+  handle.addEventListener('pointerdown', (e) => {
+    if (settled() || (e.button !== undefined && e.button !== 0)) return;
+    e.preventDefault();
+    handle.focus();
+    pointer = e.pointerId;
+    try { handle.setPointerCapture(e.pointerId); } catch { /* the pointer is already gone */ }
+    startX = e.clientX;
+    startP = p;
+    clearTimeout(returning);
+    setState('dragging');
+    window.addEventListener('blur', cancel);
+  });
+  handle.addEventListener('pointermove', (e) => {
+    if (e.pointerId !== pointer) return;
+    const t = travel();
+    if (!t) return;
+    show(startP + (e.clientX - startX) / t);
+    reached();
+  });
+  const release = (e) => { if (e.pointerId === pointer) cancel(); };
+  handle.addEventListener('pointerup', release);
+  handle.addEventListener('pointercancel', release);
+  handle.addEventListener('lostpointercapture', release);
+  handle.addEventListener('keydown', (e) => {
+    if (settled()) return;
+    const step = { ArrowRight: 1, ArrowLeft: -1 }[e.key];
+    // These keys belong to the slider, not to a menu around it.
+    if (step || e.key === 'Home' || e.key === 'End' || e.key === 'PageUp' || e.key === 'PageDown') {
+      e.preventDefault();
+      e.stopPropagation();
+    }
+    if (e.repeat) return;
+    if (step) {
+      clearTimeout(returning);
+      setState('idle');
+      show(Math.round(p * 10 + step) / 10);
+      reached();
+    } else if (e.key === 'Home') back(false);
+  });
+  handle.addEventListener('blur', cancel);
+  idleLabel();
+  clear(handle).appendChild(icon('chevrons'));
+  show(0);
+  return {
+    el,
+    handle,
+    // reset returns the handle for another try; failed replaces the label.
+    reset(failed) {
+      handle.removeAttribute('aria-disabled');
+      status.textContent = failed || '';
+      idleLabel(failed);
+      clear(handle).appendChild(icon('chevrons'));
+      back(true);
+    },
+    lock(lockedText) {
+      setState('locked');
+      handle.setAttribute('aria-disabled', 'true');
+      status.textContent = lockedText;
+      clear(label).appendChild(h('span', { text: lockedText }));
+      clear(handle).appendChild(icon('more'));
+    },
+  };
+}
+
 // menu builds a "…" button with a popup menu.
-// items: [{label, onSelect, danger, disabled, className}]; className lets CSS
-// show an item at some widths only (a hidden item is skipped by the keyboard).
+// items: [{label, onSelect, danger, disabled, className}] or {separator: true};
+// className lets CSS show an item at some widths only (a hidden item is
+// skipped by the keyboard). An item with inPlace(ctl) instead keeps the menu
+// open when chosen and works inside it:
+//   ctl.replace(node)  puts node where the item is, until the menu closes;
+//   ctl.hold(on)       keeps the menu open and its other items disabled;
+//   ctl.close(refocus) closes the menu;
+//   ctl.onClose(fn)    runs fn once when the menu next closes.
 let openMenu = null;
 
 export function menu(label, items, iconName) {
@@ -62,7 +200,31 @@ export function menu(label, items, iconName) {
     'aria-controls': id, 'aria-label': label, title: label,
   }, icon(iconName || 'more'));
   const list = h('div', { class: 'menu', role: 'menu', id, hidden: true });
+  let held = false;
+  let swaps = [];
+  let onClose = [];
+  const ctl = {
+    replace(item, node) {
+      item.replaceWith(node);
+      swaps.push([node, item]);
+    },
+    // Links cannot be disabled natively: aria-disabled marks them, and their
+    // clicks are dropped while held.
+    hold(on) {
+      held = on;
+      for (const el of list.querySelectorAll('.menu-item')) {
+        if (el.tagName === 'A') {
+          if (on) el.setAttribute('aria-disabled', 'true');
+          else el.removeAttribute('aria-disabled');
+        } else if (on) { el.dataset.wasDisabled = String(!!el.disabled); el.disabled = true; }
+        else if (el.dataset.wasDisabled !== undefined) { el.disabled = el.dataset.wasDisabled === 'true'; delete el.dataset.wasDisabled; }
+      }
+    },
+    close: (refocus) => close(refocus),
+    onClose(fn) { onClose.push(fn); },
+  };
   for (const it of items) {
+    if (it.separator) { list.appendChild(h('div', { class: 'menu-sep', role: 'separator' })); continue; }
     // An item with href is an external link (opened like extLink); one the
     // console cannot open from this device is shown disabled.
     const href = it.href ? safeHref(it.href) : '';
@@ -74,14 +236,24 @@ export function menu(label, items, iconName) {
         type: 'button', role: 'menuitem', tabindex: '-1', title: blocked ? SERVER_ONLY : undefined,
         class: 'menu-item' + (it.danger ? ' danger' : '') + (it.className ? ' ' + it.className : ''), disabled: !!it.disabled || !!blocked,
       }, content || it.label);
-    mi.addEventListener('click', () => { close(!href); if (it.onSelect) it.onSelect(); });
+    if (it.inPlace) {
+      mi.addEventListener('click', () => it.inPlace({ ...ctl, replace: (node) => ctl.replace(mi, node) }));
+    } else {
+      mi.addEventListener('click', (e) => {
+        if (held) { e.preventDefault(); return; }
+        close(!href);
+        if (it.onSelect) it.onSelect();
+      });
+    }
     list.appendChild(mi);
   }
   const wrap = h('div', { class: 'menu-wrap' }, btn, list);
-  const enabled = () => [...list.querySelectorAll('.menu-item:not([disabled])')].filter((el) => el.getClientRects().length);
+  // Items and an enabled in-place slider take part in arrow-key navigation.
+  const enabled = () => [...list.querySelectorAll('.menu-item:not([disabled]):not([aria-disabled="true"]), [role="slider"]:not([aria-disabled="true"])')]
+    .filter((el) => el.getClientRects().length);
 
   function open() {
-    if (openMenu && openMenu !== close) openMenu(false);
+    if (openMenu && openMenu !== close && openMenu(false) === false) return;
     list.hidden = false;
     btn.setAttribute('aria-expanded', 'true');
     openMenu = close;
@@ -89,20 +261,84 @@ export function menu(label, items, iconName) {
     if (first) first.focus();
     document.addEventListener('pointerdown', outside, true);
   }
-  function close(refocus) {
+  // close resolves false, leaving the menu open, while it is held, unless
+  // forced (leaving the page).
+  function close(refocus, force) {
+    if (held && !force) return false;
     list.hidden = true;
     btn.setAttribute('aria-expanded', 'false');
     document.removeEventListener('pointerdown', outside, true);
     if (openMenu === close) openMenu = null;
+    for (const [node, item] of swaps.reverse()) node.replaceWith(item);
+    swaps = [];
+    held = false;
+    const fns = onClose;
+    onClose = [];
     if (refocus) btn.focus();
+    for (const fn of fns) fn();
+    return true;
   }
-  function outside(e) { if (!wrap.contains(e.target)) close(false); }
+  // A press outside closes the menu. While held it does nothing at all:
+  // focus stays where it is and the click that press makes (on a link, say)
+  // is dropped, even if the deletion ends before the press does. Guards are
+  // kept per pointer: each ends with its own pointer's release or cancel, a
+  // new press of that pointer, or the window losing focus, so other pointers
+  // and keys cannot lift it, and keyboard clicks (detail 0) are never dropped.
+  const guards = new Map();
+  let guardEvent = null;
+  const pointerOf = (e) => (e.pointerId === undefined || e.pointerId < 0 ? null : e.pointerId);
+  function onClick(c) {
+    if (!c.detail) return;
+    const id = pointerOf(c);
+    if (id === null ? guards.size : guards.has(id)) { c.preventDefault(); c.stopPropagation(); }
+  }
+  function endGuard(id) {
+    guards.delete(id);
+    if (guards.size) return;
+    document.removeEventListener('click', onClick, true);
+    document.removeEventListener('pointerup', onRelease, true);
+    document.removeEventListener('pointercancel', onRelease, true);
+    document.removeEventListener('pointerdown', onPress, true);
+    window.removeEventListener('blur', endAll);
+  }
+  function endAll() { for (const id of [...guards.keys()]) endGuard(id); }
+  // The press's click comes right after its pointerup, in the same task.
+  function onRelease(e) {
+    const id = pointerOf(e);
+    const g = guards.get(id);
+    if (g) setTimeout(() => { if (guards.get(id) === g) endGuard(id); }, 0);
+  }
+  function onPress(e) { if (e !== guardEvent && guards.has(pointerOf(e))) endGuard(pointerOf(e)); }
+  // guardPress drops the click of press e and keeps focus where it is.
+  function guardPress(e) {
+    e.preventDefault?.();
+    if (!guards.size) {
+      document.addEventListener('click', onClick, true);
+      document.addEventListener('pointerup', onRelease, true);
+      document.addEventListener('pointercancel', onRelease, true);
+      document.addEventListener('pointerdown', onPress, true);
+      window.addEventListener('blur', endAll);
+    }
+    guardEvent = e;
+    guards.set(pointerOf(e), {});
+  }
+  function outside(e) {
+    if (wrap.contains(e.target)) return;
+    if (!held) close(false);
+    else guardPress(e);
+  }
 
   btn.addEventListener('click', () => (list.hidden ? open() : close(false)));
+  // While held, a press on this menu's own button or on a held item does
+  // nothing either, even if the hold ends before the press does.
+  btn.addEventListener('pointerdown', (e) => { if (held) guardPress(e); });
+  list.addEventListener('pointerdown', (e) => { if (held && !e.target.closest?.('[role="slider"]')) guardPress(e); });
   btn.addEventListener('keydown', (e) => {
     if (e.key === 'ArrowDown') { e.preventDefault(); open(); }
   });
   list.addEventListener('keydown', (e) => {
+    // While held, focus stays where it is and the menu stays open.
+    if (held && ['Escape', 'Tab', 'ArrowDown', 'ArrowUp', 'Home', 'End'].includes(e.key)) { e.preventDefault(); return; }
     const els = enabled();
     const i = els.indexOf(document.activeElement);
     if (e.key === 'Escape') { e.preventDefault(); close(true); }
@@ -115,7 +351,7 @@ export function menu(label, items, iconName) {
   return wrap;
 }
 
-export function closeMenus() { if (openMenu) openMenu(false); }
+export function closeMenus() { if (openMenu) openMenu(false, true); }
 
 export function toast(message, kind) {
   const box = document.getElementById('toasts');

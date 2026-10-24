@@ -361,8 +361,12 @@ they run once saved.
   `Not running`. `Save as vN` appears for flats with Draft changes, otherwise
   `Publish vN` when the newest saved version was never live. A row's menu holds
   the open links, Share, Deployments (Overview for documents, designs and
-  boards), Analytics and Settings. Each row has its type's label and icon
-  (Flat, Document, Page, Design, Board); a running board's open link goes to
+  boards), Analytics, Settings and, last under a divider, a red Delete.
+  Choosing Delete keeps the menu open and turns the item into a slide control
+  in its own box; dragging the handle to the end (or ten Right presses)
+  deletes the flat directly, as Settings does
+  ([Delete from the flat list](spec/console-row-delete.md)). Each row has its
+  type's label and icon (Flat, Document, Page, Design, Board); a running board's open link goes to
   its canvas. Rows do not repeat a public-access banner.
 - **Flat page.** Tabs: Deployments (Overview for documents, designs and boards) at
   `/flats/{slug}`, Analytics, Database (server flats only) and Settings.
