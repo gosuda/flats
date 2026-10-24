@@ -24,6 +24,8 @@ func TestStatusOfUsesTypedErrors(t *testing.T) {
 		{core.ErrNotDeployed, 409},
 		{wrap(store.ErrNotFound, "flat x"), 404},
 		{&core.DeployError{}, 422},
+		{core.ErrAutopilotOff, 403},
+		{wrap(core.ErrAutopilotNotAllowed, "the operator does not allow agents to decide Deploy (deploy)"), 403},
 		// A typed error wins over words in its message that the fallback
 		// would read differently.
 		{wrap(core.ErrUnavailable, "the operator must enable Portal"), 409},

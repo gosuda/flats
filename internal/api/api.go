@@ -173,6 +173,10 @@ func (s *Server) Handler() http.Handler {
 			h("GET /settings", s.getSettings)
 			h("PUT /settings", s.putSettings)
 			h("POST /settings/impact", s.settingsImpact)
+			h("GET /experiments/autopilot", s.getAutopilot)
+			h("PUT /experiments/autopilot", s.setAutopilotEnabled)
+			h("PUT /experiments/autopilot/operations/{op}", s.setAutopilotOp)
+			h("PUT /experiments/autopilot/guide", s.setAutopilotGuide)
 		} else {
 			h("POST /flats", s.createFlat)
 			h("GET /flats/{slug}/board", s.getBoard)
@@ -262,7 +266,7 @@ func statusOf(err error) int {
 		return http.StatusPreconditionFailed
 	case errors.Is(err, core.ErrInvalid), errors.Is(err, slug.ErrInvalid):
 		return http.StatusBadRequest
-	case errors.Is(err, core.ErrForbidden):
+	case errors.Is(err, core.ErrForbidden), errors.Is(err, core.ErrAutopilotOff), errors.Is(err, core.ErrAutopilotNotAllowed):
 		return http.StatusForbidden
 	case errors.Is(err, core.ErrConflict), errors.Is(err, core.ErrNotDeployed), errors.Is(err, core.ErrUnavailable),
 		errors.Is(err, core.ErrStaleApproval), errors.Is(err, core.ErrProviderNotPermitted),
