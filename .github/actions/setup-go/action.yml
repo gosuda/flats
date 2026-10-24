@@ -21,6 +21,11 @@ inputs:
   save-modules:
     description: Whether this job saves the shared module cache on main.
     default: "false"
+  restore-fallback:
+    description: >
+      An older build cache cohort to restore from when this cohort has no cache
+      yet, such as the job a cohort was split from.
+    default: ""
 
 runs:
   using: composite
@@ -37,7 +42,7 @@ runs:
         NETBIRD_HASH: ${{ hashFiles('go.mod', 'go.sum', 'netbird/go.mod', 'netbird/go.sum') }}
       run: bash "$GITHUB_ACTION_PATH/metadata.sh"
 
-    # Last restore prefix migrates existing caches; Go validates cache freshness (these are trusted main caches).
+    # Go validates cache freshness (these are trusted main caches).
     - if: steps.go.outputs.save == 'true' && inputs.save-modules == 'true'
       uses: actions/cache@v4
       with:
@@ -45,7 +50,6 @@ runs:
         key: go-mod-v2-${{ runner.os }}-${{ inputs.module-scope }}-${{ steps.go.outputs.hash }}
         restore-keys: |
           go-mod-v2-${{ runner.os }}-${{ inputs.module-scope }}-
-          go-mod-${{ runner.os }}-
     - if: steps.go.outputs.save != 'true' || inputs.save-modules != 'true'
       uses: actions/cache/restore@v4
       with:
@@ -53,7 +57,6 @@ runs:
         key: go-mod-v2-${{ runner.os }}-${{ inputs.module-scope }}-${{ steps.go.outputs.hash }}
         restore-keys: |
           go-mod-v2-${{ runner.os }}-${{ inputs.module-scope }}-
-          go-mod-${{ runner.os }}-
 
     - if: steps.go.outputs.save == 'true' && inputs.save-build == 'true'
       uses: actions/cache@v4
@@ -63,7 +66,7 @@ runs:
         restore-keys: |
           go-build-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.toolchain }}-${{ inputs.cache-key }}-${{ inputs.module-scope }}--${{ steps.go.outputs.hash }}--
           go-build-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.toolchain }}-${{ inputs.cache-key }}-${{ inputs.module-scope }}--
-          go-build-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cache-key }}--
+          ${{ inputs.restore-fallback && format('go-build-v2-{0}-{1}-{2}-{3}-{4}--', runner.os, runner.arch, steps.go.outputs.toolchain, inputs.restore-fallback, inputs.module-scope) || '' }}
     - if: steps.go.outputs.save != 'true' || inputs.save-build != 'true'
       uses: actions/cache/restore@v4
       with:
@@ -72,4 +75,4 @@ runs:
         restore-keys: |
           go-build-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.toolchain }}-${{ inputs.cache-key }}-${{ inputs.module-scope }}--${{ steps.go.outputs.hash }}--
           go-build-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.toolchain }}-${{ inputs.cache-key }}-${{ inputs.module-scope }}--
-          go-build-${{ runner.os }}-${{ runner.arch }}-${{ inputs.cache-key }}--
+          ${{ inputs.restore-fallback && format('go-build-v2-{0}-{1}-{2}-{3}-{4}--', runner.os, runner.arch, steps.go.outputs.toolchain, inputs.restore-fallback, inputs.module-scope) || '' }}

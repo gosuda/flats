@@ -2,7 +2,8 @@
 
 The existing rules are authoritative: the comment above `TestMain` in
 `internal/runtime/runtime_test.go` and `internal/apps/docs/runtime_test.go`,
-and the shard patterns in [`scripts/ci-test.sh`](../../../../scripts/ci-test.sh).
+the shard patterns in [`scripts/ci-test.sh`](../../../../scripts/ci-test.sh)
+and the race lanes in [`scripts/ci-race.sh`](../../../../scripts/ci-race.sh).
 [CI baseline](../../../../docs/gates.md#pull-request-baseline) explains them.
 
 ## Choose tests

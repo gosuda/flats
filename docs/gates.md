@@ -22,17 +22,23 @@ and runs these checks in parallel jobs:
 go mod tidy                         # CI requires no go.mod/go.sum diff
 go vet ./...
 make docs-check                     # Markdown links and anchors, uncached
-go test ./...                       # as seven shards: scripts/ci-test.sh <shard>
-go test -race ./internal/core ./internal/api ./internal/app ./internal/mcpx ./internal/store ./internal/expose/portal
-go test -race ./internal/runtime -run 'TestConcurrentFiles|TestWASIRejectsJSHostABI'
-go test -race ./internal/wsconn
-go test -race ./internal/runtime -run 'TestWebSocket(AdmissionCeiling|RejectedUpgrade|PostFailureReleasesSlot|DefaultByteLimits|MessageLimit)$'
+go test ./...                       # as eight shards: scripts/ci-test.sh <shard>
+scripts/ci-race.sh core             # go test -race, in four lanes
+scripts/ci-race.sh services
+scripts/ci-race.sh board-1
+scripts/ci-race.sh board-2
+(cd internal/apps/docs/_web && npm ci && npm test)
 ```
 
 `scripts/ci-test.sh` splits the QuickJS runtime and docs app packages into
 their long soak tests, the serial codec ownership soak and the serial docs
-budget tests (`-run`), and everything else (`-skip` on the same patterns), so
-together the shards always run the whole suite. Where `/dev/shm` is writable,
+budget tests (`-run`), and everything else (`-skip` on the same patterns). The
+board packages (`internal/board` and below) form their own shard, and the
+`other` shard runs every remaining package, so together the shards always run
+the whole suite. CI runs the shards in six jobs: the codec soak and the
+runtime soaks share one, and so do the docs budget and docs soak tests. A job
+runs its shards one after another, each as its own `go test`, the serial codec
+or budget shard first, so those tests still have the runner to themselves. Where `/dev/shm` is writable,
 the docs budget shard runs its test binary with `TMPDIR` and `GOTMPDIR` set to
 it (the go command still builds on disk), so the worker databases under
 `t.TempDir` live on tmpfs. The budgets measure the docs engine: on a GitHub
@@ -43,12 +49,21 @@ depends on elapsed time or the process environment (see the comment above each
 package's `TestMain`). A local `go test ./...` runs both packages at once, so one package's parallel tests
 can slow the other's serial timing tests; on a busy machine, run the shards
 one at a time or use `go test -p 1 ./...`. Every release archive is built
-CGO-free somewhere: darwin/arm64 by the macOS `install-script` leg,
-darwin/amd64 by the `darwin-cross-build` job on Linux, and linux/amd64 and
-linux/arm64 by the `container` job.
+CGO-free somewhere: darwin/arm64 by the `install-macos` job, darwin/amd64 by
+the `netbird` job on Linux, and linux/amd64 and linux/arm64 by the
+`container` job.
+
+`scripts/ci-race.sh` runs the race tests in four parallel lanes: the core
+service; the API, app, MCP, store, Portal and WebSocket packages with the
+runtime's FILES, WASI and WebSocket limit tests and the board engine; and the
+board server in two lanes, split by test name like the runtime and docs
+shards. The board engine starts no goroutines, so its seeded
+simulations run with a few seeds per CPU under `-race` (`BOARD_SEEDS`) and
+with their full seed counts in the board shard. `internal/board/benchdata`
+only generates fixed reference data and is not run with `-race`.
 
 Slow `internal/core` lifecycle and recovery tests run in parallel in every run,
-including the selected race job and the `other` shard. Their fixtures own
+including the core race lane and the `other` shard. Their fixtures own
 separate SQLite databases, storage directories and fake runtimes;
 checkpoint-recovery subtests also own independent fixtures. Tests that change
 package globals or assert wall-clock budgets stay serial, and restore the
@@ -56,19 +71,21 @@ globals with `t.Cleanup` so a failure cannot leak them into parallel tests.
 
 The `netbird` job covers the nested `netbird` module, which `go test ./...`
 does not reach: no go.mod/go.sum diff after `go mod tidy`, `go vet ./...`,
-`go test -race ./...` and a CGO-free build of its `./cmd/flats`. It also fails
-when the root `cmd/flats` links any `github.com/netbirdio` package, or when the
-root `go.mod` has a `replace` directive, which `go install pkg@version`
-refuses.
+`go test -race ./...` and the CGO-free darwin/amd64 release archive of its
+`./cmd/flats`; the release script fails when that binary does not link
+NetBird. The job also fails when the root `cmd/flats` links any
+`github.com/netbirdio` package, or when the root `go.mod` has a `replace`
+directive, which `go install pkg@version` refuses.
 
-The `install-script` job runs on Linux and macOS. On Linux it runs
-`shellcheck` on the POSIX and Bash scripts. Both legs syntax-check the gate
-scripts, run `scripts/test_approval_gate.py` (fake-client tests of the
-approval helper the gates share; it never starts Flats or a provider), build
-the release archive for their platform and run `scripts/install-smoke.sh`:
-`install.sh` installs the real per-user service from those archives, a rerun
-restarts it, it recovers from a crash, a stopped service stays stopped on
-upgrade, and uninstall removes it.
+The service install smoke runs on Linux in the `container` job and on macOS
+in the `install-macos` job. The `container` job runs `shellcheck` on the
+POSIX and Bash scripts. Both jobs syntax-check the gate scripts, run
+`scripts/test_approval_gate.py` (fake-client tests of the approval helper the
+gates share; it never starts Flats or a provider) and run
+`scripts/install-smoke.sh` on the release archive for their platform:
+`install.sh` installs the real per-user service (systemd or launchd) from
+that archive, a rerun restarts it, it recovers from a crash, a stopped
+service stays stopped on upgrade, and uninstall removes it.
 
 A `container` job builds the image for `linux/amd64` and `linux/arm64` from
 the Linux release archives and runs `scripts/container-smoke.sh` on the

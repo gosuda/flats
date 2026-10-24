@@ -55,7 +55,8 @@ clean development build to its commit.
 ## Cutting a release
 
 1. Land every change through a reviewed PR. Wait until CI on `main` passes,
-   including the `install-script` jobs on Linux (systemd) and macOS (launchd).
+   including the service install smoke on Linux (systemd, in the `container`
+   job) and macOS (launchd, in the `install-macos` job).
 2. Pick the version with semantic versioning. Call out data or flag changes
    that operators must act on.
 3. Read the live `main` ref (`git ls-remote origin refs/heads/main`), then tag
@@ -175,8 +176,11 @@ the container smoke test succeed. Main CI calls the image workflow after its
 complete test matrix settles. Only its exact successfully tested tip reuses
 that vet/test result; intermediate commits, manual builds and tips without
 successful verification run all shards (`scripts/ci-test.sh`) one after another,
-so the docs tests' wall-clock budgets run alone. A failure prevents that commit's publication;
-later commits in its build lane are still attempted and the lane reports failure.
+so the docs tests' wall-clock budgets run alone. A tip whose own CI test matrix
+failed is not verified again: its image is skipped with an error, and
+re-running the failed CI jobs verifies and publishes it. A failure prevents that
+commit's publication; later commits in its build lane are still attempted and
+the lane reports failure.
 Each lane has a 360-minute timeout and remains subject to GitHub Actions runtime
 limits; a timeout can leave unattempted commits that need manual recovery.
 

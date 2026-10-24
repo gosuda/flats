@@ -9,13 +9,14 @@
 # package is split by test name: the named soak, codec and budget tests run in
 # their own shards with -run, and the remaining shard runs everything else
 # with -skip on the same patterns. A new or renamed test therefore always runs
-# somewhere; at worst the shards become unbalanced. Running every shard covers
-# exactly `go test ./...`.
+# somewhere; at worst the shards become unbalanced. The board packages
+# (internal/board and below) run in their own shard, and the other shard runs
+# every remaining package. Running every shard covers exactly `go test ./...`.
 
 set -eu
 
 [ $# -ge 1 ] || {
-	echo "usage: $0 runtime-soak|runtime-codec|runtime|docs-soak|docs-budget|docs|other [go test flags...]" >&2
+	echo "usage: $0 runtime-soak|runtime-codec|runtime|docs-soak|docs-budget|docs|board|other [go test flags...]" >&2
 	exit 2
 }
 shard=$1
@@ -62,12 +63,21 @@ docs-budget)
 	exec go test "$@" -run "$docs_budget" ./internal/apps/docs
 	;;
 docs) need internal/apps/docs && exec go test "$@" -skip "$docs_soak|$docs_budget" ./internal/apps/docs ;;
+board) need internal/board && exec go test "$@" ./internal/board/... ;;
 other)
 	# Separate assignments, so set -e stops on a failing go list instead of
 	# testing no packages. Older source has another module path.
 	module=$(go list -m)
 	all=$(go list ./...)
-	packages=$(printf '%s\n' "$all" | grep -vx -e "$module/internal/runtime" -e "$module/internal/apps/docs")
+	# Fixed strings: the runtime and docs packages exactly, and the board
+	# package with everything below it.
+	packages=$(printf '%s\n' "$all" | awk -v m="$module" '
+		$0 != m "/internal/runtime" && $0 != m "/internal/apps/docs" &&
+		$0 != m "/internal/board" && index($0, m "/internal/board/") != 1')
+	[ -n "$packages" ] || {
+		echo "no packages left for the other shard" >&2
+		exit 1
+	}
 	# shellcheck disable=SC2086 # one argument per package path.
 	exec go test "$@" $packages
 	;;

@@ -64,7 +64,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [runtime-soak, runtime-codec, runtime, docs-soak, docs-budget, docs, other]
+        shard: [runtime-soak, runtime-codec, runtime, docs-soak, docs-budget, docs, board, other]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -99,7 +99,6 @@ jobs:
           key: go-mod-v2-${{ runner.os }}-root-${{ hashFiles('go.mod', 'go.sum') }}
           restore-keys: |
             go-mod-v2-${{ runner.os }}-root-
-            go-mod-${{ runner.os }}-
       - uses: actions/cache/restore@v4
         with:
           path: ${{ steps.cache-paths.outputs.build }}
@@ -107,7 +106,6 @@ jobs:
           restore-keys: |
             go-build-v2-${{ runner.os }}-${{ runner.arch }}-go${{ steps.go.outputs.go-version }}-test-${{ matrix.shard }}-root--${{ hashFiles('go.mod', 'go.sum') }}--
             go-build-v2-${{ runner.os }}-${{ runner.arch }}-go${{ steps.go.outputs.go-version }}-test-${{ matrix.shard }}-root--
-            go-build-${{ runner.os }}-${{ runner.arch }}-test-${{ matrix.shard }}--
       - name: Vet
         if: matrix.shard == 'other'
         run: go vet ./...
@@ -155,7 +153,6 @@ jobs:
           key: go-mod-v2-${{ runner.os }}-netbird-${{ hashFiles('go.mod', 'go.sum', 'netbird/go.mod', 'netbird/go.sum') }}
           restore-keys: |
             go-mod-v2-${{ runner.os }}-netbird-
-            go-mod-${{ runner.os }}-
       - uses: actions/cache/restore@v4
         with:
           path: ${{ steps.cache-paths.outputs.build }}
@@ -163,7 +160,6 @@ jobs:
           restore-keys: |
             go-build-v2-${{ runner.os }}-${{ runner.arch }}-go${{ steps.go.outputs.go-version }}-container-netbird--${{ hashFiles('go.mod', 'go.sum', 'netbird/go.mod', 'netbird/go.sum') }}--
             go-build-v2-${{ runner.os }}-${{ runner.arch }}-go${{ steps.go.outputs.go-version }}-container-netbird--
-            go-build-${{ runner.os }}-${{ runner.arch }}-container--
       - name: Build archives
         env:
           COMMIT: ${{ needs.resolve.outputs.commit }}

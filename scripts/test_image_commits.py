@@ -76,7 +76,7 @@ class ImageCommitsTests(unittest.TestCase):
             with self.subTest(case=case):
                 self.assertEqual(images.verified_commit(*case), "")
 
-    def run_build(self, *, commit=None, verified=None, event="push", fail_shard="",
+    def run_build(self, *, commit=None, verified=None, failed="", event="push", fail_shard="",
                   attempt="1", image_exists=False, ref="refs/heads/main"):
         tip = self.commits[-1]
         scripts = self.root / "scripts"
@@ -101,10 +101,53 @@ class ImageCommitsTests(unittest.TestCase):
                "GITHUB_RUN_ATTEMPT": attempt, "IMAGE": "ghcr.io/example/flats",
                "IMAGE_EXISTS": "true" if image_exists else "false",
                "VERIFIED_COMMIT": tip if verified is None else verified,
+               "FAILED_COMMIT": failed,
                "CALL_LOG": str(log), "FAIL_SHARD": fail_shard}
         result = subprocess.run(["sh", str(scripts / "build-commit-image.sh"), commit or tip],
                                 cwd=self.root, env=env, capture_output=True, text=True)
         return result.returncode, log.read_text().splitlines()
+
+    def test_failed_tip_is_only_the_exact_tip_without_proof(self):
+        tip = self.commits[-1]
+        self.assertEqual(images.failed_commit("push", self.event, tip, tip, ""), tip)
+        cases = [
+            ("push", self.event, tip, tip, tip),
+            ("workflow_dispatch", self.event, tip, tip, ""),
+            ("pull_request", self.event, tip, tip, ""),
+            ("push", {**self.event, "ref": "refs/heads/topic"}, tip, tip, ""),
+            ("push", {**self.event, "deleted": True}, tip, tip, ""),
+            ("push", self.event, self.commits[1], tip, ""),
+            ("push", self.event, tip, self.commits[1], ""),
+            ("push", self.event, "", tip, ""),
+        ]
+        for case in cases:
+            with self.subTest(case=case):
+                self.assertEqual(images.failed_commit(*case), "")
+
+    def test_shell_reports_failed_tip_without_verifying_or_building(self):
+        code, calls = self.run_build(verified="", failed=self.commits[-1])
+        self.assertNotEqual(code, 0)
+        self.assertEqual(calls, [])
+
+    def test_shell_verifies_intermediate_commit_of_a_failed_push(self):
+        code, calls = self.run_build(commit=self.commits[1], verified="", failed=self.commits[-1])
+        self.assertEqual(code, 37)
+        self.assertEqual(calls, ["go vet ./...", "runtime-soak", "runtime-codec", "runtime",
+                                 "docs-soak", "docs-budget", "docs", "board", "other", "build"])
+
+    def test_retry_of_failed_tip_keeps_existing_image_and_reports_missing_one(self):
+        tip = self.commits[-1]
+        code, calls = self.run_build(verified="", failed=tip, attempt="2", image_exists=True)
+        self.assertEqual(code, 0)
+        self.assertEqual(calls, [f"docker buildx imagetools inspect ghcr.io/example/flats:sha-{tip}"])
+        code, calls = self.run_build(verified="", failed=tip, attempt="2")
+        self.assertNotEqual(code, 0)
+        self.assertEqual(calls, [f"docker buildx imagetools inspect ghcr.io/example/flats:sha-{tip}"])
+
+    def test_retry_after_tests_pass_reuses_the_tip_verification(self):
+        code, calls = self.run_build(attempt="2")
+        self.assertEqual(code, 37)
+        self.assertEqual(calls[1:], ["build"])
 
     def test_shell_skips_only_exact_verified_tip(self):
         code, calls = self.run_build()
@@ -117,7 +160,7 @@ class ImageCommitsTests(unittest.TestCase):
                 code, calls = self.run_build(**kwargs)
                 self.assertEqual(code, 37)
                 self.assertEqual(calls, ["go vet ./...", "runtime-soak", "runtime-codec", "runtime",
-                                         "docs-soak", "docs-budget", "docs", "other", "build"])
+                                         "docs-soak", "docs-budget", "docs", "board", "other", "build"])
 
     def test_push_retry_skips_existing_full_sha_image(self):
         # Historical batch entries are also preserved without republication.
@@ -132,7 +175,7 @@ class ImageCommitsTests(unittest.TestCase):
         self.assertEqual(code, 37)
         self.assertEqual(calls[0], f"docker buildx imagetools inspect ghcr.io/example/flats:sha-{self.commits[-1]}")
         self.assertEqual(calls[1:], ["go vet ./...", "runtime-soak", "runtime-codec", "runtime",
-                                    "docs-soak", "docs-budget", "docs", "other", "build"])
+                                    "docs-soak", "docs-budget", "docs", "board", "other", "build"])
 
     def test_manual_retry_and_first_attempt_do_not_inspect_registry(self):
         for kwargs in ({"event": "workflow_dispatch", "attempt": "2"}, {"attempt": "1"},
@@ -148,6 +191,13 @@ class ImageCommitsTests(unittest.TestCase):
     def test_tooling_head_mismatch_does_not_reuse_proof(self):
         self.git("checkout", "--detach", "-q", self.commits[0])
         code, calls = self.run_build()
+        self.assertEqual(code, 37)
+        self.assertEqual(calls[0], "go vet ./...")
+        self.assertEqual(calls[-2:], ["other", "build"])
+
+    def test_tooling_head_mismatch_does_not_trust_failed_tip(self):
+        self.git("checkout", "--detach", "-q", self.commits[0])
+        code, calls = self.run_build(verified="", failed=self.commits[-1])
         self.assertEqual(code, 37)
         self.assertEqual(calls[0], "go vet ./...")
         self.assertEqual(calls[-2:], ["other", "build"])

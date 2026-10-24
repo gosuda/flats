@@ -30,42 +30,65 @@ jobs:
       - run: npm ci
       - run: npm test
 
-  # go test ./... split into parallel shards; see scripts/ci-test.sh.
+  # go test ./... split into the shards of scripts/ci-test.sh. A lane runs its
+  # shards one after another, each as its own go test, so the serial codec and
+  # budget tests (listed first) still have the runner to themselves.
   test:
-    name: test (${{ matrix.shard }})
+    name: test (${{ matrix.lane }})
     strategy:
       fail-fast: false
       matrix:
-        shard: [runtime-soak, runtime-codec, runtime, docs-soak, docs-budget, docs, other]
+        include:
+          - lane: runtime-soak
+            shards: runtime-codec runtime-soak
+          - lane: runtime
+            shards: runtime
+          - lane: docs-budget
+            shards: docs-budget docs-soak
+          - lane: docs
+            shards: docs
+          - lane: board
+            shards: board
+          - lane: other
+            shards: other
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-go
         with:
-          cache-key: test-${{ matrix.shard }}
+          cache-key: test-${{ matrix.lane }}
+          # The board packages used to be tested in the other shard.
+          restore-fallback: ${{ matrix.lane == 'board' && 'test-other' || '' }}
           # The other shard vets every package, so it downloads every module.
-          save-modules: ${{ matrix.shard == 'other' }}
+          save-modules: ${{ matrix.lane == 'other' }}
       - name: Verify module files
-        if: matrix.shard == 'other'
+        if: matrix.lane == 'other'
         run: |
           go mod tidy
           git diff --exit-code -- go.mod go.sum
       - name: Vet
-        if: matrix.shard == 'other'
+        if: matrix.lane == 'other'
         run: go vet ./...
       - name: CI workflow helper regressions
-        if: matrix.shard == 'other'
+        if: matrix.lane == 'other'
         run: |
           python3 -B -m unittest discover -s scripts -p 'test_ci_*.py'
           python3 -B -m unittest discover -s scripts -p test_image_commits.py
       # Uncached, unlike TestRepositoryDocs: go test cannot see every Git
       # index change that adds or removes a link target.
       - name: Documentation links
-        if: matrix.shard == 'other'
+        if: matrix.lane == 'other'
         run: make docs-check
       - name: Tests
-        run: scripts/ci-test.sh "${{ matrix.shard }}"
+        env:
+          SHARDS: ${{ matrix.shards }}
+        run: |
+          failed=0
+          for shard in $SHARDS; do
+            scripts/ci-test.sh "$shard" || failed=1
+          done
+          exit "$failed"
 
   # NetBird is a separate module (./netbird) because its client needs replace
   # directives; go test ./... above does not reach it.
@@ -76,7 +99,10 @@ jobs:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-go
         with:
-          cache-key: netbird
+          # A cohort of its own since the job also builds the darwin/amd64
+          # archive, whose objects the earlier netbird cache lacks.
+          cache-key: netbird-darwin
+          restore-fallback: netbird
           module-scope: netbird
           save-modules: "true"
       - name: Verify module files
@@ -84,12 +110,16 @@ jobs:
         run: |
           go mod tidy
           git diff --exit-code -- go.mod go.sum
-      - name: Vet, test and build
+      - name: Vet and test
         working-directory: netbird
         run: |
           go vet ./...
           go test -race ./...
-          CGO_ENABLED=0 go build -trimpath -ldflags="-s -w" -o /dev/null ./cmd/flats
+      # The only release target no other job builds. The release workflow uses
+      # the same CGO-free cross-build on Linux; the container job builds the
+      # Linux archives with the same script.
+      - name: Build Intel macOS release archive
+        run: FLATS_RELEASE_TARGETS="darwin/amd64" scripts/build-release.sh v0.0.0-ci "$RUNNER_TEMP/dist"
       - name: The main module does not link NetBird
         run: |
           if go list -deps ./cmd/flats | grep -q github.com/netbirdio; then
@@ -101,32 +131,31 @@ jobs:
             exit 1
           fi
 
+  # The race tests in parallel lanes; see scripts/ci-race.sh.
   race:
+    name: race (${{ matrix.lane }})
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [core, services, board-1, board-2]
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-go
         with:
-          cache-key: race
-      - name: Selected races
-        run: go test -race ./internal/core ./internal/api ./internal/app ./internal/mcpx ./internal/store ./internal/expose/portal
-      - name: FILES concurrency races
-        run: go test -race ./internal/runtime -run 'TestConcurrentFiles|TestWASIRejectsJSHostABI'
-      - name: WebSocket codec races
-        run: go test -race ./internal/wsconn
-      - name: Board races
-        # benchdata only generates fixed reference data; it is slow under -race.
-        run: go test -race $(go list ./internal/board/... | grep -v /benchdata)
-      - name: WebSocket resource limit races
-        run: go test -race ./internal/runtime -run 'TestWebSocket(AdmissionCeiling|RejectedUpgrade|PostFailureReleasesSlot|DefaultByteLimits|MessageLimit)$'
+          # The board lanes compile the same package: one cache, one writer.
+          cache-key: race-${{ startsWith(matrix.lane, 'board') && 'board' || matrix.lane }}
+          save-build: ${{ matrix.lane != 'board-2' }}
+          # The lanes used to share one race job.
+          restore-fallback: race
+      - name: Races
+        run: scripts/ci-race.sh "${{ matrix.lane }}"
 
-  install-script:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
+  # Native macOS: launchd service install smoke and its release archive.
+  # The Linux install smoke runs in the container job, on its archives.
+  install-macos:
+    runs-on: macos-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -134,12 +163,7 @@ jobs:
         with:
           cache-key: install-script
           module-scope: netbird
-          save-modules: ${{ runner.os == 'macOS' }}
-      - name: Lint
-        if: runner.os == 'Linux'
-        run: |
-          shellcheck -s sh install.sh scripts/ci-test.sh scripts/build-release.sh scripts/install-smoke.sh scripts/container-smoke.sh scripts/build-commit-image.sh scripts/build-commit-images.sh
-          shellcheck -s bash scripts/approval-gate.sh scripts/server-flat-gate.sh scripts/tailnet-gate.sh scripts/agent-gate.sh scripts/lifecycle-gate.sh
+          save-modules: "true"
       - name: Approval gate helper regressions
         timeout-minutes: 2
         run: |
@@ -148,38 +172,15 @@ jobs:
             bash -n "$gate_script" || exit 1
           done
           python3 -B scripts/test_approval_gate.py
-      - name: Build release archives
+      - name: Build release archive
         run: |
-          # Build only the archive this runner installs. The separate Darwin
-          # cross-build and container jobs cover the remaining release targets.
+          # The archive this runner installs; the netbird and container jobs
+          # build the other release targets.
           FLATS_RELEASE_TARGETS="$(go env GOOS)/$(go env GOARCH)"
           export FLATS_RELEASE_TARGETS
           scripts/build-release.sh v0.0.0-ci "$RUNNER_TEMP/dist"
-      - name: Start the systemd user manager
-        if: runner.os == 'Linux'
-        run: |
-          sudo loginctl enable-linger "$USER"
-          runtime=/run/user/$(id -u)
-          for _ in $(seq 1 30); do [ -S "$runtime/bus" ] && break; sleep 1; done
-          [ -S "$runtime/bus" ] || { echo "systemd user bus did not appear at $runtime/bus"; exit 1; }
-          echo "XDG_RUNTIME_DIR=$runtime" >> "$GITHUB_ENV"
       - name: Install, upgrade, crash and uninstall the service
         run: scripts/install-smoke.sh "$RUNNER_TEMP/dist" v0.0.0-ci
-
-  # The Intel macOS archive is compile-only coverage; building it on Linux
-  # keeps it off the native macOS install/launchd critical path. Release uses
-  # the same CGO-free cross-build on Linux.
-  darwin-cross-build:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup-go
-        with:
-          cache-key: darwin-cross-build
-          module-scope: netbird
-      - name: Build Intel macOS release archive
-        run: FLATS_RELEASE_TARGETS="darwin/amd64" scripts/build-release.sh v0.0.0-ci "$RUNNER_TEMP/dist"
 
   container:
     runs-on: ubuntu-latest
@@ -192,6 +193,28 @@ jobs:
           module-scope: netbird
       - name: Build Linux release archives
         run: FLATS_RELEASE_TARGETS="linux/amd64 linux/arm64" scripts/build-release.sh v0.0.0-ci dist
+      - name: Lint
+        run: |
+          shellcheck -s sh install.sh scripts/ci-test.sh scripts/ci-race.sh scripts/build-release.sh scripts/install-smoke.sh scripts/container-smoke.sh scripts/build-commit-image.sh scripts/build-commit-images.sh
+          shellcheck -s bash scripts/approval-gate.sh scripts/server-flat-gate.sh scripts/tailnet-gate.sh scripts/agent-gate.sh scripts/lifecycle-gate.sh
+      - name: Approval gate helper regressions
+        timeout-minutes: 2
+        run: |
+          sh -n scripts/container-smoke.sh
+          for gate_script in scripts/approval-gate.sh scripts/server-flat-gate.sh scripts/tailnet-gate.sh scripts/agent-gate.sh scripts/lifecycle-gate.sh; do
+            bash -n "$gate_script" || exit 1
+          done
+          python3 -B scripts/test_approval_gate.py
+      - name: Start the systemd user manager
+        run: |
+          sudo loginctl enable-linger "$USER"
+          runtime=/run/user/$(id -u)
+          for _ in $(seq 1 30); do [ -S "$runtime/bus" ] && break; sleep 1; done
+          [ -S "$runtime/bus" ] || { echo "systemd user bus did not appear at $runtime/bus"; exit 1; }
+          echo "XDG_RUNTIME_DIR=$runtime" >> "$GITHUB_ENV"
+      # install.sh picks the linux/amd64 archive of this job's build.
+      - name: Install, upgrade, crash and uninstall the service
+        run: scripts/install-smoke.sh dist v0.0.0-ci
       - uses: docker/setup-buildx-action@v3
       - name: Build the image for every release platform
         run: docker buildx build --platform linux/amd64,linux/arm64 .
@@ -208,8 +231,9 @@ jobs:
 
   # Reuse this exact main tip's root-module verification. The called workflow
   # keeps the original push range and fully verifies every unproven commit.
-  # Dispatch even after failed tests: a broken tip must not suppress
-  # valid intermediate commits. Main CI completion now includes SHA images.
+  # Dispatch even after failed tests: a broken tip must not suppress valid
+  # intermediate commits. A tip whose own tests failed is reported, not
+  # verified again. Main CI completion now includes SHA images.
   commit-images:
     needs: test
     if: ${{ !cancelled() && github.event_name == 'push' && github.ref == 'refs/heads/main' && !github.event.deleted }}
@@ -219,3 +243,4 @@ jobs:
     uses: ./.github/workflows/commit-images.yml
     with:
       verified-commit: ${{ needs.test.result == 'success' && github.sha || '' }}
+      failed-commit: ${{ needs.test.result == 'failure' && github.sha || '' }}

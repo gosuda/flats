@@ -12,6 +12,15 @@ if [ "${GITHUB_EVENT_NAME:-}" = push ] && [ "${GITHUB_REF:-}" = refs/heads/main 
 	echo "Already published $commit; skipping CI retry"
 	exit 0
 fi
+# FAILED_COMMIT comes only from the main CI caller when its test matrix failed
+# for this exact tip. Verifying it again would repeat that failure; re-running
+# the failed CI jobs verifies and publishes it.
+if [ "${GITHUB_EVENT_NAME:-}" = push ] && [ "${GITHUB_REF:-}" = refs/heads/main ] &&
+	[ "${FAILED_COMMIT:-}" = "$commit" ] && [ "${GITHUB_SHA:-}" = "$commit" ] &&
+	[ "$(git rev-parse HEAD)" = "$commit" ]; then
+	echo "::error::CI tests failed for $commit; not publishing its image. Re-run the failed CI jobs to verify and publish it." >&2
+	exit 1
+fi
 root=$(pwd)
 work=$(mktemp -d "$RUNNER_TEMP/flats-image.XXXXXX")
 source_dir=$work/source
@@ -19,8 +28,8 @@ trap 'git -C "$root" worktree remove --force "$source_dir" 2>/dev/null || true; 
 short=$(printf '%.7s' "$commit")
 version=v0.0.0-sha-$short
 git worktree add --detach "$source_dir" "$commit"
-# This value comes only from the main CI caller after all seven shards (and
-# vet) succeeded. Match the exact source/tooling SHA, never a PR or descendant.
+# This value comes only from the main CI caller after all shards (and vet)
+# succeeded. Match the exact source/tooling SHA, never a PR or descendant.
 if [ "${GITHUB_EVENT_NAME:-}" = push ] && [ "${GITHUB_REF:-}" = refs/heads/main ] &&
 	[ "${VERIFIED_COMMIT:-}" = "$commit" ] && [ "${GITHUB_SHA:-}" = "$commit" ] &&
 	[ "$(git rev-parse HEAD)" = "$commit" ]; then
@@ -34,7 +43,7 @@ else
 		cd "$source_dir"
 		go vet ./...
 		failed=0
-		for shard in runtime-soak runtime-codec runtime docs-soak docs-budget docs other; do
+		for shard in runtime-soak runtime-codec runtime docs-soak docs-budget docs board other; do
 			"$root/scripts/ci-test.sh" "$shard" || failed=1
 		done
 		[ "$failed" = 0 ]
