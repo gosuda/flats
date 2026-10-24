@@ -48,7 +48,8 @@ func consoleDomainOf(ctx context.Context) (cdKey, bool) {
 
 func withConsoleDomain(k cdKey, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		next.ServeHTTP(w, r.WithContext(context.WithValue(r.Context(), consoleDomainKey{}, k)))
+		ctx := core.WithConsoleDomain(context.WithValue(r.Context(), consoleDomainKey{}, k), k.prov, k.name)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
@@ -146,18 +147,22 @@ func (b nbConsole) hosts(name string) []string {
 
 // handler accepts console changes over plain HTTP (the browser sends no
 // Sec-Fetch-Site there) and records the requesting NetBird peer as the
-// author of console decisions.
+// author of console decisions and, for agent decisions, as the calling peer.
 func (b nbConsole) handler(name string, mux http.Handler) http.Handler {
-	return api.PlainHTTPConsole(api.WithApprover(func(r *http.Request) string {
-		host, _, err := net.SplitHostPort(r.RemoteAddr)
-		if err != nil {
-			return ""
-		}
-		if fqdn := b.nn.IdentityForIP(name, host); fqdn != "" {
+	inner := api.WithApprover(func(r *http.Request) string {
+		if fqdn := core.NetbirdPeerOf(r.Context()); fqdn != "" {
 			return "netbird:" + fqdn
 		}
 		return ""
-	}, mux))
+	}, mux)
+	return api.PlainHTTPConsole(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if host, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+			if fqdn := b.nn.IdentityForIP(name, host); fqdn != "" {
+				r = r.WithContext(core.WithNetbirdPeer(r.Context(), fqdn))
+			}
+		}
+		inner.ServeHTTP(w, r)
+	}))
 }
 func (b nbConsole) ports() []string { return []string{"", "80"} }
 

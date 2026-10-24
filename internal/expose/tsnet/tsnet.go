@@ -747,6 +747,8 @@ func isIdentityHeader(name string) bool {
 
 // identity strips client-sent Tailscale-User-* headers and sets the
 // caller's login and display name from WhoIs, unless the peer is tagged.
+// It also records the calling device in the request context
+// (core.WithTailnetPeer): the login when untagged, and the node name.
 func (n *Net) identity(nd *node, whoIs whoIsFunc) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		for k := range r.Header {
@@ -754,9 +756,20 @@ func (n *Net) identity(nd *node, whoIs whoIsFunc) http.Handler {
 				delete(r.Header, k)
 			}
 		}
-		if who, err := whoIs(r.Context(), r.RemoteAddr); err == nil && who.Node != nil && !who.Node.IsTagged() && who.UserProfile != nil {
-			r.Header.Set("Tailscale-User-Login", headerValue(who.UserProfile.LoginName))
-			r.Header.Set("Tailscale-User-Name", headerValue(who.UserProfile.DisplayName))
+		if who, err := whoIs(r.Context(), r.RemoteAddr); err == nil && who.Node != nil {
+			login := ""
+			if !who.Node.IsTagged() && who.UserProfile != nil {
+				login = who.UserProfile.LoginName
+				r.Header.Set("Tailscale-User-Login", headerValue(login))
+				r.Header.Set("Tailscale-User-Name", headerValue(who.UserProfile.DisplayName))
+			}
+			node := who.Node.ComputedName
+			if node == "" {
+				node, _, _ = strings.Cut(who.Node.Name, ".")
+			}
+			if login != "" || node != "" {
+				r = r.WithContext(core.WithTailnetPeer(r.Context(), login, node))
+			}
 		}
 		if handler := nd.handler.Load(); handler != nil {
 			(*handler).ServeHTTP(w, r)

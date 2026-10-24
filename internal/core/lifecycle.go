@@ -626,6 +626,7 @@ func (s *Service) finishApplying(ctx context.Context, a store.Approval) (store.A
 		if err := s.st.FinishApprovalData(ctx, a.ID, "approved", msg, raw, s.now()); err != nil {
 			return a, err
 		}
+		s.agentDecisionEvent(ctx, a, msg)
 		return s.st.GetApproval(ctx, a.ID)
 	}
 
@@ -646,6 +647,7 @@ func (s *Service) finishApplying(ctx context.Context, a store.Approval) (store.A
 		if err := s.st.FinishApprovalData(ctx, a.ID, "approved", msg, raw, s.now()); err != nil {
 			return a, err
 		}
+		s.agentDecisionEvent(ctx, a, msg)
 		return s.st.GetApproval(ctx, a.ID)
 	}
 	res, err := s.applyApproval(ctx, a)
@@ -675,7 +677,7 @@ func (s *Service) finishApplying(ctx context.Context, a store.Approval) (store.A
 		return a, derr
 	}
 	if a.Action != "delete" || err != nil {
-		s.Event(ctx, a.Flat, "info", "approval", fmt.Sprintf("%s %s by the operator: %s", a.Action, status, result), nil)
+		s.Event(ctx, a.Flat, "info", "approval", fmt.Sprintf("%s %s by %s: %s", a.Action, status, DeciderText(a.DecidedBy), result), nil)
 	}
 	out, gerr := s.st.GetApproval(ctx, a.ID)
 	if gerr != nil {
@@ -684,10 +686,21 @@ func (s *Service) finishApplying(ctx context.Context, a store.Approval) (store.A
 	return out, err
 }
 
+// agentDecisionEvent writes the decision event of an approval that a
+// restart finalized from its receipt or deployment, as the normal path of
+// finishApplying writes it. Only agent decisions get one: operator
+// decisions finalized this way keep writing none.
+func (s *Service) agentDecisionEvent(ctx context.Context, a store.Approval, msg string) {
+	if _, ok := ParseAgentDecider(a.DecidedBy); !ok || a.Action == "delete" {
+		return
+	}
+	s.Event(ctx, a.Flat, "info", "approval", fmt.Sprintf("%s approved by %s: %s", a.Action, DeciderText(a.DecidedBy), msg), nil)
+}
+
 func (s *Service) applyApproval(ctx context.Context, a store.Approval) (ActionResult, error) {
 	switch a.Action {
 	case "delete":
-		return s.applyDelete(ctx, a.Flat, ViaConsole, a.ID)
+		return s.applyDelete(ctx, a.Flat, applyVia(a), a.ID)
 	case "set_visibility":
 		return s.applyVisibilityApproval(ctx, a)
 	case "publish", "create_version":
@@ -772,7 +785,7 @@ func (s *Service) applyPublishApproval(ctx context.Context, a store.Approval) (A
 	if err := s.verifyContent(a.Flat, versionFromRevision(rev)); err != nil {
 		return ActionResult{}, err
 	}
-	return s.saveVersionFromDraft(ctx, f, rev, a.ID, ViaConsole)
+	return s.saveVersionFromDraft(ctx, f, rev, a.ID, applyVia(a))
 }
 
 func (s *Service) saveVersionFromDraft(ctx context.Context, f store.Flat, rev store.DraftRevision, approvalID string, via Via) (ActionResult, error) {
@@ -967,7 +980,7 @@ func (s *Service) applyActivateApproval(ctx context.Context, a store.Approval) (
 	if f.LiveVersion == p.Version {
 		kind = "redeploy"
 	}
-	res, err := s.deployLocked(ctx, f, p.Version, kind, ViaConsole, a.ID)
+	res, err := s.deployLocked(ctx, f, p.Version, kind, applyVia(a), a.ID)
 	if err != nil {
 		return ActionResult{}, err
 	}
@@ -1027,9 +1040,9 @@ func (s *Service) applyRollbackApproval(ctx context.Context, a store.Approval) (
 		if a.Action == "restore_data" {
 			kind = "restore"
 		}
-		res, err = s.restoreLocked(ctx, f, p.Snapshot, p.Version, kind, ViaConsole, a.ID)
+		res, err = s.restoreLocked(ctx, f, p.Snapshot, p.Version, kind, applyVia(a), a.ID)
 	} else {
-		res, err = s.rollbackLocked(ctx, f, p.Version, false, ViaConsole, a.ID)
+		res, err = s.rollbackLocked(ctx, f, p.Version, false, applyVia(a), a.ID)
 	}
 	if err != nil {
 		return ActionResult{}, err
@@ -1721,8 +1734,9 @@ func failureCode(err error) string {
 	return "apply_failed"
 }
 
-// ErrorCategories lists every value ErrorCategory can return. Agent refusal
-// documentation (docs/agent/refusals.md) has one page per category.
+// ErrorCategories lists every value ErrorCategory can return except
+// AutopilotErrorCategories. Agent refusal documentation
+// (docs/agent/refusals.md) has one page per category.
 var ErrorCategories = []string{
 	"stale_approval", "public_stop_unconfirmed", "provider_not_permitted", "provider_unavailable",
 	"runtime_unavailable", "unavailable", "provider_in_use", "not_deployed", "unchanged_content",
@@ -1779,6 +1793,10 @@ func ErrorCategory(err error) string {
 		return "board_capacity"
 	case errors.Is(err, ErrPublicEditBlocked):
 		return "public_edit_blocked"
+	case errors.Is(err, ErrAutopilotOff):
+		return "autopilot_off"
+	case errors.Is(err, ErrAutopilotNotAllowed):
+		return "autopilot_not_allowed"
 	case errors.Is(err, ErrConflict):
 		return "conflict"
 	case errors.Is(err, ErrForbidden):

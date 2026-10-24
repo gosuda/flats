@@ -29,6 +29,22 @@ func TestErrorCategoriesListEveryCategory(t *testing.T) {
 	}
 }
 
+// The Autopilot categories are listed apart from ErrorCategories.
+func TestAutopilotErrorCategories(t *testing.T) {
+	var got []string
+	for _, err := range []error{ErrAutopilotOff, ErrAutopilotNotAllowed} {
+		got = append(got, ErrorCategory(err))
+	}
+	if !slices.Equal(got, AutopilotErrorCategories) {
+		t.Fatalf("categories = %v, want %v", got, AutopilotErrorCategories)
+	}
+	for _, c := range AutopilotErrorCategories {
+		if slices.Contains(ErrorCategories, c) {
+			t.Fatalf("%s is also in ErrorCategories", c)
+		}
+	}
+}
+
 // Every string ErrorCategory can return must be listed, so a new case cannot
 // skip ErrorCategories (and its refusal page) even without a sentinel above.
 func TestErrorCategoriesMatchSource(t *testing.T) {
@@ -54,7 +70,7 @@ func TestErrorCategoriesMatchSource(t *testing.T) {
 			return true
 		})
 	}
-	listed := slices.Clone(ErrorCategories)
+	listed := slices.Concat(ErrorCategories, AutopilotErrorCategories)
 	slices.Sort(returned)
 	slices.Sort(listed)
 	if len(returned) == 0 || !slices.Equal(returned, listed) {

@@ -177,6 +177,16 @@ type Service struct {
 	// publicBoardHook, when set by a test, replaces a running board's
 	// public editing interface.
 	publicBoardHook func(*board.Instance) publicBoard
+	// autopilot caches the stored Autopilot settings for readers; only
+	// syncAutopilot replaces it, under autopilotMu, from a row it read.
+	// autopilotStale marks a failed read, autopilotWarned when the failure
+	// was last logged (Unix ms).
+	autopilot       atomic.Pointer[Autopilot]
+	autopilotMu     sync.Mutex
+	autopilotStale  atomic.Bool
+	autopilotWarned atomic.Int64
+	// apStore, when set by a test, replaces the store for Autopilot.
+	apStore autopilotStore
 }
 
 // redirect owns an old slug while its route is served or provider teardown is
@@ -248,6 +258,10 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 		runtimeOwners: map[string]int64{}, docsRefs: map[string]int{}, live: map[string]*liveFlat{}, prevs: map[string]*preview{}, redir: map[string]*redirect{}, quotaWarned: map[string]time.Time{}, stop: make(chan struct{})}
 	if err := os.MkdirAll(filepath.Join(cfg.DataDir, "flats"), 0o700); err != nil {
 		return nil, err
+	}
+	// Also logs a settings change that committed just before a crash.
+	if _, err := s.syncAutopilot(ctx); err != nil {
+		return nil, fmt.Errorf("autopilot settings: %w", err)
 	}
 	if err := CheckSecretKey(ctx, cfg.DataDir, cfg.Store); err != nil {
 		return nil, err
@@ -2088,11 +2102,37 @@ func WithActor(ctx context.Context, actor string) context.Context {
 // The approval is claimed before anything is applied, so of two concurrent
 // decisions exactly one acts and the other gets ErrConflict.
 func (s *Service) Decide(ctx context.Context, id string, approve bool) (store.Approval, error) {
+	return s.decide(ctx, id, approve, nil)
+}
+
+// decide is Decide for the operator (agent nil) and DecideAsAgent for an
+// agent. An agent's decision is refused unless Autopilot is on and allows
+// every operation the approval needs; the store checks that again in the
+// statement that claims or rejects it.
+func (s *Service) decide(ctx context.Context, id string, approve bool, agent *AgentDecision) (store.Approval, error) {
+	var row store.AutopilotRow
+	if agent != nil {
+		var err error
+		if row, err = s.autopilotStore().GetAutopilot(ctx); err != nil {
+			return store.Approval{}, err
+		}
+		if !row.Enabled {
+			return store.Approval{}, ErrAutopilotOff
+		}
+	}
 	unlock := s.lock("approval:" + id)
 	defer unlock()
 	a, err := s.st.GetApproval(ctx, id)
 	if err != nil {
 		return a, err
+	}
+	var need OpSet
+	if agent != nil {
+		var classifyErr error
+		need, classifyErr = AutopilotNeeds(a.Action, a.Params)
+		if err := autopilotRefusal(row, need, classifyErr); err != nil {
+			return store.Approval{}, err
+		}
 	}
 	// lost reports a decision that lost to another one (or why it failed).
 	lost := func(cause error) (store.Approval, error) {
@@ -2105,9 +2145,22 @@ func (s *Service) Decide(ctx context.Context, id string, approve bool) (store.Ap
 		}
 		return cur, fmt.Errorf("%w: approval is already %s", ErrConflict, cur.Status)
 	}
+	// refused handles an Autopilot claim or rejection that did not apply.
+	refused := func(err error) (store.Approval, error) {
+		switch {
+		case errors.Is(err, store.ErrApprovalNotPending):
+			return lost(nil)
+		case errors.Is(err, store.ErrAutopilotDenied):
+			return store.Approval{}, s.autopilotDenied(ctx, need)
+		}
+		return lost(err)
+	}
 	actor := "console"
 	if who, _ := ctx.Value(actorKey{}).(string); who != "" {
 		actor = who
+	}
+	if agent != nil {
+		actor = EncodeAgentDecider(*agent)
 	}
 	if !approve {
 		if a.Status == "rejected" {
@@ -2116,10 +2169,15 @@ func (s *Service) Decide(ctx context.Context, id string, approve bool) (store.Ap
 		if a.Status != "pending" {
 			return lost(nil)
 		}
-		if err := s.st.RejectApprovalAuthorized(ctx, id, actor, "rejected by the operator", s.now()); err != nil {
-			return lost(err)
+		decider := DeciderText(actor)
+		if agent == nil {
+			if err := s.st.RejectApprovalAuthorized(ctx, id, actor, "rejected by the operator", s.now()); err != nil {
+				return lost(err)
+			}
+		} else if err := s.autopilotStore().RejectApprovalAutopilot(ctx, id, actor, "rejected by "+decider, uint16(need), s.now()); err != nil {
+			return refused(err)
 		}
-		s.Event(ctx, a.Flat, "info", "approval", a.Action+" rejected by the operator", nil)
+		s.Event(ctx, a.Flat, "info", "approval", a.Action+" rejected by "+decider, nil)
 		return s.st.GetApproval(ctx, id)
 	}
 	switch a.Status {
@@ -2128,8 +2186,12 @@ func (s *Service) Decide(ctx context.Context, id string, approve bool) (store.Ap
 	case "applying":
 		return lost(nil)
 	case "pending":
-		if err := s.st.ClaimApprovalAuthorized(ctx, id, actor, s.now()); err != nil {
-			return lost(err)
+		if agent == nil {
+			if err := s.st.ClaimApprovalAuthorized(ctx, id, actor, s.now()); err != nil {
+				return lost(err)
+			}
+		} else if err := s.autopilotStore().ClaimApprovalAutopilot(ctx, id, actor, uint16(need), s.now()); err != nil {
+			return refused(err)
 		}
 		a, err = s.st.GetApproval(ctx, id)
 		if err != nil {

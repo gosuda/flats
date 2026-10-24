@@ -716,11 +716,11 @@ func hostInfo(n *Net, host string) core.HostInfo {
 
 func TestIdentityHeaders(t *testing.T) {
 	person := &apitype.WhoIsResponse{
-		Node:        &tailcfg.Node{},
+		Node:        &tailcfg.Node{Name: "alice-laptop.tail1.ts.net.", ComputedName: "laptop"},
 		UserProfile: &tailcfg.UserProfile{LoginName: "alice@example.com", DisplayName: "Alice"},
 	}
 	tagged := &apitype.WhoIsResponse{
-		Node:        &tailcfg.Node{Tags: []string{"tag:agent"}},
+		Node:        &tailcfg.Node{Name: "ci-runner.tail1.ts.net.", Tags: []string{"tag:agent"}},
 		UserProfile: &tailcfg.UserProfile{LoginName: "tagged-devices", DisplayName: "tagged-devices"},
 	}
 	cases := []struct {
@@ -728,15 +728,20 @@ func TestIdentityHeaders(t *testing.T) {
 		who         *apitype.WhoIsResponse
 		err         error
 		login, user string
+		peer        [2]string // core.TailnetPeerOf: login, node
 	}{
-		{"user", person, nil, "alice@example.com", "Alice"},
-		{"tagged", tagged, nil, "", ""},
-		{"unknown peer", nil, errors.New("peer not found"), "", ""},
+		{"user", person, nil, "alice@example.com", "Alice", [2]string{"alice@example.com", "laptop"}},
+		{"tagged", tagged, nil, "", "", [2]string{"", "ci-runner"}},
+		{"unknown peer", nil, errors.New("peer not found"), "", "", [2]string{}},
 	}
 	for _, c := range cases {
 		var got http.Header
+		var peer [2]string
 		nd := &node{}
-		var h http.Handler = http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) { got = r.Header.Clone() })
+		var h http.Handler = http.HandlerFunc(func(_ http.ResponseWriter, r *http.Request) {
+			got = r.Header.Clone()
+			peer[0], peer[1] = core.TailnetPeerOf(r.Context())
+		})
 		nd.handler.Store(&h)
 		app := (&Net{}).identity(nd, func(context.Context, string) (*apitype.WhoIsResponse, error) { return c.who, c.err })
 		r := httptest.NewRequest(http.MethodGet, "/", nil)
@@ -763,6 +768,9 @@ func TestIdentityHeaders(t *testing.T) {
 		}
 		if got.Get("X-Other") != "kept" {
 			t.Errorf("%s: unrelated header dropped", c.label)
+		}
+		if peer != c.peer {
+			t.Errorf("%s: tailnet peer %q, want %q", c.label, peer, c.peer)
 		}
 	}
 }
