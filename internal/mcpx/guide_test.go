@@ -116,16 +116,26 @@ func TestToolErrorsNameCategoryAndRefusalPage(t *testing.T) {
 }
 
 // Instructions are always loaded, so they stay small; details live in topics.
+// Both the off and the Autopilot instructions keep their invariants.
 func TestInstructionsStaySmall(t *testing.T) {
-	if n := len(instructions(20 << 20)); n > 2300 {
-		t.Fatalf("instructions are %d bytes; move details into guide topics", n)
-	}
-	ins := instructions(20 << 20)
-	for _, s := range []string{`guide {"items":["topic.index"]}`, "approval_url", "get_approval", "Never approve your own request",
-		"NOT access control", "Never infer state from a URL", "Ask the user before set_visibility, delete_flat or rollback with restore_data",
-		"BOTH directions", "refusal.<category>", "topic.instructions"} {
-		if !strings.Contains(ins, s) {
-			t.Errorf("instructions lost the invariant %q", s)
+	for _, c := range []struct {
+		name       string
+		ins        string
+		invariants []string
+	}{
+		{"off", instructions(20 << 20), []string{`guide {"items":["topic.index"]}`, "approval_url", "get_approval", "Never approve your own request",
+			"NOT access control", "Never infer state from a URL", "Ask the user before set_visibility, delete_flat or rollback with restore_data",
+			"BOTH directions", "refusal.<category>", "topic.instructions"}},
+		{"autopilot", runtimeref.AutopilotInstructions(20 << 20), []string{`guide {"items":["topic.index"]}`, "topic.autopilot", "approve_request",
+			"approval_url", "get_approval", "NOT access control", "Never infer state from a URL", "BOTH directions", "refusal.<category>", "topic.instructions"}},
+	} {
+		if n := len(c.ins); n > 2300 {
+			t.Fatalf("%s instructions are %d bytes; move details into guide topics", c.name, n)
+		}
+		for _, s := range c.invariants {
+			if !strings.Contains(c.ins, s) {
+				t.Errorf("%s instructions lost the invariant %q", c.name, s)
+			}
 		}
 	}
 }
@@ -148,7 +158,7 @@ func TestAgentTextsAvoidRetiredPhrases(t *testing.T) {
 		texts["tool "+tool.Name] = tool.Description + string(schema) + string(out)
 	}
 	for _, id := range guideItems() {
-		md, _ := guidePage(id, 20<<20)
+		md, _ := guidePage(id, 20<<20, nil)
 		texts[id] = md
 	}
 	texts["runtime reference"] = runtimeref.Markdown

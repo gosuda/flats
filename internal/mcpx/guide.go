@@ -34,16 +34,22 @@ type GuideOut struct {
 	Available     []string    `json:"available,omitempty" jsonschema:"every valid item; returned with topic.index or when an item is unknown"`
 }
 
-func registerGuide(s *mcp.Server, svc *core.Service) {
+const guideDescription = "Read Flats guidance on demand. topic.index routes by task; other items: topic.client-update, topic.static, topic.server, " +
+	"topic.server.types, topic.server.files, topic.server.db, topic.server.fetch, topic.server.limits, topic.docs, topic.manifest, " +
+	"topic.env-secrets, topic.approvals, topic.rollback-data, topic.preview-verify, topic.preview-check, topic.instructions, and " +
+	"refusal.<category> for a refused call. Pass several items at once. No side effects."
+
+func registerGuide(s *mcp.Server, svc *core.Service, autopilot bool) {
+	description := guideDescription
+	if autopilot {
+		description = autopilotDescription("guide", description)
+	}
 	mcp.AddTool(s, &mcp.Tool{
-		Name: "guide",
-		Description: "Read Flats guidance on demand. topic.index routes by task; other items: topic.client-update, topic.static, topic.server, " +
-			"topic.server.types, topic.server.files, topic.server.db, topic.server.fetch, topic.server.limits, topic.docs, topic.manifest, " +
-			"topic.env-secrets, topic.approvals, topic.rollback-data, topic.preview-verify, topic.preview-check, topic.instructions, and " +
-			"refusal.<category> for a refused call. Pass several items at once. No side effects.",
+		Name:        "guide",
+		Description: description,
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true},
-	}, func(_ context.Context, _ *mcp.CallToolRequest, in GuideIn) (*mcp.CallToolResult, GuideOut, error) {
-		out := guide(in.Items, svc.UploadLimit())
+	}, func(ctx context.Context, _ *mcp.CallToolRequest, in GuideIn) (*mcp.CallToolResult, GuideOut, error) {
+		out := guide(in.Items, svc.UploadLimit(), stateOf(ctx).Guide)
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: guideText(out)}}}, out, nil
 	})
 }
@@ -63,12 +69,17 @@ func guideItems() []string {
 }
 
 // guide resolves items. A bare topic name ("server.db") means its topic;
-// duplicates are read once.
-func guide(items []string, uploadLimit int64) GuideOut {
+// duplicates are read once. st is the request's Autopilot state, nil while
+// Autopilot is off.
+func guide(items []string, uploadLimit int64, st *runtimeref.AutopilotState) GuideOut {
 	if len(items) == 0 {
 		items = []string{"topic.index"}
 	}
-	out := GuideOut{Items: []GuideItem{}, GuideRevision: runtimeref.GuideRevision(uploadLimit)}
+	all := guideItems
+	if st != nil {
+		all = autopilotGuideItems
+	}
+	out := GuideOut{Items: []GuideItem{}, GuideRevision: runtimeref.EffectiveGuideRevision(uploadLimit, st)}
 	seen := map[string]bool{}
 	refusalSeen := false
 	for _, raw := range items {
@@ -80,7 +91,7 @@ func guide(items []string, uploadLimit int64) GuideOut {
 			continue
 		}
 		seen[id] = true
-		md, ok := guidePage(id, uploadLimit)
+		md, ok := guidePage(id, uploadLimit, st)
 		if !ok {
 			out.Unknown = append(out.Unknown, raw)
 			continue
@@ -90,16 +101,19 @@ func guide(items []string, uploadLimit int64) GuideOut {
 		}
 		out.Items = append(out.Items, GuideItem{ID: id, Markdown: md})
 		if id == "topic.index" {
-			out.Available = guideItems()
+			out.Available = all()
 		}
 	}
 	if len(out.Unknown) > 0 {
-		out.Available = guideItems()
+		out.Available = all()
 	}
 	return out
 }
 
-func guidePage(id string, uploadLimit int64) (string, bool) {
+func guidePage(id string, uploadLimit int64, st *runtimeref.AutopilotState) (string, bool) {
+	if st != nil {
+		return autopilotGuidePage(id, uploadLimit, *st)
+	}
 	if name, ok := strings.CutPrefix(id, "refusal."); ok {
 		return runtimeref.Refusal(name)
 	}
@@ -108,6 +122,24 @@ func guidePage(id string, uploadLimit int64) (string, bool) {
 		return "## Server instructions\n\nThe MCP server sends this text at initialization.\n\n" + instructions(uploadLimit) + "\n", true
 	}
 	return runtimeref.Topic(name)
+}
+
+// autopilotGuidePage is guidePage while Autopilot is on.
+func autopilotGuidePage(id string, uploadLimit int64, st runtimeref.AutopilotState) (string, bool) {
+	if name, ok := strings.CutPrefix(id, "refusal."); ok {
+		if md, ok := runtimeref.AutopilotRefusal(name); ok {
+			return md, true
+		}
+		return runtimeref.Refusal(name)
+	}
+	switch name := strings.TrimPrefix(id, "topic."); name {
+	case "instructions":
+		return "## Server instructions\n\nThe MCP server sends this text at initialization.\n\n" + runtimeref.AutopilotInstructions(uploadLimit) + "\n", true
+	case "autopilot":
+		return runtimeref.AutopilotPage(st), true
+	default:
+		return runtimeref.AutopilotTopicOverlay(name)
+	}
 }
 
 func guideText(out GuideOut) string {

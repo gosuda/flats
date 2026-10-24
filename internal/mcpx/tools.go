@@ -22,7 +22,10 @@ import (
 
 const maxFiles = bundle.MaxFiles
 
-type tools struct{ svc *core.Service }
+type tools struct {
+	svc       *core.Service
+	autopilot bool // registers the Autopilot-on descriptions
+}
 
 func register(s *mcp.Server, t *tools) {
 	ro := &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true}
@@ -41,13 +44,13 @@ func register(s *mcp.Server, t *tools) {
 			"This replaces the complete Draft; omitted files are deleted. Documents must use save_document. Only works when the agent runs on the Flats host itself (loopback); otherwise use save_draft or the flats CLI."}, t.saveDraftFromDir)
 	mcp.AddTool(s, &mcp.Tool{Name: "list_versions", Annotations: ro,
 		Description: "List retained website versions, newest first, with the current version marked. Documents have no versions."}, t.listVersions)
-	mcp.AddTool(s, &mcp.Tool{Name: "deploy", Annotations: &mcp.ToolAnnotations{DestructiveHint: &no, IdempotentHint: true},
-		Description: "Request operator approval to activate a saved version (version > 0). Save the Draft as a new version with create_version first. Nothing changes before approval. Websites only."}, t.deploy)
+	mcp.AddTool(s, t.describe(&mcp.Tool{Name: "deploy", Annotations: &mcp.ToolAnnotations{DestructiveHint: &no, IdempotentHint: true},
+		Description: "Request operator approval to activate a saved version (version > 0). Save the Draft as a new version with create_version first. Nothing changes before approval. Websites only."}), t.deploy)
 	mcp.AddTool(s, &mcp.Tool{Name: "get_draft", Annotations: ro,
 		Description: "Read the current Private Draft revision and hash of a website. Documents have no Draft."}, t.getDraft)
-	mcp.AddTool(s, &mcp.Tool{Name: "create_version", Annotations: write,
-		Description: "Freeze current Draft revision/hash and request explicit operator approval to save it as a new numbered version (v1, v2, ...) without deploying it. Call deploy with that version number to make it live. Websites only: documents have no publishing."}, t.createVersion)
-	mcp.AddTool(s, &mcp.Tool{Name: "delete_version", Annotations: write, Description: "Request explicit operator approval to delete a retained version. The live version cannot be deleted. Versions are never deleted automatically."}, t.deleteVersion)
+	mcp.AddTool(s, t.describe(&mcp.Tool{Name: "create_version", Annotations: write,
+		Description: "Freeze current Draft revision/hash and request explicit operator approval to save it as a new numbered version (v1, v2, ...) without deploying it. Call deploy with that version number to make it live. Websites only: documents have no publishing."}), t.createVersion)
+	mcp.AddTool(s, t.describe(&mcp.Tool{Name: "delete_version", Annotations: write, Description: "Request explicit operator approval to delete a retained version. The live version cannot be deleted. Versions are never deleted automatically."}), t.deleteVersion)
 	registerDesign(s, t)
 	registerBoard(s, t)
 	mcp.AddTool(s, &mcp.Tool{Name: "save_page", Annotations: write,
@@ -64,17 +67,22 @@ func register(s *mcp.Server, t *tools) {
 			"Read get_document {blocks: true} first. A changed guard, missing or ambiguous find refuses the whole call and changes nothing: re-read and retry. A later save_document merges into these edits (topic.docs)."}, t.updateDocument)
 	// rollback can replace the flat's data (restore_data), so clients must
 	// treat it as destructive and ask before running it.
-	mcp.AddTool(s, &mcp.Tool{Name: "rollback", Annotations: &mcp.ToolAnnotations{DestructiveHint: &yes},
+	rollback := t.describe(&mcp.Tool{Name: "rollback", Annotations: &mcp.ToolAnnotations{DestructiveHint: &yes},
 		Description: "Request operator approval to activate an earlier published website version (default: previous live). Documents have no versions. " +
 			"Code only by default; restore_data=true also REPLACES the flat's current database and FILES with the snapshot taken before the current version was deployed " +
-			"(legacy DB-only snapshots keep current FILES); current data is backed up first. Ask the user before restore_data. Nothing changes before operator approval."}, t.rollback)
+			"(legacy DB-only snapshots keep current FILES); current data is backed up first. Ask the user before restore_data. Nothing changes before operator approval."})
+	if t.autopilot {
+		mcp.AddTool(s, rollback, t.rollbackAutopilot)
+	} else {
+		mcp.AddTool(s, rollback, t.rollback)
+	}
 	mcp.AddTool(s, &mcp.Tool{Name: "open_preview", Annotations: write,
 		Description: "Preview a saved website version, or current Private Draft with version 0, without changing live. Documents have no previews: they run at once."}, t.openPreview)
-	mcp.AddTool(s, &mcp.Tool{Name: "set_visibility", Annotations: write,
+	mcp.AddTool(s, t.describe(&mcp.Tool{Name: "set_visibility", Annotations: write,
 		Description: "Request visibility private or public. BOTH directions require explicit operator approval; ask the user first. Same visibility is unchanged; unpublished flats cannot be Public. Public is not access control. " +
-			"A Public board or document can be view only (default) or access edit: anyone on the internet can then edit it (guide topic.board, topic.docs)."}, t.setVisibility)
-	mcp.AddTool(s, &mcp.Tool{Name: "delete_flat", Annotations: &mcp.ToolAnnotations{DestructiveHint: &yes},
-		Description: "Request permanent deletion of a flat. Always waits for the operator's approval (returns approval_url)."}, t.deleteFlat)
+			"A Public board or document can be view only (default) or access edit: anyone on the internet can then edit it (guide topic.board, topic.docs)."}), t.setVisibility)
+	mcp.AddTool(s, t.describe(&mcp.Tool{Name: "delete_flat", Annotations: &mcp.ToolAnnotations{DestructiveHint: &yes},
+		Description: "Request permanent deletion of a flat. Always waits for the operator's approval (returns approval_url)."}), t.deleteFlat)
 	mcp.AddTool(s, &mcp.Tool{Name: "get_logs", Annotations: ro,
 		Description: "Read a flat's event log: saves, deploys, health checks, runtime output, approvals."}, t.getLogs)
 	mcp.AddTool(s, &mcp.Tool{Name: "get_approval", Annotations: ro,
@@ -975,11 +983,27 @@ func (t *tools) getApproval(ctx context.Context, _ *mcp.CallToolRequest, in Appr
 		return nil, ApprovalOut{}, toolErr(err, hint)
 	}
 	out := approvalOut(a)
+	return result(t.approvalText(ctx, a, out, stateOf(ctx)), out), out, nil
+}
+
+// approvalText describes an approval for get_approval and the decision
+// tools. A pending approval that the request's Autopilot copy lets agents
+// decide says so, and an applying one names an agent decider; other texts
+// do not depend on Autopilot.
+func (t *tools) approvalText(ctx context.Context, a store.Approval, out ApprovalOut, st requestState) string {
 	text := fmt.Sprintf("Approval %s (%s on %s): %s.", a.ID, a.Action, a.Flat, a.Status)
 	if a.Status == "pending" {
-		text += " Waiting for the operator to decide in the Flats console."
+		if agentsMayDecide(a, st.Autopilot) {
+			text += " Waiting for a decision: the operator can decide it in the Flats console, or an agent with approve_request or reject_request, since Autopilot allows its operations."
+		} else {
+			text += " Waiting for the operator to decide in the Flats console."
+		}
 	} else if a.Status == "applying" {
-		text += " The operator approved it; the operation is still applying."
+		if _, agent := core.ParseAgentDecider(a.DecidedBy); agent {
+			text += " " + core.DeciderText(a.DecidedBy) + " approved it; the operation is still applying."
+		} else {
+			text += " The operator approved it; the operation is still applying."
+		}
 	}
 	if a.Result != "" {
 		text += " Result: " + a.Result
@@ -997,7 +1021,7 @@ func (t *tools) getApproval(ctx context.Context, _ *mcp.CallToolRequest, in Appr
 			text += "\nNotice: " + n
 		}
 	}
-	return result(text, out), out, nil
+	return text
 }
 
 // --- logs, secrets ---

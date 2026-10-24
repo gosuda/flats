@@ -30,7 +30,7 @@ func Handler(svc *core.Service, opts Options) http.Handler {
 	}
 	servers := &serverCache{svc: svc, version: version}
 	newHandler := func(external bool) http.Handler {
-		return mcp.NewStreamableHTTPHandler(func(*http.Request) *mcp.Server { return servers.get() },
+		return mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server { return servers.get(stateOf(r.Context()).Autopilot.Enabled) },
 			&mcp.StreamableHTTPOptions{
 				Stateless:    true,
 				JSONResponse: true,
@@ -44,7 +44,7 @@ func Handler(svc *core.Service, opts Options) http.Handler {
 	local, external := newHandler(false), newHandler(true)
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r.Body = http.MaxBytesReader(w, r.Body, maxBody(svc.UploadLimit()))
-		ctx := context.WithValue(r.Context(), loopbackKey{}, fromLoopback(r))
+		ctx := context.WithValue(withState(r, svc), loopbackKey{}, fromLoopback(r))
 		ctx = context.WithValue(ctx, clientOriginKey{}, origin(r))
 		h := local
 		if api.ExternalOrigin(ctx) != "" {
@@ -54,38 +54,61 @@ func Handler(svc *core.Service, opts Options) http.Handler {
 	})
 }
 
-// serverCache rebuilds the MCP server when the upload limit changes, so the
-// limit quoted in the server instructions matches the one enforced.
+// serverCache keeps two MCP servers, one with Autopilot off and one with it
+// on, and rebuilds both when the upload limit changes, so the limit quoted
+// in the server instructions matches the one enforced. The servers do not
+// depend on the Autopilot switches or guide: those are read per request.
 type serverCache struct {
 	svc     *core.Service
 	version string
 
-	mu    sync.Mutex
-	limit int64
-	srv   *mcp.Server
+	mu      sync.Mutex
+	limit   int64
+	off, on *mcp.Server
 }
 
-func (c *serverCache) get() *mcp.Server {
-	srv, _ := c.current()
+func (c *serverCache) get(autopilot bool) *mcp.Server {
+	srv, _ := c.server(autopilot)
 	return srv
 }
 
-// current returns the server together with the upload limit it was built for.
-func (c *serverCache) current() (*mcp.Server, int64) {
+// current returns the Autopilot-off server together with the upload limit
+// it was built for.
+func (c *serverCache) current() (*mcp.Server, int64) { return c.server(false) }
+
+func (c *serverCache) server(autopilot bool) (*mcp.Server, int64) {
 	limit := c.svc.UploadLimit()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.srv == nil || c.limit != limit {
+	if c.limit != limit {
+		c.off, c.on, c.limit = nil, nil, limit
+	}
+	if !autopilot {
+		if c.off == nil {
+			srv := mcp.NewServer(&mcp.Implementation{Name: "flats", Title: "Flats", Version: c.version},
+				&mcp.ServerOptions{Instructions: instructions(limit)})
+			register(srv, &tools{svc: c.svc})
+			registerGuide(srv, c.svc, false)
+			registerClient(srv, c.svc, false)
+			registerReference(srv, c.version, limit)
+			registerContentTypes(srv, c.version, limit)
+			c.off = srv
+		}
+		return c.off, limit
+	}
+	if c.on == nil {
 		srv := mcp.NewServer(&mcp.Implementation{Name: "flats", Title: "Flats", Version: c.version},
-			&mcp.ServerOptions{Instructions: instructions(limit)})
-		register(srv, &tools{svc: c.svc})
-		registerGuide(srv, c.svc)
-		registerClient(srv, c.svc)
+			&mcp.ServerOptions{Instructions: runtimeref.AutopilotInstructions(limit)})
+		t := &tools{svc: c.svc, autopilot: true}
+		register(srv, t)
+		registerGuide(srv, c.svc, true)
+		registerClient(srv, c.svc, true)
 		registerReference(srv, c.version, limit)
 		registerContentTypes(srv, c.version, limit)
-		c.srv, c.limit = srv, limit
+		registerAutopilot(srv, t)
+		c.on = srv
 	}
-	return c.srv, c.limit
+	return c.on, limit
 }
 
 // maxBody bounds a JSON-RPC request: inline files arrive base64 (4/3 of
