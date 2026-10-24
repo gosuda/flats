@@ -157,6 +157,7 @@ func registerAutopilot(s *mcp.Server, t *tools) {
 	mcp.AddTool(s, &mcp.Tool{Name: "approve_request", Annotations: &mcp.ToolAnnotations{DestructiveHint: &yes, IdempotentHint: true},
 		Description: "Autopilot: approve a pending approval when the operator allows every operation it needs (guide topic.autopilot). " +
 			"It applies as an approval in the console does: the frozen state is checked and the result is what get_approval returns. " +
+			"A failure reported as a conflict, such as stale_approval, is a tool error; get_approval then shows the approval failed. " +
 			"agent is your name, recorded with the decision. Approving an approved request again returns it unchanged."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in DecideIn) (*mcp.CallToolResult, ApprovalOut, error) {
 			return t.decide(ctx, in, true)
@@ -173,7 +174,9 @@ func (t *tools) decide(ctx context.Context, in DecideIn, approve bool) (*mcp.Cal
 	st := stateOf(ctx)
 	a, err := t.svc.DecideAsAgent(ctx, in.ID, approve, core.AgentDecision{Agent: in.Agent, Arrival: st.Arrival})
 	// A failed approval returned with an error other than a conflict is a
-	// decision that took effect: report it as a result.
+	// decision that took effect: report it as a result. A conflict (stale,
+	// public edit blocked, public stop unconfirmed) is a tool error, as the
+	// console answers 409, even though the approval is recorded failed.
 	if err != nil && !(a.ID != "" && a.Status == "failed" && !errors.Is(err, core.ErrConflict)) {
 		hint := ""
 		if errors.Is(err, store.ErrNotFound) {
