@@ -731,8 +731,10 @@ func TestGuestUpdateLimits(t *testing.T) {
 
 // When all guests together reach the flat's limit, updates are answered
 // busy and resent later in order; nothing is lost or applied twice.
+// Serial, in the docs-budget shard: the guest buckets refill over time, so
+// the busy answers and the receipts that keep the writers under the output
+// limit depend on the worker keeping up with the wall clock.
 func TestGuestBusyResendKeepsOrder(t *testing.T) {
-	t.Parallel()
 	a := startApp(t, t.TempDir(), initialText, "v1")
 	a.setAccess(t, "edit", 1)
 	const guests, each = 10, 10
