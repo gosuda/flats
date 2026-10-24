@@ -817,6 +817,11 @@ func TestGuestBusyResendKeepsOrder(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			// A writer that stops early still ends its first round, so the
+			// flood stops and the test reports the failure instead of
+			// running until the package timeout.
+			firstDone := sync.OnceFunc(firstRound.Done)
+			defer firstDone()
 			pending, retry := updates, false
 			for round := 0; len(pending) > 0; round++ {
 				if round > 20 {
@@ -859,7 +864,7 @@ func TestGuestBusyResendKeepsOrder(t *testing.T) {
 					}
 				}
 				if round == 0 {
-					firstRound.Done()
+					firstDone()
 				}
 				// The client waits a second, then resends what was not
 				// acknowledged in order, the first marked as a retry.
