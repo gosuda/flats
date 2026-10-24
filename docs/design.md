@@ -674,16 +674,22 @@ example `Autopilot (agent "pr-bot" via Tailscale, bot@example.com)`,
 console listener from 192.168.1.20)`. The agent name is quoted with Go `%q`, so
 it cannot add lines to the event log. With that decider text:
 
-- the decision event reads `<action> approved by <decider>: <result>`, or
-  `<action> rejected by <decider>`; a rejection also stores `rejected by
-  <decider>` as its result;
+- the decision event reads `<action> approved by <decider>: <result>` when
+  the operation applied, `<action> failed by <decider>: <error>` when an
+  approved operation failed, and `<action> rejected by <decider>` for a
+  rejection, which also stores `rejected by <decider>` as its result;
 - the events and host log lines of the applied operation say `via autopilot`
   where a console decision says `via console`. The apply path reads this from
   the stored `decided_by`, so an approval finished after a restart keeps it;
 - when a restart finalizes an agent-decided approval from its applied receipt
   or recorded deployment, Flats writes the decision event that the normal path
-  writes. Operator decisions finalized that way still write none;
-- an approved deletion writes no event, since the flat's events go with it.
+  writes, only from the call that finalizes the approval. Operator decisions
+  finalized that way still write none. The applied operation writes its own
+  events while it applies, so a crash between the operation's commit and its
+  event loses that event for either decider; recovery does not recreate it.
+  The decision event and the approval record are the durable record;
+- an approved deletion that succeeds writes no event, since the flat's events
+  go with it; a failed one writes the failed decision event.
   The approval row has no foreign key to the flat and keeps `decided_by`.
 
 **Arrival network.** The MCP handler records where each request arrived, in

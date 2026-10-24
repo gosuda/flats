@@ -122,8 +122,8 @@ and an empty guide:
 
 | Table | Holds |
 | --- | --- |
-| `autopilot` | One row (`id` 1): `enabled` (0 or 1), `ops` (the bit set of operations agents may decide, below 512; the bits are listed in [Autopilot](design.md#autopilot)), `guide` (the operation guide as the operator saved it; the host refuses more than 4,000 code points) and `updated_at` (Unix seconds of the last change, 0 when never changed) |
-| `autopilot_changes` | The host log line of each committed change (`seq`, `at`, `line`, `logged`) until it is logged; the newest 100 logged lines stay |
+| `autopilot` | One row (`id` 1): `enabled` (0 or 1), `ops` (the bit set of operations agents may decide, below 512; the bits are listed in [Autopilot](design.md#autopilot)), `guide` (the operation guide as the operator saved it; the host refuses more than 4,000 code points) and `updated_at` (Unix milliseconds of the last change, 0 when never changed) |
+| `autopilot_changes` | The host log line of each committed change (`seq`, `at` in Unix milliseconds, `line`, `logged`) until it is logged; the newest 100 logged lines stay |
 
 Nothing in them is secret, so they are not encrypted. Because every database
 from step 20 on has the `autopilot` row, that row does not count when Flats
