@@ -968,6 +968,19 @@ for (let i = 0; i < remoteTabs.length; i++) {
 }
 assert.ok(snippetOf(remoteTabs, 0).includes('claude mcp add --transport http flats https://flats.example.org/mcp'));
 assert.ok(snippetOf(remoteTabs, 3).startsWith('flats connect https://flats.example.org\nflats status\n'));
+// With nothing saved the plugin and the CLI use http://127.0.0.1:7878, so a
+// loopback console on another port or name is saved first too.
+for (const origin of ['http://127.0.0.1:17878', 'http://localhost:7878']) {
+  globalThis.location = { origin, hostname: new URL(origin).hostname };
+  page = await mountSettings(['agents']);
+  const tabs = all(page, (e) => e.getAttribute('role') === 'tab');
+  for (let i = 0; i < tabs.length; i++) {
+    assert.ok(snippetOf(tabs, i).includes(`flats connect ${origin}\n`), `${origin}: tab ${i} saves the page address`);
+  }
+  assert.ok(snippetOf(tabs, 0).includes(`claude mcp add --transport http flats ${origin}/mcp`));
+  snippetOf(tabs, 3);
+  assert.ok(page.textContent.includes('The CLI uses the host saved with flats connect, or http://127.0.0.1:7878 when none is saved.'), `${origin}: CLI note names the default`);
+}
 globalThis.location = agentsLocation;
 
 // Host values are read only, with their sources, on the Console page.

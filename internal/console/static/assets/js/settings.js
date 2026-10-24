@@ -6,7 +6,7 @@
 
 import { h, dateTime, relTime, plural } from './dom.js';
 import { api } from './api.js';
-import { errorPanel, loading, toast, extLink, busy, fill, confirmDialog, infoDialog, setHostProviders, consoleOnServer } from './ui.js';
+import { errorPanel, loading, toast, extLink, busy, fill, confirmDialog, infoDialog, setHostProviders } from './ui.js';
 
 export const SECTIONS = [['networks', 'Networks'], ['console', 'Console'], ['limits', 'Limits'], ['agents', 'Agents']];
 
@@ -1712,10 +1712,10 @@ function agentsPage(page) {
   if (page.token) page.token.drawn = true;
   page.ctx.setTitle('Agents · Settings');
   const url = location.origin + '/mcp';
-  // The plugin and the CLI use the host chosen with `flats connect`, which is
-  // this host only on the machine that runs it. From another device the page
-  // address has to be saved first.
-  const chooseHost = consoleOnServer() ? '' : `flats connect ${location.origin}\n`;
+  // The plugin and the CLI use the host saved with `flats connect`, or
+  // CLI_DEFAULT_ORIGIN when none is saved. Any other page address, from another
+  // device or a loopback console on another port, has to be saved first.
+  const chooseHost = atCLIDefault() ? '' : `flats connect ${location.origin}\n`;
   const pluginTitle = 'Plugin (runs flats mcp, so the flats CLI must be on the agent’s PATH)';
   // Each block is one thing to paste: the plugin and a direct registration
   // are alternatives, so they never share a Copy button.
@@ -1736,7 +1736,7 @@ function agentsPage(page) {
     ] },
     { label: 'CLI', blocks: [
       { copy: 'CLI commands', text: `${chooseHost}flats status\nflats save-draft <slug> ./dist\nflats create-version <slug> --revision <revision> --hash <hash>\nflats deploy --flat <slug> --version <version>` },
-    ], note: 'The CLI uses the host chosen with flats connect, which is the host on this machine by default. Save a Private Draft, request a numbered version, then deploy that version. Version creation and deployment each need their own approval.' },
+    ], note: `The CLI uses the host saved with flats connect, or ${CLI_DEFAULT_ORIGIN} when none is saved. Save a Private Draft, request a numbered version, then deploy that version. Version creation and deployment each need their own approval.` },
   ];
   // A block with a title is named by it, so a screen reader says which block
   // holds the focus.
@@ -1783,6 +1783,16 @@ function agentsPage(page) {
         ctl: h('a', { class: 'btn btn-small', href: '/approvals', 'data-nav': true, text: 'Approvals' }) })),
       callout('info', 'These limits apply to the agent tools. The console itself has no login yet: it only refuses requests from other websites, so a program on a machine that can reach its management address can call it as this page does. Keep that address private.')),
     all);
+}
+
+// CLI_DEFAULT_ORIGIN is the host the CLI and `flats mcp` use when nothing is
+// saved (DefaultURL in internal/cli).
+const CLI_DEFAULT_ORIGIN = 'http://127.0.0.1:7878';
+
+// atCLIDefault is true when this page is on CLI_DEFAULT_ORIGIN. Another
+// loopback name or port may be a different host to the CLI, so it is not.
+function atCLIDefault() {
+  try { return new URL(location.origin).origin === CLI_DEFAULT_ORIGIN; } catch { return false; }
 }
 
 // copyButton copies text() and says so.
