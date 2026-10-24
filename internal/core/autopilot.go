@@ -30,8 +30,8 @@ const (
 	OpDeleteFlat          AutopilotOp = "delete_flat"
 )
 
-// AutopilotOps lists the operations in bit and display order: bit i is
-// AutopilotOps[i].
+// AutopilotOps lists the operations in bit order: bit i is
+// AutopilotOps[i]. The console shows them in its own display order.
 var AutopilotOps = []AutopilotOp{
 	OpCreateVersion, OpDeleteVersion, OpDeploy, OpRollback, OpRollbackRestoreData,
 	OpMakePublic, OpMakePrivate, OpPublicEditing, OpDeleteFlat,

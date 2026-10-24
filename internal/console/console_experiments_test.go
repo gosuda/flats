@@ -7,14 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-)
 
-// autopilotOps is the server's list of Autopilot operation IDs in bit order
-// (docs/spec/autopilot-TECH.md 2.2), which the Experiments page must match.
-var autopilotOps = []string{
-	"create_version", "delete_version", "deploy", "rollback", "rollback_restore_data",
-	"make_public", "make_private", "public_editing", "delete_flat",
-}
+	"github.com/gosuda/flats/internal/core"
+)
 
 // TestConsoleExperiments renders Settings › Experiments, the Agents page
 // under Autopilot and the approval page's "Decided by" under Node with the
@@ -46,7 +41,8 @@ func TestConsoleExperiments(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	ops, err := json.Marshal(autopilotOps)
+	// The Experiments page must list exactly the server's operations.
+	ops, err := json.Marshal(core.AutopilotOps)
 	if err != nil {
 		t.Fatal(err)
 	}
