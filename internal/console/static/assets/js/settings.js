@@ -1843,7 +1843,7 @@ function copyButton(text, label) {
 // --- experiments ---
 
 // OPERATIONS are the operations agents may decide under Autopilot, in
-// display order under their sub-headings (docs/spec/autopilot-TECH.md 6.1),
+// display order under their sub-headings (docs/surfaces.md, Console),
 // which is not the server's bit order. Text in backticks is shown as code.
 export const OPERATIONS = [
   { group: 'Versions and deployments', id: 'create_version', label: 'Create versions', desc: 'Save a Draft as a new numbered version (`create_version`).' },
@@ -1951,7 +1951,10 @@ function drawAutopilot(page, view, reload) {
   const autopilot = group('autopilot', 'Autopilot', 'Agents approve or reject pending approvals for the operations you allow.', list(
     row({ id: 'autopilot-state', title: ['Autopilot', ' ', on ? pill('On', 'on') : pill('Off', 'off')],
       desc: 'While it is off, agents see Flats exactly as without Autopilot.',
-      meta: [h('span', null, 'Agents get the tools ', h('code', { text: 'approve_request' }), ' and ', h('code', { text: 'reject_request' })), 'They see a change when they reconnect'],
+      // Two lines rather than two meta items, so no separator is left at a wrap.
+      meta: h('span', { class: 's-meta-lines' },
+        h('span', null, 'Agents get the tools ', h('code', { text: 'approve_request' }), ' and ', h('code', { text: 'reject_request' })),
+        h('span', { text: 'They see a change when they reconnect' })),
       ctl: toggle })));
   if (!on) {
     fill(page.content, experimentsHead(), autopilot);

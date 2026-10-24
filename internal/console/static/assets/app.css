@@ -797,6 +797,8 @@ input::placeholder { color: var(--muted); opacity: 1; }
 .s-guide-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; flex-wrap: wrap; }
 .s-guide-acts { display: flex; gap: 8px; }
 .s-guide-acts .btn[hidden] { display: none; }
+/* Autopilot's meta: one item per line, without separators. */
+.s-meta-lines { display: flex; flex-direction: column; gap: 2px; }
 
 .pill {
   display: inline-flex; align-items: center; gap: 6px; padding: 1px 8px 1px 7px; border-radius: 999px;

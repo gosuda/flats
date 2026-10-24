@@ -74,7 +74,7 @@ async function open(section) {
 }
 
 // The page has every operation of the server (whose list is in bit order),
-// shown in its own groups and order (docs/spec/autopilot-TECH.md 6.1).
+// shown in its own groups and order (docs/surfaces.md, Console).
 assert.deepEqual(OPERATIONS.map((o) => o.id).sort(), [...serverOps].sort());
 assert.equal(new Set(OPERATIONS.map((o) => o.label)).size, OPERATIONS.length);
 const DISPLAY = [

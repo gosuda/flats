@@ -51,7 +51,7 @@ export function statusBadge(status) {
 const SURFACES = { mcp: 'an MCP client', cli: 'the flats CLI', api: 'the HTTP API', console: 'the console' };
 
 // ARRIVALS describe the network an Autopilot decision arrived on
-// (docs/spec/autopilot-TECH.md 3.4).
+// (docs/design.md, Autopilot records).
 const ARRIVALS = {
   local: () => 'Local',
   listener: (d) => (d.ip ? `the console listener from ${d.ip}` : 'the console listener'),
