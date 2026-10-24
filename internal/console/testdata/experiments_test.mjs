@@ -253,6 +253,37 @@ assert.equal(sw.checked, true, 'the stored value after reading it again');
 assert.equal(byId(main, 'autopilot-op-deploy').checked, true);
 stop();
 
+// Changes of different switches run one at a time, so an older response can
+// never undo a newer committed change: enable Deploy with a slow answer, then
+// Make Public; the display ends equal to the stored operations.
+reset({ enabled: true, allowed: [] });
+({ main, stop } = await open('experiments'));
+const deploySw = byId(main, 'autopilot-op-deploy');
+const publicSw = byId(main, 'autopilot-op-make_public');
+let releaseDeploy;
+const publicBefore = sent('/operations/make_public').length;
+const publicSent = () => sent('/operations/make_public').slice(publicBefore);
+answers['PUT ' + BASE + '/operations/deploy'] = () => new Promise((resolve) => { releaseDeploy = resolve; });
+deploySw.checked = true;
+deploySw.dispatch('change');
+await tick();
+publicSw.checked = true;
+publicSw.dispatch('change');
+await tick();
+assert.equal(publicSent().length, 0, 'the second change waits for the first');
+assert.equal(publicSw.checked, true, 'a waiting switch keeps the chosen value');
+assert.equal(publicSw.disabled, true);
+stored = { ...stored, allowed: ['deploy'] };
+releaseDeploy({ status: 200, body: { autopilot: stored } });
+await tick();
+await tick();
+assert.equal(publicSw.checked, true, 'the older response does not uncheck the newer change');
+assert.deepEqual(publicSent().map((c) => c.body), [{ allowed: true }]);
+assert.deepEqual(stored.allowed, ['deploy', 'make_public']);
+assert.deepEqual(switches(main).filter((s) => s.checked).map((s) => s.getAttribute('id').slice('autopilot-op-'.length)).sort(), [...stored.allowed].sort());
+assert.ok(switches(main).every((s) => !s.disabled));
+stop();
+
 // The guide counts code points, as the server does, and has its own Save
 // button (rule 13).
 reset({ enabled: true, guide: 'Deploy previews only.' });

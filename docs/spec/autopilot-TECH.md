@@ -963,7 +963,12 @@ With `st` nil, `guide` and `guidePage` run today's code unchanged.
   takes the returned value and toasts "Agents may now decide Deploy." or
   "Agents can no longer decide Deploy."; on failure it returns to the stored
   value and toasts the error message with kind `error` (rule 12). Switches
-  are not part of a save bar.
+  are not part of a save bar. The page sends switch requests one at a time,
+  in the order the switches changed, so each response is at least as new as
+  the one before it and an older response cannot undo a newer committed
+  change. A switch whose request has not answered yet keeps the value the
+  operator chose until its own response; every other switch takes the value
+  of each response.
 - The guide is a `textarea` with a counter "812 / 4,000 characters" counted
   as code points (`[...text].length`), matching the server. Save is enabled
   while the text differs from the stored guide and is within the limit; over
@@ -1162,6 +1167,9 @@ management API server for console calls:
 - Turn off sends at once with no dialog (rule 10);
 - a switch change sends one `PUT`; a failure restores the switch and toasts
   the message (rule 12);
+- a second switch changed while the first one's request is still running
+  waits for it, keeps its chosen value meanwhile, and the switches end equal
+  to the stored operations (6.1);
 - the counter counts an emoji as one; Save is disabled when unchanged or over
   4,000 (rule 13);
 - the nine `OPERATIONS` IDs equal the server's list as a set (a fixture

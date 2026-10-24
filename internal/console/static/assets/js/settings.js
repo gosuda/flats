@@ -1960,12 +1960,17 @@ function drawAutopilot(page, view, reload) {
 
   // Each switch applies at once. A failed change returns the switch to the
   // stored value; the stored state is then read again, since a change can
-  // commit and still report an error.
+  // commit and still report an error. Requests run one at a time, in the
+  // order the switches changed, so every response is at least as new as the
+  // one before it; a switch whose request has not answered yet keeps the
+  // value the operator chose until its own response.
   const switches = new Map();
+  const pending = new Set();
+  let queue = Promise.resolve();
   const update = (next) => {
     view = next;
     if (!view.enabled) { drawAutopilot(page, view, reload); return; }
-    for (const [id, input] of switches) input.checked = allowed().includes(id);
+    for (const [id, input] of switches) if (!pending.has(id)) input.checked = allowed().includes(id);
   };
   const reread = () => api.autopilot()
     .then((r) => { if (page.ctx.alive()) update(r.autopilot); })
@@ -1976,21 +1981,26 @@ function drawAutopilot(page, view, reload) {
     const input = h('input', { id, type: 'checkbox', role: 'switch', class: 'switch' });
     input.checked = allowed().includes(op.id);
     switches.set(op.id, input);
-    input.addEventListener('change', async () => {
+    input.addEventListener('change', () => {
       const want = input.checked;
       input.disabled = true;
-      try {
-        const res = await api.setAutopilotOperation(op.id, want);
-        if (!page.ctx.alive()) return;
-        toast(want ? `Agents may now decide ${op.label}.` : `Agents can no longer decide ${op.label}.`, 'success');
-        update(res.autopilot);
-      } catch (err) {
-        input.checked = allowed().includes(op.id);
-        toast(`${op.label} was not changed: ${err.message}`, 'error');
-        reread();
-      } finally {
-        input.disabled = false;
-      }
+      pending.add(op.id);
+      queue = queue.then(async () => {
+        try {
+          const res = await api.setAutopilotOperation(op.id, want);
+          pending.delete(op.id);
+          if (!page.ctx.alive()) return;
+          toast(want ? `Agents may now decide ${op.label}.` : `Agents can no longer decide ${op.label}.`, 'success');
+          update(res.autopilot);
+        } catch (err) {
+          pending.delete(op.id);
+          input.checked = allowed().includes(op.id);
+          toast(`${op.label} was not changed: ${err.message}`, 'error');
+          await reread();
+        } finally {
+          input.disabled = false;
+        }
+      });
     });
     return row({ id: 'row-' + id, title: [op.label, op.tag ? tag(op.tag, 'solid') : null], labelFor: id, desc: withCode(op.desc), ctl: input });
   };
