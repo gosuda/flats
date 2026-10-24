@@ -1,6 +1,9 @@
 package cli
 
 import (
+	"encoding/json"
+	"maps"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -80,8 +83,35 @@ func TestMCPConfigNamesPluginInstall(t *testing.T) {
 			t.Errorf("mcp-config is missing %q:\n%s", want, r.stdout)
 		}
 	}
-	// JSON output keeps its shape.
-	if j := run(t, "", "", "mcp-config", "--json"); strings.Contains(j.stdout, "plugin") {
-		t.Errorf("mcp-config --json changed:\n%s", j.stdout)
+	// JSON output keeps its shape: the same keys as before the plugin text, and
+	// no plugin commands.
+	j := run(t, "", "", "mcp-config", "--json")
+	if j.code != 0 || strings.Contains(j.stdout, "plugin") {
+		t.Fatalf("mcp-config --json: %d\n%s", j.code, j.stdout)
+	}
+	var v map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(j.stdout), &v); err != nil {
+		t.Fatalf("mcp-config --json: %v\n%s", err, j.stdout)
+	}
+	keys := func(raw []byte) []string {
+		var m map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &m); err != nil {
+			t.Fatalf("mcp-config --json: %v\n%s", err, raw)
+		}
+		return slices.Sorted(maps.Keys(m))
+	}
+	for name, want := range map[string][]string{
+		"":       {"claude", "codex", "cursor", "url"},
+		"claude": {"command"},
+		"codex":  {"command", "file", "toml"},
+		"cursor": {"file", "json"},
+	} {
+		raw := []byte(j.stdout)
+		if name != "" {
+			raw = v[name]
+		}
+		if got := keys(raw); !slices.Equal(got, want) {
+			t.Errorf("mcp-config --json %q keys = %v, want %v", name, got, want)
+		}
 	}
 }
