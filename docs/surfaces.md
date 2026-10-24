@@ -68,7 +68,9 @@ non-loopback console bind remains reachable there.
 
 The approver recorded with a decision is the tailnet login on a Tailscale
 console domain, `netbird:<peer FQDN>` on a NetBird console domain, and none on
-the loopback listener (the audit actor is then `console`).
+the loopback listener (the audit actor is then `console`). An agent decision
+under Autopilot records an `autopilot:` value with the agent's name and the
+network it arrived on instead ([Autopilot](design.md#autopilot)).
 
 ## Errors and status codes
 
@@ -155,11 +157,17 @@ mounted under both prefixes; **console** routes exist only under
 | PUT | `/console-domains/preferred` | console | `{preferred}`: `local`, `tailscale:NAME`, `netbird:NAME` or `""` for none, with `If-Match`; answers `{etag}` |
 | GET, PUT | `/settings` | console | Read or save `config.json` settings (below) |
 | POST | `/settings/impact` | console | What the next pruning would remove with the candidate settings; writes nothing |
+| GET | `/experiments/autopilot` | console | The Autopilot settings ([Experiments routes](#experiments-routes)) |
+| PUT | `/experiments/autopilot` | console | `{enabled: true, confirmed_allowed: [...]}` turns Autopilot on with the operations the confirmation listed; `{enabled: false}` turns it off |
+| PUT | `/experiments/autopilot/operations/{op}` | console | `{allowed}` allows or disallows one operation |
+| PUT | `/experiments/autopilot/guide` | console | `{guide}` saves the operation guide |
 
 Approval outcomes, frozen parameters and the `result_data` enums are defined in
 the [lifecycle core contract](lifecycle-core-contract.md). Version creation,
 activation, rollback, visibility in both directions, deletion and version
-deletion requested by an agent wait for a console decision. The console does
+deletion requested by an agent wait for a console decision, or, while
+Autopilot allows the operation, for an agent decision
+([Autopilot tools](#autopilot-tools)). The console does
 not skip the approval request: for those same actions it creates the request
 and approves it at once (its confirm dialog is the decision), except flat
 deletion and version deletion, which it applies directly. Previews, provider
@@ -224,6 +232,33 @@ permissions and the Portal listing take effect immediately.
   or the page is stale, and 409 means a flag of a service started without
   `--config` pins the key.
 
+### Experiments routes
+
+The four `/experiments/autopilot` routes read and change the
+[Autopilot](design.md#autopilot) settings. They exist only under
+`/console/api` (`/api/experiments/...` is 404) and pass the console guard, so
+the CLI, API clients and requests without `X-Flats-Console` get 403. MCP has
+no tool for them. Every route answers the settings:
+
+```json
+{"autopilot": {
+  "enabled": true,
+  "allowed": ["create_version", "deploy"],
+  "guide": "Approve deploys of PR preview flats only.",
+  "guide_max": 4000,
+  "updated_at": "2026-10-24T09:00:00Z"
+}}
+```
+
+`allowed` lists operation IDs in bit order, `[]` when none; `updated_at` is
+omitted until the first change. The GET reads the database, not a cached copy.
+Bodies refuse unknown fields. A missing `enabled`, `allowed` or `guide`,
+`confirmed_allowed` missing when turning on or present when turning off, an
+unknown operation ID, or a guide over 4,000 code points is 400 `invalid`.
+Turning on with a `confirmed_allowed` that differs from the stored operations
+is 409 `conflict` and changes nothing. A change takes effect for the next MCP
+request, and Flats writes it to the host log without the guide text.
+
 ## CLI
 
 `flats <command>` calls the HTTP API (the CLI sends `X-Flats-Client: cli`).
@@ -266,7 +301,7 @@ the operator must fix. Every request that waits for approval exits 3 in text
 and JSON modes, with the approval URL, its status and how to poll it. A pending
 Private-to-Public request says that internet access begins only after approval;
 it never describes the flat as already Public. The CLI has no approve, reject,
-provider-permission or key command against a running host.
+provider-permission, key or Experiments command against a running host.
 
 ## MCP
 
@@ -283,13 +318,15 @@ Tools (names are the registered `Name` values):
 | Revisions (documents, designs and boards) | `list_revisions`, `get_revision`, `pin_revision`, `rollback_revision` |
 | Flat settings | `set_visibility`, `delete_flat`, `set_env`, `delete_env` |
 | References | `get_runtime_reference`, `get_content_types` (also resources `flats://docs/runtime-api/v1` and `flats://docs/content-types/v1`) |
+| Autopilot, only while it is on | `approve_request`, `reject_request` ([Autopilot tools](#autopilot-tools)) |
 
 Saves contain complete inline files or validated host build-directory content.
 Typed output names Draft content only as `draft`; there is no version 0.
 Document saves return `flat` without a Draft or version. Version operations use
 positive numbers and return the pending approval, its status and link. There is
-no decision, provider-permission, settings or key tool, and the MCP handler
-never gains console authority. The server instructions describe Private URLs as
+no provider-permission, settings or key tool, no decision tool except the
+Autopilot tools while Autopilot is on, and the MCP handler never gains console
+authority. The server instructions describe Private URLs as
 Local loopback or explicitly permitted Tailscale, NetBird or reverse proxy
 routes, and pending visibility notices use the future tense. Removed tools (`save_version`,
 `save_version_from_dir`, `publish`) have no aliases.
@@ -300,6 +337,69 @@ flat's own Private route; see [Revision store](revision-store.md).
 warning}` without a revision when the restore applied but its revision is not
 recorded yet (import pending, or already deleted by retention); it must not be
 resent.
+
+### Autopilot tools
+
+MCP builds two servers for each upload limit, one with Autopilot off and one
+with it on. Each HTTP request reads the settings once, gets the matching
+server, and uses the same copy for its guide pages, guide revision,
+`check_client`, `get_client_skill` and `get_approval` texts. Switches and the
+operation guide are read per request, so changing them rebuilds no server.
+With Autopilot off, every tool, schema, instruction, guide page and result is
+the same as on a host without Autopilot.
+
+While Autopilot is on, the server adds two tools:
+
+| Tool | Input | Result |
+| --- | --- | --- |
+| `approve_request` | `id` (the approval ID), `agent` (the agent's own name, 1 to 100 characters, recorded as given and not verified) | The approval as `get_approval` returns it, after it applied as a console approval would |
+| `reject_request` | The same | The rejected approval; nothing is applied |
+
+Both are idempotent; `approve_request` is marked destructive. They decide
+only approvals whose operations the operator allows
+([Autopilot](design.md#autopilot)). An approval that the decision claimed but
+whose operation failed is a normal result with `status: "failed"`, and its
+text names the `failure_code`. Other refusals are tool errors with category
+`invalid`, `not_found`, `conflict`, `autopilot_off` or
+`autopilot_not_allowed`. Every network that serves `/mcp` reaches the tools;
+there is no loopback check. MCP keeps no sessions: a client sees a changed
+tool list when it lists tools again. If a call reaches the on server after
+Autopilot was turned off, the host refuses it as `autopilot_off`. The off server
+answers `approve_request` as an unknown tool.
+
+The other texts change only while Autopilot is on:
+
+- The server instructions, the descriptions of `deploy`, `create_version`,
+  `delete_version`, `rollback` (with its `restore_data` field), `set_visibility`,
+  `delete_flat` and `guide`, and guide topics `approvals`, `rollback-data`,
+  `index`, `board`, `docs`, `static` and `client-update` drop the sentences
+  that say only the operator decides, that MCP has no approval tool or that
+  agents ask the user first. Each change is an exact replacement of a
+  substring of the off text; a test requires each substring to occur exactly
+  once, and another fails if an on text keeps an operator-only phrase. The six
+  request tools also say that an agent may decide them with
+  `approve_request`. `topic.instructions` shows the on instructions.
+- `guide` serves `topic.autopilot`, listed after `topic.approvals`, and the
+  refusal pages `refusal.autopilot_off` and `refusal.autopilot_not_allowed`.
+  Their source is `docs/agent/autopilot.md`, outside the topic directory, so
+  the off guide and the generated references never contain them.
+  `topic.autopilot` holds the rules, the operations allowed now and the
+  operation guide in a fence one backtick longer than the guide's longest
+  backtick run. It says that its rules take precedence over the runtime
+  reference, the content types reference and `llms.txt`, which keep their
+  text.
+- The guide revision is a hash of the off revision, the Autopilot page and
+  replacements, the allowed operation IDs and the operation guide. `guide`,
+  `check_client`, `get_client_skill` and `GET /client` report it, so changing
+  a switch or the guide while on makes clients see `guide_status:
+  refresh_required`, and turning Autopilot off returns them to the off
+  revision.
+- `check_client` adds an `autopilot` member, `{enabled, allowed, read: "guide
+  topic.autopilot"}`; every other field keeps its name, type and meaning.
+- `get_approval` on a pending approval whose operations are all allowed says
+  that the operator or an agent with `approve_request` or `reject_request` can
+  decide it. On an `applying` approval decided by an agent it names the agent
+  decider. Other texts and the structured output do not change.
 
 ### Board tools
 
@@ -401,7 +501,7 @@ they run once saved.
   is refused in the console until it has a live version and allows a public
   network. The public URL is `public_url`, or the URL of a current public
   endpoint.
-- **Settings.** Four pages behind a left nav. Networks: the defaults for new
+- **Settings.** Five pages behind a left nav. Networks: the defaults for new
   flats, then Private and Public providers, each opening its own page with
   Turn on / Turn off, its key (Tailscale auth key, NetBird setup key, zrok
   account token: state and source, never the value), its hosts, its own
@@ -416,7 +516,12 @@ they run once saved.
   storage, history and traffic. Agents: setup for Claude Code, Codex and Cursor
   (the plugin, or the MCP address registered directly), the CLI, how to check the
   connection, and what the agent tools cannot do (the console itself is not
-  authenticated yet). Fields stage changes.
+  authenticated yet); while Autopilot is on, an "Autopilot on" pill, an
+  introduction that names the exception, a "What agents can decide" group with
+  the allowed operations and a link to Experiments, and "Decide other requests"
+  in place of "Approve requests". A "Change Experiments" row says in both states
+  that no agent tool changes Experiments. Experiments: described below. Fields
+  stage changes.
   Console has separate inline Save/Discard controls for Links and Reverse proxy,
   always visible and disabled until that section changes; saving one preserves
   edits in the other. Other settings pages use one floating save bar. Each
@@ -425,12 +530,34 @@ they run once saved.
   for confirmation because that address stops accepting new requests;
   buttons act at once. A disabled action shows its reason next to it or on
   hover and keyboard focus.
+- **Experiments.** Features whose behavior and names may still change; at
+  first only Autopilot. A warning at the top says that only people change
+  this page and that Flats cannot enforce it. While Autopilot is off, the
+  page shows only its On/Off row with Turn on. Turn on opens a confirmation
+  that lists the operations allowed now (or says none is), says that anyone
+  on the internet can open a Public flat and that Flats does not enforce the
+  operation guide, and sends the listed operations as `confirmed_allowed`;
+  any failure, including a 409, opens a dialog and reloads the page. Turn off
+  acts at once. While it is on, the page adds nine operation switches under
+  "Versions and deployments" (Create versions, Deploy, Roll back, Delete
+  versions), "Visibility" (Make Public, Make Private, Public editing) and
+  "Data and deletion" (Roll back with data restore, tagged "replaces data";
+  Delete flats, tagged "permanent"). Each switch sends its change at once,
+  one request at a time in the order the switches changed, and toasts the
+  result; a failed change returns the switch to the stored value and reads
+  the settings again. The operation guide has a counter of code points out
+  of 4,000 and its own Save guide and Discard buttons; Save is enabled while
+  the text differs and fits. Unsaved text is dropped when the page is left.
 - **Approvals.** A top-bar item with the number of pending requests opens the
   queue.
 - **Approval page.** Names version creation (including legacy `publish`
   requests), version deletion, activation, rollback, data restore, visibility
   changes and deletion, so requests made by agents can be reviewed and decided
-  there.
+  there. A decided approval shows "Decided by": "the console", the tailnet
+  login or "NetBird peer <name>" as recorded, or for an agent decision
+  `Autopilot: agent "<name>" via <network>` with a note that Flats did not
+  verify the name. Other values, including an unreadable `autopilot:` value,
+  are shown as stored, always as text. The approvals list does not show it.
 
 Legacy `public-listed` and `public-unlisted` values are shown as Public.
 Permission for a network does not publish a flat or change its visibility, and

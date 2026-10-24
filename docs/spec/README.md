@@ -40,7 +40,7 @@ list.
 | [Metrics](metrics.md) | implemented | Configurable Prometheus exposure, optional per-flat series, and independent Analytics usage (requests, errors, response time, worker CPU and memory, disk) |
 | [Delete from the flat list](console-row-delete.md) | implemented | A Delete item in each flat's "…" menu that turns into a slide control in place; dragging its handle to the end deletes the flat |
 | [Flats behind a reverse proxy](reverse-proxy-sites.md) | implemented | `proxy` and `proxy-public` providers that serve flats through an operator's reverse proxy, address selection by host default, and rename redirects on the arrival network |
-| [Autopilot](autopilot.md) | planned | An opt-in mode in the new Settings › Experiments tab where agents approve or reject pending approvals for the operations the operator allows, with an operation guide for agents |
+| [Autopilot](autopilot.md) | implemented | An opt-in mode in the new Settings › Experiments tab where agents approve or reject pending approvals for the operations the operator allows, with an operation guide for agents |
 
 ## Where the technical designs live
 
@@ -59,3 +59,4 @@ docs:
 | NetBird peers and the other network providers | [networking.md](../networking.md), [network-provider-lifecycle.md](../network-provider-lifecycle.md) |
 | Reverse proxy providers: template and listener, Manager and app paths, address selection by host default, rename redirects on the arrival network | [networking.md](../networking.md#serving-flats-behind-a-reverse-proxy), [network-provider-lifecycle.md](../network-provider-lifecycle.md#reverse-proxy), [configuration.md](../configuration.md#reverse-proxy-keys) |
 | Client checks, CLI updates and skill sync | [release.md](../release.md#updating-a-client), [agents.md](../agents.md#keeping-clients-current) |
+| Autopilot: operations, what an approval needs, agent decisions and their records, arrival networks, settings and host log, MCP on and off texts, the Experiments screen, storage | [design.md](../design.md#autopilot), [surfaces.md](../surfaces.md#autopilot-tools), [configuration.md](../configuration.md#autopilot-settings) |

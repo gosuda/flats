@@ -10,7 +10,7 @@ The question "who decides this value?" picks the place:
 | Decided by | Stored in | Examples |
 | --- | --- | --- |
 | The operator | `config.json` | addresses, system policies, permitted networks, console domains, provider settings |
-| Flats while running | `flats.db` | flats, drafts, versions, deployments, document and design revisions, approvals, per-flat provider permission, events, analytics (page views, and per-day usage in `usagedays`), ordinary app environment variables, encrypted secrets, encrypted operator keys, console node records |
+| Flats while running | `flats.db` | flats, drafts, versions, deployments, document and design revisions, approvals, per-flat provider permission, events, analytics (page views, and per-day usage in `usagedays`), ordinary app environment variables, encrypted secrets, encrypted operator keys, console node records, [Autopilot settings](#autopilot-settings) |
 | The flat | `flats/<slug>/` | uploaded code, revision contents, the flat's SQLite database and FILES |
 | Nobody may read it in plain text | separate files | `secret.key` |
 | A client machine's user | `flats-client/connection.json` | which Flats host the CLI and `flats mcp` use, saved by `flats connect` |
@@ -110,6 +110,27 @@ Stopping the host and copying the whole data directory covers all of it.
 
 Restore with the same or a newer Flats release: an older binary refuses a newer
 `config.json` or database.
+
+### Autopilot settings
+
+The [Autopilot](spec/autopilot.md) settings live only in `flats.db`. They
+have no `config.json` key, environment variable, `flats serve` flag, CLI
+command or MCP tool; only the console's Experiments page changes them
+([routes](surfaces.md#experiments-routes)). Database step 20 creates two
+tables on new and upgraded hosts, with Autopilot off, no operation allowed
+and an empty guide:
+
+| Table | Holds |
+| --- | --- |
+| `autopilot` | One row (`id` 1): `enabled` (0 or 1), `ops` (the bit set of operations agents may decide, below 512; the bits are listed in [Autopilot](design.md#autopilot)), `guide` (the operation guide as the operator saved it; the host refuses more than 4,000 code points) and `updated_at` (Unix seconds of the last change, 0 when never changed) |
+| `autopilot_changes` | The host log line of each committed change (`seq`, `at`, `line`, `logged`) until it is logged; the newest 100 logged lines stay |
+
+Nothing in them is secret, so they are not encrypted. Because every database
+from step 20 on has the `autopilot` row, that row does not count when Flats
+checks whether a database already holds data. A release older than step 20
+refuses the database; going back means restoring the backup taken before the
+migration, which loses the agent decisions made since. To stop Autopilot
+without going back, turn it off in the console, or stop Flats.
 
 ## config.json
 

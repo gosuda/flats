@@ -129,8 +129,10 @@ change. Flats are created by agents (MCP, CLI or API), never from the console.
 
 `Decide` and per-flat provider-grant mutations are console operations:
 transports expose them only on console routes, and provider grants also
-require `ViaConsole`. Decisions persist `decided_by` and `authorized_at`
-before execution. `WithActor(ctx, actor)` supplies the audit actor (the API
+require `ViaConsole`. The one other decider is `DecideAsAgent`, which MCP
+exposes only while Autopilot is on and which decides only approvals whose
+operations the operator allows ([Autopilot](design.md#autopilot)). Decisions
+persist `decided_by` and `authorized_at` before execution. `WithActor(ctx, actor)` supplies the audit actor (the API
 passes the console domain's identity when one is known); otherwise it is
 `console`. What a console request does and does not prove is described in
 [design.md](design.md#approvals).
@@ -242,6 +244,10 @@ with its `user_version`, so a failed step leaves no trace:
 | 14 | console nodes per network |
 | 15 | version quota and version number history |
 | 16 | flat identity: a random ID per flat |
+| 17 | flat usage: per-day usage of each flat |
+| 18 | board revision imports |
+| 19 | public access level |
+| 20 | Autopilot settings and their change log ([Autopilot settings](configuration.md#autopilot-settings)) |
 
 A database newer than the binary is refused untouched.
 

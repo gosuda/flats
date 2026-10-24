@@ -524,8 +524,10 @@ public or public → private) or delete a flat on their own. Each such request
 freezes its parameters in a pending approval (`create_version`,
 `delete_version`, `activate`, `rollback`, `restore_data`, `set_visibility`,
 `delete`) and returns `approval_url` = `<console>/approvals/<id>`. Nothing
-changes until the operator approves it in the console; a frozen parameter that
-changed before the decision makes the approval fail as `stale_approval`. A
+changes until the operator approves it in the console, or, while
+[Autopilot](#autopilot) allows its operations, an agent approves it; a frozen
+parameter that changed before the decision makes the approval fail as
+`stale_approval`. A
 console request for these actions also creates an approval, except two
 destructive ones that apply directly after their confirm dialog: deleting a
 flat and deleting a non-live version. Saves of documents and designs, and all
@@ -534,8 +536,9 @@ revision operations, need no approval (see [Model and flows](#model-and-flows)).
 There are no accounts, so operator authority rests on where a request comes
 from and what it carries. Enforced:
 
-* MCP, the CLI and `/api` have no approve, reject or settings operation, and
-  their approval-gated calls only create approvals. `flats config` edits
+* MCP, the CLI and `/api` have no settings operation, and no approve or
+  reject operation except the two MCP tools of [Autopilot](#autopilot) while
+  it is on. Their approval-gated calls only create approvals. `flats config` edits
   `config.json` only while no host runs (it takes the data lock).
 * Every request to the management server must name that listener in `Host`,
   from a list the guard reads per request: on the loopback listener
@@ -552,9 +555,9 @@ from and what it carries. Enforced:
   cannot. A NetBird console domain is plain HTTP, where browsers send no Fetch
   Metadata; there a same-origin `http` `Origin` is accepted instead, while the
   custom header still forces a preflight that Flats never grants.
-* Console decisions record who decided, as `decided_by` in the response and
-  in the flat's approval event (an approved delete removes the flat with its
-  events, so only the response carries it): on a Tailscale console domain the
+* Console decisions record who decided, as `decided_by` in the response, the
+  approval record and the flat's approval event (an approved delete removes
+  the flat with its events; the approval record stays): on a Tailscale console domain the
   approver's tailnet login from `WhoIs` (client-sent `Tailscale-User-*`
   headers are dropped first), on a NetBird console domain `netbird:<peer
   name>` of the requesting peer. Decisions on the loopback listener are
@@ -572,6 +575,178 @@ not against arbitrary code running as the operator. Mitigations: write
 Tailscale ACLs or NetBird policies so that only the operator's browser devices
 can reach the console domains, and run untrusted agents under another OS user
 or on another machine, so they reach Flats only through MCP or the API.
+
+### Autopilot
+
+[Autopilot](spec/autopilot.md) lets agents decide pending approvals of the
+operations the operator allows. It is off by default, and only the console
+changes it ([Experiments routes](surfaces.md#experiments-routes)). Autopilot adds a
+second decider and changes nothing else: an agent decision claims, checks and
+applies an approval through the same code as a console decision, so stale
+checks, provider permissions and the public-edit preflight apply to it as
+well. With Autopilot off, MCP serves exactly what it serves without the
+feature ([Autopilot tools](surfaces.md#autopilot-tools)).
+
+**Operations.** Each operation is one bit of the stored set
+([Autopilot settings](configuration.md#autopilot-settings)). Bit positions
+never change or get reused. The console shows the operations in its own order.
+
+| Bit | ID | Console label | Approvals it covers |
+| --- | --- | --- | --- |
+| 0 | `create_version` | Create versions | `create_version`, legacy `publish` |
+| 1 | `delete_version` | Delete versions | `delete_version` |
+| 2 | `deploy` | Deploy | `activate` |
+| 3 | `rollback` | Roll back | `rollback` with `restore_data` false |
+| 4 | `rollback_restore_data` | Roll back with data restore | `rollback` with `restore_data` true, `restore_data` |
+| 5 | `make_public` | Make Public | `set_visibility` Private to Public |
+| 6 | `make_private` | Make Private | `set_visibility` Public to Private |
+| 7 | `public_editing` | Public editing | `set_visibility` that changes a Public access level |
+| 8 | `delete_flat` | Delete flats | `delete` |
+
+**What an approval needs.** `AutopilotNeeds` reads only the approval's action
+and frozen parameters, never the flat's current state, and fails closed. It
+reads parameters only when they are a JSON object with no top-level `null`
+member that decodes into the action's parameter type; unknown members are
+ignored, as the apply path ignores them. An absent `restore_data` reads as
+false. For `set_visibility`:
+
+- the frozen starting visibility must be present, and both raw visibilities
+  must be `private`, `public`, `public-listed` or `public-unlisted`. The check
+  runs before canonicalization, because canonicalization maps unknown values
+  to `private`;
+- the requested Public level is `edit` only when the approval froze an access
+  sequence and `access` is `edit`, otherwise `view`;
+- Private to Public needs Make Public, plus Public editing for `edit`. Public
+  to Private needs Make Private. Public to Public needs Public editing when
+  the frozen starting level is known and differs.
+
+Any other approval is unclassified: an unknown action, unreadable parameters,
+an unknown level, a missing starting level for Public to Public, or a request
+for no change. No switch allows an unclassified approval, so agents can
+neither approve nor reject it.
+
+**Deciding.** `DecideAsAgent` follows `Decide` and adds these checks, in
+order:
+
+1. The agent name must be 1 to 100 code points and not blank (`invalid`).
+   Flats keeps it as given and does not verify it.
+2. If Autopilot is off, Flats refuses the call as `autopilot_off`.
+3. Under the approval's lock, a missing approval is `not_found`. Flats
+   refuses an unclassified approval, or one that needs an operation that is
+   not allowed, as `autopilot_not_allowed`, for approve and reject alike. The
+   message names the missing operations by label and ID, or the reason.
+4. The status rules are those of `Decide`: approving an approved approval or
+   rejecting a rejected one returns it unchanged without a write, and any
+   other decision of a decided or `applying` approval is `conflict`.
+5. A pending approval is claimed (`applying`) or rejected by one conditional
+   `UPDATE` that also requires the `autopilot` row to be on and to allow every
+   needed bit. Console setters are write transactions too, so a switch turned
+   off before that statement commits refuses the call, and one turned off
+   afterwards neither stops nor undoes the decision. When the statement
+   changes nothing, Flats reads the approval and the row again only to name
+   the error: `conflict`, `autopilot_off`, `autopilot_not_allowed`, or
+   `autopilot_not_allowed` with "Autopilot changed during the call; nothing
+   changed; call again".
+
+A claimed approval then finishes exactly as an operator's, including after a
+restart. Steps 2 and 3 use the row as read before the lock, only to give
+early, specific refusals; step 5 decides. `autopilot_off` and
+`autopilot_not_allowed` are listed in `AutopilotErrorCategories`, not in
+`ErrorCategories`, because their refusal pages exist only while Autopilot is
+on. They never reach a claimed approval, so they are never a `failure_code`.
+The HTTP API maps both to 403.
+
+**Records.** An agent decision stores `decided_by` as `autopilot:` followed by
+a JSON object: `agent`, `network` (`local`, `listener`, `tailscale`, `netbird`
+or `external`) and, when known, `ip`, `login`, `node`, `peer` or `origin`:
+
+```text
+autopilot:{"agent":"pr-bot","network":"tailscale","login":"bot@example.com"}
+autopilot:{"agent":"pr-bot","network":"listener","ip":"192.168.1.20"}
+```
+
+A value counts as an agent decision only when it has the prefix, decodes, has
+a non-blank agent and a known network. Console values (`console`, a tailnet
+login, `netbird:<fqdn>`) never start with `autopilot:{`. Event texts name the
+decider as `the operator` for operator values and, for an agent, as for
+example `Autopilot (agent "pr-bot" via Tailscale, bot@example.com)`,
+`Autopilot (agent "pr-bot" via Local)` or `Autopilot (agent "pr-bot" via the
+console listener from 192.168.1.20)`. The agent name is quoted with Go `%q`, so
+it cannot add lines to the event log. With that decider text:
+
+- the decision event reads `<action> approved by <decider>: <result>`, or
+  `<action> rejected by <decider>`; a rejection also stores `rejected by
+  <decider>` as its result;
+- the events and host log lines of the applied operation say `via autopilot`
+  where a console decision says `via console`. The apply path reads this from
+  the stored `decided_by`, so an approval finished after a restart keeps it;
+- when a restart finalizes an agent-decided approval from its applied receipt
+  or recorded deployment, Flats writes the decision event that the normal path
+  writes. Operator decisions finalized that way still write none;
+- an approved deletion writes no event, since the flat's events go with it.
+  The approval row has no foreign key to the flat and keeps `decided_by`.
+
+**Arrival network.** The MCP handler records where each request arrived, in
+this order:
+
+1. A declared external origin: `external` with that origin.
+2. A Tailscale console domain: `tailscale` with the caller's tailnet login, or
+   its node name when the device is tagged. The tsnet identity handler puts
+   both into the request context from `WhoIs`, not into headers.
+3. A NetBird console domain: `netbird` with the calling peer's name, when
+   NetBird knows it.
+4. Otherwise the console listener. Only the socket's source address counts;
+   `Forwarded`, `X-Forwarded-For`, `X-Real-Ip` and `Tailscale-User-*` are
+   never read. The source is `local` when it is a loopback address or one of
+   the host's own interface addresses (a process on the host that connects to
+   a wildcard-bound listener through its LAN address), else `listener` with
+   the source address. Interface addresses are cached for 10 seconds and read
+   again once on a miss. An IPv6 link-local address matches only with the zone
+   of the interface that holds it. An IPv4 link-local address never matches,
+   because it carries no interface, so a caller using one is `listener`.
+
+A reverse proxy on the host that is not declared as an external origin
+therefore arrives as `local`, which is true of the connection it makes.
+
+**Settings and the host log.** The `autopilot` row is the only source of
+truth. Each console setter runs one `BEGIN IMMEDIATE` transaction that reads
+the stored row, decides from it alone and writes the new row with its host
+log line in `autopilot_changes`. A cancelled request cannot stop a started
+change, and two console tabs changing different switches keep both changes.
+Turning Autopilot on carries the operations the confirmation dialog listed;
+when the stored ones differ, the host refuses the change as `conflict`. A call that
+changes nothing writes and logs nothing.
+
+After each change, and at startup, a sync reads the row and the change lines
+not logged yet, writes those lines to the host log with the time of the
+change, marks them logged (keeping the newest 100 logged lines) and replaces
+the in-memory copy. When marking fails, the next sync writes those lines
+again, so each change reaches the log at least once. MCP reads the in-memory copy.
+After a failed read it reads again; while that fails it reports Autopilot off
+and logs `autopilot: settings unavailable` at most once a minute. This hides
+the tools and never authorizes anything, since decisions check the row
+itself. The console's GET reads the database directly, so a database it
+cannot read is an error there. Log lines name the change and who made it,
+never the guide text:
+
+```text
+autopilot: turned on by tailnet user "alice@example.com"; agents may decide: create_version, deploy (at 2026-10-24T09:00:00Z)
+autopilot: agents may no longer decide make_public; changed by NetBird peer "laptop.netbird.cloud" (at 2026-10-24T09:00:00Z)
+autopilot: operation guide changed by the console on the loopback listener (no tailnet identity) (812 of 4000 characters) (at 2026-10-24T09:00:00Z)
+```
+
+The person is the tailnet user or node, or the NetBird peer, of a console
+domain. Otherwise the line names how the console was reached: through an
+external origin, on the loopback listener, from one of the host's own
+addresses, or from another address on the console listener.
+
+**Trust.** The Experiments page is guarded like the rest of the console, and
+the guard is the one described under Approvals: a program that can send
+console requests can turn Autopilot on or change switches. Agents are told
+never to, and the host log records every change. Agent names are untrusted
+text: bounded, quoted in events, inserted as text in the console and never
+written to the host log. The operation guide reaches agents fenced in
+`topic.autopilot`; Flats does not log or enforce it.
 
 ## Server flats (handler ABI)
 

@@ -1,6 +1,10 @@
 # Autopilot
 
-Status: planned.
+Status: implemented. The design is in the architecture docs:
+[Autopilot](../design.md#autopilot),
+[Experiments routes](../surfaces.md#experiments-routes),
+[Autopilot tools](../surfaces.md#autopilot-tools) and
+[Autopilot settings](../configuration.md#autopilot-settings).
 
 ## Summary
 
@@ -22,8 +26,6 @@ allowed. Everything an agent decides is recorded as the agent's decision.
 Autopilot is the first entry of a new Settings tab, **Experiments**, for
 features whose behavior and names may still change. The tab is changed only
 in the console.
-
-The technical design is in [autopilot-TECH.md](autopilot-TECH.md).
 
 ## Principles
 
@@ -273,11 +275,6 @@ The technical design is in [autopilot-TECH.md](autopilot-TECH.md).
 33. Public providers, provider grants, default networks, keys, secrets,
     quotas and limits keep working as today. Autopilot adds no limit of its
     own on how many flats or decisions agents make.
-
-## Current state
-
-Nothing is implemented. Agents cannot decide approvals; MCP has no approval
-tool and guide `topic.approvals` says so.
 
 ## Open questions
 
