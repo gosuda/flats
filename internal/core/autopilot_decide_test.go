@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"reflect"
 	"regexp"
 	"slices"
@@ -401,9 +402,50 @@ func prepareApproval(t *testing.T, s *Service, action string) string {
 		}
 		_, err = s.Rollback(ctx, "crash", 1, ViaMCP)
 		return pendingID(t, err)
+	case "rollback_restore", "restore_data":
+		// Deploying version 2 snapshots "before"; a restore puts it back.
+		writeNote(t, s, "crash", "before")
+		_, err := s.Deploy(ctx, "crash", 2, ViaMCP)
+		if _, err := s.Decide(ctx, pendingID(t, err), true); err != nil {
+			t.Fatal(err)
+		}
+		writeNote(t, s, "crash", "after")
+		if action == "rollback_restore" {
+			_, err = s.RollbackWithData(ctx, "crash", 1, true, ViaMCP)
+		} else {
+			_, err = s.RestoreSnapshot(ctx, "crash", snapshotBefore(t, s, "crash", 2), ViaMCP)
+		}
+		return pendingID(t, err)
 	}
 	t.Fatalf("no setup for %s", action)
 	return ""
+}
+
+// writeNote writes a flat's FILES note, the data a restore puts back.
+func writeNote(t *testing.T, s *Service, slug, text string) {
+	t.Helper()
+	if err := writeFile(filepath.Join(s.dataDirOf(slug), "files", "note"), text); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readNote(t *testing.T, s *Service, slug string) string {
+	t.Helper()
+	b, err := readFile(filepath.Join(s.dataDirOf(slug), "files", "note"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b
+}
+
+// snapshotBefore names the snapshot taken before version n was deployed.
+func snapshotBefore(t *testing.T, s *Service, slug string, n int) string {
+	t.Helper()
+	name, err := s.liveSnapshot(slug, n)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return name
 }
 
 func claim(t *testing.T, s *Service, d decider, id string) store.Approval {
@@ -430,18 +472,24 @@ func claim(t *testing.T, s *Service, d decider, id string) store.Approval {
 // records for an operator decision.
 func TestAgentDecisionResumesAfterRestart(t *testing.T) {
 	viaWords := map[string]string{"create_version": "saved version 1 from draft revision", "activate": "deploy: version 2 is live (was 1) via", "rollback": "rollback: version 1 is live (was 2) via"}
-	for _, action := range []string{"create_version", "delete_version", "activate", "rollback", "set_visibility", "delete"} {
+	// rollback_restore is a rollback with restore_data; restore_data is the
+	// action that restores the live version's data.
+	for _, setup := range []string{"create_version", "delete_version", "activate", "rollback", "rollback_restore", "restore_data", "set_visibility", "delete"} {
+		action := setup
+		if setup == "rollback_restore" {
+			action = "rollback"
+		}
 		for _, applied := range []bool{false, true} {
 			if action == "delete" && applied {
 				continue // a deleted flat keeps no events
 			}
 			for _, d := range deciders {
-				name := fmt.Sprintf("%s/applied=%t/%s", action, applied, d.name)
+				name := fmt.Sprintf("%s/applied=%t/%s", setup, applied, d.name)
 				t.Run(name, func(t *testing.T) {
 					ctx := t.Context()
 					s, logs := newAutopilotServiceWith(t, time.Time{}, &lifecycleNetwork{policy: "grant", state: "ready"})
 					allowAutopilot(t, s, AutopilotOps...)
-					id := prepareApproval(t, s, action)
+					id := prepareApproval(t, s, setup)
 					before := approvalEvents(t, s, "crash")
 					a := claim(t, s, d, id)
 					if applied {
@@ -453,6 +501,12 @@ func TestAgentDecisionResumesAfterRestart(t *testing.T) {
 					a, _ = s.GetApproval(ctx, id)
 					if a.Status != "approved" || a.DecidedBy != d.actor {
 						t.Fatalf("resumed %+v", a)
+					}
+					if a.Action != action {
+						t.Fatalf("action %s, want %s", a.Action, action)
+					}
+					if (setup == "rollback_restore" || setup == "restore_data") && readNote(t, s, "crash") != "before" {
+						t.Fatal("data not restored")
 					}
 					if action == "delete" {
 						if _, err := s.st.GetFlat(ctx, "crash"); !errors.Is(err, store.ErrNotFound) {
@@ -472,7 +526,7 @@ func TestAgentDecisionResumesAfterRestart(t *testing.T) {
 					if !slices.Equal(added, want) {
 						t.Fatalf("decision events %q, want %q", added, want)
 					}
-					if w, ok := viaWords[action]; ok && !applied {
+					if w, ok := viaWords[setup]; ok && !applied {
 						via := "via " + string(applyVia(a))
 						evs, _ := s.st.ListEvents(ctx, "crash", "", 0, 1000)
 						found := false
@@ -502,8 +556,9 @@ func TestAgentDecisionResumesAfterRestart(t *testing.T) {
 
 // approvalIDs and durations differ between runs.
 var (
-	approvalIDs = regexp.MustCompile(`apr-[0-9a-z]+`)
-	durations   = regexp.MustCompile(`in [0-9.]+[µm]?s\b`)
+	approvalIDs   = regexp.MustCompile(`apr-[0-9a-z]+`)
+	durations     = regexp.MustCompile(`in [0-9.]+[µm]?s\b`)
+	snapshotTimes = regexp.MustCompile(`-\d+\.sqlite\b`)
 )
 
 // runScenario requests and decides one approval of each action on a new
@@ -527,7 +582,7 @@ func runScenario(t *testing.T, d decider) (approvals []string, events []string, 
 		if a.DecidedBy != d.actor {
 			t.Fatalf("decided_by %q", a.DecidedBy)
 		}
-		approvals = append(approvals, fmt.Sprintf("%s|%s|%s|%s", a.Action, a.Status, norm.Replace(a.Result), a.ResultData))
+		approvals = append(approvals, snapshotTimes.ReplaceAllString(fmt.Sprintf("%s|%s|%s|%s", a.Action, a.Status, norm.Replace(a.Result), a.ResultData), "-<t>.sqlite"))
 	}
 	lifecycleSave(t, s, "equal", "one")
 	decide(resultID(t)(s.Publish(ctx, "equal", 0, "", ViaMCP)))
@@ -535,10 +590,25 @@ func runScenario(t *testing.T, d decider) (approvals []string, events []string, 
 	decide(pendingID(t, err))
 	lifecycleSave(t, s, "equal", "two")
 	decide(resultID(t)(s.Publish(ctx, "equal", 0, "", ViaMCP)))
+	writeNote(t, s, "equal", "before")
 	_, err = s.Deploy(ctx, "equal", 2, ViaMCP)
 	decide(pendingID(t, err))
 	_, err = s.Rollback(ctx, "equal", 1, ViaMCP)
 	decide(pendingID(t, err))
+	_, err = s.Deploy(ctx, "equal", 2, ViaMCP)
+	decide(pendingID(t, err))
+	writeNote(t, s, "equal", "after")
+	_, err = s.RollbackWithData(ctx, "equal", 1, true, ViaMCP)
+	decide(pendingID(t, err))
+	if readNote(t, s, "equal") != "before" {
+		t.Fatal("rollback with restore_data did not restore the data")
+	}
+	writeNote(t, s, "equal", "after")
+	_, err = s.RestoreSnapshot(ctx, "equal", snapshotBefore(t, s, "equal", 2), ViaMCP)
+	decide(pendingID(t, err))
+	if readNote(t, s, "equal") != "before" {
+		t.Fatal("restore_data did not restore the data")
+	}
 	decide(resultID(t)(s.DeleteVersion(ctx, "equal", 2, ViaMCP)))
 	if err := s.SetProviderPermission(ctx, "equal", store.ProviderPortal, true, ViaConsole); err != nil {
 		t.Fatal(err)
@@ -549,7 +619,7 @@ func runScenario(t *testing.T, d decider) (approvals []string, events []string, 
 	flat.CreatedAt, flat.UpdatedAt, flat.ID = time.Time{}, time.Time{}, ""
 	evs, _ := s.st.ListEvents(ctx, "equal", "", 0, 1000)
 	for _, e := range evs {
-		msg := approvalIDs.ReplaceAllString(norm.Replace(e.Message), "<id>")
+		msg := snapshotTimes.ReplaceAllString(approvalIDs.ReplaceAllString(norm.Replace(e.Message), "<id>"), "-<t>.sqlite")
 		events = append(events, e.Kind+"|"+durations.ReplaceAllString(msg, "in <t>"))
 	}
 	id := resultID(t)(s.Delete(ctx, "equal", ViaMCP, ""))
@@ -558,7 +628,7 @@ func runScenario(t *testing.T, d decider) (approvals []string, events []string, 
 		t.Fatalf("deleted flat's approval lost its decider: %+v", a)
 	}
 	for _, l := range logs.matching("via ") {
-		logLines = append(logLines, approvalIDs.ReplaceAllString(norm.Replace(l), "<id>"))
+		logLines = append(logLines, snapshotTimes.ReplaceAllString(approvalIDs.ReplaceAllString(norm.Replace(l), "<id>"), "-<t>.sqlite"))
 	}
 	return approvals, events, logLines, flat
 }
@@ -580,7 +650,10 @@ func TestAgentDecisionMatchesOperator(t *testing.T) {
 	if !reflect.DeepEqual(opF, agF) {
 		t.Fatalf("flat differs:\n%+v\n%+v", opF, agF)
 	}
-	if len(opA) != 9 || !slices.ContainsFunc(opE, func(e string) bool { return strings.Contains(e, "<decider>") }) ||
+	if len(opA) != 12 || !slices.ContainsFunc(opA, func(a string) bool { return strings.HasPrefix(a, "restore_data|approved|") }) ||
+		!slices.ContainsFunc(opA, func(a string) bool {
+			return strings.HasPrefix(a, "rollback|") && strings.Contains(a, `"data_impact":"restore_data"`)
+		}) || !slices.ContainsFunc(opE, func(e string) bool { return strings.Contains(e, "<decider>") }) ||
 		!slices.ContainsFunc(opE, func(e string) bool { return strings.Contains(e, "via <surface>") }) ||
 		!slices.ContainsFunc(opL, func(l string) bool { return strings.Contains(l, "deleted via <surface>") }) {
 		t.Fatalf("scenario did not record what it compares:\n%s\n%s", strings.Join(opE, "\n"), strings.Join(opL, "\n"))
