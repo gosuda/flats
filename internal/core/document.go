@@ -150,7 +150,7 @@ func (s *Service) getDocument(ctx context.Context, slugName, doc string, blockOf
 		}
 		req := httptest.NewRequestWithContext(ctx, http.MethodGet, "http://docs.internal"+path, nil)
 		rec := httptest.NewRecorder()
-		live.handler.ServeHTTP(rec, trustedAccess(req, false))
+		live.handler.ServeHTTP(rec, withRouteHeaders(req, false))
 		if rec.Code == http.StatusNotFound {
 			return Document{}, ErrDocumentNotFound
 		}
@@ -505,7 +505,7 @@ func (s *Service) UpdateDocument(ctx context.Context, slugName, doc string, ops 
 	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
 	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "http://docs.internal/_docs/api/edit?doc="+url.QueryEscape(doc), bytes.NewReader(body))
-	req = trustedAccess(req, false)
+	req = withRouteHeaders(req, false)
 	req.Header.Set("X-Flats-Host-Op", "edit")
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -616,7 +616,7 @@ func (s *Service) editReceipt(ctx context.Context, live *deployed, slugName, doc
 	ctx, cancel := context.WithTimeout(ctx, receiptLookupTimeout)
 	defer cancel()
 	req := httptest.NewRequestWithContext(ctx, http.MethodGet, "http://docs.internal/_docs/api/receipt?doc="+url.QueryEscape(doc)+"&id="+url.QueryEscape(id), nil)
-	req = trustedAccess(req, false)
+	req = withRouteHeaders(req, false)
 	req.Header.Set("X-Flats-Host-Op", "edit")
 	rec := httptest.NewRecorder()
 	live.handler.ServeHTTP(rec, req)

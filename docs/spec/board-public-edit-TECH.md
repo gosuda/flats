@@ -149,7 +149,7 @@ epoch as today, closing every public socket.
 
 ### 2.6 Telling the board instance
 
-- `trustedAccess` deletes any client `X-Flats-Public-Access`. `serveSite`, on
+- `withRouteHeaders` deletes any client `X-Flats-Public-Access`. `serveSite`, on
   a Public request, sets it from the flat it already re-reads per request:
   `view` or `edit`.
 - `board.Options` gains `PublicAccess string`, so an instance opened later

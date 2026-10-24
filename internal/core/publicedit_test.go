@@ -709,24 +709,24 @@ func TestPublicAccessHeaderIsTrusted(t *testing.T) {
 	r, _ := http.NewRequest("GET", "http://plan.test/", nil)
 	r.Header.Set("x-flats-public-access", "edit")
 	r.Header.Set("x-flats-access-epoch", "99")
-	clean := trustedAccess(r, true)
+	clean := withRouteHeaders(r, true)
 	if v, e := clean.Header.Get(board.PublicAccessHeader), clean.Header.Get(AccessEpochHeader); v != "" || e != "" {
 		t.Fatalf("forged level kept: %q epoch %q", v, e)
 	}
 	in := s.liveBoard("plan")
-	got := withPublicAccess(trustedAccess(r, true), &deployed{inst: in}, store.AccessView, 4).Header
+	got := withPublicAccess(withRouteHeaders(r, true), &deployed{inst: in}, store.AccessView, 4).Header
 	if got.Get(board.PublicAccessHeader) != store.AccessView || got.Get(AccessEpochHeader) != "" {
 		t.Fatalf("board headers = %v", got)
 	}
 	docs := &deployed{inst: contentInstance{}, version: store.Version{Manifest: []byte(`{"type":"docs"}`)}}
-	got = withPublicAccess(trustedAccess(r, true), docs, store.AccessEdit, 4).Header
+	got = withPublicAccess(withRouteHeaders(r, true), docs, store.AccessEdit, 4).Header
 	if got.Get(board.PublicAccessHeader) != store.AccessEdit || got.Get(AccessEpochHeader) != "4" {
 		t.Fatalf("document headers = %v", got)
 	}
-	if got := withPublicAccess(trustedAccess(r, false), docs, "", 4).Header; got.Get(board.PublicAccessHeader) != "" || got.Get(AccessEpochHeader) != "" {
+	if got := withPublicAccess(withRouteHeaders(r, false), docs, "", 4).Header; got.Get(board.PublicAccessHeader) != "" || got.Get(AccessEpochHeader) != "" {
 		t.Fatalf("private document headers = %v", got)
 	}
-	if got := withPublicAccess(trustedAccess(r, true), &deployed{}, store.AccessView, 4).Header; got.Get(board.PublicAccessHeader) != "" || got.Get(AccessEpochHeader) != "" {
+	if got := withPublicAccess(withRouteHeaders(r, true), &deployed{}, store.AccessView, 4).Header; got.Get(board.PublicAccessHeader) != "" || got.Get(AccessEpochHeader) != "" {
 		t.Fatalf("website headers = %v", got)
 	}
 }

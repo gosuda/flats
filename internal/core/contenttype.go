@@ -40,10 +40,10 @@ type docsDocument struct {
 	Text string `json:"text"`
 }
 
-// trustedAccess clones the request and replaces access and strips all
+// withRouteHeaders clones the request and replaces access and strips all
 // spellings of the host-only health signal, public access level and access
 // epoch.
-func trustedAccess(r *http.Request, public bool) *http.Request {
+func withRouteHeaders(r *http.Request, public bool) *http.Request {
 	r = r.Clone(r.Context())
 	for key := range r.Header {
 		if strings.EqualFold(key, "X-Flats-Access") || strings.EqualFold(key, "X-Flats-Health") || strings.EqualFold(key, "X-Flats-Host-Op") ||

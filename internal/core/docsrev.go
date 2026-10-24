@@ -87,7 +87,7 @@ func (s *Service) docsHost(ctx context.Context, slugName, method, op string, bod
 	ctx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 	req := httptest.NewRequestWithContext(ctx, method, "http://docs.internal/_docs/host/revisions/"+op, r)
-	req = trustedAccess(req, false)
+	req = withRouteHeaders(req, false)
 	req.Header.Set("X-Flats-Host-Op", "revisions")
 	if body != nil {
 		req.Header.Set("Content-Type", "application/json")

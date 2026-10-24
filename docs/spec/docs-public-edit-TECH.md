@@ -114,7 +114,7 @@ any request reaches the worker.
 
 `withPublicAccess` sets, on Public requests of a document flat, the board's
 `X-Flats-Public-Access` (`view` or `edit`) and a new `X-Flats-Access-Epoch`
-(`access_seq`). `trustedAccess` strips client spellings of both. Private
+(`access_seq`). `withRouteHeaders` strips client spellings of both. Private
 requests carry neither.
 
 ### 2.6 Import

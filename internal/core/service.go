@@ -644,7 +644,7 @@ func (s *Service) serveSite(lf *liveFlat, slugName string, public bool, epoch *r
 		lf.views.Add(1)
 		lf.recordPath(s.now().UTC().Format("2006-01-02"), r.URL.Path)
 	}
-	d.handler.ServeHTTP(w, withPublicAccess(trustedAccess(r, public), d, access, accessSeq))
+	d.handler.ServeHTTP(w, withPublicAccess(withRouteHeaders(r, public), d, access, accessSeq))
 }
 
 // stripIdentity removes Tailscale identity headers a client may have sent.
@@ -1448,7 +1448,7 @@ func healthCheck(h http.Handler, p string, redact func(string) string) HealthRes
 			msg = err.Error()
 			return
 		}
-		req = trustedAccess(req, false)
+		req = withRouteHeaders(req, false)
 		req.Header.Set("X-Flats-Health", "1")
 		h.ServeHTTP(rec, req)
 	}()

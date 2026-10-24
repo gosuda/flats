@@ -714,7 +714,7 @@ func (s *Service) downgradeEdit(ctx context.Context) error {
 
 // withPublicAccess sets the trusted public access headers of a Public
 // request: the level for a board, the level and its epoch for a document.
-// trustedAccess has removed any the client sent.
+// withRouteHeaders has removed any the client sent.
 func withPublicAccess(r *http.Request, d *deployed, access string, epoch int64) *http.Request {
 	if access == "" {
 		return r

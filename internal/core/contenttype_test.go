@@ -530,7 +530,7 @@ func TestHostHealthSignalIsTrusted(t *testing.T) {
 		r.Header["x-flats-health"] = []string{"1"}
 		r.Header.Set("X-Flats-Host-Op", "edit")
 		r.Header["x-flats-host-op"] = []string{"edit"}
-		clean := trustedAccess(r, public)
+		clean := withRouteHeaders(r, public)
 		for key := range clean.Header {
 			if strings.EqualFold(key, "X-Flats-Health") || strings.EqualFold(key, "X-Flats-Host-Op") {
 				t.Fatal("client host signal retained", key)
