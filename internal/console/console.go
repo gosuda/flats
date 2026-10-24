@@ -88,7 +88,7 @@ func Handler() http.Handler {
 	mux.HandleFunc("GET /approvals", page)
 	mux.HandleFunc("GET /approvals/{id}", page)
 	mux.HandleFunc("GET /settings", page)
-	for _, section := range []string{"networks", "console", "limits", "agents"} {
+	for _, section := range []string{"networks", "console", "limits", "agents", "experiments"} {
 		mux.HandleFunc("GET /settings/"+section, page)
 	}
 	mux.HandleFunc("GET /settings/networks/{provider}", page)

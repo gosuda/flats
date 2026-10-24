@@ -39,7 +39,7 @@ func TestAppRoutesServeIndex(t *testing.T) {
 	h := Handler()
 	index := readStatic(t, "index.html")
 	for _, p := range []string{"/", "/flats/my-blog", "/flats/my-blog/settings", "/flats/my-blog/analytics", "/flats/my-blog/database", "/approvals", "/approvals/apr-abc123", "/settings", "/settings?x=1",
-		"/settings/networks", "/settings/networks/portal", "/settings/console", "/settings/limits", "/settings/agents"} {
+		"/settings/networks", "/settings/networks/portal", "/settings/console", "/settings/limits", "/settings/agents", "/settings/experiments"} {
 		rec := get(t, h, http.MethodGet, p, nil)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("GET %s: status %d", p, rec.Code)
@@ -56,6 +56,28 @@ func TestAppRoutesServeIndex(t *testing.T) {
 	rec := get(t, h, http.MethodHead, "/flats/x", nil)
 	if rec.Code != http.StatusOK || rec.Body.Len() != 0 {
 		t.Errorf("HEAD: status %d, %d body bytes", rec.Code, rec.Body.Len())
+	}
+}
+
+// Every Settings section the page offers opens by direct link or reload,
+// not only by navigation inside the page.
+func TestSettingsSectionsServeIndex(t *testing.T) {
+	js := readStatic(t, "assets/js/settings.js")
+	m := regexp.MustCompile(`export const SECTIONS = \[(.*)\];`).FindStringSubmatch(js)
+	if m == nil {
+		t.Fatal("settings.js has no SECTIONS list")
+	}
+	ids := regexp.MustCompile(`\['([a-z-]+)',`).FindAllStringSubmatch(m[1], -1)
+	if len(ids) == 0 {
+		t.Fatal("no section in SECTIONS")
+	}
+	h := Handler()
+	index := readStatic(t, "index.html")
+	for _, id := range ids {
+		p := "/settings/" + id[1]
+		if rec := get(t, h, http.MethodGet, p, nil); rec.Code != http.StatusOK || rec.Body.String() != index {
+			t.Errorf("GET %s: status %d, not index.html", p, rec.Code)
+		}
 	}
 }
 
