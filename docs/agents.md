@@ -14,7 +14,8 @@ over stdio, so the plugin never names a host.
    connects to a host elsewhere, install just the binary with the installer's
    `--no-service` option. The agent must find `flats` on its `PATH`.
 2. Choose the host once per machine. Skip this on the host itself: loopback is
-   the default.
+   the default. This chooses which host the CLI and the plugin talk to. It does
+   not register an agent.
 
    ```sh
    flats connect https://flats.example.ts.net
@@ -94,8 +95,8 @@ register a webhook or start automatic execution.
 
 Agents connect to the Streamable HTTP endpoint at `http://127.0.0.1:7878/mcp`
 on the host, or the console's Tailscale URL plus `/mcp` from another allowed
-device. Run `flats mcp-config` for Claude Code, Codex and Cursor setup. For a
-host on a custom management port, use
+device. Run `flats mcp-config` for Claude Code, Codex and Cursor setup, including
+the plugin install commands. For a host on a custom management port, use
 `flats mcp-config --url http://127.0.0.1:17878`. For example:
 
 ```sh
@@ -109,7 +110,9 @@ Cursor project `.cursor/mcp.json`:
 {"mcpServers":{"flats":{"url":"http://127.0.0.1:7878/mcp"}}}
 ```
 
-Restart or reconnect your client and list tools.
+Restart or reconnect your client and list tools. The agent's first call is
+`check_client`. In a terminal, `flats status` checks that the CLI reaches the
+host.
 
 ## Keeping clients current
 

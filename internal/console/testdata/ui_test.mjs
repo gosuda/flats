@@ -899,6 +899,90 @@ key('End');
 assert.equal(agentTabs[3].getAttribute('tabindex'), '0');
 assert.equal(agentTabs[0].getAttribute('tabindex'), '-1');
 
+// Each client tab leads with the plugin and keeps registering the MCP address
+// directly. Flats and its CLI are on this machine, so no tab saves a host.
+const snippetOf = (tabs, i) => { tabs[i].dispatch('click'); return byId(page, 'agent-snippet').textContent; };
+const claudeSnippet = snippetOf(agentTabs, 0);
+assert.ok(claudeSnippet.includes('claude plugin marketplace add gosuda/flats && claude plugin install flats@flats'));
+assert.ok(claudeSnippet.indexOf('claude plugin install') < claudeSnippet.indexOf('claude mcp add'));
+assert.ok(claudeSnippet.includes('the flats CLI must be on the agent’s PATH'));
+const codexSnippet = snippetOf(agentTabs, 1);
+assert.ok(codexSnippet.includes('codex plugin marketplace add gosuda/flats && codex plugin add flats@flats'));
+assert.ok(codexSnippet.includes('url = "http://127.0.0.1:7878/mcp"') && codexSnippet.includes('default_tools_approval_mode = "approve"'));
+// Auto-approval is for trusted agents only, as flats mcp-config says.
+assert.ok(page.textContent.includes('It does not make a version live') && page.textContent.includes('Use it only with trusted agents.'));
+const cursorSnippet = snippetOf(agentTabs, 2);
+assert.ok(cursorSnippet.includes('cursor-agent plugin marketplace add https://github.com/gosuda/flats'));
+assert.ok(cursorSnippet.includes('Then install Flats from the Cursor plugin list.') && cursorSnippet.includes('"mcpServers"'));
+// Interactive zsh treats a pasted # line as a command, not a comment: it prints
+// "command not found: #", and an apostrophe in it leaves the paste at quote>.
+// So no copied block holds an apostrophe, and the shell blocks (plugin and CLI)
+// hold no # line. The Codex TOML block is a config file and keeps its comments.
+for (const i of [0, 1, 2, 3]) {
+  agentTabs[i].dispatch('click');
+  const blocks = all(byId(page, 'agent-snippet'), (e) => e.tagName === 'PRE').map((pre) => pre.textContent);
+  blocks.forEach((text, b) => assert.ok(!text.includes("'"), `tab ${i} block ${b} has no apostrophe`));
+  const shell = i === 3 ? blocks : blocks.slice(0, 1);
+  shell.forEach((text) => assert.ok(!text.split('\n').some((line) => line.trim().startsWith('#')), `tab ${i} shell block has no # line`));
+}
+const cliSnippet = snippetOf(agentTabs, 3);
+// The plugin and the direct registration are alternatives, so each client tab
+// has two blocks with a Copy button each, and neither block holds the other's text.
+for (const i of [0, 1, 2]) {
+  agentTabs[i].dispatch('click');
+  const panel = byId(page, 'agent-snippet');
+  const blocks = all(panel, (e) => e.tagName === 'PRE');
+  assert.equal(blocks.length, 2, `tab ${i} has a plugin block and a direct block`);
+  assert.equal(all(panel, (e) => e.tagName === 'BUTTON').length, 2, `tab ${i} has a Copy button per block`);
+  assert.ok(blocks[0].textContent.includes('plugin') && !/mcp add|mcp_servers|mcpServers/.test(blocks[0].textContent), `tab ${i} plugin block`);
+  assert.ok(/mcp add|mcp_servers|mcpServers/.test(blocks[1].textContent) && !blocks[1].textContent.includes('plugin'), `tab ${i} direct block`);
+  // Each focusable block is named by its title.
+  blocks.forEach((pre) => {
+    const name = pre.getAttribute('aria-labelledby');
+    assert.ok(name && name.startsWith('agent-block-'), `tab ${i} block has a name`);
+    assert.ok(byId(panel, name).textContent.length > 0, `tab ${i} block name resolves`);
+  });
+  // Each block has its own name, so a screen reader can tell the two apart.
+  const [pluginName, directName] = blocks.map((pre) => pre.getAttribute('aria-labelledby'));
+  assert.notEqual(pluginName, directName, `tab ${i} blocks share a name`);
+  assert.ok(byId(panel, pluginName).textContent.startsWith('Plugin'), `tab ${i} plugin block name`);
+  assert.ok(byId(panel, directName).textContent.startsWith('Without the plugin'), `tab ${i} direct block name`);
+}
+agentTabs[3].dispatch('click');
+assert.equal(all(byId(page, 'agent-snippet'), (e) => e.tagName === 'PRE').length, 1);
+assert.ok(cliSnippet.startsWith('flats status\nflats save-draft'));
+for (const text of [claudeSnippet, codexSnippet, cursorSnippet, cliSnippet]) assert.equal(text.includes('flats connect'), false, 'on the host, no tab saves a host');
+assert.equal(page.textContent.includes('Use it only with trusted agents.'), false, 'the caveat belongs to the Codex tab');
+// The check row says how to tell that the connection works.
+assert.ok(page.textContent.includes('Check the connection') && page.textContent.includes('check_client'));
+assert.ok(page.textContent.includes('flats status') && page.textContent.includes('flats mcp-config'));
+
+// From another device the plugin and the CLI would still use the host saved on
+// their own machine, so every tab saves this page's address first.
+const agentsLocation = globalThis.location;
+globalThis.location = { origin: 'https://flats.example.org', hostname: 'flats.example.org' };
+page = await mountSettings(['agents']);
+const remoteTabs = all(page, (e) => e.getAttribute('role') === 'tab');
+for (let i = 0; i < remoteTabs.length; i++) {
+  assert.ok(snippetOf(remoteTabs, i).includes('flats connect https://flats.example.org\n'), `tab ${i} saves the page address`);
+}
+assert.ok(snippetOf(remoteTabs, 0).includes('claude mcp add --transport http flats https://flats.example.org/mcp'));
+assert.ok(snippetOf(remoteTabs, 3).startsWith('flats connect https://flats.example.org\nflats status\n'));
+// With nothing saved the plugin and the CLI use http://127.0.0.1:7878, so a
+// loopback console on another port or name is saved first too.
+for (const origin of ['http://127.0.0.1:17878', 'http://localhost:7878']) {
+  globalThis.location = { origin, hostname: new URL(origin).hostname };
+  page = await mountSettings(['agents']);
+  const tabs = all(page, (e) => e.getAttribute('role') === 'tab');
+  for (let i = 0; i < tabs.length; i++) {
+    assert.ok(snippetOf(tabs, i).includes(`flats connect ${origin}\n`), `${origin}: tab ${i} saves the page address`);
+  }
+  assert.ok(snippetOf(tabs, 0).includes(`claude mcp add --transport http flats ${origin}/mcp`));
+  snippetOf(tabs, 3);
+  assert.ok(page.textContent.includes('The CLI uses the host saved with flats connect, or http://127.0.0.1:7878 when none is saved.'), `${origin}: CLI note names the default`);
+}
+globalThis.location = agentsLocation;
+
 // Host values are read only, with their sources, on the Console page.
 page = await mountSettings(['console']);
 const configCard = byId(page, 'configuration');

@@ -235,6 +235,18 @@ selected host's MCP endpoint; any other MCP client registers
 `http://127.0.0.1:7878/mcp` directly. The install commands are in the
 [Quick start](#2-connect-your-agent).
 
+Without the plugin, register the MCP endpoint yourself. `flats mcp-config` prints
+the commands for Claude Code, Codex and Cursor with your host's address:
+
+```sh
+claude mcp add --transport http flats http://127.0.0.1:7878/mcp
+```
+
+Restart or reconnect the agent and list its tools to check the connection. In a
+terminal, `flats status` checks that the CLI reaches the host. `flats connect`
+chooses which host the CLI and the plugin talk to (loopback by default). It does
+not register an agent.
+
 [Connecting agents](docs/agents.md) covers the other clients, remote hosts
 (`flats connect`), client updates and llms.txt. The agent starts with
 read-only `check_client`, then reads the server's current `guide`.

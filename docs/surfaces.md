@@ -251,8 +251,15 @@ for server flats); `flats config` and
 | `rename <slug> <new-slug>`, `delete <slug> [--reason r]` | Rename; request deletion |
 | `env`, `network`, `secret` | Manage server settings; changing `network` origins or `secret` values works only from the host itself (loopback) |
 | `approvals [--status s]` | List approvals (read-only) |
-| `status`, `install`, `uninstall`, `connect`, `mcp`, `mcp-config` | Host and client setup ([Connecting agents](agents.md)) |
+| `status`, `install`, `uninstall`, `connect`, `mcp`, `mcp-config` | Host and client setup ([Connecting agents](agents.md)). `connect` chooses the host the CLI and `mcp` use; `mcp-config` prints the agent setup commands |
 | `client check`, `update`, `skill sync`, `version` | Client freshness ([Updating a client](release.md#updating-a-client)) |
+
+`flats help` lists the commands, then names `status` and `mcp-config` before the
+exit codes. `flats help <command>` prints the usage line, the synopsis and, for
+`connect`, `mcp`, `mcp-config` and `client`, a longer description. `flats
+<command> -h` prints the same for commands that take flags, then lists the
+flags. Subcommand groups such as `board`, `config`, `env`, `key`, `network` and
+`secret`, and `serve`, handle `-h` themselves.
 
 Exit codes: 0 success, 1 error, 2 usage, 3 pending approval, 78 configuration
 the operator must fix. Every request that waits for approval exits 3 in text
@@ -406,8 +413,10 @@ they run once saved.
   change, asks for confirmation and says that pending approvals become stale. Console: the console's addresses on
   every network, the address for links, external reverse-proxy origins and the
   read-only host values. Limits:
-  storage, history and traffic. Agents: MCP setup and what the agent tools
-  cannot do (the console itself is not authenticated yet). Fields stage changes.
+  storage, history and traffic. Agents: setup for Claude Code, Codex and Cursor
+  (the plugin, or the MCP address registered directly), the CLI, how to check the
+  connection, and what the agent tools cannot do (the console itself is not
+  authenticated yet). Fields stage changes.
   Console has separate inline Save/Discard controls for Links and Reverse proxy,
   always visible and disabled until that section changes; saving one preserves
   edits in the other. Other settings pages use one floating save bar. Each

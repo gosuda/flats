@@ -1712,15 +1712,39 @@ function agentsPage(page) {
   if (page.token) page.token.drawn = true;
   page.ctx.setTitle('Agents · Settings');
   const url = location.origin + '/mcp';
+  // The plugin and the CLI use the host saved with `flats connect`, or
+  // CLI_DEFAULT_ORIGIN when none is saved. Any other page address, from another
+  // device or a loopback console on another port, has to be saved first.
+  const chooseHost = atCLIDefault() ? '' : `flats connect ${location.origin}\n`;
+  const pluginTitle = 'Plugin (runs flats mcp, so the flats CLI must be on the agent’s PATH)';
+  // Each block is one thing to paste: the plugin and a direct registration
+  // are alternatives, so they never share a Copy button.
   const snippets = [
-    ['Claude Code', `claude mcp add --transport http flats ${url}`],
-    ['Codex', `# ~/.codex/config.toml\n[mcp_servers.flats]\nurl = "${url}"`],
-    ['Cursor', `// ~/.cursor/mcp.json or .cursor/mcp.json\n${JSON.stringify({ mcpServers: { flats: { url } } }, null, 2)}`],
-    ['CLI', 'flats save-draft <slug> ./dist\nflats create-version <slug> --revision <revision> --hash <hash>\nflats deploy --flat <slug> --version <version>'],
+    { label: 'Claude Code', blocks: [
+      { title: pluginTitle, copy: 'plugin commands', text: `${chooseHost}claude plugin marketplace add gosuda/flats && claude plugin install flats@flats` },
+      { title: 'Without the plugin: register the MCP address', copy: 'MCP registration', text: `claude mcp add --transport http flats ${url}` },
+    ] },
+    { label: 'Codex', blocks: [
+      { title: pluginTitle, copy: 'plugin commands', text: `${chooseHost}codex plugin marketplace add gosuda/flats && codex plugin add flats@flats` },
+      { title: 'Without the plugin: register the MCP address in ~/.codex/config.toml', copy: 'MCP registration', text: `[mcp_servers.flats]\nurl = "${url}"\n# needed for \`codex exec\`; interactive sessions can prompt instead\ndefault_tools_approval_mode = "approve"\n# or: codex mcp add flats --url ${url}` },
+    ], note: 'Client auto-approval permits Draft edits and pending requests. It does not make a version live or give an agent operator authority. Use it only with trusted agents.' },
+    { label: 'Cursor', blocks: [
+      // Interactive zsh runs a pasted # line as a command, so the follow-up
+      // step is in the title, which is not copied.
+      { title: `${pluginTitle}. Then install Flats from the Cursor plugin list.`, copy: 'plugin commands', text: `${chooseHost}cursor-agent plugin marketplace add https://github.com/gosuda/flats` },
+      { title: 'Without the plugin: register the MCP address in ~/.cursor/mcp.json or .cursor/mcp.json', copy: 'MCP registration', text: JSON.stringify({ mcpServers: { flats: { url } } }, null, 2) },
+    ] },
+    { label: 'CLI', blocks: [
+      { copy: 'CLI commands', text: `${chooseHost}flats status\nflats save-draft <slug> ./dist\nflats create-version <slug> --revision <revision> --hash <hash>\nflats deploy --flat <slug> --version <version>` },
+    ], note: `The CLI uses the host saved with flats connect, or ${CLI_DEFAULT_ORIGIN} when none is saved. Save a Private Draft, request a numbered version, then deploy that version. Version creation and deployment each need their own approval.` },
   ];
-  const code = h('pre', { class: 's-code', tabindex: '0' }, h('code'));
-  const panel = h('div', { class: 's-tabpanel', role: 'tabpanel', id: 'agent-snippet' }, code, copyButton(() => code.textContent, 'snippet'));
-  const tabs = snippets.map(([label, text], i) => {
+  // A block with a title is named by it, so a screen reader says which block
+  // holds the focus.
+  const codeBlock = ({ title, copy, text }, n) => h('div', { class: 's-block' },
+    title ? h('p', { class: 's-row-desc', id: 'agent-block-' + n, text: title }) : null,
+    h('div', { class: 's-tabpanel' }, h('pre', { class: 's-code', tabindex: '0', 'aria-labelledby': title ? 'agent-block-' + n : null }, h('code', { text })), copyButton(() => text, copy)));
+  const panel = h('div', { class: 's-blocks', role: 'tabpanel', id: 'agent-snippet' });
+  const tabs = snippets.map(({ label }, i) => {
     const t = h('button', { type: 'button', role: 'tab', class: 's-tab', id: 'agent-tab-' + i, 'aria-controls': 'agent-snippet', 'aria-selected': 'false', text: label });
     t.addEventListener('click', () => select(i));
     return t;
@@ -1728,11 +1752,9 @@ function agentsPage(page) {
   const note = h('p', { class: 's-row-desc' });
   function select(i) {
     tabs.forEach((t, j) => { t.setAttribute('aria-selected', String(i === j)); t.setAttribute('tabindex', i === j ? '0' : '-1'); });
-    code.firstChild.textContent = snippets[i][1];
+    fill(panel, snippets[i].blocks.map(codeBlock));
     panel.setAttribute('aria-labelledby', 'agent-tab-' + i);
-    note.textContent = snippets[i][0] === 'CLI'
-      ? 'Save a Private Draft, request a numbered version, then deploy that version. Version creation and deployment each need their own approval.'
-      : 'Agents can create flats, save Drafts, request numbered versions and deploy them, open previews and read logs.';
+    note.textContent = snippets[i].note || 'Agents can create flats, save Drafts, request numbered versions and deploy them, open previews and read logs.';
   }
   select(0);
   const tablist = h('div', { class: 's-tabs', role: 'tablist', 'aria-label': 'Client' }, tabs);
@@ -1746,12 +1768,13 @@ function agentsPage(page) {
     tabs[i].focus();
   });
   // The snippets for every client stay in the page for search and copy.
-  const all = h('div', { class: 'sr-only' }, snippets.map(([label, text]) => h('pre', null, `${label}: ${text}`)));
+  const all = h('div', { class: 'sr-only' }, snippets.map(({ label, blocks }) => h('pre', null, `${label}: ${blocks.map((b) => b.text).join('\n')}`)));
   fill(page.content,
     pageHead({ title: 'Agents', intro: ['Agents can create flats, save Drafts, open previews and read logs. Saving versions, deploying, visibility changes and deleting wait for your approval under ', h('a', { href: '/approvals', 'data-nav': true, text: 'Approvals' }), '.'] }),
     group('connect', 'Connect an agent', 'MCP over Streamable HTTP', list(
       row({ title: 'MCP address', meta: ['Uses the address you’re on now'], ctl: [h('code', { text: url }), copyButton(() => url, 'MCP address')] }),
-      h('div', { class: 's-row stack' }, tablist, panel, note))),
+      h('div', { class: 's-row stack' }, tablist, panel, note),
+      row({ title: 'Check the connection', desc: ['Restart or reconnect the agent and list its tools. Its first call is ', h('code', { text: 'check_client' }), '. In a terminal, ', h('code', { text: 'flats status' }), ' checks that the CLI reaches this host, and ', h('code', { text: 'flats mcp-config' }), ' prints the setup commands for the host the CLI uses.'] }))),
     group('agent-limits', 'What the agent tools can’t do', 'MCP tools and the agent API', list(
       row({ title: 'Read or set keys', desc: ['No agent tool reads or sets a network key. Keys are set here, under each network, or with ', h('code', { text: 'flats key set' }), ' on the host.'],
         ctl: h('a', { class: 'btn btn-small', href: '/settings/networks', 'data-nav': true, text: 'Networks' }) }),
@@ -1760,6 +1783,16 @@ function agentsPage(page) {
         ctl: h('a', { class: 'btn btn-small', href: '/approvals', 'data-nav': true, text: 'Approvals' }) })),
       callout('info', 'These limits apply to the agent tools. The console itself has no login yet: it only refuses requests from other websites, so a program on a machine that can reach its management address can call it as this page does. Keep that address private.')),
     all);
+}
+
+// CLI_DEFAULT_ORIGIN is the host the CLI and `flats mcp` use when nothing is
+// saved (DefaultURL in internal/cli).
+const CLI_DEFAULT_ORIGIN = 'http://127.0.0.1:7878';
+
+// atCLIDefault is true when this page is on CLI_DEFAULT_ORIGIN. Another
+// loopback name or port may be a different host to the CLI, so it is not.
+function atCLIDefault() {
+  try { return new URL(location.origin).origin === CLI_DEFAULT_ORIGIN; } catch { return false; }
 }
 
 // copyButton copies text() and says so.

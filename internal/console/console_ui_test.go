@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/gosuda/flats/internal/cli"
 )
 
 // TestConsoleUI renders the list and flat pages under Node with a fake DOM
@@ -41,5 +43,17 @@ func TestConsoleUI(t *testing.T) {
 	out, err := cmd.CombinedOutput()
 	if err != nil || !strings.Contains(string(out), "ok") {
 		t.Fatalf("node: %v\n%s", err, out)
+	}
+}
+
+// TestAgentsDefaultOriginMatchesCLI keeps the Agents page's idea of the host
+// the CLI uses when nothing is saved equal to the CLI's own default.
+func TestAgentsDefaultOriginMatchesCLI(t *testing.T) {
+	b, err := staticFS.ReadFile("static/assets/js/settings.js")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "const CLI_DEFAULT_ORIGIN = '" + cli.DefaultURL + "';"; !strings.Contains(string(b), want) {
+		t.Fatalf("settings.js does not hold %q", want)
 	}
 }

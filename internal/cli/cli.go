@@ -130,9 +130,9 @@ func init() {
 		{"status", "show server and service status", "status", (*app).status},
 		{"install", "run `flats serve` at login (launchd/systemd)", "install [--config path] [--data dir] [--executable path] [-- legacy serve flags...]", (*app).install},
 		{"uninstall", "remove the launchd agent", "uninstall", (*app).uninstall},
-		{"connect", "choose the Flats host this CLI and `flats mcp` use", "connect [<url>] [--clear]", (*app).connect},
-		{"mcp", "serve the host's MCP tools over stdio (for agent plugins)", "mcp [--url url]", (*app).mcpBridge},
-		{"mcp-config", "print MCP setup for agent tools", "mcp-config [--url url]", (*app).mcpConfig},
+		{"connect", "choose which host this CLI and `flats mcp` talk to (to connect an agent, see mcp-config)", "connect [<url>] [--clear]", (*app).connect},
+		{"mcp", "relay the host's MCP tools over stdio (what the agent plugins run)", "mcp [--url url]", (*app).mcpBridge},
+		{"mcp-config", "print setup commands for Claude Code, Codex and Cursor", "mcp-config [--url url]", (*app).mcpConfig},
 		{"config", "manage the host configuration (config.json)", "", (*app).config},
 		{"key", "manage the host's Tailscale, zrok and NetBird keys while it is stopped", "", (*app).key},
 		{"client", "check local client compatibility", "client check [--skill-file path]", (*app).clientCommand},
@@ -150,6 +150,43 @@ func (c *command) commandUsage() string {
 		return KeyUsage
 	}
 	return c.usage
+}
+
+// commandAbout holds the longer description that `flats help <command>` and
+// `flats <command> -h` print after the synopsis. A command without an entry
+// shows its synopsis only.
+var commandAbout = map[string]string{
+	"connect": "Saves the address of the Flats host that this CLI and `flats mcp` use, after checking that it\n" +
+		"answers as a Flats host. Without arguments it shows the current host and where that choice came\n" +
+		"from. --clear returns to the loopback default.\n\n" +
+		"It does not register an agent. `flats mcp-config` prints the setup commands for Claude Code,\n" +
+		"Codex and Cursor.",
+	"mcp": "Serves the host's MCP tools over stdio and relays them to the selected host. The Flats plugin for\n" +
+		"Claude Code, Codex and Cursor runs this command, so the flats CLI must be on the agent's PATH.\n" +
+		"Choose the host with `flats connect`.",
+	"mcp-config": "Prints the commands that register this host's MCP endpoint with Claude Code, Codex and Cursor,\n" +
+		"and the commands that install the Flats plugin. Use --url for a host at another address. --json\n" +
+		"prints the endpoint and the registration commands as JSON, without the plugin commands.",
+	"client": "Checks whether this CLI is compatible with the host and, with --skill-file, whether the named\n" +
+		"standalone skill file is current. The check changes nothing. `flats update` replaces a CLI that\n" +
+		"the check reports as incompatible.",
+}
+
+// printCommandHelp prints the usage line, then the synopsis and the longer
+// description when the command has one.
+func printCommandHelp(w io.Writer, c *command) {
+	fmt.Fprintf(w, "usage: flats %s\n\n%s\n", c.commandUsage(), capitalize(c.synopsis))
+	if about := commandAbout[c.name]; about != "" {
+		fmt.Fprintf(w, "\n%s\n", about)
+	}
+}
+
+// capitalize upper-cases the first byte; every synopsis starts with ASCII.
+func capitalize(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
 }
 
 func findCommand(name string) *command {
@@ -224,7 +261,7 @@ func Run(ctx context.Context, args []string, env Env) int {
 	case "help", "-h", "--help":
 		if len(rest) > 0 {
 			if c := findCommand(rest[0]); c != nil {
-				fmt.Fprintf(a.out, "usage: flats %s\n", c.commandUsage())
+				printCommandHelp(a.out, c)
 				return ExitOK
 			}
 		}
@@ -332,7 +369,7 @@ func printProblems(w io.Writer, ps []problem) {
 // globalFlags registers --url and --json. Run resolves the default URL once
 // it knows the command (resolveURL).
 func (a *app) globalFlags(fs *flag.FlagSet) {
-	fs.Var(urlFlag{a}, "url", "Flats server URL (env FLATS_URL, else the address saved by `flats connect`)")
+	fs.Var(urlFlag{a}, "url", "Flats server `URL` (env FLATS_URL, else the host saved by flats connect)")
 	fs.BoolVar(&a.jsonOut, "json", a.jsonOut, "machine-readable JSON output")
 }
 
@@ -341,7 +378,7 @@ func (a *app) printUsage(w io.Writer) {
 	for _, c := range commands {
 		fmt.Fprintf(w, "  %-11s %s\n", c.name, c.synopsis)
 	}
-	fmt.Fprintf(w, "  %-11s %s\n  %-11s %s\n\nRun `flats help <command>` for details. Exit codes: 0 ok, 1 error, 2 usage, 3 pending approval.\n",
+	fmt.Fprintf(w, "  %-11s %s\n  %-11s %s\n\n`flats status` checks the host. `flats mcp-config` shows how to connect an agent.\nRun `flats help <command>` for details. Exit codes: 0 ok, 1 error, 2 usage, 3 pending approval.\n",
 		"serve", "run the server", "worker", "internal: server-flat worker process")
 }
 
@@ -361,7 +398,8 @@ func (a *app) parse(fs *flag.FlagSet, args []string, minPos, maxPos int) ([]stri
 		if err := fs.Parse(args); err != nil {
 			if errors.Is(err, flag.ErrHelp) {
 				if c := findCommand(fs.Name()); c != nil {
-					fmt.Fprintf(a.out, "usage: flats %s\n", c.commandUsage())
+					printCommandHelp(a.out, c)
+					fmt.Fprintln(a.out)
 				}
 				fs.SetOutput(a.out)
 				fs.PrintDefaults()
