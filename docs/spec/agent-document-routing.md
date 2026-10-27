@@ -1,6 +1,6 @@
 # Agent document routing
 
-Status: planned
+Status: implemented
 
 A user can connect an agent to Flats and still get documents somewhere else.
 In Claude Code the connector `claude.ai Claude Docs` is available with no setup,
@@ -34,7 +34,8 @@ the file it changed, so `--undo` works from the files alone.
    plan always names the project directory. A project that is the user's home
    directory is refused, with a message to run the command inside a repository
    or to use user scope. The command runs on macOS and Linux, like the rest of
-   the CLI.
+   the CLI. Its output is text, and `--json` is a usage error. Ctrl-C at the
+   question ends the command without writing.
 
 2. **Targets.** Each target is one file or one printed text:
 
@@ -90,8 +91,10 @@ the file it changed, so `--undo` works from the files alone.
    spaces and dots written as `_`. The command inserts text and leaves every
    other byte alone: no reordering, no reformatting, the file's own indentation
    and line endings, and an inline array stays inline. A key that is absent goes
-   after the last member of its object with that member's indentation. An object
-   with no members becomes a multi-line object: the new members are indented one
+   after the last member of its object with that member's indentation. A closing
+   brace or bracket is never moved: when the gap inside an empty pair holds a
+   line break, the new text goes right after the opening one, and otherwise the
+   gap is replaced. An object with no members becomes a multi-line object: the new members are indented one
    unit deeper than the line that holds its opening brace, and the closing brace
    is on its own line at that line's indentation. An array with no elements
    takes the new elements inline if its brackets are on one line, and otherwise
@@ -236,9 +239,10 @@ temporary directories, except where noted.
 - Settings (5): a table of real-world shapes (tabs, two and four spaces, CRLF,
   inline and multi-line arrays, empty inline and multi-line arrays, `{}` and a
   multi-line empty object at the top level and as `permissions`, absent and
-  existing `permissions`, existing `deniedMcpServers`, entries already present) where the result differs from the
-  input only by inserted bytes; each refusal; and a copy of a large real
-  `settings.json` as a non-synthetic case.
+  existing `permissions`, existing `deniedMcpServers`, entries already present)
+  where the result differs from the input only by inserted bytes; each refusal;
+  and a check by hand against a large real `settings.json`, whose result the
+  final report gives, because such a file cannot be committed.
 - Flow (6, 7): `--dry-run`, a refused target with `--dry-run`, no terminal, decline, `--yes` with and without a
   terminal, symbolic links, modes, backups and their names, a leftover temporary
   file after a failure, a file that changes between plan and write, and a write
@@ -258,9 +262,9 @@ temporary directories, except where noted.
   holds other content, after which a new setup is refused with the stated
   message; kept when its path is a symbolic link; a front-matter-only `.mdc`
   file accepts a new setup; undo when the override file appeared after setup;
-  undo twice; setup, undo and setup again on a settings file ends with each of
-  the three entries present once and parses to the same value as after the
-  first setup.
+  undo twice; setup, undo and setup again on a settings file that held none of
+  the entries ends with each of the three present once and parses to the same
+  value as after the first setup.
 - Plan notes (9): the setup output of each agent and scope names the notes, and
   the `--undo` output names the undo notes and none of the setup ones.
 - Installer and uninstall (11): `shellcheck -s sh install.sh`, the installer
@@ -284,10 +288,6 @@ which were not checked. Registering the Flats MCP server with an agent, which
 of what earlier runs changed, which is why undo cannot tell added entries from
 identical ones already there. Console blocks that show the routing text itself.
 Windows, where the CLI is not built.
-
-## Current state
-
-Nothing is implemented.
 
 ## Open questions
 

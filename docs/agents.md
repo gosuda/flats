@@ -55,14 +55,16 @@ Connecting an agent does not make Flats the place where it creates documents.
 In Claude Code the connector `claude.ai Claude Docs` is available with no setup,
 and the synced skill `anthropic-skills:docs` sends document requests to it. The
 Flats skill is chosen only when the user names Flats. A line in `CLAUDE.md` does
-not settle this alone. Claude Code reads `CLAUDE.md` as context, not as enforced
-configuration, so it may follow either of two instructions that disagree.
+not settle this alone. Claude Code reads that file as context, not as enforced
+configuration, and may follow either of two instructions that disagree.
 
 `flats agent-setup docs` is an opt-in command that makes Flats the document tool
 of the agents you select. For Claude Code it removes the competing route first
 and then adds an instruction that breaks the tie. Codex and Cursor have no known
 competing route, so for them it adds the instruction only. Run it on the machine
-where the agent runs.
+where the agent runs, and connect the agent to Flats first (`flats mcp-config`,
+or the [plugin](#plugin)). Until then the agent tells you that it cannot reach
+Flats instead of using another document tool.
 
 ```sh
 flats agent-setup docs [--agent claude|codex|cursor|all] [--scope user|project] [--dry-run] [--yes] [--undo]
@@ -70,96 +72,73 @@ flats agent-setup docs [--agent claude|codex|cursor|all] [--scope user|project] 
 
 | Flag | Effect |
 | --- | --- |
-| `--agent claude\|codex\|cursor\|all` | The agents to set up. At user scope the default is every agent whose user directory exists. At project scope the flag is required when setting up, so a repository gets files only for the agents its owners name. With `--undo` the default is `all`. An agent you name is set up even if its directory is missing. |
-| `--scope user\|project` | `user` (the default) targets the agent's own configuration directory. `project` targets files in the current repository. |
-| `--dry-run` | Prints the plan and stops, even with `--yes`. |
+| `--agent` | The agents to set up. At user scope the default is every agent whose user directory exists. At project scope the flag is required, so a repository gets files only for the agents its owners name. With `--undo` the default is `all`. |
+| `--scope` | `user` (the default) targets the agent's own configuration directory. `project` targets files in the current repository. |
+| `--dry-run` | Prints the plan and writes nothing, even with `--yes`. |
 | `--yes` | Applies the plan without asking. |
-| `--undo` | Reverses an earlier setup. |
-
-The project is the nearest directory, starting at the current one and going up,
-that holds a `.git` entry. If there is none, the project is the current
-directory and the plan says that it found no repository. The command refuses a
-project that is your home directory. Run it inside a repository, or use user
-scope.
+| `--undo` | Reverses a setup. |
 
 | Agent | User scope | Project scope |
 | --- | --- | --- |
 | Claude Code | A block in `<claude dir>/CLAUDE.md` and three entries in `<claude dir>/settings.json` | A block in `<project>/CLAUDE.md` |
 | Codex | A block in `<codex dir>/AGENTS.override.md` if that file exists, else in `<codex dir>/AGENTS.md` | A block in `<project>/AGENTS.md` |
-| Cursor | Prints the routing text for Cursor Settings, Rules, User Rules and writes nothing | The file `<project>/.cursor/rules/flats-documents.mdc` |
+| Cursor | Prints the text to paste into Cursor Settings, Rules, User Rules; writes nothing | The file `<project>/.cursor/rules/flats-documents.mdc` |
 
 `<claude dir>` is `$CLAUDE_CONFIG_DIR` or `~/.claude`, `<codex dir>` is
-`$CODEX_HOME` or `~/.codex`, and Cursor's user directory is `~/.cursor`.
+`$CODEX_HOME` or `~/.codex`, and Cursor's user directory is `~/.cursor`. The
+project is the nearest directory, starting at the current one and going up, that
+holds a `.git` entry. Without one, the project is the current directory and the
+plan says so. The command refuses a project that is your home directory.
 
-Every target gets the same routing text, at most 800 bytes and with no host name.
-The text covers a document people will read, share or edit afterwards. It tells
-the agent to create such a document with the Flats MCP tools (`create_flat` with
-type `docs`, then `save_document`) after `check_client` and the guide, and to
-tell you instead of using another document tool when Flats is not connected. A
-block starts with the line `<!-- flats:documents:begin -->` and ends with
-`<!-- flats:documents:end -->`. The command appends a block to a file that has
-none and replaces it in place when its text differs. Bytes outside the markers
-do not change, except the newline and blank line that separate an appended block
-from the text before it. The Cursor rule file is different. The command owns it,
-so a new file holds a short front matter that sets `alwaysApply: true`, then the
-block. Codex reads at most 32 KiB of `AGENTS.md` by default, so the command
-refuses to add or replace a Codex block when the resulting file would be larger
-than 32768 bytes.
+Every target gets the same short routing text. It covers a document that people
+will read, share or edit afterwards, and tells the agent to create it with the
+Flats MCP tools (`create_flat` with type `docs`, then `save_document`). The text
+sits between the lines `<!-- flats:documents:begin -->` and
+`<!-- flats:documents:end -->`. The command appends the block to a file that
+has none and replaces it in place when its text differs. Every other byte of the
+file stays. Codex reads at most 32 KiB of `AGENTS.md` by default, so the command
+refuses to add or replace a Codex block when the file would grow past 32768
+bytes. The Cursor rule file belongs to the command: a new file holds a short
+front matter that sets `alwaysApply: true`, then the block.
 
 For Claude Code at user scope the command also adds three entries to
-`settings.json`: `{"serverName": "claude.ai Claude Docs"}` in `deniedMcpServers`,
-and `Skill(anthropic-skills:docs)` and `mcp__claude_ai_Claude_Docs__*` in
-`permissions.deny`. It inserts text and leaves every other byte alone, so the
-file keeps its order, indentation and line endings. It refuses to write unless
-the result is the original plus exactly these entries. It also refuses invalid
-JSON (comments included), a wrong type for a key it edits, and a key that
-appears twice. The command skips an entry that is already there, and the plan
-says that it was already there and that `--undo` will remove it. Project scope never edits a settings file,
-because those files are checked in and shared, and the competing connector
-belongs to the person, not the repository. A project-scope Claude run adds the
-instruction only and says that Claude Docs stays available.
+`settings.json`: `{"serverName": "claude.ai Claude Docs"}` to
+`deniedMcpServers`, and `Skill(anthropic-skills:docs)` and
+`mcp__claude_ai_Claude_Docs__*` to `permissions.deny`. It inserts text and leaves
+every other byte alone, so the file keeps its order, indentation and line
+endings, and it refuses to write unless the result is the original plus exactly
+these entries. It refuses invalid JSON (comments included), a wrong type for a
+key it edits, and a key that appears twice. Project scope never edits a settings
+file, because those files are shared and the connector belongs to the person.
 
-The command computes the plan for every target before it writes anything. The
-plan lists each file's path, the action (create, add, replace, remove, delete or
-unchanged), the exact lines added or removed, the backup directory and notes. If
-any target is refused, the command prints the reasons, writes nothing and exits
-1, with or without `--dry-run`. If nothing would change, it says so and exits 0.
-`--dry-run` stops after the plan with exit 0. Otherwise a terminal gets the
-question `Apply these changes? [y/N]`, and any answer but `y` or `yes` leaves
-everything unchanged with exit 0. `--yes` skips the question. Without a terminal
-and without `--yes` the command writes nothing, exits 2 and tells you to rerun
-with `--yes` or `--dry-run`.
+The command computes the plan for every target before it writes. The plan lists
+each file, the action (create, add, replace, remove, delete or unchanged), the
+exact lines changed, the backup directory and a few notes. If any target is
+refused, nothing is written and the exit code is 1. Otherwise a terminal gets
+the question `Apply these changes? [y/N]`. Without a terminal and without
+`--yes` the command writes nothing and exits 2. Before it changes or deletes an
+existing file, it copies the file into `agent-setup-backups/`, next to
+`connection.json` in the `flats-client` directory of the user config directory.
+It follows symbolic links and edits the target, so a link kept by a dotfile
+manager stays a link. It writes files one by one. If one write fails, the others
+still go through, the failure is reported per file with exit 1, and a rerun
+finishes the rest.
 
-Before it changes or deletes an existing file, the command copies the file into
-`agent-setup-backups/`, next to `connection.json` in the `flats-client`
-directory of the user config directory. It follows symbolic links and edits the
-target, so a link kept by a dotfile manager stays a link. It writes the files one
-by one. If a write fails, the earlier files stay written, the command reports
-the failure per file and exits 1, and a rerun finishes the rest.
-
-`--undo` shows the same preview and asks the same question. It looks at the same
-targets as a setup for the same scope and agents, so set the same
-`CLAUDE_CONFIG_DIR` or `CODEX_HOME`. For Codex it looks at both
-`AGENTS.override.md` and `AGENTS.md`. The command keeps no record of earlier
-runs. Undo therefore cannot tell a settings entry that setup added from an
-identical one that was there before, and it removes both. The plan lists each
-entry before anything is removed. Undo never deletes `CLAUDE.md`, `AGENTS.md`,
-`AGENTS.override.md` or `settings.json`, even when nothing else is left in them.
-An empty `AGENTS.override.md` silences `AGENTS.md` in Codex, and a tracked file
-belongs to its repository. The one file undo deletes is the Cursor rule file,
-once only its front matter is left. A second undo changes nothing.
+`--undo` shows the same plan and asks the same question. It looks at the same
+targets as the setup, so set the same `CLAUDE_CONFIG_DIR` or `CODEX_HOME`. The
+command keeps no record of earlier runs, so undo cannot tell a settings entry
+that setup added from an identical one that was already there, and it removes
+both. The plan names each entry before anything is removed. Undo never deletes
+`CLAUDE.md`, `AGENTS.md`, `AGENTS.override.md` or `settings.json`, and it keeps
+emptied arrays. An empty `AGENTS.override.md` silences `AGENTS.md` in Codex, and
+a tracked file belongs to its repository. The one file undo deletes is the
+Cursor rule file, once only its front matter is left.
 
 The command cannot reach every route. The Claude desktop app does not read the
 connector entry, so disconnect Claude Docs at claude.ai/customize/connectors if
 it is listed there. Undo does not reconnect a connector you disconnected. The
-command does not edit Cursor User Rules. At user scope it prints the text and
-the place to paste it, and undo does not remove text you pasted.
-
-The agent also needs Flats connected, which this command does not do. Run
-`flats mcp-config` for the setup commands (see
-[MCP without the plugin](#mcp-without-the-plugin)), or install the
-[plugin](#plugin). Until Flats is connected, the agent tells you instead of
-using another tool.
+command does not edit Cursor User Rules: at user scope it prints the text and
+where to paste it, and undo does not remove what you pasted.
 
 ## Skills for Flats and skills for this repository
 

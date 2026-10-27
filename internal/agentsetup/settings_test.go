@@ -453,3 +453,42 @@ func TestSettingsKeepsValuesOutsideTheEntries(t *testing.T) {
 		t.Errorf("undo lost original bytes: %v\n%s", err, back.Out)
 	}
 }
+
+// checkSettings is the safety net behind every edit: it must refuse an
+// edited file that is not the original plus (or minus) exactly the entries.
+func TestCheckSettingsRefusesWrongResults(t *testing.T) {
+	before := []byte("{\n  \"a\": 1\n}\n")
+	good, err := SetSettings(before)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := checkSettings(before, good.Out, setEntries); err != nil {
+		t.Fatalf("a correct result is refused: %v", err)
+	}
+	for name, after := range map[string]string{
+		"an entry is missing":     `{"a": 1, "deniedMcpServers": [{"serverName": "claude.ai Claude Docs"}], "permissions": {"deny": ["Skill(anthropic-skills:docs)"]}}`,
+		"another value changed":   `{"a": 2, "deniedMcpServers": [{"serverName": "claude.ai Claude Docs"}], "permissions": {"deny": ["Skill(anthropic-skills:docs)", "mcp__claude_ai_Claude_Docs__*"]}}`,
+		"a key was dropped":       `{"deniedMcpServers": [{"serverName": "claude.ai Claude Docs"}], "permissions": {"deny": ["Skill(anthropic-skills:docs)", "mcp__claude_ai_Claude_Docs__*"]}}`,
+		"an extra key appeared":   `{"a": 1, "b": 2, "deniedMcpServers": [{"serverName": "claude.ai Claude Docs"}], "permissions": {"deny": ["Skill(anthropic-skills:docs)", "mcp__claude_ai_Claude_Docs__*"]}}`,
+		"the result is not JSON":  `{"a": 1,`,
+		"the entry is duplicated": `{"a": 1, "deniedMcpServers": [{"serverName": "claude.ai Claude Docs"}, {"serverName": "claude.ai Claude Docs"}], "permissions": {"deny": ["Skill(anthropic-skills:docs)", "mcp__claude_ai_Claude_Docs__*"]}}`,
+	} {
+		if err := checkSettings(before, []byte(after), setEntries); !errors.Is(err, ErrSettings) {
+			t.Errorf("%s: err = %v, want ErrSettings", name, err)
+		}
+	}
+	dropped, err := DropSettings(good.Out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := checkSettings(good.Out, dropped.Out, dropEntries); err != nil {
+		t.Errorf("a correct removal is refused: %v", err)
+	}
+	// Undo keeps emptied arrays, so a result that also dropped them is wrong.
+	if err := checkSettings(good.Out, before, dropEntries); !errors.Is(err, ErrSettings) {
+		t.Errorf("a removal that dropped the emptied arrays: err = %v, want ErrSettings", err)
+	}
+	if err := checkSettings(good.Out, good.Out, dropEntries); !errors.Is(err, ErrSettings) {
+		t.Errorf("a removal that removed nothing: err = %v, want ErrSettings", err)
+	}
+}

@@ -282,6 +282,12 @@ func TestPlanRefusals(t *testing.T) {
 	if !errors.Is(user.Items[0].Err, ErrBlock) || !errors.Is(user.Items[1].Err, ErrSettings) {
 		t.Errorf("errors = %v, %v", user.Items[0].Err, user.Items[1].Err)
 	}
+	if err := proj.Items[0].Err; err == nil || !strings.Contains(err.Error(), "symbolic link that cannot be followed") {
+		t.Errorf("dangling link: %v", err)
+	}
+	if err := user.Items[2].Err; err == nil || !strings.Contains(err.Error(), "not a regular file") {
+		t.Errorf("directory target: %v", err)
+	}
 }
 
 func TestSymbolicLinksAreFollowedAndKept(t *testing.T) {

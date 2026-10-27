@@ -253,7 +253,6 @@ func SetSettings(content []byte) (SettingsChange, error) {
 	var ch SettingsChange
 	var edits []edit
 	var rootMembers []func(ind string, multi bool) string
-	needDenied := l.denied == nil
 	switch {
 	case l.denied == nil:
 		ch.Entries = append(ch.Entries, keyDenied+": "+deniedEntryText)
@@ -263,7 +262,7 @@ func SetSettings(content []byte) (SettingsChange, error) {
 	default:
 		ch.Present = append(ch.Present, keyDenied+": "+deniedEntryText)
 	}
-	if needDenied {
+	if l.denied == nil {
 		rootMembers = append(rootMembers, func(ind string, multi bool) string {
 			return quote(keyDenied) + ": " + st.array(ind, []string{deniedEntryText}, multi)
 		})

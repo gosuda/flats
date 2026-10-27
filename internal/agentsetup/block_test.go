@@ -94,18 +94,18 @@ func TestSetBlock(t *testing.T) {
 
 func TestSetBlockRefusesMalformedBlocks(t *testing.T) {
 	for name, in := range map[string]string{
-		"begin without end":     BeginMarker + "\ntext\n",
-		"end before begin":      EndMarker + "\n" + BeginMarker + "\n",
-		"end without begin":     "text\n" + EndMarker + "\n",
-		"two blocks":            block("\n") + block("\n"),
-		"two begins one end":    BeginMarker + "\n" + BeginMarker + "\n" + EndMarker + "\n",
-		"one begin two ends":    BeginMarker + "\n" + EndMarker + "\n" + EndMarker + "\n",
-		"unterminated fence is": "```\n" + BeginMarker + "\n",
+		"begin without end":               BeginMarker + "\ntext\n",
+		"end before begin":                EndMarker + "\n" + BeginMarker + "\n",
+		"end without begin":               "text\n" + EndMarker + "\n",
+		"two blocks":                      block("\n") + block("\n"),
+		"two begins one end":              BeginMarker + "\n" + BeginMarker + "\n" + EndMarker + "\n",
+		"one begin two ends":              BeginMarker + "\n" + EndMarker + "\n" + EndMarker + "\n",
+		"marker in an unterminated fence": "```\n" + BeginMarker + "\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			for _, fn := range []func([]byte) ([]byte, Action, error){SetBlock, DropBlock} {
 				out, _, err := fn([]byte(in))
-				if name == "unterminated fence is" {
+				if name == "marker in an unterminated fence" {
 					// The marker is inside the fence, so there is no block at all.
 					if err != nil {
 						t.Errorf("unexpected error: %v", err)
@@ -164,6 +164,8 @@ func TestOnlyFrontMatter(t *testing.T) {
 		"---\nunterminated\n":                     false,
 		"\n---\na: b\n---\n":                      false,
 		"just text\n":                             false,
+		"text\n---\n":                             false,
+		"text\n---\nmore\n---\n":                  false,
 	} {
 		if got := OnlyFrontMatter([]byte(in)); got != want {
 			t.Errorf("OnlyFrontMatter(%q) = %v, want %v", in, got, want)

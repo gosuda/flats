@@ -173,17 +173,17 @@ func NewPlan(o Options) (*Plan, error) {
 		switch {
 		case a == Claude && o.Scope == User:
 			items = []*Item{
-				p.block(o, Claude, filepath.Join(dirs.Claude, "CLAUDE.md"), 0o700),
-				p.settings(o, filepath.Join(dirs.Claude, "settings.json")),
+				blockItem(o, Claude, filepath.Join(dirs.Claude, "CLAUDE.md"), 0o700),
+				settingsItem(o, filepath.Join(dirs.Claude, "settings.json")),
 			}
 		case a == Claude:
-			items = []*Item{p.block(o, Claude, filepath.Join(project, "CLAUDE.md"), 0o755)}
+			items = []*Item{blockItem(o, Claude, filepath.Join(project, "CLAUDE.md"), 0o755)}
 		case a == Codex && o.Scope == User:
-			items = p.codexUser(o, dirs.Codex)
+			items = codexUserItems(o, dirs.Codex)
 		case a == Codex:
-			items = []*Item{p.codexBlock(o, filepath.Join(project, "AGENTS.md"), 0o755)}
+			items = []*Item{codexItem(o, filepath.Join(project, "AGENTS.md"), 0o755)}
 		case a == Cursor && o.Scope == Project:
-			items = []*Item{p.rule(o, filepath.Join(project, ".cursor", "rules", "flats-documents.mdc"))}
+			items = []*Item{ruleItem(o, filepath.Join(project, ".cursor", "rules", "flats-documents.mdc"))}
 		case a == Cursor && !o.Undo:
 			items = []*Item{{Agent: Cursor, Kind: KindPrint, Path: "Cursor Settings > Rules > User Rules", Text: RoutingText}}
 		}
@@ -207,20 +207,20 @@ func containsAgent(as []Agent, a Agent) bool {
 
 // codexUser picks the user-level file Codex reads: AGENTS.override.md if it
 // exists, else AGENTS.md. Undo looks at both.
-func (p *Plan) codexUser(o Options, dir string) []*Item {
+func codexUserItems(o Options, dir string) []*Item {
 	override := filepath.Join(dir, "AGENTS.override.md")
 	plain := filepath.Join(dir, "AGENTS.md")
 	if o.Undo {
-		return []*Item{p.codexBlock(o, override, 0o700), p.codexBlock(o, plain, 0o700)}
+		return []*Item{codexItem(o, override, 0o700), codexItem(o, plain, 0o700)}
 	}
 	if _, err := os.Lstat(override); err == nil {
-		return []*Item{p.codexBlock(o, override, 0o700)}
+		return []*Item{codexItem(o, override, 0o700)}
 	}
-	return []*Item{p.codexBlock(o, plain, 0o700)}
+	return []*Item{codexItem(o, plain, 0o700)}
 }
 
-func (p *Plan) codexBlock(o Options, path string, dirMode fs.FileMode) *Item {
-	it := p.block(o, Codex, path, dirMode)
+func codexItem(o Options, path string, dirMode fs.FileMode) *Item {
+	it := blockItem(o, Codex, path, dirMode)
 	if it != nil && it.Err == nil && !o.Undo && it.Action != Unchanged && len(it.After) > codexLimit {
 		it.Err = fmt.Errorf("the file would be %d bytes, more than the %d bytes Codex reads of AGENTS.md by default, so the block could be cut off", len(it.After), codexLimit)
 	}
@@ -278,7 +278,7 @@ func (it *Item) finish(after []byte, action Action) {
 }
 
 // block plans a Flats block in an instruction file.
-func (p *Plan) block(o Options, agent Agent, path string, dirMode fs.FileMode) *Item {
+func blockItem(o Options, agent Agent, path string, dirMode fs.FileMode) *Item {
 	it := target(agent, KindBlock, path, o, 0o644, dirMode)
 	if it == nil || it.Err != nil {
 		return it
@@ -302,7 +302,7 @@ func (p *Plan) block(o Options, agent Agent, path string, dirMode fs.FileMode) *
 }
 
 // settings plans the Claude Code settings entries.
-func (p *Plan) settings(o Options, path string) *Item {
+func settingsItem(o Options, path string) *Item {
 	it := target(Claude, KindSettings, path, o, 0o600, 0o700)
 	if it == nil || it.Err != nil {
 		return it
@@ -326,7 +326,7 @@ func (p *Plan) settings(o Options, path string) *Item {
 }
 
 // rule plans the Cursor rule file, which this package owns.
-func (p *Plan) rule(o Options, path string) *Item {
+func ruleItem(o Options, path string) *Item {
 	it := target(Cursor, KindRule, path, o, 0o644, 0o755)
 	if it == nil || it.Err != nil {
 		return it
