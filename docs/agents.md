@@ -81,7 +81,7 @@ flats agent-setup docs [--agent claude|codex|cursor|all] [--scope user|project] 
 | Agent | User scope | Project scope |
 | --- | --- | --- |
 | Claude Code | A block in `<claude dir>/CLAUDE.md` and three entries in `<claude dir>/settings.json` | A block in `<project>/CLAUDE.md` |
-| Codex | A block in `<codex dir>/AGENTS.override.md` if that file exists, else in `<codex dir>/AGENTS.md` | A block in `<project>/AGENTS.md` |
+| Codex | A block in `<codex dir>/AGENTS.override.md` if that file has content, else in `<codex dir>/AGENTS.md` | The same choice in `<project>` |
 | Cursor | Prints the text to paste into Cursor Settings, Rules, User Rules; writes nothing | The file `<project>/.cursor/rules/flats-documents.mdc` |
 
 `<claude dir>` is `$CLAUDE_CONFIG_DIR` or `~/.claude`, `<codex dir>` is
@@ -96,9 +96,13 @@ Flats MCP tools (`create_flat` with type `docs`, then `save_document`). The text
 sits between the lines `<!-- flats:documents:begin -->` and
 `<!-- flats:documents:end -->`. The command appends the block to a file that
 has none and replaces it in place when its text differs. Every other byte of the
-file stays. Codex reads at most 32 KiB of `AGENTS.md` by default, so the command
-refuses to add or replace a Codex block when the file would grow past 32768
-bytes. The Cursor rule file belongs to the command: a new file holds a short
+file stays. Codex reads `AGENTS.override.md` before `AGENTS.md` in each directory
+and skips an empty file. The command therefore writes the override only when it
+has content. A block in an empty override would hide your `AGENTS.md`. Codex
+reads at most 32 KiB of these files together by default (`project_doc_max_bytes`,
+which you can change), and the project file comes last, so it is the first to be
+left out. The command checks one file and refuses to add or replace a Codex block
+when that file would grow past 32768 bytes. The Cursor rule file belongs to the command: a new file holds a short
 front matter that sets `alwaysApply: true`, then the block.
 
 For Claude Code at user scope the command also adds three entries to
@@ -108,8 +112,13 @@ For Claude Code at user scope the command also adds three entries to
 every other byte alone, so the file keeps its order, indentation and line
 endings, and it refuses to write unless the result is the original plus exactly
 these entries. It refuses invalid JSON (comments included), a wrong type for a
-key it edits, and a key that appears twice. Project scope never edits a settings
-file, because those files are shared and the connector belongs to the person.
+key it edits, and a key that appears twice. The `deniedMcpServers` entry matches
+the connector's display name, which claude.ai can change, and a name that
+collides with another connector gains a ` (N)` suffix. Anthropic recommends a
+`serverUrl` entry for a deny that must survive that, and the command sets none
+because the connector's URL is not documented. Project scope never edits a
+settings file, because those files are shared and the connector belongs to the
+person.
 
 The command computes the plan for every target before it writes. The plan lists
 each file, the action (create, add, replace, remove, delete or unchanged), the
@@ -130,9 +139,9 @@ command keeps no record of earlier runs, so undo cannot tell a settings entry
 that setup added from an identical one that was already there, and it removes
 both. The plan names each entry before anything is removed. Undo never deletes
 `CLAUDE.md`, `AGENTS.md`, `AGENTS.override.md` or `settings.json`, and it keeps
-emptied arrays. An empty `AGENTS.override.md` silences `AGENTS.md` in Codex, and
-a tracked file belongs to its repository. The one file undo deletes is the
-Cursor rule file, once only its front matter is left.
+emptied arrays. Those files belong to you or to the repository, and a tracked file
+would show as deleted. The one file undo deletes is the Cursor rule file, once
+only its front matter is left.
 
 The command cannot reach every route. The Claude desktop app does not read the
 connector entry, so disconnect Claude Docs at claude.ai/customize/connectors if

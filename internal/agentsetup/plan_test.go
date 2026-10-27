@@ -217,33 +217,87 @@ func TestPlanRefusesAProjectThatIsTheHomeDirectory(t *testing.T) {
 	}
 }
 
-func TestPlanCodexOverrideFile(t *testing.T) {
-	f := newFixture(t)
-	dir := filepath.Join(f.home, ".codex")
-	write(t, filepath.Join(dir, "AGENTS.md"), "plain\n")
-	write(t, filepath.Join(dir, "AGENTS.override.md"), "override\n")
-	p := f.plan(t, User, false, Codex)
-	if got := paths(p); len(got) != 1 || filepath.Base(got[0]) != "AGENTS.override.md" {
-		t.Errorf("setup targets = %v, want the override file", got)
+// codexDir returns where the Codex files of a scope live in the fixture.
+func (f *fixture) codexDir(scope Scope) string {
+	if scope == User {
+		return filepath.Join(f.home, ".codex")
 	}
-	f.apply(t, p)
-	if !strings.Contains(read(t, filepath.Join(dir, "AGENTS.override.md")), BeginMarker) || strings.Contains(read(t, filepath.Join(dir, "AGENTS.md")), BeginMarker) {
-		t.Error("the block went to the wrong file")
-	}
+	return f.project
+}
 
-	// Undo looks at both files, so it finds a block in either, even when the
-	// override file appeared after the setup.
-	f2 := newFixture(t)
-	dir2 := filepath.Join(f2.home, ".codex")
-	f2.apply(t, f2.plan(t, User, false, Codex))
-	write(t, filepath.Join(dir2, "AGENTS.override.md"), "new override\n")
-	undo := f2.plan(t, User, true, Codex)
-	if len(undo.Items) != 2 {
-		t.Fatalf("undo items = %v", paths(undo))
+// Codex skips an empty file and reads AGENTS.override.md first in each
+// directory, so a setup writes the override only when it has content. Writing a
+// block into an empty override would make it the only file Codex reads and
+// hide the user's AGENTS.md.
+func TestPlanCodexFilePicksTheFileCodexReads(t *testing.T) {
+	for _, scope := range []Scope{User, Project} {
+		for name, tc := range map[string]struct {
+			setup func(t *testing.T, override string)
+			want  string
+		}{
+			"no override":              {func(t *testing.T, override string) {}, "AGENTS.md"},
+			"override with content":    {func(t *testing.T, override string) { write(t, override, "override\n") }, "AGENTS.override.md"},
+			"empty override":           {func(t *testing.T, override string) { write(t, override, "") }, "AGENTS.md"},
+			"whitespace-only override": {func(t *testing.T, override string) { write(t, override, " \n\t\n") }, "AGENTS.md"},
+			"override is a directory":  {func(t *testing.T, override string) { os.MkdirAll(override, 0o755) }, "AGENTS.md"},
+			"override is a dangling link": {func(t *testing.T, override string) {
+				os.MkdirAll(filepath.Dir(override), 0o755)
+				if err := os.Symlink(filepath.Join(filepath.Dir(override), "nowhere"), override); err != nil {
+					t.Fatal(err)
+				}
+			}, "AGENTS.md"},
+		} {
+			t.Run(string(scope)+"/"+name, func(t *testing.T) {
+				f := newFixture(t)
+				dir := f.codexDir(scope)
+				override, plain := filepath.Join(dir, "AGENTS.override.md"), filepath.Join(dir, "AGENTS.md")
+				write(t, plain, "my own global rules\n")
+				tc.setup(t, override)
+				overrideBefore := ""
+				if b, err := os.ReadFile(override); err == nil {
+					overrideBefore = string(b)
+				}
+				p := f.plan(t, scope, false, Codex)
+				if got := paths(p); len(got) != 1 || filepath.Base(got[0]) != tc.want || p.Items[0].Err != nil {
+					t.Fatalf("targets = %v (err %v), want %s", got, p.Items[0].Err, tc.want)
+				}
+				f.apply(t, p)
+				if tc.want == "AGENTS.md" {
+					if got := read(t, plain); !strings.HasPrefix(got, "my own global rules\n\n"+BeginMarker) {
+						t.Errorf("AGENTS.md = %q", got)
+					}
+					if b, err := os.ReadFile(override); err == nil && string(b) != overrideBefore {
+						t.Errorf("the override changed: %q", b)
+					}
+				} else if got := read(t, plain); got != "my own global rules\n" || !strings.Contains(read(t, override), BeginMarker) {
+					t.Errorf("the block went to the wrong file: AGENTS.md %q", got)
+				}
+			})
+		}
 	}
-	f2.apply(t, undo)
-	if got := read(t, filepath.Join(dir2, "AGENTS.md")); strings.Contains(got, BeginMarker) {
-		t.Errorf("the block is still in AGENTS.md: %q", got)
+}
+
+// Undo looks at both files in either scope, so it finds a block in either,
+// even when the override file appeared or got content after the setup.
+func TestPlanCodexUndoLooksAtBothFiles(t *testing.T) {
+	for _, scope := range []Scope{User, Project} {
+		t.Run(string(scope), func(t *testing.T) {
+			f := newFixture(t)
+			dir := f.codexDir(scope)
+			f.apply(t, f.plan(t, scope, false, Codex)) // the block goes into AGENTS.md
+			write(t, filepath.Join(dir, "AGENTS.override.md"), "new override\n")
+			undo := f.plan(t, scope, true, Codex)
+			if len(undo.Items) != 2 {
+				t.Fatalf("undo items = %v", paths(undo))
+			}
+			f.apply(t, undo)
+			if got := read(t, filepath.Join(dir, "AGENTS.md")); strings.Contains(got, BeginMarker) {
+				t.Errorf("the block is still in AGENTS.md: %q", got)
+			}
+			if got := read(t, filepath.Join(dir, "AGENTS.override.md")); got != "new override\n" {
+				t.Errorf("undo changed the override: %q", got)
+			}
+		})
 	}
 }
 
@@ -390,12 +444,18 @@ func TestSetupThenUndoRestoresTheFiles(t *testing.T) {
 
 func TestUndoNeverDeletesInstructionFiles(t *testing.T) {
 	f := newFixture(t)
+	only, _, _ := SetBlock(nil) // a file that holds nothing but the block
 	for _, path := range []string{
 		filepath.Join(f.home, ".claude", "CLAUDE.md"),
-		filepath.Join(f.home, ".codex", "AGENTS.override.md"),
 		filepath.Join(f.project, "CLAUDE.md"),
 	} {
 		write(t, path, "") // an empty file that exists before the setup
+	}
+	for _, path := range []string{
+		filepath.Join(f.home, ".codex", "AGENTS.override.md"),
+		filepath.Join(f.project, "AGENTS.override.md"),
+	} {
+		write(t, path, string(only))
 	}
 	for _, scope := range []Scope{User, Project} {
 		f.apply(t, f.plan(t, scope, false, Claude, Codex))
@@ -405,6 +465,7 @@ func TestUndoNeverDeletesInstructionFiles(t *testing.T) {
 		filepath.Join(f.home, ".claude", "CLAUDE.md"),
 		filepath.Join(f.home, ".codex", "AGENTS.override.md"),
 		filepath.Join(f.project, "CLAUDE.md"),
+		filepath.Join(f.project, "AGENTS.override.md"),
 	} {
 		if !exists(path) || read(t, path) != "" {
 			t.Errorf("%s: exists %v content %q, want an empty file", path, exists(path), read(t, path))

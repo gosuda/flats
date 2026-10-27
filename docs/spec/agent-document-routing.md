@@ -43,8 +43,16 @@ the file it changed, so `--undo` works from the files alone.
    | Agent | User scope | Project scope |
    | --- | --- | --- |
    | Claude Code | A block in `<claude dir>/CLAUDE.md` and three entries in `<claude dir>/settings.json` (requirement 5) | A block in `<project>/CLAUDE.md` |
-   | Codex | A block in `<codex dir>/AGENTS.override.md` if that file exists, else in `<codex dir>/AGENTS.md` | A block in `<project>/AGENTS.md` |
+   | Codex | A block in `<codex dir>/AGENTS.override.md` if that file has content, else in `<codex dir>/AGENTS.md` | The same choice in `<project>`: `AGENTS.override.md` if it has content, else `AGENTS.md` |
    | Cursor | Prints the routing text for Cursor Settings, Rules, User Rules; writes nothing | The file `<project>/.cursor/rules/flats-documents.mdc` |
+
+   Codex reads `AGENTS.override.md` before `AGENTS.md` in each directory, and it
+   skips an empty file. A block written into an empty override would make that
+   file the only one Codex reads and hide the user's `AGENTS.md`, so the command
+   writes the override only when it has content, and a file that holds only
+   whitespace counts as empty. Codex's documentation also says that it reads the
+   override "if it exists". Under that reading a block in `AGENTS.md` goes unread
+   while the override is empty, which hides nothing and harms nothing.
 
    Project scope never edits a settings file. Those files are checked in and
    shared, and the competing connector belongs to the person, not the
@@ -112,6 +120,15 @@ the file it changed, so `--undo` works from the files alone.
    `permissions.deny` holds exactly that string. An element with other keys is
    a different rule and does not count. A present entry is not added again, and
    the plan says that it was already there and that `--undo` will remove it.
+   Two limits come from how Claude Code names things. A `serverName` entry
+   matches the connector's display name, which claude.ai can change, and a name
+   that collides with another connector gains a ` (N)` suffix. Anthropic's
+   documentation recommends a `serverUrl` entry when a deny must survive that;
+   the command sets none, because the connector's URL is not documented. The
+   tool rule depends on the same name. The skill rule names the synced skill
+   exactly. `Skill(skill:docs)` would match the skill under any of its names,
+   but it would also block a skill of the user's own that is called `docs`, so
+   the command does not add it.
 
 6. **Plan and confirmation.** The command first computes the plan for every
    target without writing. It prints each file's path, the action (create, add,
@@ -170,11 +187,9 @@ the file it changed, so `--undo` works from the files alone.
    file's current content minus exactly those entries, or the file is refused.
    Undo never removes a key or an emptied array, and it never deletes
    `CLAUDE.md`, `AGENTS.md`, `AGENTS.override.md` or `settings.json`, even if
-   nothing else is left in them. An empty override file silences `AGENTS.md` in
-   Codex, and a tracked empty file belongs to its repository, so undo must not
-   remove a file whose presence or emptiness decides what the agent reads, or a
-   file the user or the repository owns. The one file undo deletes is the Cursor `.mdc`
-   file, which only this command creates, so deleting it is intended even if it
+   nothing else is left in them. Those files belong to the user or the
+   repository, and a tracked file would show as deleted. The one file undo
+   deletes is the Cursor `.mdc` file, which only this command creates, so deleting it is intended even if it
    was committed. It goes when nothing is left but its front matter and
    whitespace, whatever that front matter says, and otherwise it stays with the
    other content. If the `.mdc` path is itself a symbolic link, undo removes the
@@ -200,7 +215,11 @@ the file it changed, so `--undo` works from the files alone.
 10. **Codex size.** Codex reads at most 32 KiB of `AGENTS.md` content by default.
     The command refuses a setup that adds or replaces a Codex block when the
     resulting file would be larger than 32768 bytes, and says why. A file that
-    would stay unchanged, and an undo, are never refused for size.
+    would stay unchanged, and an undo, are never refused for size. The limit
+    Codex applies is the combined size of the global file and the project files
+    (`project_doc_max_bytes`, which a user can change), so this check on one file
+    is a floor and not a guarantee. A project file comes last, so it is the first
+    to be left out when the total runs over.
 
 11. **Installer and uninstall.** After a successful run, `install.sh` prints
     where to connect an agent (`flats mcp-config`) and that
@@ -230,7 +249,9 @@ Each requirement is checked by a test that runs the real code against
 temporary directories, except where noted.
 
 - Command and targets (1, 2, 10): defaults and detection through
-  `CLAUDE_CONFIG_DIR` and `CODEX_HOME`, the Codex override file, the project
+  `CLAUDE_CONFIG_DIR` and `CODEX_HOME`, the Codex file choice in both scopes (no
+  override, an override with content, an empty or whitespace-only one, a
+  directory or a dangling link of that name), the project
   root search from a subdirectory, outside a repository and at the home
   directory, project scope with
   and without `--undo`, a Codex file one byte under and over the limit, and an
@@ -258,13 +279,15 @@ temporary directories, except where noted.
   array; a settings entry that was there before setup is
   listed in the setup plan and removed by undo; an element with other keys than
   `serverName` is kept; duplicates are all removed; undo after a setup that
-  failed halfway; undo after another program reformatted the file; an empty
-  override file and an empty tracked project `CLAUDE.md` are never deleted;
+  failed halfway; undo after another program reformatted the file; an override
+  that holds only the block and an empty tracked project `CLAUDE.md` are never
+  deleted;
   an instruction file created by setup is left empty, not deleted; the Cursor
   file is deleted when only its front matter, or nothing, is left; kept when it
   holds other content, after which a new setup is refused with the stated
   message; kept when its path is a symbolic link; a front-matter-only `.mdc`
-  file accepts a new setup; undo when the override file appeared after setup;
+  file accepts a new setup; undo in both Codex scopes when the override file
+  appeared or got content after setup;
   undo twice; setup, undo and setup again on a settings file that held none of
   the entries ends with each of the three present once and parses to the same
   value as after the first setup.
@@ -279,8 +302,10 @@ The effect on the agents themselves is not covered by these tests. For Claude
 Code, connector denial was checked in a real VS Code session on 2026-10-27: the
 connector's tools disappeared when the setting was saved. The glob rule follows
 the documentation quoted in requirement 5, and the effect of the skill rule on
-the skill listing was not observed. The Codex and Cursor instruction files are
-not verified with the real agents. The final report says so.
+the skill listing was not observed. The Codex file choice follows its
+documentation (it skips empty files and reads an override first in each
+directory), and the Codex and Cursor instruction files are not verified with the
+real agents. The final report says so.
 
 ## Non-goals
 
@@ -291,8 +316,3 @@ which were not checked. Registering the Flats MCP server with an agent, which
 of what earlier runs changed, which is why undo cannot tell added entries from
 identical ones already there. Console blocks that show the routing text itself.
 Windows, where the CLI is not built.
-
-## Open questions
-
-- Whether Codex reads `AGENTS.override.md` first in its user directory, as its
-  documentation describes. No Codex is installed where this was designed.

@@ -297,6 +297,38 @@ func TestAgentSetupResolvesRelativeAgentDirectories(t *testing.T) {
 	}
 }
 
+// Codex skips an empty AGENTS.override.md. A block written into it would make
+// it the only file Codex reads and hide the user's AGENTS.md.
+func TestAgentSetupSkipsAnEmptyCodexOverride(t *testing.T) {
+	f := newSetupFx(t)
+	override := f.write(".codex/AGENTS.override.md", "")
+	plain := f.write(".codex/AGENTS.md", "my global rules\n")
+	r := f.run("", "--agent", "codex", "--yes")
+	if r.code != ExitOK || !strings.Contains(r.stdout, plain+"  (add)") || strings.Contains(r.stdout, "AGENTS.override.md") {
+		t.Fatalf("%+v", r)
+	}
+	if got := readFile(t, override); got != "" {
+		t.Errorf("the empty override was written: %q", got)
+	}
+	if got := readFile(t, plain); !strings.HasPrefix(got, "my global rules\n\n"+agentsetup.BeginMarker) {
+		t.Errorf("AGENTS.md = %q", got)
+	}
+
+	// An override that has content is the file Codex reads, in the project too.
+	g := newSetupFx(t)
+	proj := filepath.Join(g.project, "AGENTS.override.md")
+	if err := os.WriteFile(proj, []byte("project override\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	r = g.run("", "--scope", "project", "--agent", "codex", "--yes")
+	if r.code != ExitOK || !strings.Contains(r.stdout, proj+"  (add)") || fileExists(filepath.Join(g.project, "AGENTS.md")) {
+		t.Fatalf("project: %+v", r)
+	}
+	if u := g.run("", "--scope", "project", "--agent", "codex", "--undo", "--yes"); u.code != ExitOK || readFile(t, proj) != "project override\n" {
+		t.Errorf("project undo: %+v %q", u, readFile(t, proj))
+	}
+}
+
 func TestAgentSetupProjectScope(t *testing.T) {
 	f := newSetupFx(t)
 	sub := filepath.Join(f.project, "src")

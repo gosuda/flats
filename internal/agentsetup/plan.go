@@ -1,6 +1,7 @@
 package agentsetup
 
 import (
+	"bytes"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -187,9 +188,9 @@ func NewPlan(o Options) (*Plan, error) {
 		case a == Claude:
 			items = []*Item{blockItem(o, Claude, filepath.Join(project, "CLAUDE.md"), 0o755)}
 		case a == Codex && o.Scope == User:
-			items = codexUserItems(o, dirs.Codex)
+			items = codexItems(o, dirs.Codex, 0o700)
 		case a == Codex:
-			items = []*Item{codexItem(o, filepath.Join(project, "AGENTS.md"), 0o755)}
+			items = codexItems(o, project, 0o755)
 		case a == Cursor && o.Scope == Project:
 			items = []*Item{ruleItem(o, filepath.Join(project, ".cursor", "rules", "flats-documents.mdc"))}
 		case a == Cursor && !o.Undo:
@@ -213,18 +214,23 @@ func containsAgent(as []Agent, a Agent) bool {
 	return false
 }
 
-// codexUser picks the user-level file Codex reads: AGENTS.override.md if it
-// exists, else AGENTS.md. Undo looks at both.
-func codexUserItems(o Options, dir string) []*Item {
+// codexItems plans the Codex file in dir, which is the user directory or the
+// project. A setup writes AGENTS.override.md when that file has content, and
+// AGENTS.md otherwise. Codex skips empty files, so writing a block into an
+// empty override would make it the only file Codex reads and hide AGENTS.md.
+// The documentation also says Codex reads an override "if it exists"; if that
+// is the rule, a block in AGENTS.md goes unread, which harms nothing. Undo
+// looks at both files.
+func codexItems(o Options, dir string, dirMode fs.FileMode) []*Item {
 	override := filepath.Join(dir, "AGENTS.override.md")
 	plain := filepath.Join(dir, "AGENTS.md")
 	if o.Undo {
-		return []*Item{codexItem(o, override, 0o700), codexItem(o, plain, 0o700)}
+		return []*Item{codexItem(o, override, dirMode), codexItem(o, plain, dirMode)}
 	}
-	if _, err := os.Lstat(override); err == nil {
-		return []*Item{codexItem(o, override, 0o700)}
+	if b, err := os.ReadFile(override); err == nil && len(bytes.TrimSpace(b)) > 0 {
+		return []*Item{codexItem(o, override, dirMode)}
 	}
-	return []*Item{codexItem(o, plain, 0o700)}
+	return []*Item{codexItem(o, plain, dirMode)}
 }
 
 func codexItem(o Options, path string, dirMode fs.FileMode) *Item {
