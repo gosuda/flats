@@ -40,6 +40,7 @@ list.
 | [Metrics](metrics.md) | implemented | Configurable Prometheus exposure, optional per-flat series, and independent Analytics usage (requests, errors, response time, worker CPU and memory, disk) |
 | [Delete from the flat list](console-row-delete.md) | implemented | A Delete item in each flat's "…" menu that turns into a slide control in place; dragging its handle to the end deletes the flat |
 | [Flats behind a reverse proxy](reverse-proxy-sites.md) | implemented | `proxy` and `proxy-public` providers that serve flats through an operator's reverse proxy, address selection by host default, and rename redirects on the arrival network |
+| [Agent document routing](agent-document-routing.md) | planned | `flats agent-setup docs`: an opt-in, previewable and undoable setup that makes Flats the document tool of Claude Code, Codex and Cursor, and blocks the competing Claude Docs route |
 | [Autopilot](autopilot.md) | implemented | An opt-in mode in the new Settings › Experiments tab where agents approve or reject pending approvals for the operations the operator allows, with an operation guide for agents |
 
 ## Where the technical designs live
