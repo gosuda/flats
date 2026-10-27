@@ -959,12 +959,57 @@ assert.equal(page.textContent.includes('Use it only with trusted agents.'), fals
 assert.ok(page.textContent.includes('Check the connection') && page.textContent.includes('check_client'));
 assert.ok(page.textContent.includes('flats status') && page.textContent.includes('flats mcp-config'));
 
+// The document routing command is one block in a group of its own after Connect
+// (docs/spec/agent-document-routing.md rule 12). It is not a tab and not part of
+// a client's blocks, and the console shows the command only.
+const SETUP_COMMAND = 'flats agent-setup docs';
+const setupGroupOf = (root) => {
+  const found = all(root, (e) => e.tagName === 'SECTION' && e.getAttribute('id') === 'agent-setup');
+  assert.equal(found.length, 1, 'one agent-setup group');
+  return found[0];
+};
+const setupGroup = setupGroupOf(page);
+assert.deepEqual(all(page, (e) => e.tagName === 'SECTION').map((s) => s.getAttribute('id')), ['connect', 'agent-setup', 'agent-limits'], 'the group follows Connect');
+const setupBlocks = all(setupGroup, (e) => e.tagName === 'PRE');
+assert.equal(setupBlocks.length, 1, 'the group holds one block');
+assert.equal(setupBlocks[0].textContent, SETUP_COMMAND);
+assert.ok(!setupBlocks[0].textContent.includes("'"), 'the setup block has no apostrophe');
+assert.ok(!setupBlocks[0].textContent.split('\n').some((line) => line.trim().startsWith('#')), 'the setup block has no # line');
+assert.equal(all(setupGroup, (e) => e.tagName === 'BUTTON').length, 1, 'one Copy button');
+// The text names the block, says where the command runs and that it previews first.
+const setupName = byId(setupGroup, setupBlocks[0].getAttribute('aria-labelledby'));
+assert.ok(setupName, 'the setup block is named');
+assert.ok(setupName.textContent.includes('Run it on the machine where the agent runs.'), setupName.textContent);
+assert.ok(setupName.textContent.includes('It shows a preview before it writes anything.'), setupName.textContent);
+assert.ok(!setupGroup.textContent.includes('{'), 'the console shows no JSON');
+// The command is not in the Connect group or in any client tab.
+assert.equal(byId(page, 'connect').textContent.includes('agent-setup'), false, 'the Connect group does not hold the command');
+for (const i of [0, 1, 2, 3]) {
+  agentTabs[i].dispatch('click');
+  assert.equal(byId(page, 'agent-snippet').textContent.includes('agent-setup'), false, `tab ${i} does not hold the command`);
+}
+assert.equal(all(page, (e) => e.getAttribute('role') === 'tab').length, 4, 'no tab was added');
+assert.equal(all(setupGroup, (e) => e.getAttribute('role') === 'tab').length, 0);
+// The Copy button copies exactly the command.
+const copied = [];
+const savedNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+Object.defineProperty(globalThis, 'navigator', { value: { clipboard: { writeText: async (text) => { copied.push(text); } } }, configurable: true, writable: true });
+const setupCopy = all(setupGroup, (e) => e.tagName === 'BUTTON')[0];
+assert.equal(setupCopy.getAttribute('aria-label'), 'Copy agent-setup command');
+setupCopy.dispatch('click');
+await tick();
+assert.deepEqual(copied, [SETUP_COMMAND]);
+assert.equal(setupCopy.textContent, 'Copied');
+Object.defineProperty(globalThis, 'navigator', savedNavigator);
+
 // From another device the plugin and the CLI would still use the host saved on
 // their own machine, so every tab saves this page's address first.
 const agentsLocation = globalThis.location;
 globalThis.location = { origin: 'https://flats.example.org', hostname: 'flats.example.org' };
 page = await mountSettings(['agents']);
 const remoteTabs = all(page, (e) => e.getAttribute('role') === 'tab');
+// The setup command runs where the agent runs, so it never names this host.
+assert.deepEqual(all(setupGroupOf(page), (e) => e.tagName === 'PRE').map((pre) => pre.textContent), [SETUP_COMMAND]);
 for (let i = 0; i < remoteTabs.length; i++) {
   assert.ok(snippetOf(remoteTabs, i).includes('flats connect https://flats.example.org\n'), `tab ${i} saves the page address`);
 }
@@ -979,6 +1024,7 @@ for (const origin of ['http://127.0.0.1:17878', 'http://localhost:7878']) {
   for (let i = 0; i < tabs.length; i++) {
     assert.ok(snippetOf(tabs, i).includes(`flats connect ${origin}\n`), `${origin}: tab ${i} saves the page address`);
   }
+  assert.deepEqual(all(setupGroupOf(page), (e) => e.tagName === 'PRE').map((pre) => pre.textContent), [SETUP_COMMAND], `${origin}: the setup command names no host`);
   assert.ok(snippetOf(tabs, 0).includes(`claude mcp add --transport http flats ${origin}/mcp`));
   snippetOf(tabs, 3);
   assert.ok(page.textContent.includes('The CLI uses the host saved with flats connect, or http://127.0.0.1:7878 when none is saved.'), `${origin}: CLI note names the default`);
