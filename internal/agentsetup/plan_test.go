@@ -80,25 +80,39 @@ func paths(p *Plan) []string {
 	return out
 }
 
+func TestUserDirsResolveRelativePaths(t *testing.T) {
+	f := newFixture(t)
+	f.env["CLAUDE_CONFIG_DIR"] = "cfg/claude"
+	f.env["CODEX_HOME"] = "../codex-home/"
+	d := UserDirs(f.home, f.project, getenv(f.env))
+	if d.Claude != filepath.Join(f.project, "cfg", "claude") || d.Codex != filepath.Join(filepath.Dir(f.project), "codex-home") {
+		t.Errorf("UserDirs = %+v", d)
+	}
+	f.env["CLAUDE_CONFIG_DIR"] = f.home + "/abs//dir/"
+	if got := UserDirs(f.home, f.project, getenv(f.env)).Claude; got != filepath.Join(f.home, "abs", "dir") {
+		t.Errorf("an absolute value is cleaned: %q", got)
+	}
+}
+
 func TestUserDirsAndDetect(t *testing.T) {
 	f := newFixture(t)
-	if got := Detect(f.home, getenv(f.env)); len(got) != 0 {
+	if got := Detect(f.home, f.project, getenv(f.env)); len(got) != 0 {
 		t.Errorf("Detect with no directories = %v", got)
 	}
 	for _, d := range []string{".claude", ".cursor"} {
 		os.MkdirAll(filepath.Join(f.home, d), 0o755)
 	}
-	if got := Detect(f.home, getenv(f.env)); len(got) != 2 || got[0] != Claude || got[1] != Cursor {
+	if got := Detect(f.home, f.project, getenv(f.env)); len(got) != 2 || got[0] != Claude || got[1] != Cursor {
 		t.Errorf("Detect = %v, want claude and cursor", got)
 	}
 	// An environment override moves the directory Detect looks at.
 	f.env["CLAUDE_CONFIG_DIR"] = filepath.Join(f.home, "elsewhere")
 	f.env["CODEX_HOME"] = filepath.Join(f.home, "codex-home")
 	os.MkdirAll(f.env["CODEX_HOME"], 0o755)
-	if got := Detect(f.home, getenv(f.env)); len(got) != 2 || got[0] != Codex || got[1] != Cursor {
+	if got := Detect(f.home, f.project, getenv(f.env)); len(got) != 2 || got[0] != Codex || got[1] != Cursor {
 		t.Errorf("Detect with overrides = %v, want codex and cursor", got)
 	}
-	d := UserDirs(f.home, getenv(f.env))
+	d := UserDirs(f.home, f.project, getenv(f.env))
 	if d.Claude != f.env["CLAUDE_CONFIG_DIR"] || d.Codex != f.env["CODEX_HOME"] || d.Cursor != filepath.Join(f.home, ".cursor") {
 		t.Errorf("UserDirs = %+v", d)
 	}
@@ -583,7 +597,25 @@ func tempFiles(t *testing.T, dir string) []string {
 	return out
 }
 
-func TestApplyLeavesNoTemporaryFileOnFailure(t *testing.T) {
+// A failure after the temporary file exists must not leave it behind. A
+// directory where the file should be makes the recheck fail at that point.
+func TestApplyLeavesNoTemporaryFileAfterTheTempFileExists(t *testing.T) {
+	f := newFixture(t)
+	dir := filepath.Join(f.home, "d")
+	target := filepath.Join(dir, "CLAUDE.md")
+	if err := os.MkdirAll(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	it := &Item{Kind: KindBlock, Path: target, Real: target, Action: Create, After: []byte("x\n"), mode: 0o644, dirMode: 0o755}
+	if err := Apply(it, ApplyOptions{BackupDir: f.backups}); !errors.Is(err, ErrChanged) {
+		t.Fatalf("err = %v, want ErrChanged", err)
+	}
+	if left := tempFiles(t, dir); len(left) != 0 {
+		t.Errorf("temporary files left: %v", left)
+	}
+}
+
+func TestApplyStopsWhenTheBackupFails(t *testing.T) {
 	f := newFixture(t)
 	dir := filepath.Join(f.home, ".claude")
 	path := filepath.Join(dir, "CLAUDE.md")

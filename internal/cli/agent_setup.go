@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -41,7 +42,7 @@ func (a *app) agentSetup(args []string) error {
 	if err != nil {
 		return err
 	}
-	agents, err := a.setupAgents(*agentFlag, scope, *undo, home)
+	agents, err := a.setupAgents(*agentFlag, scope, *undo, home, cwd)
 	if err != nil {
 		return err
 	}
@@ -79,6 +80,9 @@ func (a *app) agentSetup(args []string) error {
 			return usagef("no terminal to ask on, so nothing was written; rerun with --yes to apply or --dry-run to only see the plan")
 		}
 		ok, err := a.confirm("\nApply these changes?")
+		if errors.Is(err, context.Canceled) {
+			return errors.New("interrupted; nothing was written")
+		}
 		if err != nil {
 			return err
 		}
@@ -109,7 +113,7 @@ func (a *app) setupDirs() (home, cwd string, err error) {
 // setupAgents resolves --agent: all agents for an undo, the agents found in
 // the home directory for a user-scope setup, and a required name for a
 // project-scope setup.
-func (a *app) setupAgents(name string, scope agentsetup.Scope, undo bool, home string) ([]agentsetup.Agent, error) {
+func (a *app) setupAgents(name string, scope agentsetup.Scope, undo bool, home, cwd string) ([]agentsetup.Agent, error) {
 	switch name {
 	case "all":
 		return agentsetup.AllAgents, nil
@@ -125,7 +129,7 @@ func (a *app) setupAgents(name string, scope agentsetup.Scope, undo bool, home s
 	case scope == agentsetup.Project:
 		return nil, usagef("--agent is required at project scope: claude, codex, cursor or all")
 	}
-	found := agentsetup.Detect(home, a.env.Getenv)
+	found := agentsetup.Detect(home, cwd, a.env.Getenv)
 	if len(found) == 0 {
 		return nil, usagef("no agent found in %s; name one with --agent claude|codex|cursor|all", home)
 	}

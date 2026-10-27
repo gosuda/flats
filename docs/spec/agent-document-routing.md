@@ -24,7 +24,8 @@ the file it changed, so `--undo` works from the files alone.
    [--scope user|project] [--dry-run] [--yes] [--undo]`. `--scope` defaults to
    `user`. At user scope `--agent` defaults to every agent whose user directory
    exists: `$CLAUDE_CONFIG_DIR` or `~/.claude`, `$CODEX_HOME` or `~/.codex`, and
-   `~/.cursor`. At project scope `--agent` is required when setting up, so a
+   `~/.cursor`. A relative value of either variable is taken from the current
+   directory. At project scope `--agent` is required when setting up, so a
    repository gets files only for agents its owners name. With `--undo`,
    `--agent` defaults to `all` at either scope. An agent named explicitly is set
    up even if its directory is missing. If no agent is found, the command is a

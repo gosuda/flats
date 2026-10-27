@@ -110,21 +110,29 @@ func (p *Plan) Changes() bool {
 type Dirs struct{ Claude, Codex, Cursor string }
 
 // UserDirs resolves the agents' user directories: $CLAUDE_CONFIG_DIR or
-// ~/.claude, $CODEX_HOME or ~/.codex, and ~/.cursor.
-func UserDirs(home string, getenv func(string) string) Dirs {
+// ~/.claude, $CODEX_HOME or ~/.codex, and ~/.cursor. A relative value is taken
+// from cwd, so the plan and the backups name the same absolute paths wherever
+// the command runs.
+func UserDirs(home, cwd string, getenv func(string) string) Dirs {
 	d := Dirs{Claude: filepath.Join(home, ".claude"), Codex: filepath.Join(home, ".codex"), Cursor: filepath.Join(home, ".cursor")}
+	abs := func(v string) string {
+		if filepath.IsAbs(v) {
+			return filepath.Clean(v)
+		}
+		return filepath.Join(cwd, v)
+	}
 	if v := getenv("CLAUDE_CONFIG_DIR"); v != "" {
-		d.Claude = v
+		d.Claude = abs(v)
 	}
 	if v := getenv("CODEX_HOME"); v != "" {
-		d.Codex = v
+		d.Codex = abs(v)
 	}
 	return d
 }
 
 // Detect lists the agents whose user directory exists.
-func Detect(home string, getenv func(string) string) []Agent {
-	d := UserDirs(home, getenv)
+func Detect(home, cwd string, getenv func(string) string) []Agent {
+	d := UserDirs(home, cwd, getenv)
 	var out []Agent
 	for _, c := range []struct {
 		a   Agent
@@ -155,7 +163,7 @@ func ProjectDir(start string) (dir string, found bool) {
 // NewPlan computes the changes for o without writing.
 func NewPlan(o Options) (*Plan, error) {
 	p := &Plan{}
-	dirs := UserDirs(o.Home, o.Getenv)
+	dirs := UserDirs(o.Home, o.Cwd, o.Getenv)
 	project := ""
 	if o.Scope == Project {
 		var found bool

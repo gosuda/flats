@@ -127,6 +127,30 @@ var settingsCases = []struct {
   ]
 }
 `},
+	{"permissions as an empty object over two lines", "{\n  \"permissions\": {\n  }\n}\n", `{
+  "permissions": {
+    "deny": [
+      ` + entrySkill + `,
+      ` + entryTools + `
+    ]
+  },
+  "deniedMcpServers": [
+    ` + entryDenied + `
+  ]
+}
+`},
+	{"a closing brace in an odd place is not moved", "{\n  \"permissions\": {\n      }\n}\n", `{
+  "permissions": {
+    "deny": [
+      ` + entrySkill + `,
+      ` + entryTools + `
+    ]
+      },
+  "deniedMcpServers": [
+    ` + entryDenied + `
+  ]
+}
+`},
 	{"permissions as an empty object", "{\n  \"permissions\": {}\n}\n", `{
   "permissions": {
     "deny": [

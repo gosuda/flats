@@ -281,6 +281,19 @@ func TestAgentSetupDetectsAgentsAndHonorsEnvironment(t *testing.T) {
 	}
 }
 
+func TestAgentSetupResolvesRelativeAgentDirectories(t *testing.T) {
+	f := newSetupFx(t)
+	f.env["CLAUDE_CONFIG_DIR"] = "rel-claude"
+	r := f.run("", "--agent", "claude", "--yes")
+	want := filepath.Join(f.project, "rel-claude", "CLAUDE.md")
+	if r.code != ExitOK || !strings.Contains(r.stdout, want+"  (create)") || !fileExists(want) {
+		t.Errorf("%+v", r)
+	}
+	if b := f.backups(); len(b) != 0 {
+		t.Errorf("a new file was backed up: %v", b)
+	}
+}
+
 func TestAgentSetupProjectScope(t *testing.T) {
 	f := newSetupFx(t)
 	sub := filepath.Join(f.project, "src")
@@ -348,10 +361,25 @@ func TestAgentSetupReportsAFileThatChangedAndGoesOn(t *testing.T) {
 	if got := readFile(t, md); got != "someone else\n" {
 		t.Errorf("CLAUDE.md = %q", got)
 	}
-	// The other files were still written, and a rerun finishes the rest.
+	// The other files were still written.
 	if !fileExists(filepath.Join(f.home, ".claude", "settings.json")) || !fileExists(filepath.Join(f.home, ".codex", "AGENTS.md")) {
 		t.Errorf("the other files were not written:\n%s", r.stdout)
 	}
+	// Undo over this mix of written and unwritten targets leaves the changed
+	// file alone and takes the setup out of the others.
+	if u := f.run("", "--undo", "--yes"); u.code != ExitOK {
+		t.Fatalf("undo after a partial failure: %+v", u)
+	}
+	if got := readFile(t, md); got != "someone else\n" {
+		t.Errorf("undo touched the file that was never set up: %q", got)
+	}
+	if got := readFile(t, filepath.Join(f.home, ".codex", "AGENTS.md")); got != "" {
+		t.Errorf("AGENTS.md after undo = %q", got)
+	}
+	if got := readFile(t, filepath.Join(f.home, ".claude", "settings.json")); strings.Contains(got, "Skill(") || strings.Contains(got, "claude.ai Claude Docs") {
+		t.Errorf("settings after undo:\n%s", got)
+	}
+	// A rerun of the setup finishes the rest.
 	if again := f.run("", "--yes"); again.code != ExitOK || !strings.Contains(again.stdout, "CLAUDE.md: updated") {
 		t.Errorf("rerun: %+v", again)
 	}
@@ -413,8 +441,8 @@ func TestAgentSetupInterruptedPrompt(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	pr, pw := io.Pipe()
 	t.Cleanup(func() { pw.Close() })
-	var out syncBuffer
-	env := Env{Stdin: pr, Stdout: &out, Stderr: io.Discard, Home: f.home, ConfigDir: f.confg, Cwd: f.project,
+	var out, errb syncBuffer
+	env := Env{Stdin: pr, Stdout: &out, Stderr: &errb, Home: f.home, ConfigDir: f.confg, Cwd: f.project,
 		Getenv: func(string) string { return "" }, IsTerminal: func(io.Reader) bool { return true }}
 	done := make(chan int, 1)
 	go func() { done <- Run(ctx, []string{"agent-setup", "docs"}, env) }()
@@ -431,6 +459,9 @@ func TestAgentSetupInterruptedPrompt(t *testing.T) {
 	}
 	if fileExists(filepath.Join(f.home, ".claude", "CLAUDE.md")) {
 		t.Error("wrote a file after the prompt was interrupted")
+	}
+	if got := errb.String(); got != "flats: interrupted; nothing was written\n" {
+		t.Errorf("stderr = %q", got)
 	}
 }
 
