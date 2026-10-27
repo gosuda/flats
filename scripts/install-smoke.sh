@@ -51,6 +51,15 @@ expected_version() {
 	esac
 }
 
+# check_agents_pointer fails unless the installer output $1 names the commands
+# that connect an agent and that set up documents.
+check_agents_pointer() {
+	printf '%s\n' "$1" | grep -q 'flats mcp-config' ||
+		fail "installer did not print how to connect an agent"
+	printf '%s\n' "$1" | grep -q 'flats agent-setup docs' ||
+		fail "installer did not print the optional agent-setup command"
+}
+
 main_pid() {
 	if [ "$(uname -s)" = Darwin ]; then
 		launchctl print "gui/$(id -u)/dev.flats.serve" 2>/dev/null | awk '$1 == "pid" { print $3 }'
@@ -72,7 +81,9 @@ service_file() {
 }
 
 step "fresh install"
-sh "$root/install.sh"
+out=$(sh "$root/install.sh" 2>&1) || fail "installer failed: $out"
+printf '%s\n' "$out"
+check_agents_pointer "$out"
 reported=$(expected_version "$version" "$flats")
 "$flats" version | grep -qF "flats $reported " || fail "installed binary is not $reported"
 healthy || fail "service is not answering"
@@ -116,6 +127,7 @@ done
 out=$(sh "$root/install.sh" 2>&1) || fail "installer failed on a stopped service: $out"
 printf '%s\n' "$out"
 printf '%s\n' "$out" | grep -q 'Start the service' || fail "installer did not print how to start the service"
+check_agents_pointer "$out"
 sleep 3
 ! healthy 2>/dev/null || fail "installer started a service the user stopped"
 

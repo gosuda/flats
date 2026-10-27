@@ -236,6 +236,10 @@ func (a *app) waitForServer() bool {
 	}
 }
 
+// uninstallAgentNote ends the text output of uninstall. Removing the service
+// does not touch the files that `flats agent-setup docs` edits.
+const uninstallAgentNote = "Agent files are left as they are. `flats agent-setup docs --undo` reverts a setup made with `flats agent-setup docs`."
+
 func (a *app) uninstall(args []string) error {
 	fs := a.flags("uninstall")
 	if _, err := a.parse(fs, args, 0, 0); err != nil {
@@ -254,6 +258,7 @@ func (a *app) uninstall(args []string) error {
 		} else {
 			fmt.Fprintln(a.out, "The systemd user service was not installed.")
 		}
+		fmt.Fprintln(a.out, uninstallAgentNote)
 		return nil
 	}
 	removed, err := launchd.Uninstall(a.ctx, a.launchdOpts())
@@ -269,6 +274,7 @@ func (a *app) uninstall(args []string) error {
 	} else {
 		fmt.Fprintln(a.out, "The launchd agent was not installed.")
 	}
+	fmt.Fprintln(a.out, uninstallAgentNote)
 	return nil
 }
 
