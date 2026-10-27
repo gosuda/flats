@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand/v2"
 	"strings"
 	"testing"
 )
@@ -383,6 +384,18 @@ func TestDropSettingsLineAndCommaHandling(t *testing.T) {
 			crlf("{\n  \"permissions\": {\n    \"deny\": [\n      \"a\",\n      " + entrySkill + "\n    ]\n  }\n}\n"),
 			crlf("{\n  \"permissions\": {\n    \"deny\": [\n      \"a\"\n    ]\n  }\n}\n"),
 		},
+		"comma-first, an element in the middle": {
+			"{\n  \"permissions\": {\n    \"deny\": [\n      \"a\"\n      ,\n      " + entrySkill + "\n      ,\n      \"b\"\n    ]\n  }\n}\n",
+			"{\n  \"permissions\": {\n    \"deny\": [\n      \"a\"\n      ,\n      \"b\"\n    ]\n  }\n}\n",
+		},
+		"comma-first, the first element": {
+			"{\n  \"permissions\": {\n    \"deny\": [\n      " + entrySkill + "\n      ,\n      \"b\"\n    ]\n  }\n}\n",
+			"{\n  \"permissions\": {\n    \"deny\": [\n      \"b\"\n    ]\n  }\n}\n",
+		},
+		"comma-first, the last element": {
+			"{\n  \"permissions\": {\n    \"deny\": [\n      \"a\"\n      ,\n      " + entrySkill + "\n    ]\n  }\n}\n",
+			"{\n  \"permissions\": {\n    \"deny\": [\n      \"a\"\n    ]\n  }\n}\n",
+		},
 		"an object element over several lines": {
 			"{\n  \"deniedMcpServers\": [\n    {\n      \"serverName\": \"claude.ai Claude Docs\"\n    },\n    {\"serverName\": \"x\"}\n  ]\n}\n",
 			"{\n  \"deniedMcpServers\": [\n    {\"serverName\": \"x\"}\n  ]\n}\n",
@@ -490,5 +503,105 @@ func TestCheckSettingsRefusesWrongResults(t *testing.T) {
 	}
 	if err := checkSettings(good.Out, good.Out, dropEntries); !errors.Is(err, ErrSettings) {
 		t.Errorf("a removal that removed nothing: err = %v, want ErrSettings", err)
+	}
+}
+
+// settingsGen lays out valid settings files at random: inline, one element per
+// line, or comma-first, with LF or CRLF and varied indentation.
+type settingsGen struct {
+	r         *rand.Rand
+	eol, unit string
+}
+
+func (g *settingsGen) list(open, close string, items []string, depth int) string {
+	if len(items) == 0 {
+		return open + close
+	}
+	inner, outer := strings.Repeat(g.unit, depth+1), strings.Repeat(g.unit, depth)
+	switch g.r.IntN(3) {
+	case 0:
+		return open + strings.Join(items, ", ") + close
+	case 1:
+		return open + g.eol + inner + strings.Join(items, ","+g.eol+inner) + g.eol + outer + close
+	default:
+		return open + g.eol + inner + strings.Join(items, g.eol+inner+","+g.eol+inner) + g.eol + outer + close
+	}
+}
+
+func (g *settingsGen) pick(from []string) []string {
+	var out []string
+	for range g.r.IntN(5) {
+		out = append(out, from[g.r.IntN(len(from))])
+	}
+	return out
+}
+
+func (g *settingsGen) file() string {
+	g.eol = []string{"\n", "\r\n"}[g.r.IntN(2)]
+	g.unit = []string{"  ", "    ", "\t"}[g.r.IntN(3)]
+	var members []string
+	if g.r.IntN(2) == 0 {
+		members = append(members, `"a": 1`)
+	}
+	if g.r.IntN(3) > 0 {
+		denied := g.list("[", "]", g.pick([]string{`{"serverName": "other"}`, entryDenied, `{"serverName": "claude.ai Claude Docs", "x": 1}`}), 1)
+		members = append(members, `"deniedMcpServers": `+denied)
+	}
+	if g.r.IntN(3) > 0 {
+		var perm []string
+		if g.r.IntN(2) == 0 {
+			perm = append(perm, `"allow": `+g.list("[", "]", g.pick([]string{`"Bash(ls)"`}), 2))
+		}
+		if g.r.IntN(3) > 0 {
+			perm = append(perm, `"deny": `+g.list("[", "]", g.pick([]string{`"Bash(rm:*)"`, entrySkill, entryTools}), 2))
+		}
+		members = append(members, `"permissions": `+g.list("{", "}", perm, 1))
+	}
+	if g.r.IntN(2) == 0 {
+		members = append(members, `"z": [1, {"k": "v"}]`)
+	}
+	g.r.Shuffle(len(members), func(i, j int) { members[i], members[j] = members[j], members[i] })
+	return g.list("{", "}", members, 0) + g.eol
+}
+
+// Whatever the layout, setup is insertion-only, idempotent and valid, and undo
+// is valid and removes every entry.
+func TestSettingsRandomLayouts(t *testing.T) {
+	g := &settingsGen{r: rand.New(rand.NewPCG(1, 2))}
+	for i := 0; i < 1500; i++ {
+		in := []byte(g.file())
+		if !json.Valid(in) {
+			t.Fatalf("the generator made invalid JSON:\n%s", in)
+		}
+		set, err := SetSettings(in)
+		if err != nil {
+			t.Fatalf("setup refused a valid file: %v\n%s", err, in)
+		}
+		if !json.Valid(set.Out) || !isSubsequence(in, set.Out) {
+			t.Fatalf("setup is not insertion-only or not valid:\n%s\n---\n%s", in, set.Out)
+		}
+		again, err := SetSettings(set.Out)
+		if err != nil || again.Action != Unchanged {
+			t.Fatalf("setup is not idempotent: %v %v\n%s", again.Action, err, set.Out)
+		}
+		for _, e := range []string{entryDenied, entrySkill, entryTools} {
+			if !bytes.Contains(set.Out, []byte(e)) {
+				t.Fatalf("setup lacks %s:\n%s", e, set.Out)
+			}
+		}
+		for _, src := range [][]byte{in, set.Out} {
+			drop, err := DropSettings(src)
+			if err != nil {
+				t.Fatalf("undo refused a valid file: %v\n%s", err, src)
+			}
+			if !json.Valid(drop.Out) || !isSubsequence(drop.Out, src) {
+				t.Fatalf("undo is not deletion-only or not valid:\n%s\n---\n%s", src, drop.Out)
+			}
+			for _, e := range []string{entryDenied, entrySkill, entryTools} {
+				if bytes.Contains(drop.Out, []byte(e)) {
+					t.Fatalf("undo left %s:\n%s", e, drop.Out)
+				}
+			}
+		}
 	}
 }

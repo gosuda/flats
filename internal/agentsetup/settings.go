@@ -368,25 +368,19 @@ func DropSettings(content []byte) (SettingsChange, error) {
 	return ch, nil
 }
 
-// removeEdits removes element i of arr together with the line or the
-// separator that joins it to its neighbours.
+// removeEdits removes element i of arr with the separator that joins it to a
+// neighbour. The range runs from the element to the start of the next element,
+// or from the end of the previous element to the end of the last one, so it
+// holds for any layout, comma-first included. A sole element that has its line
+// to itself takes the line, which leaves the brackets as they were.
 func (st style) removeEdits(arr *node, i int) []edit {
 	e := arr.elems[i]
 	n := len(arr.elems)
-	if from, to, ok := st.ownLines(e); ok {
-		edits := []edit{{from, to, ""}}
-		if i == n-1 && n > 1 {
-			prev := arr.elems[i-1]
-			c := prev.end
-			for st.b[c] != ',' {
-				c++
-			}
-			edits = append(edits, edit{c, c + 1, ""})
-		}
-		return edits
-	}
 	switch {
 	case n == 1:
+		if from, to, ok := st.ownLines(e); ok {
+			return []edit{{from, to, ""}}
+		}
 		return []edit{{e.start, e.end, ""}}
 	case i < n-1:
 		return []edit{{e.start, arr.elems[i+1].start, ""}}

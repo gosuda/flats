@@ -89,7 +89,7 @@ the file it changed, so `--undo` works from the files alone.
    deny rule removes the matched tools from Claude's context, and that connector
    tools appear as `mcp__claude_ai_<server>__<tool>` with characters such as
    spaces and dots written as `_`. The command inserts text and leaves every
-   other byte alone: no reordering, no reformatting, the file's own indentation
+   other byte alone, apart from the empty gap described below: no reordering, no reformatting, the file's own indentation
    and line endings, and an inline array stays inline. A key that is absent goes
    after the last member of its object with that member's indentation. A closing
    brace or bracket is never moved: when the gap inside an empty pair holds a
@@ -160,10 +160,12 @@ the file it changed, so `--undo` works from the files alone.
 
    Removal is as careful as insertion. A block goes together with the blank line
    before it, and no other byte changes. A settings entry goes together with the
-   comma and whitespace that join it to a neighbour, and every matching element
-   goes if the entry appears more than once. An element on a line of its own
-   goes with that whole line; an element in an inline array goes with one
-   separator. The result must parse and equal the
+   separator that joins it to a neighbour: the comma and the whitespace up to
+   the next element, or from the previous element to the end of the last one, in
+   any layout, comma-first included. Every matching element goes if the entry
+   appears more than once. An element that is alone in its array and has its
+   line to itself goes with that line, which leaves the brackets as they were.
+   The result must parse and equal the
    file's current content minus exactly those entries, or the file is refused.
    Undo never removes a key or an emptied array, and it never deletes
    `CLAUDE.md`, `AGENTS.md`, `AGENTS.override.md` or `settings.json`, even if
