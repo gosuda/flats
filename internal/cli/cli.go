@@ -76,7 +76,7 @@ type Env struct {
 	ReleaseTransport http.RoundTripper      // release downloads only
 	CandidateProbe   func(context.Context, string) (selfupdate.Identity, error)
 	ConfigDir        string               // client settings parent; "" = os.UserConfigDir
-	Cwd              string               // where project scope starts; "" = os.Getwd
+	Cwd              string               // where project scope starts and relative agent directories resolve; "" = os.Getwd
 	IsTerminal       func(io.Reader) bool // nil: a terminal file descriptor
 }
 

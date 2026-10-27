@@ -282,6 +282,9 @@ func TestAgentSetupDetectsAgentsAndHonorsEnvironment(t *testing.T) {
 }
 
 func TestAgentSetupResolvesRelativeAgentDirectories(t *testing.T) {
+	// If the resolution regressed, a relative path would land in the process
+	// working directory. Make that a temporary one, not the source tree.
+	t.Chdir(t.TempDir())
 	f := newSetupFx(t)
 	f.env["CLAUDE_CONFIG_DIR"] = "rel-claude"
 	r := f.run("", "--agent", "claude", "--yes")
