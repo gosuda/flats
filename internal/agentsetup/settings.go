@@ -150,6 +150,18 @@ func (st style) spansLines(from, to int) bool {
 	return bytes.IndexByte(st.b[from:to], '\n') >= 0
 }
 
+// commaLead returns the text before pos on its line when that text is only
+// whitespace, a comma and whitespace: the lead of a comma-first layout, where
+// each item after the first starts its line with the comma that separates it.
+func (st style) commaLead(pos int) (string, bool) {
+	lead := string(st.b[bytes.LastIndexByte(st.b[:pos], '\n')+1 : pos])
+	rest := strings.TrimLeft(lead, " \t")
+	if !strings.HasPrefix(rest, ",") || strings.Trim(rest[1:], " \t") != "" {
+		return "", false
+	}
+	return lead, true
+}
+
 // array renders items as a JSON array whose own line has indentation ind.
 func (st style) array(ind string, items []string, multi bool) string {
 	if !multi {
@@ -201,9 +213,14 @@ func (st style) membersEdit(obj *node, members func(ind string, multi bool) []st
 		ind = st.indentOf(last.keyStart)
 		sep = st.eol + ind
 	}
+	lead, commaFirst := st.commaLead(last.keyStart)
 	var sb strings.Builder
 	for _, m := range members(ind, multi) {
-		sb.WriteString("," + sep + m)
+		if commaFirst {
+			sb.WriteString(st.eol + lead + m)
+		} else {
+			sb.WriteString("," + sep + m)
+		}
 	}
 	return edit{last.val.end, last.val.end, sb.String()}
 }
@@ -229,9 +246,14 @@ func (st style) elementsEdit(arr *node, items []string) edit {
 	if st.spansLines(arr.start, last.start) {
 		sep = st.eol + st.indentOf(last.start)
 	}
+	lead, commaFirst := st.commaLead(last.start)
 	var sb strings.Builder
 	for _, it := range items {
-		sb.WriteString("," + sep + it)
+		if commaFirst {
+			sb.WriteString(st.eol + lead + it)
+		} else {
+			sb.WriteString("," + sep + it)
+		}
 	}
 	return edit{last.end, last.end, sb.String()}
 }

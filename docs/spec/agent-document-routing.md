@@ -104,7 +104,10 @@ the file it changed, so `--undo` works from the files alone.
    spaces and dots written as `_`. The command inserts text and leaves every
    other byte alone, apart from the empty gap described below: no reordering, no reformatting, the file's own indentation
    and line endings, and an inline array stays inline. A key that is absent goes
-   after the last member of its object with that member's indentation. A closing
+   after the last member of its object with that member's indentation. When that
+   member, or the last element of an array that gets elements, starts its line
+   with the comma that separates it (a comma-first layout), the new text does
+   the same, one item per line, and no line ends in a comma. A closing
    brace or bracket is never moved: when the gap inside an empty pair holds a
    line break, the new text goes right after the opening one, and otherwise the
    gap is replaced. An object with no members becomes a multi-line object: the new members are indented one
@@ -270,7 +273,7 @@ temporary directories, except where noted.
   The command-level test shows the refusal writes nothing and that closing the
   fence lets setup run once and be idempotent.
 - Settings (5): a table of real-world shapes (tabs, two and four spaces, CRLF,
-  inline and multi-line arrays, empty inline and multi-line arrays, `{}` and a
+  inline and multi-line arrays, comma-first objects and arrays, empty inline and multi-line arrays, `{}` and a
   multi-line empty object at the top level and as `permissions`, absent and
   existing `permissions`, existing `deniedMcpServers`, entries already present)
   where the result differs from the input only by inserted bytes; each refusal;

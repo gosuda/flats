@@ -212,6 +212,48 @@ var settingsCases = []struct {
   }
 }
 `},
+	{"comma-first object", "{\n  \"a\": 1\n, \"b\": 2\n}\n", `{
+  "a": 1
+, "b": 2
+, "deniedMcpServers": [
+  ` + entryDenied + `
+]
+, "permissions": {
+  "deny": [
+    ` + entrySkill + `,
+    ` + entryTools + `
+  ]
+}
+}
+`},
+	{"comma-first arrays", `{
+  "permissions": {
+    "deny": [
+      "Bash(rm:*)"
+    , "Bash(ls:*)"
+    ]
+  }
+, "deniedMcpServers": [
+    {"serverName": "other"}
+  , {"serverName": "x"}
+  ]
+}
+`, `{
+  "permissions": {
+    "deny": [
+      "Bash(rm:*)"
+    , "Bash(ls:*)"
+    , ` + entrySkill + `
+    , ` + entryTools + `
+    ]
+  }
+, "deniedMcpServers": [
+    {"serverName": "other"}
+  , {"serverName": "x"}
+  , ` + entryDenied + `
+  ]
+}
+`},
 	{"an element with more keys is a different rule", "{\n  \"deniedMcpServers\": [\n    {\"serverName\": \"claude.ai Claude Docs\", \"serverUrl\": \"x\"}\n  ]\n}\n", `{
   "deniedMcpServers": [
     {"serverName": "claude.ai Claude Docs", "serverUrl": "x"},
