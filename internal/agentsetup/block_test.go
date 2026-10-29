@@ -94,29 +94,63 @@ func TestSetBlock(t *testing.T) {
 
 func TestSetBlockRefusesMalformedBlocks(t *testing.T) {
 	for name, in := range map[string]string{
-		"begin without end":               BeginMarker + "\ntext\n",
-		"end before begin":                EndMarker + "\n" + BeginMarker + "\n",
-		"end without begin":               "text\n" + EndMarker + "\n",
-		"two blocks":                      block("\n") + block("\n"),
-		"two begins one end":              BeginMarker + "\n" + BeginMarker + "\n" + EndMarker + "\n",
-		"one begin two ends":              BeginMarker + "\n" + EndMarker + "\n" + EndMarker + "\n",
-		"marker in an unterminated fence": "```\n" + BeginMarker + "\n",
+		"begin without end":  BeginMarker + "\ntext\n",
+		"end before begin":   EndMarker + "\n" + BeginMarker + "\n",
+		"end without begin":  "text\n" + EndMarker + "\n",
+		"two blocks":         block("\n") + block("\n"),
+		"two begins one end": BeginMarker + "\n" + BeginMarker + "\n" + EndMarker + "\n",
+		"one begin two ends": BeginMarker + "\n" + EndMarker + "\n" + EndMarker + "\n",
 	} {
 		t.Run(name, func(t *testing.T) {
 			for _, fn := range []func([]byte) ([]byte, Action, error){SetBlock, DropBlock} {
 				out, _, err := fn([]byte(in))
-				if name == "marker in an unterminated fence" {
-					// The marker is inside the fence, so there is no block at all.
-					if err != nil {
-						t.Errorf("unexpected error: %v", err)
-					}
-					continue
-				}
 				if !errors.Is(err, ErrBlock) || out != nil {
 					t.Errorf("err = %v, out = %q; want ErrBlock and no output", err, out)
 				}
 			}
 		})
+	}
+}
+
+// A block appended after a fence that never closes would be code to a reader,
+// and the next run would not see its markers, so it would append another.
+func TestSetBlockRefusesAFileThatEndsInsideAFence(t *testing.T) {
+	for name, in := range map[string]string{
+		"a lone fence":                          "```\n",
+		"a fence with an info string and text":  "# Notes\n\n```go\ncode\n",
+		"a marker inside the fence":             "```\n" + BeginMarker + "\n",
+		"a tilde fence without a final newline": "~~~\ntext",
+		"a shorter fence does not close it":     "````\n```\n",
+		"a fence after a closed one":            "```\nx\n```\n\n~~~\ny\n",
+		"CRLF":                                  "```\r\ncode\r\n",
+	} {
+		t.Run(name, func(t *testing.T) {
+			out, action, err := SetBlock([]byte(in))
+			if !errors.Is(err, ErrOpenFence) || out != nil || action != Unchanged {
+				t.Errorf("SetBlock = %q, %v, %v; want ErrOpenFence and no output", out, action, err)
+			}
+			// There is nothing to undo, and undo says so instead of refusing.
+			out, action, err = DropBlock([]byte(in))
+			if err != nil || action != Unchanged || string(out) != in {
+				t.Errorf("DropBlock = %q, %v, %v; want the file unchanged", out, action, err)
+			}
+		})
+	}
+}
+
+// A fence left open after the block does not hide the block.
+func TestABlockBeforeAnOpenFenceIsStillFound(t *testing.T) {
+	tail := "\n```\ncode\n"
+	current := block("\n") + tail
+	if got, action, err := SetBlock([]byte(current)); err != nil || action != Unchanged || string(got) != current {
+		t.Errorf("SetBlock(current) = %q, %v, %v; want unchanged", got, action, err)
+	}
+	stale := BeginMarker + "\nold\n" + EndMarker + "\n" + tail
+	if got, action, err := SetBlock([]byte(stale)); err != nil || action != Replace || string(got) != current {
+		t.Errorf("SetBlock(stale) = %q, %v, %v; want the block replaced", got, action, err)
+	}
+	if got, action, err := DropBlock([]byte(current)); err != nil || action != Remove || string(got) != tail {
+		t.Errorf("DropBlock = %q, %v, %v", got, action, err)
 	}
 }
 

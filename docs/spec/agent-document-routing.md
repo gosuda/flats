@@ -77,7 +77,11 @@ the file it changed, so `--undo` works from the files alone.
    blank line, then the block. An empty file gets the block alone. A file with a
    block whose text differs gets that block replaced where it is. A file whose
    block is current is unchanged. A begin marker without an end marker, an end
-   before a begin, or more than one block is refused. Bytes outside the markers
+   before a begin, or more than one block is refused. So is a file with no block
+   that ends inside a fence that is never closed: a block appended there would
+   be code to a reader, its markers would not count on the next run, and the
+   command would append another. The refusal tells the user to close the fence.
+   Undo of such a file finds no block and changes nothing. Bytes outside the markers
    never change, apart from the newline and blank line just described, and
    inserted lines use the file's line ending, CRLF if the file contains one. A
    missing file is created holding the block. The Cursor `.mdc` file is
@@ -259,7 +263,12 @@ temporary directories, except where noted.
 - Routing text (3): a test checks the size, that no URL or host is present, and
   that the named tools exist in the MCP tool registry.
 - Blocks (4): insert, replace, current, each refused shape, markers inside
-  fenced code blocks, CRLF files, and empty and whitespace-only files.
+  fenced code blocks, CRLF files, and empty and whitespace-only files; a file
+  that ends inside a fence that never closes (backtick and tilde fences, a
+  shorter fence that does not close a longer one, CRLF), refused by setup and
+  left alone by undo, and a block before such a fence, which is still found.
+  The command-level test shows the refusal writes nothing and that closing the
+  fence lets setup run once and be idempotent.
 - Settings (5): a table of real-world shapes (tabs, two and four spaces, CRLF,
   inline and multi-line arrays, empty inline and multi-line arrays, `{}` and a
   multi-line empty object at the top level and as `permissions`, absent and

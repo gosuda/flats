@@ -267,6 +267,44 @@ func TestAgentSetupRefusalWritesNothing(t *testing.T) {
 	}
 }
 
+// A CLAUDE.md that ends inside a code fence that never closes used to get a
+// new block on every run, and undo said it had nothing to do.
+func TestAgentSetupRefusesAFileThatEndsInsideAFence(t *testing.T) {
+	f := newSetupFx(t)
+	open := "# rules\n\n```sh\nrm -rf build\n"
+	md := f.write(".claude/CLAUDE.md", open)
+	settings := f.write(".claude/settings.json", "{}\n")
+
+	r := f.run("", "--yes")
+	if r.code != ExitError || !strings.Contains(r.stdout, "(refused)") || !strings.Contains(r.stdout, "never closed") || !strings.Contains(r.stdout, "Nothing was written") {
+		t.Errorf("setup: %+v", r)
+	}
+	if readFile(t, md) != open || readFile(t, settings) != "{}\n" || len(f.backups()) != 0 {
+		t.Errorf("a refusal wrote: %q %q %v", readFile(t, md), readFile(t, settings), f.backups())
+	}
+	if r := f.run("", "--undo", "--yes"); r.code != ExitOK || !strings.Contains(r.stdout, "Nothing to undo.") {
+		t.Errorf("undo: %+v", r)
+	}
+
+	// With the fence closed the setup goes through once, and again changes nothing.
+	closed := open + "```\n"
+	f.write(".claude/CLAUDE.md", closed)
+	for i := range 2 {
+		if r := f.run("", "--yes"); r.code != ExitOK {
+			t.Fatalf("run %d: %+v", i+1, r)
+		}
+		if n := strings.Count(readFile(t, md), "flats:documents:begin"); n != 1 {
+			t.Errorf("run %d: %d blocks, want 1", i+1, n)
+		}
+	}
+	if r := f.run("", "--undo", "--yes"); r.code != ExitOK {
+		t.Errorf("undo after setup: %+v", r)
+	}
+	if got := readFile(t, md); got != closed {
+		t.Errorf("undo left %q, want %q", got, closed)
+	}
+}
+
 func TestAgentSetupDetectsAgentsAndHonorsEnvironment(t *testing.T) {
 	f := newSetupFx(t)
 	os.MkdirAll(filepath.Join(f.home, "codex-home"), 0o755)

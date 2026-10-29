@@ -28,6 +28,11 @@ func (a Action) String() string {
 // end marker, an end before a begin, or more than one block.
 var ErrBlock = errors.New("the Flats block is malformed")
 
+// ErrOpenFence reports a file that ends inside a code fence that is never
+// closed. A marker there does not count as one, so a block appended to the file
+// would be missed on the next run.
+var ErrOpenFence = errors.New("the file ends inside a code fence that is never closed, so a block added after it would be read as code and not found again; close the fence and run the command again")
+
 type line struct {
 	start, textEnd, end int // text is [start, textEnd), the line ending is [textEnd, end)
 }
@@ -125,6 +130,16 @@ func findBlock(content []byte, lines []line) (begin, end int, found bool, err er
 	return begin, end, true, nil
 }
 
+// endsInFence reports whether the last line lies inside a fenced code block
+// that is never closed.
+func endsInFence(content []byte, lines []line) bool {
+	var f fence
+	for _, l := range lines {
+		f.step(string(content[l.start:l.textEnd]))
+	}
+	return f.char != 0
+}
+
 func joinLines(lines []string, eol string) []byte {
 	return []byte(strings.Join(lines, eol) + eol)
 }
@@ -159,6 +174,9 @@ func SetBlock(content []byte) ([]byte, Action, error) {
 		}
 		out := slices.Concat(content[:lines[begin].start], []byte(replacement), content[lines[end].end:])
 		return out, Replace, nil
+	}
+	if endsInFence(content, lines) {
+		return nil, Unchanged, ErrOpenFence
 	}
 	if len(content) == 0 {
 		return joinLines(want, eol), Add, nil

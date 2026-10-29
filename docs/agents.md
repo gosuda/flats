@@ -95,7 +95,9 @@ will read, share or edit afterwards, and tells the agent to create it with the
 Flats MCP tools (`create_flat` with type `docs`, then `save_document`). The text
 sits between the lines `<!-- flats:documents:begin -->` and
 `<!-- flats:documents:end -->`. The command appends the block to a file that
-has none and replaces it in place when its text differs. Every other byte of the
+has none and replaces it in place when its text differs. It refuses a file that
+ends inside a code fence that is never closed, because a block added after the
+fence would be read as code; close the fence and run the command again. Every other byte of the
 file stays. Codex reads `AGENTS.override.md` before `AGENTS.md` in each directory
 and skips an empty file. The command therefore writes the override only when it
 has content. A block in an empty override would hide your `AGENTS.md`. Codex
