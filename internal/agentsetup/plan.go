@@ -29,7 +29,8 @@ const (
 	Project Scope = "project"
 )
 
-// codexLimit is the number of bytes of AGENTS.md that Codex reads by default.
+// codexLimit is the default number of bytes of project instruction files that
+// Codex reads. The user-scope check uses it as a conservative bound.
 const codexLimit = 32768
 
 // ErrProjectIsHome is returned when the project directory is the home directory.
@@ -214,20 +215,23 @@ func containsAgent(as []Agent, a Agent) bool {
 	return false
 }
 
-// codexItems plans the Codex file in dir, which is the user directory or the
-// project. A setup writes AGENTS.override.md when that file has content, and
-// AGENTS.md otherwise. Codex skips empty files, so writing a block into an
-// empty override would make it the only file Codex reads and hide AGENTS.md.
-// The documentation also says Codex reads an override "if it exists"; if that
-// is the rule, a block in AGENTS.md goes unread, which harms nothing. Undo
-// looks at both files.
+// codexItems plans the Codex file in dir, the file Codex reads there. In the
+// Codex home, Codex reads the first of AGENTS.override.md and AGENTS.md that
+// has content, so an empty override does not hide AGENTS.md. In a project
+// directory, Codex takes the first of the two that is a regular file and drops
+// it afterwards if it is empty, so there an empty override hides AGENTS.md and
+// the block goes into the override. Undo looks at both files.
 func codexItems(o Options, dir string, dirMode fs.FileMode) []*Item {
 	override := filepath.Join(dir, "AGENTS.override.md")
 	plain := filepath.Join(dir, "AGENTS.md")
 	if o.Undo {
 		return []*Item{codexItem(o, override, dirMode), codexItem(o, plain, dirMode)}
 	}
-	if b, err := os.ReadFile(override); err == nil && len(bytes.TrimSpace(b)) > 0 {
+	if o.Scope == Project {
+		if fi, err := os.Stat(override); err == nil && fi.Mode().IsRegular() {
+			return []*Item{codexItem(o, override, dirMode)}
+		}
+	} else if b, err := os.ReadFile(override); err == nil && len(bytes.TrimSpace(b)) > 0 {
 		return []*Item{codexItem(o, override, dirMode)}
 	}
 	return []*Item{codexItem(o, plain, dirMode)}
@@ -236,7 +240,7 @@ func codexItems(o Options, dir string, dirMode fs.FileMode) []*Item {
 func codexItem(o Options, path string, dirMode fs.FileMode) *Item {
 	it := blockItem(o, Codex, path, dirMode)
 	if it != nil && it.Err == nil && !o.Undo && it.Action != Unchanged && len(it.After) > codexLimit {
-		it.Err = fmt.Errorf("the file would be %d bytes, more than the %d bytes Codex reads of AGENTS.md by default, so the block could be cut off", len(it.After), codexLimit)
+		it.Err = fmt.Errorf("the file would be %d bytes, more than the %d bytes Codex reads of project instructions by default, so the block could be cut off", len(it.After), codexLimit)
 	}
 	return it
 }

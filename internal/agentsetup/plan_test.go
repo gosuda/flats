@@ -225,21 +225,39 @@ func (f *fixture) codexDir(scope Scope) string {
 	return f.project
 }
 
-// Codex skips an empty file and reads AGENTS.override.md first in each
-// directory, so a setup writes the override only when it has content. Writing a
-// block into an empty override would make it the only file Codex reads and
-// hide the user's AGENTS.md.
+// In the Codex home, Codex reads the first of AGENTS.override.md and AGENTS.md
+// that has content. In a project directory it takes the first of the two that
+// is a regular file and only then drops it if it is empty, so an empty
+// override there hides AGENTS.md.
 func TestPlanCodexFilePicksTheFileCodexReads(t *testing.T) {
 	for _, scope := range []Scope{User, Project} {
+		emptyOverride := "AGENTS.md"
+		if scope == Project {
+			emptyOverride = "AGENTS.override.md"
+		}
 		for name, tc := range map[string]struct {
 			setup func(t *testing.T, override string)
 			want  string
 		}{
 			"no override":              {func(t *testing.T, override string) {}, "AGENTS.md"},
 			"override with content":    {func(t *testing.T, override string) { write(t, override, "override\n") }, "AGENTS.override.md"},
-			"empty override":           {func(t *testing.T, override string) { write(t, override, "") }, "AGENTS.md"},
-			"whitespace-only override": {func(t *testing.T, override string) { write(t, override, " \n\t\n") }, "AGENTS.md"},
+			"empty override":           {func(t *testing.T, override string) { write(t, override, "") }, emptyOverride},
+			"whitespace-only override": {func(t *testing.T, override string) { write(t, override, " \n\t\n") }, emptyOverride},
 			"override is a directory":  {func(t *testing.T, override string) { os.MkdirAll(override, 0o755) }, "AGENTS.md"},
+			"override links to an empty file": {func(t *testing.T, override string) {
+				real := filepath.Join(filepath.Dir(override), "real-override.md")
+				write(t, real, "")
+				if err := os.Symlink(real, override); err != nil {
+					t.Fatal(err)
+				}
+			}, emptyOverride},
+			"override links to a directory": {func(t *testing.T, override string) {
+				real := filepath.Join(filepath.Dir(override), "real-override")
+				os.MkdirAll(real, 0o755)
+				if err := os.Symlink(real, override); err != nil {
+					t.Fatal(err)
+				}
+			}, "AGENTS.md"},
 			"override is a dangling link": {func(t *testing.T, override string) {
 				os.MkdirAll(filepath.Dir(override), 0o755)
 				if err := os.Symlink(filepath.Join(filepath.Dir(override), "nowhere"), override); err != nil {

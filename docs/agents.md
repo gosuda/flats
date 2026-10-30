@@ -81,7 +81,7 @@ flats agent-setup docs [--agent claude|codex|cursor|all] [--scope user|project] 
 | Agent | User scope | Project scope |
 | --- | --- | --- |
 | Claude Code | A block in `<claude dir>/CLAUDE.md` and three entries in `<claude dir>/settings.json` | A block in `<project>/CLAUDE.md` |
-| Codex | A block in `<codex dir>/AGENTS.override.md` if that file has content, else in `<codex dir>/AGENTS.md` | The same choice in `<project>` |
+| Codex | A block in `<codex dir>/AGENTS.override.md` if that file has content, else in `<codex dir>/AGENTS.md` | A block in `<project>/AGENTS.override.md` if that file exists, even empty, else in `<project>/AGENTS.md` |
 | Cursor | Prints the text to paste into Cursor Settings, Rules, User Rules; writes nothing | The file `<project>/.cursor/rules/flats-documents.mdc` |
 
 `<claude dir>` is `$CLAUDE_CONFIG_DIR` or `~/.claude`, `<codex dir>` is
@@ -98,13 +98,15 @@ sits between the lines `<!-- flats:documents:begin -->` and
 has none and replaces it in place when its text differs. It refuses a file that
 ends inside a code fence that is never closed, because a block added after the
 fence would be read as code; close the fence and run the command again. Every other byte of the
-file stays. Codex reads `AGENTS.override.md` before `AGENTS.md` in each directory
-and skips an empty file. The command therefore writes the override only when it
-has content. A block in an empty override would hide your `AGENTS.md`. Codex
-reads at most 32 KiB of these files together by default (`project_doc_max_bytes`,
-which you can change), and the project file comes last, so it is the first to be
-left out. The command checks one file and refuses to add or replace a Codex block
-when that file would grow past 32768 bytes. The Cursor rule file belongs to the command: a new file holds a short
+file stays. Codex reads `AGENTS.override.md` before `AGENTS.md`, but it treats
+an empty override differently in the two places. In `<codex dir>` it skips an
+empty override and reads `AGENTS.md`, so the command writes the override there
+only when it has content. In a project an empty override still hides
+`AGENTS.md`, so the command writes the override whenever it exists. In a project
+Codex reads at most 32 KiB of all the project files together by default
+(`project_doc_max_bytes`, which you can change), starting with the root file
+that holds the block. The command refuses to add or replace a Codex block when
+the file would grow past 32768 bytes. The Cursor rule file belongs to the command: a new file holds a short
 front matter that sets `alwaysApply: true`, then the block.
 
 For Claude Code at user scope the command also adds three entries to
