@@ -1350,7 +1350,7 @@ OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 
 
-===== dompurify 3.4.16 ((MPL-2.0 OR Apache-2.0)) =====
+===== dompurify 3.4.17 ((MPL-2.0 OR Apache-2.0)) =====
 
                                  Apache License
                            Version 2.0, January 2004
@@ -2166,7 +2166,7 @@ licenses; we recommend you read them, as their terms may differ from the
 terms above.
 
 
-===== markdown-it 15.0.2 (MIT) =====
+===== markdown-it 15.0.3 (MIT) =====
 Copyright (c) 2014 Vitaly Puzrin, Alex Kocharin.
 
 Permission is hereby granted, free of charge, to any person
