@@ -280,7 +280,8 @@ func requestJSON(p reqPayload, body []byte) []byte {
 }
 
 // jsonQuotedLen and appendJSONQuoted are one escaping written twice: the
-// length sizes the writer's single exact allocation. Both copy json.Marshal's
+// length sizes the writer's single allocation (over-sized where a raw
+// U+FFFD replaces a multi-byte invalid sequence). Both copy json.Marshal's
 // string escaping byte for byte — HTML-safe <, > and &, U+2028 and U+2029,
 // and a raw U+FFFD per undecodable byte — so a spliced body is
 // indistinguishable from a marshaled one.
