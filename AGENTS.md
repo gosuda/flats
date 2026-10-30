@@ -7,7 +7,14 @@ Explicit design-only, implementation-only
 and test-only requests use the corresponding stage and stop at its boundary.
 Each stage includes review by a different model and correction before acceptance.
 Agents without skill discovery must read these same linked instructions directly,
-including the change-type playbooks and cleanup skills the workflow links.
+
+Memory: allocate on hot paths only when ownership escapes. Reuse
+short-lived buffers through `sync.Pool`, stream with `io.Copy` or
+`io.CopyBuffer` rather than `io.ReadAll` of a whole body when a streaming
+form exists, and prefer `json.Encoder`/`json.RawMessage` over an
+intermediate `[]byte` or `string` copy. Reserve only the bytes a request
+actually consumed; a speculative reservation sized to a limit starves
+concurrent work.
 
 Read the [documentation index](docs/README.md) and relevant
 [specifications](docs/spec/README.md) before changing behavior. Keep specifications
