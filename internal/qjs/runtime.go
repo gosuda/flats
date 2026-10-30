@@ -104,6 +104,7 @@ type Runtime struct {
 	randomErr  error
 	restored   bool
 	imageExtra map[string]uint64
+	base       []byte // post-init memory snapshot, see image.go
 }
 
 // New creates a QuickJS runtime with optional configuration.
