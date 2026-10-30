@@ -33,6 +33,7 @@ fail() {
 	exit 1
 }
 
+# shellcheck source=scripts/lib-gate.sh
 . "$root/scripts/lib-gate.sh"
 
 main_pid() {

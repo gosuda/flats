@@ -195,7 +195,7 @@ jobs:
         run: FLATS_RELEASE_TARGETS="linux/amd64 linux/arm64" scripts/build-release.sh v0.0.0-ci dist
       - name: Lint
         run: |
-          shellcheck -s sh install.sh scripts/ci-test.sh scripts/ci-race.sh scripts/build-release.sh scripts/install-smoke.sh scripts/container-smoke.sh scripts/build-commit-image.sh scripts/build-commit-images.sh
+          shellcheck -s sh install.sh scripts/ci-test.sh scripts/ci-race.sh scripts/build-release.sh scripts/install-smoke.sh scripts/container-smoke.sh scripts/build-commit-image.sh scripts/build-commit-images.sh scripts/lib-gate.sh
           shellcheck -s bash scripts/approval-gate.sh scripts/server-flat-gate.sh scripts/tailnet-gate.sh scripts/agent-gate.sh scripts/lifecycle-gate.sh
       - name: Approval gate helper regressions
         timeout-minutes: 2
