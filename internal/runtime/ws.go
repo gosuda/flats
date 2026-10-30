@@ -42,8 +42,6 @@ var (
 	wsPublicFrames, wsPublicBytes         = 400.0, 4.0 * 1024 * 1024
 )
 
-// --- hub: connections and the dedicated websocket VM ---
-
 type wsEvent struct {
 	Type    string            `json:"type"`
 	ID      int64             `json:"id"`
