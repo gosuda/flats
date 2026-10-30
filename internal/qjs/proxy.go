@@ -3,6 +3,8 @@ package qjs
 import (
 	"context"
 	"encoding/binary"
+	"fmt"
+	"math"
 	"sync"
 	"sync/atomic"
 
@@ -123,18 +125,30 @@ func createFuncProxyWithRegistry(registry *ProxyRegistry) JsFunctionProxy {
 		argc uint32,
 		argv uint32,
 	) (rs uint64) {
-		goFunc, this := getProxyFuncParams(registry, module.Memory(), thisVal, argc, argv)
+		mem := module.Memory()
+		var this *This
 		defer func() {
-			for _, arg := range this.args {
-				arg.Free()
+			if this != nil {
+				for _, arg := range this.args {
+					arg.Free()
+				}
 			}
 		}()
 
 		defer func() {
 			if r := recover(); r != nil {
-				rs = handlePanicRecovery(this, r)
+				rs = recoverProxyCall(this, r)
 			}
 		}()
+
+		goFunc, goContext, parsed, err := getProxyFuncParams(registry, mem, thisVal, argc, argv)
+		if err != nil {
+			if goContext != nil {
+				return goContext.ThrowError(err).Raw()
+			}
+			return 0
+		}
+		this = parsed
 
 		result, err := goFunc(this)
 		if err != nil {
@@ -153,6 +167,16 @@ func createFuncProxyWithRegistry(registry *ProxyRegistry) JsFunctionProxy {
 		}
 		return validateAndReturnResult(this, result)
 	}
+}
+
+// recoverProxyCall converts a panic anywhere in the proxy call into a JS
+// exception. this is nil only when parsing failed before the context was
+// recovered; the defined host result for that case is raw 0.
+func recoverProxyCall(this *This, r any) uint64 {
+	if this == nil || this.context == nil {
+		return 0
+	}
+	return handlePanicRecovery(this, r)
 }
 
 // handlePanicRecovery handles panics during Go function execution.
@@ -182,25 +206,36 @@ func validateAndReturnResult(this *This, result *Value) uint64 {
 }
 
 // getProxyFuncParams extracts and validates parameters for proxy function calls.
-// It parses WASM memory to extract function ID, context, arguments, and async information.
+// It parses WASM memory to extract function ID, context, arguments, and async
+// information. On failure the resolved context is returned with the error so
+// the caller can still throw through it.
 func getProxyFuncParams(
 	registry *ProxyRegistry,
 	mem api.Memory,
 	thisRef uint64,
 	argc uint32,
 	argv uint32,
-) (Function, *This) {
-	args := readArgsFromWasmMem(mem, argc, argv)
+) (Function, *Context, *This, error) {
+	args, err := readArgsFromWasmMem(mem, argc, argv)
+	if err != nil {
+		return nil, nil, nil, err
+	}
 	functionHandle := args[0]  // The first argument is the function ID
 	jsContextHandle := args[1] // The second argument is the context ID
 	isAsync := args[2]         // The third argument is the async flag
 
 	goFunc, goContext := retrieveGoResources(registry, functionHandle, jsContextHandle)
+	if goContext == nil {
+		return nil, nil, nil, fmt.Errorf("jsFunctionProxy: unknown context handle %d", jsContextHandle)
+	}
+	if goFunc == nil {
+		return nil, goContext, nil, fmt.Errorf("jsFunctionProxy: unknown function handle %d", functionHandle)
+	}
 	promise := extractPromiseIfAsync(goContext, args, isAsync)
 	fnArgs := extractFunctionArguments(goContext, args)
 	this := createThisContext(goContext, thisRef, fnArgs, promise, isAsync)
 
-	return goFunc, this
+	return goFunc, goContext, this, nil
 }
 
 // extractPromiseIfAsync extracts the promise handle for async functions.
@@ -254,17 +289,36 @@ func retrieveGoResources(
 	return goFunc, goContext
 }
 
-// readArgsFromWasmMem reads the argument array from WASM memory with proper validation.
-// Each argument is 8 bytes (uint64) in little-endian format.
-func readArgsFromWasmMem(mem api.Memory, argc uint32, argv uint32) []uint64 {
-	args := make([]uint64, argc)
+// maxProxyArgs caps the guest-supplied argument count. Real argument lists
+// are small; the header alone carries 4 slots. 1<<16 bounds a single read to
+// 512 KiB no matter how large the guest memory is.
+const maxProxyArgs = 1 << 16
 
-	for i := range argc {
-		offset := argv + (i * 8)
-		data, _ := mem.Read(offset, 8)
-		// Convert the 8 bytes to a uint64 (little-endian encoding)
-		args[i] = binary.LittleEndian.Uint64(data)
+// readArgsFromWasmMem reads the argument array from WASM memory with proper
+// validation. The header carries function ID, context ID, async flag and
+// promise handle, so argc must be at least 4; each argument is 8 bytes
+// (uint64) little-endian.
+func readArgsFromWasmMem(mem api.Memory, argc uint32, argv uint32) ([]uint64, error) {
+	const headerArgs = 4
+	if argc < headerArgs {
+		return nil, fmt.Errorf("jsFunctionProxy: argc %d < %d", argc, headerArgs)
+	}
+	if argc > maxProxyArgs {
+		return nil, fmt.Errorf("jsFunctionProxy: too many arguments")
+	}
+	if uint64(argc) > uint64(math.MaxUint32-argv)/8 {
+		return nil, fmt.Errorf("jsFunctionProxy: argv range overflows")
+	}
+	byteCount := argc * 8
+	data, ok := mem.Read(argv, byteCount)
+	if !ok {
+		return nil, fmt.Errorf("jsFunctionProxy: argv %d..%d out of memory", argv, uint64(argv)+uint64(byteCount))
+	}
+	args := make([]uint64, argc)
+	for i := range args {
+		args[i] = binary.LittleEndian.Uint64(data[i*8 : i*8+8])
 	}
 
-	return args
+// refused_by: statement_fold · collision: none (no common ancestor text)
+	return args, nil
 }
