@@ -98,48 +98,77 @@ func checksum(raw []byte, name string) (string, error) {
 	}
 	return found, nil
 }
-func extract(raw []byte) ([]byte, error) {
+
+// extractTo runs the single decompression pass over the release archive,
+// streaming the flats executable into w instead of materializing it in
+// memory. Verification stays as before: the archive digest is checked before
+// this runs, and the trailing drain below still confirms the remainder of the
+// decompressed stream inside the budget.
+func extractTo(w io.Writer, raw []byte) error {
 	gz, e := gzip.NewReader(bytes.NewReader(raw))
 	if e != nil {
-		return nil, failure("assets_unavailable", "invalid release archive: %w", e)
+		return failure("assets_unavailable", "invalid release archive: %w", e)
 	}
 	defer gz.Close()
 	limited := &io.LimitedReader{R: gz, N: executableLimit + (8 << 20) + 1}
 	tr := tar.NewReader(limited)
-	var binary []byte
+	found := false
 	for {
 		h, e := tr.Next()
 		if errors.Is(e, io.EOF) {
 			break
 		}
 		if e != nil {
-			return nil, failure("assets_unavailable", "invalid release archive: %w", e)
+			return failure("assets_unavailable", "invalid release archive: %w", e)
 		}
 		if !path.IsAbs(h.Name) && path.Clean(h.Name) == h.Name && h.Name != ".." && !strings.HasPrefix(h.Name, "../") && !strings.Contains(h.Name, "\\") {
 		} else {
-			return nil, failure("assets_unavailable", "unsafe archive entry %q", h.Name)
+			return failure("assets_unavailable", "unsafe archive entry %q", h.Name)
 		}
 		if h.Name != "flats" {
 			continue
 		}
-		if binary != nil || h.Typeflag != tar.TypeReg || h.Size <= 0 || h.Size > executableLimit {
-			return nil, failure("assets_unavailable", "invalid flats executable entry")
+		if found || h.Typeflag != tar.TypeReg || h.Size <= 0 || h.Size > executableLimit {
+			return failure("assets_unavailable", "invalid flats executable entry")
 		}
-		binary, e = io.ReadAll(io.LimitReader(tr, executableLimit+1))
-		if e != nil {
-			return nil, e
+		if _, e = io.Copy(w, io.LimitReader(tr, executableLimit+1)); e != nil {
+			return e
 		}
+		found = true
 	}
 	if _, err := io.Copy(io.Discard, limited); err != nil {
-		return nil, failure("assets_unavailable", "invalid compressed archive: %w", err)
+		return failure("assets_unavailable", "invalid compressed archive: %w", err)
 	}
 	if limited.N == 0 {
-		return nil, failure("assets_unavailable", "decompressed release exceeds size limit")
+		return failure("assets_unavailable", "decompressed release exceeds size limit")
 	}
-	if len(binary) == 0 {
-		return nil, failure("assets_unavailable", "release archive has no flats executable")
+	if !found {
+		return failure("assets_unavailable", "release archive has no flats executable")
 	}
-	return binary, nil
+	return nil
+}
+
+// stageStream fills the stage file through fill, so the candidate executable
+// is written once from the archive stream and never buffered whole. It mirrors
+// the create/chmod/sync/close sequence of stage in files.go.
+func stageStream(path string, mode os.FileMode, fill func(w io.Writer) error) (string, error) {
+	name := stageName(path)
+	if e := os.Remove(name); e != nil && !errors.Is(e, os.ErrNotExist) {
+		return "", e
+	}
+	f, e := os.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
+	if e != nil {
+		return "", e
+	}
+	pe := f.Chmod(mode)
+	we := fill(f)
+	se := f.Sync()
+	ce := f.Close()
+	if e = errors.Join(pe, we, se, ce); e != nil {
+		os.Remove(name)
+		return "", e
+	}
+	return name, nil
 }
 
 type cappedBuffer struct{ bytes.Buffer }
@@ -233,11 +262,7 @@ func Update(ctx context.Context, o Options) (Identity, string, error) {
 	if Digest(archive) != sum {
 		return Identity{}, abs, failure("checksum", "release archive checksum mismatch")
 	}
-	binary, e := extract(archive)
-	if e != nil {
-		return Identity{}, abs, e
-	}
-	staged, e := stage(abs, binary, 0755)
+	staged, e := stageStream(abs, 0755, func(w io.Writer) error { return extractTo(w, archive) })
 	if e != nil {
 		return Identity{}, abs, e
 	}
