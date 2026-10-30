@@ -187,8 +187,6 @@ func (s *Server) Handler() http.Handler {
 	return mux
 }
 
-// --- helpers ---
-
 // ErrorBody is the JSON error shape.
 type ErrorBody struct {
 	Error    string             `json:"error"`
@@ -332,8 +330,6 @@ func isLoopback(r *http.Request) bool {
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
 }
-
-// --- handlers ---
 
 func (s *Server) status(w http.ResponseWriter, r *http.Request, _ core.Via) {
 	var sys any
@@ -995,7 +991,6 @@ func (s *Server) zrokAccountAdmin(w http.ResponseWriter) (ZrokAccountAdmin, Prov
 	return z, p, true
 }
 
-// connectZrok enables a zrok environment with the operator's account token.
 func (s *Server) connectZrok(w http.ResponseWriter, r *http.Request, _ core.Via) {
 	z, p, ok := s.zrokAccountAdmin(w)
 	if !ok {
@@ -1015,7 +1010,6 @@ func (s *Server) connectZrok(w http.ResponseWriter, r *http.Request, _ core.Via)
 	writeJSON(w, 200, map[string]any{"providers": p.NetworkProviders(r.Context())})
 }
 
-// disconnectZrok unregisters the host's zrok environment.
 func (s *Server) disconnectZrok(w http.ResponseWriter, r *http.Request, _ core.Via) {
 	z, p, ok := s.zrokAccountAdmin(w)
 	if !ok {
@@ -1072,7 +1066,6 @@ func (s *Server) setTailscaleKey(w http.ResponseWriter, r *http.Request, _ core.
 	s.writeKeys(w, r, k)
 }
 
-// deleteTailscaleKey removes the stored Tailscale auth key.
 func (s *Server) deleteTailscaleKey(w http.ResponseWriter, r *http.Request, _ core.Via) {
 	s.keyAction(w, r, KeyAdmin.DeleteTailscaleKey)
 }
@@ -1097,12 +1090,10 @@ func (s *Server) setNetbirdKey(w http.ResponseWriter, r *http.Request, _ core.Vi
 	s.writeKeys(w, r, k)
 }
 
-// deleteNetbirdKey removes the stored NetBird setup key.
 func (s *Server) deleteNetbirdKey(w http.ResponseWriter, r *http.Request, _ core.Via) {
 	s.keyAction(w, r, KeyAdmin.DeleteNetbirdKey)
 }
 
-// dismissNetbirdLegacyPeer hides the notice about the old shared peer.
 func (s *Server) dismissNetbirdLegacyPeer(w http.ResponseWriter, r *http.Request, _ core.Via) {
 	s.keyAction(w, r, KeyAdmin.DismissNetbirdLegacyPeer)
 }

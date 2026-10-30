@@ -642,7 +642,6 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	return h, nil
 }
 
-// configHash returns the config hash of the file at path.
 func configHash(path string) (string, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
