@@ -43,16 +43,18 @@ the file it changed, so `--undo` works from the files alone.
    | Agent | User scope | Project scope |
    | --- | --- | --- |
    | Claude Code | A block in `<claude dir>/CLAUDE.md` and three entries in `<claude dir>/settings.json` (requirement 5) | A block in `<project>/CLAUDE.md` |
-   | Codex | A block in `<codex dir>/AGENTS.override.md` if that file has content, else in `<codex dir>/AGENTS.md` | The same choice in `<project>`: `AGENTS.override.md` if it has content, else `AGENTS.md` |
+   | Codex | A block in `<codex dir>/AGENTS.override.md` if that file has content, else in `<codex dir>/AGENTS.md` | A block in `<project>/AGENTS.override.md` if that path is a regular file, even an empty one, else in `<project>/AGENTS.md` |
    | Cursor | Prints the routing text for Cursor Settings, Rules, User Rules; writes nothing | The file `<project>/.cursor/rules/flats-documents.mdc` |
 
-   Codex reads `AGENTS.override.md` before `AGENTS.md` in each directory, and it
-   skips an empty file. A block written into an empty override would make that
-   file the only one Codex reads and hide the user's `AGENTS.md`, so the command
-   writes the override only when it has content, and a file that holds only
-   whitespace counts as empty. Codex's documentation also says that it reads the
-   override "if it exists". Under that reading a block in `AGENTS.md` goes unread
-   while the override is empty, which hides nothing and harms nothing.
+   Codex chooses between `AGENTS.override.md` and `AGENTS.md` differently in the
+   two places. In the Codex home it reads the first of the two that has content,
+   so an empty override, or one that holds only whitespace, does not hide
+   `AGENTS.md`. A block written into such an override would hide it, so the
+   command writes the override there only when it has content. In a project
+   directory Codex takes the first of the two that is a regular file and drops it
+   afterwards if it is empty, so an empty override hides `AGENTS.md` and a block
+   in `AGENTS.md` would go unread. The command therefore writes the override
+   whenever it is a regular file.
 
    Project scope never edits a settings file. Those files are checked in and
    shared, and the competing connector belongs to the person, not the
@@ -219,14 +221,16 @@ the file it changed, so `--undo` works from the files alone.
    claude.ai and does not remove text the user pasted into Cursor's User Rules,
    for the agents and scopes where setup would have said so.
 
-10. **Codex size.** Codex reads at most 32 KiB of `AGENTS.md` content by default.
-    The command refuses a setup that adds or replaces a Codex block when the
-    resulting file would be larger than 32768 bytes, and says why. A file that
-    would stay unchanged, and an undo, are never refused for size. The limit
-    Codex applies is the combined size of the global file and the project files
-    (`project_doc_max_bytes`, which a user can change), so this check on one file
-    is a floor and not a guarantee. A project file comes last, so it is the first
-    to be left out when the total runs over.
+10. **Codex size.** The command refuses a setup that adds or replaces a Codex
+    block when the resulting file would be larger than 32768 bytes, and says why.
+    A file that would stay unchanged, and an undo, are never refused for size.
+    In a project, Codex reads at most `project_doc_max_bytes` (32 KiB by default,
+    and a user can change it) of all the project files together, from the root
+    down to the working directory, and cuts what is over. A project-scope block
+    sits in the root file, which comes first, so the check on that one file is
+    exact at the default unless the user lowers the limit. The file in the Codex
+    home does not count toward that limit. At user scope the check is a
+    conservative bound, not a Codex limit.
 
 11. **Installer and uninstall.** After a successful run, `install.sh` prints
     where to connect an agent (`flats mcp-config`) and that
@@ -257,8 +261,9 @@ temporary directories, except where noted.
 
 - Command and targets (1, 2, 10): defaults and detection through
   `CLAUDE_CONFIG_DIR` and `CODEX_HOME`, the Codex file choice in both scopes (no
-  override, an override with content, an empty or whitespace-only one, a
-  directory or a dangling link of that name), the project
+  override, an override with content, an empty or whitespace-only one, which
+  the two scopes treat differently, a directory or a dangling link of that
+  name), the project
   root search from a subdirectory, outside a repository and at the home
   directory, project scope with
   and without `--undo`, a Codex file one byte under and over the limit, and an
@@ -314,10 +319,13 @@ The effect on the agents themselves is not covered by these tests. For Claude
 Code, connector denial was checked in a real VS Code session on 2026-10-27: the
 connector's tools disappeared when the setting was saved. The glob rule follows
 the documentation quoted in requirement 5, and the effect of the skill rule on
-the skill listing was not observed. The Codex file choice follows its
-documentation (it skips empty files and reads an override first in each
-directory), and the Codex and Cursor instruction files are not verified with the
-real agents. The final report says so.
+the skill listing was not observed. The Codex file choice and size rule follow
+Codex's source, and were checked on 2026-10-30 with codex-cli 0.162.1 through
+`codex debug prompt-input`, which prints the instructions the model receives:
+the block was present for a project with no override, an override with content,
+an empty one and a whitespace-only one. A real Codex session following the
+block, and the Cursor instruction files, are not verified. The final report
+says so.
 
 ## Non-goals
 
