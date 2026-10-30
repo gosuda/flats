@@ -200,7 +200,7 @@ export function liveDecorations(
             }
             return false;
           }
-          case "FencedCode":
+          case "FencedCode": {
             line(node.from, node.to, "cm-codeblock");
             // Fence lines stay as empty padding rows of the code block, and
             // container marks (a quote's ">") inside it are hidden; each
@@ -222,6 +222,7 @@ export function liveDecorations(
               if (!isActive(from, end)) hide(from, end);
             }
             return false;
+          }
           case "Table":
             line(node.from, node.to, "cm-table");
             return false;
