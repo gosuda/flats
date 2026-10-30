@@ -2,6 +2,8 @@ package agentsetup
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"os"
 	"path/filepath"
@@ -214,6 +216,67 @@ func TestPlanRefusesAProjectThatIsTheHomeDirectory(t *testing.T) {
 	}
 	if _, err = NewPlan(Options{Agents: []Agent{Claude}, Scope: User, Home: f.home, Getenv: getenv(f.env), Cwd: sub}); err != nil {
 		t.Errorf("user scope: %v", err)
+	}
+
+	// The same directory under another spelling is still the home directory.
+	alias := filepath.Join(filepath.Dir(f.home), "home-alias")
+	if err := os.Symlink(f.home, alias); err != nil {
+		t.Fatal(err)
+	}
+	for name, o := range map[string]Options{
+		"home spelled through a link":      {Home: alias, Cwd: sub},
+		"working directory through a link": {Home: f.home, Cwd: filepath.Join(alias, "notes")},
+	} {
+		o.Agents, o.Scope, o.Getenv = []Agent{Claude}, Project, getenv(f.env)
+		if _, err := NewPlan(o); !errors.Is(err, ErrProjectIsHome) {
+			t.Errorf("%s: err = %v, want ErrProjectIsHome", name, err)
+		}
+	}
+}
+
+// A target under a directory link that points nowhere is refused while
+// planning, so a setup that also has good targets writes none of them.
+func TestPlanRefusesATargetUnderADanglingDirectoryLink(t *testing.T) {
+	f := newFixture(t)
+	if err := os.Symlink(filepath.Join(f.home, "missing"), filepath.Join(f.home, ".claude")); err != nil {
+		t.Fatal(err)
+	}
+	p := f.plan(t, User, false, Claude, Codex)
+	if len(p.Items) != 3 {
+		t.Fatalf("items = %v", paths(p))
+	}
+	for _, it := range p.Items[:2] {
+		if it.Err == nil || !strings.Contains(it.Err.Error(), "symbolic link that cannot be followed") {
+			t.Errorf("%s: err = %v", it.Path, it.Err)
+		}
+	}
+	if p.Items[2].Err != nil || len(p.Refused()) != 2 {
+		t.Errorf("codex err %v, refused %d", p.Items[2].Err, len(p.Refused()))
+	}
+	if undo := f.plan(t, User, true, Claude); len(undo.Refused()) != 0 {
+		t.Errorf("undo has nothing to look at and refuses nothing: %v", undo.Refused())
+	}
+}
+
+// A file under a linked directory is backed up under the hash of its resolved
+// path, as for a linked file.
+func TestBackupNamesUseTheResolvedPath(t *testing.T) {
+	f := newFixture(t)
+	real := filepath.Join(f.home, "dotfiles", "claude")
+	write(t, filepath.Join(real, "CLAUDE.md"), "# mine\n")
+	if err := os.Symlink(real, filepath.Join(f.home, ".claude")); err != nil {
+		t.Fatal(err)
+	}
+	p := f.plan(t, User, false, Claude)
+	want, _ := filepath.EvalSymlinks(filepath.Join(real, "CLAUDE.md"))
+	if it := p.Items[0]; it.Real != want {
+		t.Fatalf("real = %q, want %q", it.Real, want)
+	}
+	f.apply(t, p)
+	sum := sha256.Sum256([]byte(want))
+	entries, _ := os.ReadDir(f.backups)
+	if len(entries) != 1 || !strings.Contains(entries[0].Name(), "-"+hex.EncodeToString(sum[:4])+"-CLAUDE.md") {
+		t.Errorf("backups = %v, want the hash of %s", entries, want)
 	}
 }
 

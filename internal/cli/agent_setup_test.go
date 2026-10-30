@@ -426,6 +426,40 @@ func TestAgentSetupProjectScope(t *testing.T) {
 	if r := h.run("", "--scope", "project", "--agent", "claude", "--yes"); r.code != ExitError || !strings.Contains(r.stderr, "the home directory") {
 		t.Errorf("home as project: %+v", r)
 	}
+
+	// Home given under another spelling of the same directory is refused too,
+	// and nothing is written.
+	k := newSetupFx(t)
+	os.MkdirAll(filepath.Join(k.home, ".git"), 0o755)
+	k.project = k.home
+	alias := filepath.Join(filepath.Dir(k.home), "home-alias")
+	if err := os.Symlink(k.home, alias); err != nil {
+		t.Fatal(err)
+	}
+	k.home = alias
+	if r := k.run("", "--scope", "project", "--agent", "all", "--yes"); r.code != ExitError || !strings.Contains(r.stderr, "the home directory") || fileExists(filepath.Join(k.project, "CLAUDE.md")) {
+		t.Errorf("home under another spelling: %+v", r)
+	}
+}
+
+// A dangling ~/.claude link is refused in the plan, so the Codex file that has
+// nothing wrong with it is not written either.
+func TestAgentSetupDanglingAgentDirectoryWritesNothing(t *testing.T) {
+	f := newSetupFx(t)
+	os.Remove(filepath.Join(f.home, ".claude"))
+	if err := os.Symlink(filepath.Join(f.home, "missing"), filepath.Join(f.home, ".claude")); err != nil {
+		t.Fatal(err)
+	}
+	os.MkdirAll(filepath.Join(f.home, ".codex"), 0o755)
+	for _, args := range [][]string{{"--agent", "all", "--dry-run"}, {"--agent", "all", "--yes"}} {
+		r := f.run("", args...)
+		if r.code != ExitError || !strings.Contains(r.stdout, "(refused)") || !strings.Contains(r.stdout, "Nothing was written") {
+			t.Errorf("%v: %+v", args, r)
+		}
+	}
+	if fileExists(filepath.Join(f.home, ".codex", "AGENTS.md")) || len(f.backups()) != 0 {
+		t.Errorf("a refused plan wrote: AGENTS.md %v, backups %v", fileExists(filepath.Join(f.home, ".codex", "AGENTS.md")), f.backups())
+	}
 }
 
 func TestAgentSetupCursorUserScopePrintsTheText(t *testing.T) {

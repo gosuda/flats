@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"math/rand/v2"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -543,6 +544,9 @@ func TestCheckSettingsRefusesWrongResults(t *testing.T) {
 	}
 	if err := checkSettings(before, good.Out, setEntries); err != nil {
 		t.Fatalf("a correct result is refused: %v", err)
+	}
+	if err := checkSettings(before, append(slices.Clone(good.Out), "x"...), setEntries); !errors.Is(err, ErrSettings) {
+		t.Errorf("text after the object: err = %v, want ErrSettings", err)
 	}
 	for name, after := range map[string]string{
 		"an entry is missing":     `{"a": 1, "deniedMcpServers": [{"serverName": "claude.ai Claude Docs"}], "permissions": {"deny": ["Skill(anthropic-skills:docs)"]}}`,
