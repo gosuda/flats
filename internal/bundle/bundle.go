@@ -18,6 +18,7 @@ package bundle
 import (
 	"archive/tar"
 	"archive/zip"
+	"bufio"
 	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
@@ -217,26 +218,38 @@ func FromArchive(r io.Reader, lim Limits) ([]File, error) {
 func fromArchive(r io.Reader, lim Limits, overhead int64) ([]File, error) {
 	// Bound the compressed body too: a well-formed archive of MaxBytes is never
 	// much larger than MaxBytes plus headers.
-	raw, err := io.ReadAll(io.LimitReader(r, lim.MaxBytes+lim.MaxBytes/4+1<<20))
-	if err != nil {
+	capacity := lim.MaxBytes + lim.MaxBytes/4 + 1<<20
+	// Sniff the format from a short prefix, so tar and tar.gz are decompressed
+	// once straight into the collector and never buffered whole. Only zip
+	// needs the entire archive in memory, because zip.NewReader reads entries
+	// by offset into a single buffer.
+	br := bufio.NewReader(r)
+	magic, err := br.Peek(4)
+	if err != nil && !errors.Is(err, io.EOF) {
 		return nil, err
-	}
-	if int64(len(raw)) > lim.MaxBytes+lim.MaxBytes/4+1<<20 {
-		return nil, &ValidationError{Problems: []Problem{{Message: "archive is larger than the upload limit", Fix: "shrink the build output or raise the upload limit in system settings"}}}
 	}
 	c := newCollector(lim)
 	switch {
-	case bytes.HasPrefix(raw, []byte("PK\x03\x04")) || bytes.HasPrefix(raw, []byte("PK\x05\x06")):
+	case bytes.HasPrefix(magic, []byte("PK\x03\x04")) || bytes.HasPrefix(magic, []byte("PK\x05\x06")):
+		raw, rerr := io.ReadAll(io.LimitReader(br, capacity))
+		if rerr != nil {
+			return nil, rerr
+		}
+		if int64(len(raw)) > capacity {
+			return nil, &ValidationError{Problems: []Problem{{Message: "archive is larger than the upload limit", Fix: "shrink the build output or raise the upload limit in system settings"}}}
+		}
 		err = c.readZip(raw)
-	case bytes.HasPrefix(raw, []byte{0x1f, 0x8b}):
-		gz, gerr := gzip.NewReader(bytes.NewReader(raw))
+	case bytes.HasPrefix(magic, []byte{0x1f, 0x8b}):
+		gz, gerr := gzip.NewReader(io.LimitReader(br, capacity))
 		if gerr != nil {
 			return nil, &ValidationError{Problems: []Problem{{Message: "invalid gzip data: " + gerr.Error(), Fix: "send a valid .tar.gz, .tar or .zip archive"}}}
 		}
 		defer gz.Close()
 		// The tar reader decompresses every byte it passes over, including
 		// skipped bodies and PAX records the collector never sees, so bound
-		// the whole stream rather than only the files kept.
+		// the whole stream rather than only the files kept. The compressed
+		// input stays capped too: decompression never reads past the upload
+		// budget.
 		budget := lim.MaxBytes + overhead
 		stream := &io.LimitedReader{R: gz, N: budget + 1}
 		err = c.readTar(stream)
@@ -244,7 +257,7 @@ func fromArchive(r io.Reader, lim Limits, overhead int64) ([]File, error) {
 			return nil, expansionError(budget)
 		}
 	default:
-		err = c.readTar(bytes.NewReader(raw))
+		err = c.readTar(io.LimitReader(br, capacity))
 	}
 	if err != nil {
 		return nil, err
