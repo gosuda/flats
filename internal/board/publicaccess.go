@@ -22,7 +22,6 @@ import (
 // "edit") on Public requests. Core sets it; clients cannot.
 const PublicAccessHeader = "X-Flats-Public-Access"
 
-// Public access levels.
 const (
 	AccessNone = ""
 	AccessView = "view"

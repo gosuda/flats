@@ -988,8 +988,6 @@ func (c *conn) pump() {
 	}
 }
 
-// setHanded records that the client's board reaches seq with what the
-// socket was handed.
 func (c *conn) setHanded(seq int64) {
 	c.mu.Lock()
 	c.handed = max(c.handed, seq)
