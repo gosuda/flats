@@ -60,6 +60,26 @@ func TestZip(t *testing.T) {
 	}
 }
 
+func TestZipOverUploadLimit(t *testing.T) {
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	h := &zip.FileHeader{Name: "index.html", Method: zip.Store}
+	w, _ := zw.CreateHeader(h)
+	payload := make([]byte, int64(lim.MaxBytes)+int64(lim.MaxBytes)/4+(1<<20)+1)
+	for i := range payload {
+		payload[i] = byte(i * 2654435761)
+	}
+	if _, err := w.Write(payload); err != nil {
+		t.Fatal(err)
+	}
+	zw.Close()
+	_, err := FromArchive(&buf, lim)
+	v, ok := IsValidation(err)
+	if !ok || !strings.Contains(v.Error(), "upload limit") {
+		t.Fatalf("oversize zip: %v", err)
+	}
+}
+
 func TestRejectsTraversalLinksAndOversize(t *testing.T) {
 	_, err := FromArchive(bytes.NewReader(tgz(t, map[string]string{"../evil": "x", "index.html": "y"})), lim)
 	if v, ok := IsValidation(err); !ok || !strings.Contains(v.Error(), "escapes") {
