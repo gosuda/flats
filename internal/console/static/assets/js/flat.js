@@ -5,6 +5,7 @@
 // its first tab (Overview) shows only status and logs, and its settings have
 // no environment or server permissions.
 // Analytics and Database are their own modules under the same tabs.
+'use strict';
 
 import { h, icon, timeEl, dateTime, bytes, plural, shortHash, visibilityOf, accessOf, publicEditOf, editWords, ACCESS, visibilityBadge, publicURL, publicNoticeOf, proxyRoute, proxyDetail } from './dom.js';
 import { api } from './api.js';

@@ -6,6 +6,7 @@
 // intended end targets of each connector.
 //
 // usage: node seed.mjs --url http://127.0.0.1:17940 --slug feedback-1 --out baseline.json [--seed 1]
+'use strict';
 
 import { writeFileSync } from 'node:fs';
 import { args, post, readBoard } from './lib.mjs';

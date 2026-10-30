@@ -2,6 +2,8 @@
 // per session; the client sends {op:"undo"} or {op:"redo"} and reports what
 // the server skipped.
 
+'use strict';
+
 import { toast, plural } from './ui.js';
 import { who } from './guest.js';
 

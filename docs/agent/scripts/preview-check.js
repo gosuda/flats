@@ -1,6 +1,8 @@
 // Flats preview check. Run it in your browser tool's JavaScript runner (or the
 // DevTools console) on a Draft preview, once per width and color scheme. It
 // only reads the rendered page; it cannot see console errors logged earlier.
+'use strict';
+
 (() => {
   const root = document.documentElement;
   const vw = root.clientWidth;

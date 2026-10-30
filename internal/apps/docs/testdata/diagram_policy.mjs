@@ -5,6 +5,8 @@
 // diagram too, until the member clicks.
 //
 //	node diagram_policy.mjs <url> <evidence dir>
+'use strict';
+
 import assert from "node:assert/strict";
 import path from "node:path";
 import { pathToFileURL } from "node:url";

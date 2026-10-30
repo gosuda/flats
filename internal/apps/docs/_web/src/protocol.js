@@ -1,3 +1,5 @@
+'use strict';
+
 import * as enc from "lib0/encoding";
 import * as dec from "lib0/decoding";
 export const LIMITS = Object.freeze({

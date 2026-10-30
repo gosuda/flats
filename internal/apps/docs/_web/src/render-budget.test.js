@@ -1,3 +1,5 @@
+'use strict';
+
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { REMOTE_RENDER_GAP_MS, coalescedRefresh } from "./render-budget.js";

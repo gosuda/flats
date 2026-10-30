@@ -1,3 +1,5 @@
+'use strict';
+
 import { ySyncAnnotation } from "y-codemirror.next";
 import { test } from "node:test";
 import { diagramBlocks } from "./live.js";

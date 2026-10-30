@@ -1,3 +1,5 @@
+'use strict';
+
 import * as Y from "yjs";
 import { EditorState, Compartment } from "@codemirror/state";
 import { EditorView, keymap, drawSelection } from "@codemirror/view";

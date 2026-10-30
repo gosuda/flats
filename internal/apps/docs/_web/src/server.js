@@ -1,3 +1,5 @@
+'use strict';
+
 import content from "./content.js";
 import { clientJS, clientCSS } from "./assets.js";
 import * as Y from "yjs";

@@ -55,6 +55,7 @@
 // the order of the server's ack sequence numbers, so this detects lost or
 // misapplied writes (including one bundle's write clobbering another's on
 // the same element), not a wrong server order.
+'use strict';
 
 import { writeFileSync } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';

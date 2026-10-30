@@ -1,3 +1,5 @@
+'use strict';
+
 import { PlaceTool } from './place.js';
 
 // Text tool (T); double-clicking an empty spot also creates text (rule 16).

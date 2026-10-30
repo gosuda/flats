@@ -1,5 +1,6 @@
 // Tab is one page target attached through a flattened session; the board-e2e
 // harness drives pages through real input events (Input.dispatch*).
+'use strict';
 
 import { writeFileSync } from 'node:fs';
 import { sleep } from '../../lib/cdp.mjs';

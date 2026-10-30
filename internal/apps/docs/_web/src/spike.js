@@ -1,3 +1,5 @@
+'use strict';
+
 import * as Y from "yjs";
 export default {
   fetch() {

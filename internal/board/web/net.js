@@ -2,6 +2,8 @@
 // pending; ack and reject retry rules; ops_part splitting; snapshot and
 // delta_part assembly by generation; resync; fatal; reconnect backoff.
 
+'use strict';
+
 export const FRAME_MAX = 256 * 1024;      // client-to-server frame, after encoding
 export const PART_DATA_MAX = 192 * 1024;  // raw bytes of one ops_part data slice
 export const PARTS_MAX = 32;

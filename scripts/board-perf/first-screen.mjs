@@ -20,6 +20,7 @@
 //   "first interactive screen" time.
 // Also recorded: response end of the HTML, the WebSocket open, welcome and
 // last snapshot part, and when every image in view finished decoding.
+'use strict';
 
 import { writeFileSync } from 'node:fs';
 import { launchChrome } from '../lib/cdp.mjs';

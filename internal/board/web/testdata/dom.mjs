@@ -2,6 +2,8 @@
 // elements, events, focus and selectors for ui.js, textedit.js and, with
 // page.mjs, the whole app.
 
+'use strict';
+
 class Node {
   constructor(tag) {
     this.tagName = tag.toUpperCase();

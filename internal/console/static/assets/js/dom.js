@@ -1,5 +1,6 @@
 // DOM building and formatting helpers. Everything is built with
 // createElement/textContent so server data is never parsed as HTML.
+'use strict';
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 

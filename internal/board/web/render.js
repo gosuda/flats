@@ -3,6 +3,8 @@
 // The static layer redraws only dirty regions, shifts its bitmap while
 // panning and shows a scaled bitmap while a zoom gesture runs.
 
+'use strict';
+
 import { currentTheme, stickyColor, inkColor, shapeFill, frameFill } from './theme.js';
 import { style, authorOf } from './schema.js';
 import { connectorPoints, pointAlong, penWorldPoints, penWidth, labelBox } from './geom.js';

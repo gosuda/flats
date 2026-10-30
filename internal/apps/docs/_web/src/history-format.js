@@ -1,4 +1,6 @@
 // Formatting of the history panel, kept free of browser APIs for tests.
+'use strict';
+
 import { diffLines } from "diff";
 
 const relative = new Intl.RelativeTimeFormat(undefined, { numeric: "auto" });

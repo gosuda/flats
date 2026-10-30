@@ -2,6 +2,8 @@
 // element list (role="tree") that shows itself while it has focus. Frames are
 // branches, elements leaves, in reading order per frame.
 
+'use strict';
+
 import { $, h, announce } from './ui.js';
 import { KIND_NAMES, SHAPE_NAMES, style, authorOf } from './schema.js';
 import * as ops from './ops.js';

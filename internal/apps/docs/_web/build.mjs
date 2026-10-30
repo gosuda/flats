@@ -1,3 +1,5 @@
+'use strict';
+
 import { build } from "esbuild";
 import { readFile, writeFile, readdir, mkdir } from "node:fs/promises";
 import { createHash } from "node:crypto";
@@ -13,6 +15,7 @@ const options = {
   minify: true,
   target: "es2022",
   legalComments: "none",
+  banner: { js: '"use strict";' },
   metafile: true,
 };
 // Mermaid is served as its own module from a content-hashed path, so it is
@@ -33,7 +36,7 @@ if (mermaidGzip.length > 1536 * 1024)
   throw new Error("Compressed Mermaid exceeds the host codec limit");
 await writeFile(
   out + "/mermaid-asset.js",
-  `export default ${JSON.stringify(mermaidJS)};\nexport const gzip = ${JSON.stringify(mermaidGzip.toString("base64"))};\n`,
+  `'use strict';\n\nexport default ${JSON.stringify(mermaidJS)};\nexport const gzip = ${JSON.stringify(mermaidGzip.toString("base64"))};\n`,
 );
 const client = await build({
   ...options,

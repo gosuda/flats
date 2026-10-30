@@ -2,6 +2,8 @@
 // read-only, pin and unpin, roll back after an in-page confirmation, and copy
 // elements of an earlier revision into the current board.
 
+'use strict';
+
 import { $, h, icon, toast, confirmDialog, relTime, plural, replace } from './ui.js';
 import { badge } from './guest.js';
 import { SpatialIndex } from './index.js';

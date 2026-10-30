@@ -1,6 +1,7 @@
 // Flat actions shared by the list and the flat page. Each asks for
 // confirmation first and reports the outcome; they resolve true when the
 // server state changed.
+'use strict';
 
 import { h, dateTime, bytes, VISIBILITY, visibilityOf, accessOf, accessLabel, editWords, ACCESS, becomingNoticeFor, publicURL, publicNoticeOf, PUBLIC_NETWORKS } from './dom.js';
 import { api, ApiError } from './api.js';

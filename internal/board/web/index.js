@@ -2,6 +2,8 @@
 // elements that span more than 4 cells, and a reverse index from a target
 // element to the connectors attached to it.
 
+'use strict';
+
 const CELL = 512;
 const LARGE_CELLS = 4;
 

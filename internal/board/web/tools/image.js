@@ -3,6 +3,8 @@
 // uploaded bytes until a batch that references them is acknowledged, for
 // recovery files (9.3).
 
+'use strict';
+
 import { h, toast } from '../ui.js';
 import * as ops from '../ops.js';
 

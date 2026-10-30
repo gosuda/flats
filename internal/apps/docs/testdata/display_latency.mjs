@@ -18,6 +18,8 @@
 // a round trip into page B's main thread ("probe"). With
 // FLATS_DOCS_DISPLAY_PROFILE=1 it records a CPU profile of page B during the
 // edits into the evidence directory and prints its top functions.
+'use strict';
+
 import fs from "node:fs";
 import readline from "node:readline";
 import path from "node:path";

@@ -3,6 +3,8 @@
 // The screen is the server copy with the pending batches applied again on top
 // (the overlay), plus a transient preview while a drag is in progress.
 
+'use strict';
+
 import { clampPoint, withBundle } from './schema.js';
 import { endpointWorld } from './geom.js';
 import { keyBetween } from './ids.js';

@@ -1,3 +1,5 @@
+'use strict';
+
 import { pngBlob, saveBlob } from "./diagram-export.js";
 import { createWheelPan } from "../../../../design/web/wheel.js";
 let cloneID = 0;

@@ -1,4 +1,5 @@
 // Landing page: every flat, with search, a list/grid toggle and row actions.
+'use strict';
 
 import { h, clear, icon, timeEl, relTime, visibilityBadge } from './dom.js';
 import { api, thumbnail } from './api.js';

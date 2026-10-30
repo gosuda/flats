@@ -2,6 +2,8 @@
 // item that turns into a slide control in place, the pending lifecycle and
 // every outcome of the request, against a stubbed API. Reuses the fake DOM of
 // ui_test.mjs, whose suite runs first. The Go runner copies both scripts.
+'use strict';
+
 import './ui_test.mjs';
 import assert from 'node:assert/strict';
 

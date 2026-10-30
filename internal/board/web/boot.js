@@ -7,6 +7,8 @@
 // does not reload again within 10 seconds, so a host that keeps failing
 // shows the failure instead of reloading forever. This file must stay
 // self-contained: no imports, nothing that depends on the other files.
+'use strict';
+
 (() => {
   const key = 'flats-board-reload';
   addEventListener('error', (e) => {

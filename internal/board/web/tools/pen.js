@@ -2,6 +2,8 @@
 // and stored as normalized points (TECH 3.1, 11.1). A stylus draws with any
 // tool (rule 20).
 
+'use strict';
+
 import { penFromPoints } from '../geom.js';
 import { inkColor } from '../theme.js';
 import { strokeSmooth } from '../render.js';

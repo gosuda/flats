@@ -1,5 +1,6 @@
 // Tests of the e2e helpers that need no browser or host:
 // node --test scripts/board-e2e/lib/lib.test.mjs
+'use strict';
 
 import test from 'node:test';
 import assert from 'node:assert/strict';

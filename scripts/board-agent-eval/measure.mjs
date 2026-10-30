@@ -5,6 +5,7 @@
 // OffscreenCanvas, over the DevTools protocol). "approx" runs the same code
 // in Node with an estimated glyph width; use it only when Chrome is missing,
 // and treat results near 12 px as uncertain.
+'use strict';
 
 import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';

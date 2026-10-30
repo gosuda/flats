@@ -1,5 +1,7 @@
 // Size caps for a diagram drawn on request (docs-public-edit-TECH 3.10):
 // what one click on a diagram anyone may have written can cost.
+'use strict';
+
 export const DIAGRAM_CAPS = Object.freeze({
   maxTextSize: 20000,
   maxEdges: 500,

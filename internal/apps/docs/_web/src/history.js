@@ -1,6 +1,8 @@
 // The history panel of a Private document page: the flat's revisions,
 // viewing one (rendered, or as changes against the live text), pinning and
 // restoring. The routes are served by the host (core/docsroutes.go).
+'use strict';
+
 import { createMarkdown } from "./markdown.js";
 import {
   ago,

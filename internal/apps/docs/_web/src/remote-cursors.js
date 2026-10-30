@@ -2,6 +2,8 @@
 // guest's name (docs-public-edit.md rule 13). Adapted from
 // y-codemirror.next 0.3.6 src/y-remote-selections.js (MIT License,
 // Copyright (c) 2022 Kevin Jahns), whose caret label holds only the name.
+'use strict';
+
 import { Decoration, ViewPlugin, WidgetType } from "@codemirror/view";
 import { Annotation, RangeSet } from "@codemirror/state";
 import { yRemoteSelectionsTheme } from "y-codemirror.next";

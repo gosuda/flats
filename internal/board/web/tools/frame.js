@@ -1,3 +1,5 @@
+'use strict';
+
 import { PlaceTool } from './place.js';
 
 // Frame tool (F). Frames go to the back of the stacking order.

@@ -8,6 +8,11 @@ and test-only requests use the corresponding stage and stop at its boundary.
 Each stage includes review by a different model and correction before acceptance.
 Agents without skill discovery must read these same linked instructions directly,
 
+JavaScript: every `.js` and `.mjs` file declares `'use strict';` in its
+directive prologue, after any shebang or leading comment. New files carry it
+from the start; `.mjs` is strict implicitly, and the declaration is still
+required so the rule stays uniform and grep-checkable.
+
 Memory: allocate on hot paths only when ownership escapes. Reuse
 short-lived buffers through `sync.Pool`, stream with `io.Copy` or
 `io.CopyBuffer` rather than `io.ReadAll` of a whole body when a streaming

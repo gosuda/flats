@@ -1,4 +1,5 @@
 // Approval page: what an agent asked for and who decided it.
+'use strict';
 
 import { h, clear, dateTime, timeEl, visibilityOf, accessKey, accessOf, accessLabel, editWords, visibilityBadge, becomingNoticeFor } from './dom.js';
 import { api } from './api.js';

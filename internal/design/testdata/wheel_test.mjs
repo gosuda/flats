@@ -1,4 +1,6 @@
 // Runs under Node from TestWheelPan, which puts web/wheel.js beside this file.
+'use strict';
+
 import { createWheelPan } from './wheel.js';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

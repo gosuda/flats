@@ -38,6 +38,8 @@
 //
 // The private lezer helpers these need (finishLink and the link parsers)
 // are copied from lezer; node_modules is not modified.
+'use strict';
+
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
 import { Element, InlineContext, parser } from "@lezer/markdown";
 

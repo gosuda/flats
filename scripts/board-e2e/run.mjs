@@ -7,6 +7,7 @@
 //
 // Usage: node scripts/board-e2e/run.mjs --console http://127.0.0.1:17930 --flats ./flats
 // See README.md. Exit status: 0 when every check passed, 1 otherwise.
+'use strict';
 
 import { parseArgs } from 'node:util';
 import { spawnSync } from 'node:child_process';

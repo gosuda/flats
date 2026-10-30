@@ -1,6 +1,8 @@
 // Eraser (E): drag across pen strokes to delete them; the B1 eraser deletes
 // whole strokes and never other elements (TECH 3.1).
 
+'use strict';
+
 import * as ops from '../ops.js';
 
 export class EraserTool {

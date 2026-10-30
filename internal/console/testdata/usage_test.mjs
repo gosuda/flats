@@ -2,6 +2,8 @@
 // stacked requests chart and the notes for flats without their own worker.
 // Reuses the console's DOM harness and runs its regression suite first; the
 // Go runner (console_usage_test.go) copies both scripts.
+'use strict';
+
 import './ui_test.mjs';
 import assert from 'node:assert/strict';
 import { mount as analytics, duration, percent, cpuTime, usageSeries } from './analytics.js';

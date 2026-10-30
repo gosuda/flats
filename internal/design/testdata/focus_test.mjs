@@ -2,6 +2,8 @@
 // web/wheel.js beside this file. It boots the real canvas app against a small
 // fake DOM, host API and event stream on a phone-sized viewport, and checks
 // which artboard frames it creates.
+'use strict';
+
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import vm from 'node:vm';

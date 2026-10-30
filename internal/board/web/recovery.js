@@ -1,6 +1,8 @@
 // Recovery files (TECH 9.3): the result of applying this tab's unconfirmed
 // batches on top of the server copy, with the image bytes they reference.
 
+'use strict';
+
 import { clampPoint, contentOf } from './schema.js';
 import { endWorld } from './geom.js';
 import { writeZip } from './zip.js';

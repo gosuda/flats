@@ -2,6 +2,8 @@
 // API_BASE is an operator-chosen HTTPS origin, never a visitor-supplied URL.
 // The response exposes only the upstream `message` field; headers,
 // credentials and upstream error detail never reach the visitor.
+'use strict';
+
 export default {
   async fetch(request, env) {
     const path = new URL(request.url).pathname;

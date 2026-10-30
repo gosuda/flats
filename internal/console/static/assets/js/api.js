@@ -1,5 +1,6 @@
 // Client for /console/api. Every request carries X-Flats-Console: 1; the
 // browser adds Sec-Fetch-Site, which the server checks on mutations.
+'use strict';
 
 const BASE = '/console/api';
 

@@ -2,8 +2,9 @@
 // module, then initialized by __flats_init. Provides fetch, Response,
 // Headers, Request, URL, URLSearchParams, btoa/atob, console, the env object
 // and the dispatch entry points the Go side calls with JSON strings.
+'use strict';
+
 (() => {
-  "use strict";
   const host = globalThis.__flats_host;
   delete globalThis.__flats_host;
   const docsCodec = globalThis.__flats_docs_codec;

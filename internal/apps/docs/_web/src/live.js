@@ -2,6 +2,8 @@
 // in one Y.Text; this only decorates it. Formatting is shown rendered, and the
 // Markdown syntax reappears on the lines the cursor or selection touches, so
 // it can be edited where it is written.
+'use strict';
+
 import { syntaxTree } from "@codemirror/language";
 import MarkdownIt from "markdown-it";
 import { isDiagram } from "./markdown.js";

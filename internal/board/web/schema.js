@@ -1,6 +1,8 @@
 // Element schema (TECH Appendix A): style keys and defaults, bundles, and the
 // limits the client checks before it sends a batch.
 
+'use strict';
+
 export const STICKY_COLORS = ['yellow', 'orange', 'pink', 'blue', 'green', 'gray'];
 export const INK_COLORS = ['ink', 'gray', 'red', 'orange', 'green', 'blue', 'purple'];
 export const SHAPES = ['rect', 'round', 'ellipse', 'diamond'];

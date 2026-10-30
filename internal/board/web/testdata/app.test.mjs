@@ -1,5 +1,7 @@
 // App-level tests: the real board app started from index.html (page.mjs),
 // with the test playing the server over the fake socket.
+'use strict';
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { startApp } from './page.mjs';

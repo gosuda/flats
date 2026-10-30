@@ -1,3 +1,5 @@
+'use strict';
+
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { Pending, Provider } from "./provider.js";

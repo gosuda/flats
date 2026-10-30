@@ -1,6 +1,7 @@
 // Flats design canvas app. Plain ES module, no dependencies.
 // It shows a design's artboards on a pan/zoom canvas and, on a Private
 // route, edits layout, notes, text and tweaks through /_design/api/ops.
+'use strict';
 
 import { createWheelPan } from './wheel.js';
 

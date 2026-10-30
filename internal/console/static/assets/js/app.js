@@ -1,4 +1,5 @@
 // Entry point: the history-API router for console and per-flat management pages.
+'use strict';
 
 import { h, clear } from './dom.js';
 import { closeMenus, setHostProviders } from './ui.js';
