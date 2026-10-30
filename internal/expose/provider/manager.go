@@ -330,52 +330,17 @@ func New(dir string, opts Options) (*Manager, error) {
 	}, nil
 }
 
-func (m *Manager) tailnet() Tailnet {
-	m.bmu.RLock()
-	defer m.bmu.RUnlock()
-	return m.ts
-}
-
-func (m *Manager) portalNet() PortalNet {
-	m.bmu.RLock()
-	defer m.bmu.RUnlock()
-	return m.portal
-}
-
-func (m *Manager) zrokNet() ZrokNet {
-	m.bmu.RLock()
-	defer m.bmu.RUnlock()
-	return m.zrok
-}
-
-func (m *Manager) quickNet() QuickNet {
-	m.bmu.RLock()
-	defer m.bmu.RUnlock()
-	return m.cfquick
-}
-
-func (m *Manager) netbirdNet() NetbirdNet {
-	m.bmu.RLock()
-	defer m.bmu.RUnlock()
-	return m.netbird
-}
-
-func (m *Manager) proxyNet() ProxyNet {
-	m.bmu.RLock()
-	defer m.bmu.RUnlock()
-	return m.proxy
-}
+func (m *Manager) tailnet() Tailnet       { return loadBackend(&m.bmu, &m.ts) }
+func (m *Manager) portalNet() PortalNet   { return loadBackend(&m.bmu, &m.portal) }
+func (m *Manager) zrokNet() ZrokNet       { return loadBackend(&m.bmu, &m.zrok) }
+func (m *Manager) quickNet() QuickNet     { return loadBackend(&m.bmu, &m.cfquick) }
+func (m *Manager) netbirdNet() NetbirdNet { return loadBackend(&m.bmu, &m.netbird) }
+func (m *Manager) proxyNet() ProxyNet     { return loadBackend(&m.bmu, &m.proxy) }
 
 // AttachProxy configures the reverse proxy backend, for a proxy provider the
 // operator turns on while the host runs. It does not grant the provider and
 // keeps a backend already attached.
-func (m *Manager) AttachProxy(p ProxyNet) {
-	m.bmu.Lock()
-	defer m.bmu.Unlock()
-	if m.proxy == nil {
-		m.proxy = p
-	}
-}
+func (m *Manager) AttachProxy(p ProxyNet) { attachBackend(&m.bmu, &m.proxy, p) }
 
 // DetachProxy removes the reverse proxy backend, for a proxy provider turned
 // off while the host runs. It refuses while any proxy route is registered.
@@ -397,32 +362,14 @@ func (m *Manager) DetachProxy() bool {
 }
 
 // AttachNetbird configures the NetBird backend once. It does not grant it.
-func (m *Manager) AttachNetbird(n NetbirdNet) {
-	m.bmu.Lock()
-	defer m.bmu.Unlock()
-	if m.netbird == nil {
-		m.netbird = n
-	}
-}
+func (m *Manager) AttachNetbird(n NetbirdNet) { attachBackend(&m.bmu, &m.netbird, n) }
 
 // AttachTailnet configures the Tailscale backend once, for a provider the
 // operator enables while the host runs. It does not grant the provider.
-func (m *Manager) AttachTailnet(t Tailnet) {
-	m.bmu.Lock()
-	defer m.bmu.Unlock()
-	if m.ts == nil {
-		m.ts = t
-	}
-}
+func (m *Manager) AttachTailnet(t Tailnet) { attachBackend(&m.bmu, &m.ts, t) }
 
 // AttachPortal configures the Portal backend once. It does not grant Portal.
-func (m *Manager) AttachPortal(p PortalNet) {
-	m.bmu.Lock()
-	defer m.bmu.Unlock()
-	if m.portal == nil {
-		m.portal = p
-	}
-}
+func (m *Manager) AttachPortal(p PortalNet) { attachBackend(&m.bmu, &m.portal, p) }
 
 func (m *Manager) config() string {
 	m.bmu.RLock()
@@ -440,23 +387,11 @@ func (m *Manager) SetConfiguration(c string) {
 }
 
 // AttachZrok configures the zrok backend once. It does not grant zrok.
-func (m *Manager) AttachZrok(z ZrokNet) {
-	m.bmu.Lock()
-	defer m.bmu.Unlock()
-	if m.zrok == nil {
-		m.zrok = z
-	}
-}
+func (m *Manager) AttachZrok(z ZrokNet) { attachBackend(&m.bmu, &m.zrok, z) }
 
 // AttachCFQuick configures the Cloudflare quick tunnel backend once. It does
 // not grant the provider.
-func (m *Manager) AttachCFQuick(q QuickNet) {
-	m.bmu.Lock()
-	defer m.bmu.Unlock()
-	if m.cfquick == nil {
-		m.cfquick = q
-	}
-}
+func (m *Manager) AttachCFQuick(q QuickNet) { attachBackend(&m.bmu, &m.cfquick, q) }
 
 // DetachZrok removes the zrok backend, for an account disconnected while the
 // host runs. It refuses while any zrok route is registered.
@@ -591,21 +526,8 @@ func (m *Manager) ServeExposure(ctx context.Context, req ExposureRequest) (res E
 }
 
 func (m *Manager) configured(id ID) bool {
-	switch id {
-	case Local:
-		return m.local != nil
-	case Tailscale, Funnel:
-		return m.tailnet() != nil
-	case Portal:
-		return m.portalNet() != nil
-	case Zrok:
-		return m.zrokNet() != nil
-	case CFQuick:
-		return m.quickNet() != nil
-	case Netbird, NetbirdExpose:
-		return m.netbirdNet() != nil
-	case Proxy, ProxyPublic:
-		return m.proxyNet() != nil
+	if view, ok := backendViews[id]; ok {
+		return view.configured(m)
 	}
 	return false
 }
@@ -732,46 +654,11 @@ func (m *Manager) refreshed(observed observedEndpoint, r route, routed bool) Exp
 	ep := observed.endpoint
 	if routed {
 		var fresh ExposureEndpoint
-		switch ep.Provider {
-		case Local:
-			fresh = fromStatus(Local, m.local.Status(), r.host, m.local.URL(r.host))
-		case Tailscale:
-			fresh = fromStatus(Tailscale, m.tailnet().Status(), r.host, m.tailnet().URL(r.host))
-		case Funnel:
-			fresh = m.tailnet().FunnelState(r.host)
-		case Portal:
-			fresh = fromStatus(Portal, m.portalNet().Status(), r.host, m.portalNet().URL(r.host))
-		case Zrok:
-			// zrok can be detached (account replaced) after the snapshot.
-			if z := m.zrokNet(); z != nil {
-				fresh = fromStatus(Zrok, z.Status(), r.host, z.URL(r.host))
+		if view, ok := backendViews[ep.Provider]; ok {
+			if view.missingDetail == "" || view.configured(m) {
+				fresh = view.view(m, ep.Provider, r.host)
 			} else {
-				fresh = ExposureEndpoint{Provider: Zrok, State: stateUnavailable, Detail: "zrok is not configured"}
-			}
-		case CFQuick:
-			if q := m.quickNet(); q != nil {
-				fresh = fromStatus(CFQuick, q.Status(), r.host, q.URL(r.host))
-			} else {
-				fresh = ExposureEndpoint{Provider: CFQuick, State: stateUnavailable, Detail: "cloudflare quick tunnels are not configured"}
-			}
-		case Netbird:
-			// NetBird can be detached (peer disconnected) after the snapshot.
-			if n := m.netbirdNet(); n != nil {
-				fresh = fromStatus(Netbird, n.PrivateStatus(), r.host, n.PrivateURL(r.host))
-			} else {
-				fresh = ExposureEndpoint{Provider: Netbird, State: stateUnavailable, Detail: "netbird is not configured"}
-			}
-		case NetbirdExpose:
-			if n := m.netbirdNet(); n != nil {
-				fresh = fromStatus(NetbirdExpose, n.PublicStatus(), r.host, n.PublicURL(r.host))
-			} else {
-				fresh = ExposureEndpoint{Provider: NetbirdExpose, State: stateUnavailable, Detail: "netbird is not configured"}
-			}
-		case Proxy, ProxyPublic:
-			if p := m.proxyNet(); p != nil {
-				fresh = fromStatus(ep.Provider, p.Status(), r.host, p.URL(r.host))
-			} else {
-				fresh = ExposureEndpoint{Provider: ep.Provider, State: stateUnavailable, Detail: "the reverse proxy is not configured"}
+				fresh = ExposureEndpoint{Provider: ep.Provider, State: stateUnavailable, Detail: view.missingDetail}
 			}
 		}
 		ep.URL, ep.State, ep.Detail = fresh.URL, fresh.State, fresh.Detail
@@ -857,31 +744,19 @@ func (m *Manager) servePrivate(ctx context.Context, req ExposureRequest) (Exposu
 	var eps []ExposureEndpoint
 	var errs []error
 	ep, err := m.openLocal(ctx, req)
-	eps = append(eps, ep)
-	if err != nil {
-		errs = append(errs, err)
-	}
+	eps, errs = collectOpen(eps, errs, ep, err)
 	if listed(req.Permitted, Tailscale) {
 		ep, err := m.openTailscale(ctx, req)
-		eps = append(eps, ep)
-		if err != nil {
-			errs = append(errs, err)
-		}
+		eps, errs = collectOpen(eps, errs, ep, err)
 	}
 	// Previews are throwaway hosts; NetBird gives them no peer or port.
 	if listed(req.Permitted, Netbird) && !req.Ephemeral {
 		ep, err := m.openNetbird(ctx, req)
-		eps = append(eps, ep)
-		if err != nil {
-			errs = append(errs, err)
-		}
+		eps, errs = collectOpen(eps, errs, ep, err)
 	}
 	if listed(req.Permitted, Proxy) {
 		ep, err := m.openProxy(ctx, req, Proxy)
-		eps = append(eps, ep)
-		if err != nil {
-			errs = append(errs, err)
-		}
+		eps, errs = collectOpen(eps, errs, ep, err)
 	}
 	for _, id := range publicIDs {
 		if listed(req.Permitted, id) {
@@ -914,40 +789,24 @@ func (m *Manager) servePublic(ctx context.Context, req ExposureRequest) (Exposur
 		privateReq.Handler = req.PrivateHandler
 	}
 	private, privateErr := m.retainPrivate(ctx, privateReq, Local)
-	eps = append(eps, private)
-	if privateErr != nil {
-		errs = append(errs, privateErr)
-	}
+	eps, errs = collectOpen(eps, errs, private, privateErr)
 	if listed(req.Permitted, Tailscale) {
 		tail, err := m.retainPrivate(ctx, privateReq, Tailscale)
-		eps = append(eps, tail)
-		if err != nil {
-			errs = append(errs, err)
-		}
+		eps, errs = collectOpen(eps, errs, tail, err)
 	}
 	if listed(req.Permitted, Netbird) {
 		mesh, err := m.retainPrivate(ctx, privateReq, Netbird)
-		eps = append(eps, mesh)
-		if err != nil {
-			errs = append(errs, err)
-		}
+		eps, errs = collectOpen(eps, errs, mesh, err)
 	}
 	if listed(req.Permitted, Proxy) {
 		proxy, err := m.retainPrivate(ctx, privateReq, Proxy)
-		eps = append(eps, proxy)
-		if err != nil {
-			errs = append(errs, err)
-		}
+		eps, errs = collectOpen(eps, errs, proxy, err)
 	}
 	opened := 0
 	for _, id := range want {
 		ep, err := m.openPublic(ctx, req, id)
-		eps = append(eps, ep)
-		if err != nil {
-			errs = append(errs, err)
-			continue
-		}
-		if ep.State == stateReady || ep.State == stateStarting || ep.State == "needs-login" || ep.State == "key-expiring" {
+		eps, errs = collectOpen(eps, errs, ep, err)
+		if err == nil && (ep.State == stateReady || ep.State == stateStarting || ep.State == "needs-login" || ep.State == "key-expiring") {
 			opened++
 		}
 	}
@@ -1003,10 +862,9 @@ func (m *Manager) openLocal(ctx context.Context, req ExposureRequest) (ExposureE
 	host := requestHost(req)
 	url, err := m.local.Serve(ctx, host, tagged(Local, req.Handler), req.Ephemeral)
 	if err != nil {
-		return ExposureEndpoint{Provider: Local, State: stateError, Detail: err.Error()}, err
+		return openFailed(Local, err)
 	}
-	m.track(req, Local, host)
-	return fromStatus(Local, m.local.Status(), host, url), nil
+	return m.finishOpen(req, Local, host, url, m.local.Status()), nil
 }
 
 func (m *Manager) openTailscale(ctx context.Context, req ExposureRequest) (ExposureEndpoint, error) {
@@ -1019,14 +877,9 @@ func (m *Manager) openTailscale(ctx context.Context, req ExposureRequest) (Expos
 	host := requestHost(req)
 	url, err := m.tailnet().Serve(ctx, host, tagged(Tailscale, req.Handler), req.Ephemeral)
 	if err != nil {
-		return ExposureEndpoint{Provider: Tailscale, State: stateError, Detail: err.Error()}, err
+		return openFailed(Tailscale, err)
 	}
-	m.track(req, Tailscale, host)
-	ep := fromStatus(Tailscale, m.tailnet().Status(), host, url)
-	if ep.State == "" {
-		ep.State = stateStarting
-	}
-	return ep, nil
+	return m.finishOpen(req, Tailscale, host, url, m.tailnet().Status()), nil
 }
 
 func (m *Manager) openNetbird(ctx context.Context, req ExposureRequest) (ExposureEndpoint, error) {
@@ -1035,22 +888,14 @@ func (m *Manager) openNetbird(ctx context.Context, req ExposureRequest) (Exposur
 	}
 	n := m.netbirdNet()
 	if n == nil {
-		return refused(Netbird, "netbird is permitted but not configured"), fmt.Errorf("%w: netbird", ErrNotConfigured)
+		return unconfiguredRefusal(Netbird, "netbird is permitted but not configured", "netbird")
 	}
 	host := requestHost(req)
 	url, err := n.ServePrivate(ctx, host, tagged(Netbird, req.Handler))
 	if err != nil {
-		return ExposureEndpoint{Provider: Netbird, State: stateError, Detail: err.Error()}, fmt.Errorf("%w: netbird: %w", core.ErrProviderNotReady, err)
+		return serveFailed(Netbird, "netbird", err)
 	}
-	m.track(req, Netbird, host)
-	ep := fromStatus(Netbird, n.PrivateStatus(), host, url)
-	if ep.URL == "" {
-		ep.URL = url
-	}
-	if ep.State == "" {
-		ep.State = stateStarting
-	}
-	return ep, nil
+	return m.finishOpen(req, Netbird, host, url, n.PrivateStatus()), nil
 }
 
 // openProxy serves req on the reverse proxy listener as provider id: the
@@ -1065,15 +910,14 @@ func (m *Manager) openProxy(ctx context.Context, req ExposureRequest, id ID) (Ex
 	defer m.xmu.RUnlock()
 	p := m.proxyNet()
 	if p == nil {
-		return refused(id, "the reverse proxy is permitted but not configured"), fmt.Errorf("%w: %s", ErrNotConfigured, id)
+		return unconfiguredRefusal(id, "the reverse proxy is permitted but not configured", string(id))
 	}
 	host := requestHost(req)
 	url, err := p.Serve(ctx, host, tagged(id, req.Handler))
 	if err != nil {
-		return ExposureEndpoint{Provider: id, State: stateError, Detail: err.Error()}, fmt.Errorf("%w: %s: %w", core.ErrProviderNotReady, id, err)
+		return serveFailed(id, string(id), err)
 	}
-	m.track(req, id, host)
-	return fromStatus(id, p.Status(), host, url), nil
+	return m.finishOpen(req, id, host, url, p.Status()), nil
 }
 
 func (m *Manager) openPublic(ctx context.Context, req ExposureRequest, id ID) (ExposureEndpoint, error) {
@@ -1083,7 +927,7 @@ func (m *Manager) openPublic(ctx context.Context, req ExposureRequest, id ID) (E
 	switch id {
 	case Funnel:
 		if m.tailnet() == nil {
-			return refused(Funnel, "funnel is permitted but tailscale is not configured"), fmt.Errorf("%w: tailscale-funnel", ErrNotConfigured)
+			return unconfiguredRefusal(Funnel, "funnel is permitted but tailscale is not configured", "tailscale-funnel")
 		}
 		host := requestHost(req)
 		pending, err := m.hasPendingTailnet(req.Slug, host)
@@ -1100,7 +944,7 @@ func (m *Manager) openPublic(ctx context.Context, req ExposureRequest, id ID) (E
 		}
 		url, err := m.tailnet().ServeFunnel(ctx, host, tagged(Funnel, req.Handler))
 		if err != nil {
-			return ExposureEndpoint{Provider: Funnel, State: stateError, Detail: err.Error()}, fmt.Errorf("%w: tailscale-funnel: %w", core.ErrProviderNotReady, err)
+			return serveFailed(Funnel, "tailscale-funnel", err)
 		}
 		m.track(req, Funnel, host)
 		ep := m.tailnet().FunnelState(host)
@@ -1113,22 +957,15 @@ func (m *Manager) openPublic(ctx context.Context, req ExposureRequest, id ID) (E
 		}
 		return ep, nil
 	case Portal:
-		if m.portalNet() == nil {
-			return refused(Portal, "portal is permitted but not configured"), fmt.Errorf("%w: portal", ErrNotConfigured)
+		p := m.portalNet()
+		if p == nil {
+			return unconfiguredRefusal(Portal, "portal is permitted but not configured", "portal")
 		}
-		url, err := m.portalNet().Serve(ctx, req.Slug, tagged(Portal, req.Handler), req.Hidden)
+		url, err := p.Serve(ctx, req.Slug, tagged(Portal, req.Handler), req.Hidden)
 		if err != nil {
-			return ExposureEndpoint{Provider: Portal, State: stateError, Detail: err.Error()}, fmt.Errorf("%w: portal: %w", core.ErrProviderNotReady, err)
+			return serveFailed(Portal, "portal", err)
 		}
-		m.track(req, Portal, req.Slug)
-		ep := fromStatus(Portal, m.portalNet().Status(), req.Slug, url)
-		if ep.URL == "" {
-			ep.URL = url
-		}
-		if ep.State == "" {
-			ep.State = stateStarting
-		}
-		return ep, nil
+		return m.finishOpen(req, Portal, req.Slug, url, p.Status()), nil
 	case Zrok:
 		// Hold the open against DetachZrok from Serve through registration,
 		// so a backend is never detached under an open that will register.
@@ -1136,57 +973,33 @@ func (m *Manager) openPublic(ctx context.Context, req ExposureRequest, id ID) (E
 		defer m.zmu.RUnlock()
 		z := m.zrokNet()
 		if z == nil {
-			return refused(Zrok, "zrok is permitted but not configured"), fmt.Errorf("%w: zrok", ErrNotConfigured)
+			return unconfiguredRefusal(Zrok, "zrok is permitted but not configured", "zrok")
 		}
 		url, err := z.Serve(ctx, req.Slug, tagged(Zrok, req.Handler))
 		if err != nil {
-			return ExposureEndpoint{Provider: Zrok, State: stateError, Detail: err.Error()}, fmt.Errorf("%w: zrok: %w", core.ErrProviderNotReady, err)
+			return serveFailed(Zrok, "zrok", err)
 		}
-		m.track(req, Zrok, req.Slug)
-		ep := fromStatus(Zrok, z.Status(), req.Slug, url)
-		if ep.URL == "" {
-			ep.URL = url
-		}
-		if ep.State == "" {
-			ep.State = stateStarting
-		}
-		return ep, nil
+		return m.finishOpen(req, Zrok, req.Slug, url, z.Status()), nil
 	case CFQuick:
 		q := m.quickNet()
 		if q == nil {
-			return refused(CFQuick, "cloudflare-quick is permitted but not configured"), fmt.Errorf("%w: cloudflare-quick", ErrNotConfigured)
+			return unconfiguredRefusal(CFQuick, "cloudflare-quick is permitted but not configured", "cloudflare-quick")
 		}
 		url, err := q.Serve(ctx, req.Slug, tagged(CFQuick, req.Handler))
 		if err != nil {
-			return ExposureEndpoint{Provider: CFQuick, State: stateError, Detail: err.Error()}, fmt.Errorf("%w: cloudflare-quick: %w", core.ErrProviderNotReady, err)
+			return serveFailed(CFQuick, "cloudflare-quick", err)
 		}
-		m.track(req, CFQuick, req.Slug)
-		ep := fromStatus(CFQuick, q.Status(), req.Slug, url)
-		if ep.URL == "" {
-			ep.URL = url
-		}
-		if ep.State == "" {
-			ep.State = stateStarting
-		}
-		return ep, nil
+		return m.finishOpen(req, CFQuick, req.Slug, url, q.Status()), nil
 	case NetbirdExpose:
 		n := m.netbirdNet()
 		if n == nil {
-			return refused(NetbirdExpose, "netbird is permitted but not configured"), fmt.Errorf("%w: netbird-expose", ErrNotConfigured)
+			return unconfiguredRefusal(NetbirdExpose, "netbird is permitted but not configured", "netbird-expose")
 		}
 		url, err := n.ServePublic(ctx, req.Slug, tagged(NetbirdExpose, req.Handler))
 		if err != nil {
-			return ExposureEndpoint{Provider: NetbirdExpose, State: stateError, Detail: err.Error()}, fmt.Errorf("%w: netbird-expose: %w", core.ErrProviderNotReady, err)
+			return serveFailed(NetbirdExpose, "netbird-expose", err)
 		}
-		m.track(req, NetbirdExpose, req.Slug)
-		ep := fromStatus(NetbirdExpose, n.PublicStatus(), req.Slug, url)
-		if ep.URL == "" {
-			ep.URL = url
-		}
-		if ep.State == "" {
-			ep.State = stateStarting
-		}
-		return ep, nil
+		return m.finishOpen(req, NetbirdExpose, req.Slug, url, n.PublicStatus()), nil
 	case ProxyPublic:
 		return m.openProxy(ctx, req, ProxyPublic)
 	default:
@@ -1422,12 +1235,12 @@ func sortedKeys(set map[string]struct{}) []string {
 // is retained separately for StopSlug or a later Funnel activation to retry;
 // it does not mean the public route remains reachable.
 func (m *Manager) StopPublicRoutes(ctx context.Context, slug string) (PublicStopResult, error) {
-	funnelHost, hadFunnel := m.take(slug, Funnel, false)
-	_, hadPortal := m.take(slug, Portal, false)
-	_, hadZrok := m.take(slug, Zrok, false)
-	_, hadQuick := m.take(slug, CFQuick, false)
-	_, hadExpose := m.take(slug, NetbirdExpose, false)
-	proxyHost, hadProxy := m.take(slug, ProxyPublic, false)
+	funnelHost, hadFunnel := m.routeHost(slug, Funnel)
+	_, hadPortal := m.routeHost(slug, Portal)
+	_, hadZrok := m.routeHost(slug, Zrok)
+	_, hadQuick := m.routeHost(slug, CFQuick)
+	_, hadExpose := m.routeHost(slug, NetbirdExpose)
+	proxyHost, hadProxy := m.routeHost(slug, ProxyPublic)
 	var res PublicStopResult
 	if hadFunnel {
 		if m.tailnet() == nil {
@@ -1453,7 +1266,7 @@ func (m *Manager) StopPublicRoutes(ctx context.Context, slug string) (PublicStop
 				}
 				res.Unconfirmed = append(res.Unconfirmed, Funnel)
 			} else {
-				m.take(slug, Funnel, true)
+				m.dropRoute(slug, Funnel)
 				m.pruneState(slug, Funnel)
 				res.Stopped = append(res.Stopped, Funnel)
 				if !sharedPrivate && ctx.Err() == nil {
@@ -1468,15 +1281,13 @@ func (m *Manager) StopPublicRoutes(ctx context.Context, slug string) (PublicStop
 		}
 	}
 	if hadPortal {
-		if m.portalNet() == nil {
-			res.Unconfirmed = append(res.Unconfirmed, Portal)
-		} else if err := m.portalNet().Stop(slug); err != nil {
-			res.Unconfirmed = append(res.Unconfirmed, Portal)
-		} else {
-			m.take(slug, Portal, true)
-			m.pruneState(slug, Portal)
-			res.Stopped = append(res.Stopped, Portal)
-		}
+		m.stopRoutedPublic(&res, slug, slug, Portal, func() error {
+			p := m.portalNet()
+			if p == nil {
+				return ErrNotConfigured
+			}
+			return p.Stop(slug)
+		})
 	}
 	switch z := m.zrokNet(); {
 	case hadZrok && z == nil:
@@ -1487,18 +1298,18 @@ func (m *Manager) StopPublicRoutes(ctx context.Context, slug string) (PublicStop
 		// backend has to settle, such as one whose creation response was lost.
 		res.Unconfirmed = append(res.Unconfirmed, Zrok)
 	case hadZrok:
-		m.take(slug, Zrok, true)
+		m.dropRoute(slug, Zrok)
 		m.pruneState(slug, Zrok)
 		res.Stopped = append(res.Stopped, Zrok)
 	}
 	if hadQuick {
-		if q := m.quickNet(); q == nil || q.Stop(slug) != nil {
-			res.Unconfirmed = append(res.Unconfirmed, CFQuick)
-		} else {
-			m.take(slug, CFQuick, true)
-			m.pruneState(slug, CFQuick)
-			res.Stopped = append(res.Stopped, CFQuick)
-		}
+		m.stopRoutedPublic(&res, slug, slug, CFQuick, func() error {
+			q := m.quickNet()
+			if q == nil {
+				return ErrNotConfigured
+			}
+			return q.Stop(slug)
+		})
 	}
 	switch n := m.netbirdNet(); {
 	case hadExpose && n == nil:
@@ -1508,19 +1319,19 @@ func (m *Manager) StopPublicRoutes(ctx context.Context, slug string) (PublicStop
 		// Also without a route: a failed open may have left an expose session.
 		res.Unconfirmed = append(res.Unconfirmed, NetbirdExpose)
 	case hadExpose:
-		m.take(slug, NetbirdExpose, true)
+		m.dropRoute(slug, NetbirdExpose)
 		m.pruneState(slug, NetbirdExpose)
 		res.Stopped = append(res.Stopped, NetbirdExpose)
 	}
 	// The listener is local: a route is gone once it leaves the route map.
 	if hadProxy {
-		if p := m.proxyNet(); p == nil || p.Stop(proxyHost) != nil {
-			res.Unconfirmed = append(res.Unconfirmed, ProxyPublic)
-		} else {
-			m.take(slug, ProxyPublic, true)
-			m.pruneState(slug, ProxyPublic)
-			res.Stopped = append(res.Stopped, ProxyPublic)
-		}
+		m.stopRoutedPublic(&res, slug, proxyHost, ProxyPublic, func() error {
+			p := m.proxyNet()
+			if p == nil {
+				return ErrNotConfigured
+			}
+			return p.Stop(proxyHost)
+		})
 	}
 	if res.Stopped == nil {
 		res.Stopped = []ID{}
@@ -1549,6 +1360,18 @@ func (m *Manager) hasRoute(slug, host string, id ID) bool {
 	defer m.mu.Unlock()
 	for _, r := range m.routes {
 		if r.slug == slug && r.host == host && r.provider == id {
+			return true
+		}
+	}
+	return false
+}
+
+// hasFunnelRoute reports whether host still has a registered Funnel route.
+func (m *Manager) hasFunnelRoute(host string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, r := range m.routes {
+		if r.host == host && r.provider == Funnel {
 			return true
 		}
 	}
@@ -1856,20 +1679,11 @@ func (m *Manager) StopProviderRoutes(ctx context.Context, slug string, id ID) er
 			break
 		}
 		if id == Netbird || id == Proxy {
-			err := ErrNotConfigured
-			if n := m.netbirdNet(); id == Netbird && n != nil {
-				err = n.StopPrivate(r.host)
-			} else if p := m.proxyNet(); id == Proxy && p != nil {
-				err = p.Stop(r.host)
-			}
-			if err != nil {
+			if err := m.stopPrivateBackend(id, r.host); err != nil {
 				errs = append(errs, err)
 				continue
 			}
-			m.mu.Lock()
-			delete(m.routes, k)
-			m.pruneStateLocked(r.slug, r.audience, r.host, r.provider)
-			m.mu.Unlock()
+			m.forgetRegistration(k, r)
 			continue
 		}
 		if m.tailnet() == nil {
@@ -1882,29 +1696,17 @@ func (m *Manager) StopProviderRoutes(ctx context.Context, slug string, id ID) er
 		} else {
 			// A legacy backend Stop may retire a shared Funnel node. Refuse rather
 			// than silently altering the separately approved Public route.
-			m.mu.Lock()
-			sharedFunnel := false
-			for _, sibling := range m.routes {
-				if sibling.host == r.host && sibling.provider == Funnel {
-					sharedFunnel = true
-					break
-				}
-			}
-			m.mu.Unlock()
-			if sharedFunnel {
+			if m.hasFunnelRoute(r.host) {
 				stopErr = errors.New("private-only teardown is unavailable; approve Private access to stop Funnel first")
 			} else {
 				stopErr = m.tailnet().Stop(r.host)
 			}
 		}
-		if err := stopErr; err != nil {
-			errs = append(errs, err)
+		if stopErr != nil {
+			errs = append(errs, stopErr)
 			continue
 		}
-		m.mu.Lock()
-		delete(m.routes, k)
-		m.pruneStateLocked(r.slug, r.audience, r.host, r.provider)
-		m.mu.Unlock()
+		m.forgetRegistration(k, r)
 	}
 	return errors.Join(errs...)
 }
@@ -1930,18 +1732,8 @@ func (m *Manager) StopExposure(ctx context.Context, host string) error {
 		var err error
 		if r.provider == Local {
 			err = m.local.Stop(host)
-		} else if r.provider == Netbird {
-			if n := m.netbirdNet(); n != nil {
-				err = n.StopPrivate(host)
-			} else {
-				err = ErrNotConfigured
-			}
-		} else if r.provider == Proxy {
-			if p := m.proxyNet(); p != nil {
-				err = p.Stop(host)
-			} else {
-				err = ErrNotConfigured
-			}
+		} else if r.provider == Netbird || r.provider == Proxy {
+			err = m.stopPrivateBackend(r.provider, host)
 		} else if m.tailnet() != nil {
 			err = m.tailnet().Stop(host)
 		} else {
@@ -1951,10 +1743,7 @@ func (m *Manager) StopExposure(ctx context.Context, host string) error {
 			errs = append(errs, err)
 			continue
 		}
-		m.mu.Lock()
-		delete(m.routes, k)
-		m.pruneStateLocked(r.slug, r.audience, r.host, r.provider)
-		m.mu.Unlock()
+		m.forgetRegistration(k, r)
 	}
 	return errors.Join(errs...)
 }
@@ -2022,7 +1811,7 @@ func (m *Manager) track(req ExposureRequest, id ID, host string) {
 	m.mu.Unlock()
 }
 
-// take reports whether a route exists. drop removes it.
+// take is the route-record peek/drop primitive: drop removes the record.
 func (m *Manager) take(slug string, id ID, drop bool) (host string, ok bool) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -2036,6 +1825,12 @@ func (m *Manager) take(slug string, id ID, drop bool) (host string, ok bool) {
 	}
 	return "", false
 }
+
+// routeHost reports whether id has a route for slug, with its host.
+func (m *Manager) routeHost(slug string, id ID) (string, bool) { return m.take(slug, id, false) }
+
+// dropRoute removes id's route record for slug after a confirmed stop.
+func (m *Manager) dropRoute(slug string, id ID) (host string, ok bool) { return m.take(slug, id, true) }
 
 func stateKey(slug string, audience Audience, host string) string {
 	return slug + "\x00" + string(audience) + "\x00" + host
