@@ -57,6 +57,7 @@ const S = {
   editing: false,
   selected: null,        // board path
   focus: null,           // { path }
+  booted: false,         // boot chose canvas or focus; no frame loads before
   revision: null,        // viewing revision number (read-only), or null for live
   revState: null,        // canvas of the viewed revision
   panel: null,           // 'tweaks' | 'revisions' | null
@@ -337,7 +338,10 @@ function makeFrame(path) {
 // frames outright.
 function loadFrame(f, path, hash) {
   f.loaded = true;
-  f.error && f.error.remove(); f.error = null;
+  f.loadedAt = hash + '|' + assetSignature();
+  // An error seen at the same content (for example in the focus view) stays
+  // marked: the new document need not repeat an error caused by interaction.
+  if (f.error && f.errorAt !== f.loadedAt) { f.error.remove(); f.error = null; }
   const iframe = h('iframe', {
     title: `Artboard ${path}`, loading: 'lazy', referrerpolicy: 'no-referrer',
    
@@ -347,7 +351,11 @@ function loadFrame(f, path, hash) {
   f.frame.replaceChildren(iframe);
 }
 
+// loadVisible gives boards near the viewport their first frame. Behind the
+// full-window view it loads nothing: every frame there costs memory a phone
+// may not have, and the canvas is hidden anyway.
 function loadVisible() {
+  if (!S.booted || S.focus) return;
   const vp = $('.viewport').getBoundingClientRect();
   const margin = 400;
   for (const [path, f] of S.frames) {
@@ -479,9 +487,14 @@ window.addEventListener('message', async (e) => {
     e.source.postMessage({ flats: 'design', type: 'boards', paths: Object.keys(canvas().boards || {}) }, '*');
     if (hit.f && S.editing) e.source.postMessage({ flats: 'design', type: 'mode', mode: 'edit' }, '*');
     if (hit.focus) e.source.postMessage({ flats: 'design', type: 'mode', mode: 'play' }, '*');
-  } else if (m.type === 'error' && hit.f) {
-    if (!hit.f.error) { hit.f.error = h('div', { class: 'error', role: 'status' }); hit.f.el.appendChild(hit.f.error); }
-    hit.f.error.textContent = 'Error: ' + String(m.message).slice(0, 200);
+  } else if (m.type === 'error') {
+    // The focus view reports on its board's canvas frame, loaded or not,
+    // with the content the reporting document was opened with.
+    const f = hit.f || S.frames.get(hit.path);
+    if (!f) return;
+    if (!f.error) { f.error = h('div', { class: 'error', role: 'status' }); f.el.appendChild(f.error); }
+    f.error.textContent = 'Error: ' + String(m.message).slice(0, 200);
+    f.errorAt = hit.f ? hit.f.loadedAt : S.focus.key;
   } else if (m.type === 'navigate') {
     const target = resolvePath(hit.path, String(m.href || ''));
     if (target && canvas().boards[target]) openFocus(target);
@@ -577,10 +590,10 @@ function resolvePath(from, href) {
 
 // ---- focus / play ----
 function openFocus(path) {
-  closeFocus();
   const c = canvas();
   const b = c.boards[path];
-  if (!b) return;
+  if (!b) { closeFocus(); return; }
+  removeFocus();
   S.focus = { path, key: hashOf(path) + '|' + assetSignature() };
   const order = c.order || Object.keys(c.boards);
   const i = order.indexOf(path);
@@ -620,11 +633,17 @@ function refreshFocus() {
   else S.focus.key = key;
 }
 
-function closeFocus() {
+function removeFocus() {
   const box = $('.focus');
   if (box) box.remove();
+}
+
+// closeFocus returns to the canvas, which then loads the boards in view.
+function closeFocus() {
+  removeFocus();
   if (S.focus) history.replaceState(null, '', location.pathname);
   S.focus = null;
+  loadVisible();
 }
 
 // ---- panels ----
@@ -881,10 +900,12 @@ async function boot() {
     S.cap = await session();
     await refresh();
   } catch (err) { document.body.replaceChildren(h('p', { style: { padding: '24px' }, text: 'Could not load this design: ' + err.message })); return; }
-  fit();
   const c = canvas();
-  const hash = decodeURIComponent(location.hash.slice(1));
+  let hash = '';
+  try { hash = decodeURIComponent(location.hash.slice(1)); } catch { /* a malformed fragment names no artboard */ }
   if (hash && c.boards[hash]) openFocus(hash);
   else if (c.launch && c.launch.view === 'focused' && c.boards[c.launch.board]) openFocus(c.launch.board);
+  S.booted = true;
+  fit();
 }
 boot();

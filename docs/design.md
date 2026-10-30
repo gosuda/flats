@@ -319,6 +319,15 @@ itself, and edits in its own `contenteditable` box: keystrokes and
 confirmation never reach the artboard, so every write needs input the person
 made in the canvas app.
 
+**Frame loading.** The canvas loads an artboard only when it comes near the
+viewport, and never loads one for the first time while an artboard is open
+full window, including a design that launches focused. Every frame is a
+document in the browser's memory, and phones end the page when there are too
+many. An artboard that is already loaded still reloads when its file, the
+shared files or its capability change. An error that the full-window artboard
+reports marks its canvas board. The marker stays until the board's file or the
+shared files change.
+
 **Events and teardown.** A write publishes `change` after its transaction
 commits; a stream starts with `hello {seq}` and sends a heartbeat every 25 s.
 At most 32 streams per flat; each queue holds 16 events, and a full queue is
