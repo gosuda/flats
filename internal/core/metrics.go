@@ -2,10 +2,12 @@ package core
 
 import (
 	"context"
+	"maps"
 	"math"
 	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gosuda/flats/internal/contenttype"
@@ -40,6 +42,56 @@ type diskSample struct {
 // diskEvery is how old a flat's disk figure may get; Sweep spreads the walks
 // over the sweeps of that period.
 const diskEvery = 5 * time.Minute
+
+// diskSamples holds each flat's last disk measurement. Sweep drops the
+// entries of flats its newest snapshot no longer lists; record and fail
+// add or refresh, walkDisks schedules by tried.
+type diskSamples struct {
+	mu    sync.Mutex
+	byUID map[string]diskSample // flat ID -> its last disk measurement
+}
+
+func (d *diskSamples) pruneLive(uids map[string]bool) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	maps.DeleteFunc(d.byUID, func(uid string, _ diskSample) bool {
+		return !uids[uid]
+	})
+}
+
+func (d *diskSamples) record(uid string, bytes int64, now time.Time) {
+	if uid == "" {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.byUID == nil {
+		d.byUID = map[string]diskSample{}
+	}
+	d.byUID[uid] = diskSample{bytes: bytes, at: now, tried: now}
+}
+
+// fail notes a walk of the flat that could not read all of it. Its last
+// figure and time stay (spec rule 15).
+func (d *diskSamples) fail(uid string, now time.Time) {
+	if uid == "" {
+		return
+	}
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.byUID == nil {
+		d.byUID = map[string]diskSample{}
+	}
+	s := d.byUID[uid]
+	s.tried = now
+	d.byUID[uid] = s
+}
+
+func (d *diskSamples) sample(uid string) diskSample {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.byUID[uid]
+}
 
 func (s *Service) liveFlats() map[string]*liveFlat {
 	s.mu.Lock()
@@ -100,50 +152,34 @@ func (s *Service) storeSnapshot(ctx context.Context, flats []snapshotFlat) {
 	for _, f := range flats {
 		uids[f.uid] = true
 	}
-	s.diskMu.Lock()
-	for uid := range s.disk {
-		if !uids[uid] {
-			delete(s.disk, uid)
-		}
-	}
-	s.diskMu.Unlock()
+	s.disk.pruneLive(uids)
 	snap.at = s.now()
 	s.snapshot.Store(snap)
 }
 
-func (s *Service) recordDisk(uid string, bytes int64) {
-	if uid == "" {
-		return
-	}
-	s.diskMu.Lock()
-	defer s.diskMu.Unlock()
-	if s.disk == nil {
-		s.disk = map[string]diskSample{}
-	}
-	now := s.now()
-	s.disk[uid] = diskSample{bytes: bytes, at: now, tried: now}
+// diskDue is a flat whose disk needs walking, with the tried time its place
+// in the walk order comes from.
+type diskDue struct {
+	f  snapshotFlat
+	at time.Time
 }
 
-// diskFailed notes a walk of the flat that could not read all of it. Its
-// last figure and time stay (spec rule 15).
-func (s *Service) diskFailed(uid string) {
-	if uid == "" {
-		return
+// due lists the flats whose disk figure is missing or close to diskEvery
+// old; walkDisks orders and budgets them.
+func (d *diskSamples) due(flats []snapshotFlat, now time.Time) []diskDue {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	var todo []diskDue
+	for _, f := range flats {
+		if f.uid == "" {
+			continue
+		}
+		s, ok := d.byUID[f.uid]
+		if !ok || now.Sub(s.tried) >= diskEvery-diskEvery/10 {
+			todo = append(todo, diskDue{f, s.tried})
+		}
 	}
-	s.diskMu.Lock()
-	defer s.diskMu.Unlock()
-	if s.disk == nil {
-		s.disk = map[string]diskSample{}
-	}
-	d := s.disk[uid]
-	d.tried = s.now()
-	s.disk[uid] = d
-}
-
-func (s *Service) diskOf(uid string) diskSample {
-	s.diskMu.Lock()
-	defer s.diskMu.Unlock()
-	return s.disk[uid]
+	return todo
 }
 
 // walkDisks measures the flats whose disk figure is missing or close to
@@ -154,30 +190,14 @@ func (s *Service) walkDisks(flats []snapshotFlat) {
 	if len(flats) == 0 {
 		return
 	}
-	now := s.now()
-	type due struct {
-		f  snapshotFlat
-		at time.Time
-	}
-	var todo []due
-	s.diskMu.Lock()
-	for _, f := range flats {
-		if f.uid == "" {
-			continue
-		}
-		d, ok := s.disk[f.uid]
-		if !ok || now.Sub(d.tried) >= diskEvery-diskEvery/10 {
-			todo = append(todo, due{f, d.tried})
-		}
-	}
-	s.diskMu.Unlock()
-	slices.SortFunc(todo, func(a, b due) int { return a.at.Compare(b.at) })
+	todo := s.disk.due(flats, s.now())
+	slices.SortFunc(todo, func(a, b diskDue) int { return a.at.Compare(b.at) })
 	budget := max(1, (len(flats)+8)/9)
 	for _, d := range todo[:min(len(todo), budget)] {
 		if n, err := dirSizeErr(s.flatDir(d.f.slug)); err == nil {
-			s.recordDisk(d.f.uid, n)
+			s.disk.record(d.f.uid, n, s.now())
 		} else {
-			s.diskFailed(d.f.uid)
+			s.disk.fail(d.f.uid, s.now())
 		}
 	}
 }
@@ -270,7 +290,7 @@ func (s *Service) Metrics() MetricsSnapshot {
 		}
 		// No live state (a rename in progress, a flat just deleted): only its
 		// disk figures are known.
-		d := s.diskOf(f.uid)
+		d := s.disk.sample(f.uid)
 		out.Flats = append(out.Flats, FlatMetrics{Slug: f.slug, Type: f.typ, DiskBytes: d.bytes, DiskMeasuredAt: d.at})
 	}
 	for c, n := range counts {
@@ -339,7 +359,7 @@ func (s *Service) flatMetrics(slug, typ, kind, uid string, lf *liveFlat, cur *de
 			fm.UnexpectedExits = w.unexpectedExits()
 		}
 	}
-	d := s.diskOf(uid)
+	d := s.disk.sample(uid)
 	fm.DiskBytes, fm.DiskMeasuredAt = d.bytes, d.at
 	return fm
 }

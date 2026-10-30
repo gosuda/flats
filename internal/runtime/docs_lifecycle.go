@@ -14,6 +14,21 @@ import (
 // docsInstance retains deployment ownership while its physical child sleeps.
 // Each spawn has a fresh socket and transport, so an old lease cannot reach a
 // replacement child even if its request races a process crash and recovery.
+//
+// The lifecycle state is derived, never stored: the fields are the truth, and
+// stateLocked is the table that maps them onto core.WorkerState.
+//
+//	sleeping   no live child, no transition: Wake spawns (retryAt may hold it)
+//	starting   a Wake owns the transition and is spawning the child and
+//	           running core's prepare; or the child lives but prepare has not
+//	           passed
+//	running    ready with a live child: leases go out
+//	quiescing  TryQuiesce closed admission; the idle sweep suspends the child
+//	           or resumes it
+//	backoff    the published child exited, or a wake failed and its child is
+//	           being terminated (quiescing with a transition); retryAt gates
+//	           the next wake
+//	stopped    Stop or Retire won; nothing starts again
 type docsInstance struct {
 	m              *Manager
 	spec           core.RuntimeSpec
@@ -75,6 +90,13 @@ func (d *docsInstance) now() time.Time {
 	return time.Now()
 }
 
+// noteFailureLocked schedules the next wake after a failed preparation or an
+// exited child: consecutive failures back off exponentially.
+func (d *docsInstance) noteFailureLocked() {
+	d.failures++
+	d.retryAt = time.Now().Add(backoff(d.failures - 1))
+}
+
 // childAlive is called with the logical controller locked. Child code never
 // takes that lock, and its process-exit callbacks run outside its own mutex.
 func childAlive(child *instance) bool {
@@ -125,7 +147,7 @@ func (d *docsInstance) leaseLocked(foreground bool) core.RuntimeLease {
 func (d *docsInstance) TryAcquire(foreground bool) (core.RuntimeLease, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.stopped || d.retired || !d.ready || d.transition != nil || !childAlive(d.child) {
+	if d.stateLocked() != core.WorkerRunning {
 		return nil, false
 	}
 	return d.leaseLocked(foreground), true
@@ -148,7 +170,7 @@ func (d *docsInstance) Wake(ctx context.Context, prepare func(context.Context, h
 	waitDeadline := time.Now().Add(4 * time.Second)
 	for {
 		d.mu.Lock()
-		if d.stopped || d.retired {
+		if d.stateLocked() == core.WorkerStopped {
 			d.mu.Unlock()
 			return nil, errStopped
 		}
@@ -171,19 +193,18 @@ func (d *docsInstance) Wake(ctx context.Context, prepare func(context.Context, h
 				return nil, err
 			}
 		}
-		if d.ready && childAlive(d.child) {
+		if d.stateLocked() == core.WorkerRunning {
 			lease := d.leaseLocked(true)
 			d.mu.Unlock()
 			return lease, nil
 		}
-		if d.ready { // The previously published child has exited.
+		if d.ready { // running → backoff: the previously published child has exited
 			d.ready = false
 			d.clean = false
 			if time.Since(d.childStarted) > time.Minute {
 				d.failures = 0
 			}
-			d.failures++
-			d.retryAt = time.Now().Add(backoff(d.failures - 1))
+			d.noteFailureLocked()
 		}
 		if wait := time.Until(d.retryAt); wait > 0 {
 			d.mu.Unlock()
@@ -241,8 +262,7 @@ func (d *docsInstance) Wake(ctx context.Context, prepare func(context.Context, h
 		cancel()
 		d.cancel = nil
 		if err != nil {
-			d.failures++
-			d.retryAt = time.Now().Add(backoff(d.failures - 1))
+			d.noteFailureLocked()
 			// Transfer the sole termination responsibility to the transition owner.
 			// Neither a new Wake nor Stop can terminate/spawn over it.
 			d.quiescing = true
@@ -278,8 +298,7 @@ func (d *docsInstance) prepare(ctx context.Context, callback func(context.Contex
 			d.child = child
 			d.cancel = nil
 			d.quiescing = true
-			d.failures++
-			d.retryAt = time.Now().Add(backoff(d.failures - 1))
+			d.noteFailureLocked()
 			epoch := d.cleanEpoch
 			d.mu.Unlock()
 			go d.finishStop(child, done, false, epoch)
@@ -310,7 +329,7 @@ func (q *docsQuiescence) ServeHTTP(w http.ResponseWriter, r *http.Request) { q.c
 func (d *docsInstance) TryQuiesce(now time.Time, idle time.Duration) (core.RuntimeQuiescence, bool) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	if d.stopped || d.retired || !d.ready || d.transition != nil || d.leases != 0 || now.Sub(d.lastForeground) < idle || now.Before(d.idleRetryAt) || !childAlive(d.child) {
+	if d.stateLocked() != core.WorkerRunning || d.leases != 0 || now.Sub(d.lastForeground) < idle || now.Before(d.idleRetryAt) {
 		return nil, false
 	}
 	d.ready = false
@@ -392,13 +411,11 @@ func (d *docsInstance) Quiescing() bool {
 	return d.quiescing && d.transition != nil
 }
 
-// WorkerState implements core.StateReporter under the controller's lock. It
-// never wakes the document. Sleeping is a logical document without a child;
-// a wake is starting, an idle drain quiescing, and a failed child waiting for
-// its retry backoff.
-func (d *docsInstance) WorkerState() core.WorkerState {
-	d.mu.Lock()
-	defer d.mu.Unlock()
+// stateLocked is the lifecycle's state table: under d.mu, it maps the fields
+// onto the state the document is in. Sleeping is a logical document without
+// a child; a wake is starting, an idle drain quiescing, and a failed child
+// waiting for its retry backoff. The transitions below are the only writers.
+func (d *docsInstance) stateLocked() core.WorkerState {
 	switch {
 	case d.stopped || d.retired:
 		return core.WorkerStopped
@@ -418,6 +435,14 @@ func (d *docsInstance) WorkerState() core.WorkerState {
 		return core.WorkerBackoff
 	}
 	return core.WorkerSleeping
+}
+
+// WorkerState implements core.StateReporter under the controller's lock. It
+// never wakes the document.
+func (d *docsInstance) WorkerState() core.WorkerState {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.stateLocked()
 }
 
 var _ core.StateReporter = (*docsInstance)(nil)

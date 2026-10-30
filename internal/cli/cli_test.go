@@ -300,6 +300,17 @@ func TestDeletePending(t *testing.T) {
 	}
 }
 
+func TestDeletePrintsCleanupPendingFromStatusOnly(t *testing.T) {
+	api, srv := newFakeAPI(t)
+	// Hosts older than #112 report cleanup pending only through the status
+	// string, without the result_data bool.
+	api.handle("DELETE /api/flats/blog", 200, `{"status": "cleanup_pending", "message": "deletion applied"}`)
+	r := run(t, srv.URL, "", "delete", "blog")
+	if r.code != 0 || !strings.Contains(r.stdout, "Status: cleanup_pending") {
+		t.Fatalf("exit %d: %s", r.code, r.stdout)
+	}
+}
+
 func TestSecretSetNeverPrintsValue(t *testing.T) {
 	api, srv := newFakeAPI(t)
 	api.handle("PUT /api/flats/blog/secrets/API_TOKEN", 200, `{"name": "API_TOKEN", "status": "stored; redeploy to apply"}`)

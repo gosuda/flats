@@ -163,7 +163,7 @@ export async function deleteVersion(flat, n) {
   if (!ok) return false;
   try {
     const result = await api.deleteVersion(flat.slug, n);
-    if (result?.status === 'cleanup_pending' || result?.cleanup_pending) {
+    if (result?.cleanup_pending) {
       await infoDialog('Version removed; cleanup pending', [
         h('p', { text: `Version ${n} was removed from the version list. Private storage cleanup is still pending.` }),
         h('p', { class: 'alert alert-warn', text: result.message || 'Restart Flats before saving, creating, deploying, or previewing this flat so storage cleanup can finish.' }),
@@ -278,7 +278,7 @@ export function deleteInPlace(flat, ctl, on) {
       // The deadline covers the approval this console decides, if any.
       const res = await withDeadline(DELETE_WAIT_MS, 'delete request', async (signal) => approve(await api.remove(flat.slug, signal), signal));
       // Only a Flats answer confirms: a proxy's page can also be a 200.
-      if (res && (res.status === 'done' || res.status === 'approved')) {
+      if (applied(res)) {
         gone(`${name} was deleted.`, 'success');
         return;
       }
@@ -358,11 +358,15 @@ async function canGoPublic(flat) {
   return true;
 }
 
+// applied reports a response the host confirmed as applied: an action that
+// ran ('done') or an approval decision receipt ('approved').
+const applied = (res) => res?.status === 'done' || res?.status === 'approved';
+
 // confirmed returns a visibility result that the host confirmed as applied:
 // an approved request, or a change that was already in place. Anything else
 // is reported as a failure rather than announced as done.
 function confirmed(res) {
-  if (res?.status === 'approved' || res?.status === 'done') return res;
+  if (applied(res)) return res;
   throw Object.assign(new Error(res?.result || res?.error || 'Flats did not confirm the change.'), { body: {} });
 }
 

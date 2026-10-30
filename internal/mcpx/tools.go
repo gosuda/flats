@@ -259,6 +259,9 @@ func toolErr(err error, hint string) error {
 	if v, ok := bundle.IsValidation(err); ok {
 		detail["problems"] = v.Problems
 	}
+	if pe, ok := errors.AsType[*core.PublicEditBlockedError](err); ok {
+		detail["problems"] = pe.Problems
+	}
 	if errors.As(err, &de) && de.Cause == nil {
 		detail["health"] = de.Health
 		if de.Health.BodyHead != "" {

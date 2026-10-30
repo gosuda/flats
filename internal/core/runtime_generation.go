@@ -5,34 +5,41 @@ import (
 	"sync"
 )
 
+// runtimeGenerations tracks the newest runtime generation per data
+// directory: crash recovery goes only to the newest owner.
+type runtimeGenerations struct {
+	mu     sync.Mutex
+	owners map[string]int64 // data directory -> newest runtime start
+}
+
 // runtimeGeneration orders starts and gives crash recovery only to the newest
 // instance using a data directory. A draining worker must not restart with a
 // newer generation and thereby make its obsolete source authoritative again.
 func (s *Service) runtimeGeneration(ctx context.Context, dataDir string) (int64, func(context.Context) (int64, error), func(), error) {
-	s.runtimeMu.Lock()
-	defer s.runtimeMu.Unlock()
+	s.runtime.mu.Lock()
+	defer s.runtime.mu.Unlock()
 	generation, err := s.st.NextRuntimeGeneration(ctx)
 	if err != nil {
 		return 0, nil, nil, err
 	}
-	previous := s.runtimeOwners[dataDir]
-	s.runtimeOwners[dataDir] = generation
+	previous := s.runtime.owners[dataDir]
+	s.runtime.owners[dataDir] = generation
 	recover := func(ctx context.Context) (int64, error) {
-		s.runtimeMu.Lock()
-		defer s.runtimeMu.Unlock()
-		if s.runtimeOwners[dataDir] != generation {
+		s.runtime.mu.Lock()
+		defer s.runtime.mu.Unlock()
+		if s.runtime.owners[dataDir] != generation {
 			return 0, ErrRuntimeUnavailable
 		}
 		return s.st.NextRuntimeGeneration(ctx)
 	}
 	undo := func() {
-		s.runtimeMu.Lock()
-		defer s.runtimeMu.Unlock()
-		if s.runtimeOwners[dataDir] == generation {
+		s.runtime.mu.Lock()
+		defer s.runtime.mu.Unlock()
+		if s.runtime.owners[dataDir] == generation {
 			if previous == 0 {
-				delete(s.runtimeOwners, dataDir)
+				delete(s.runtime.owners, dataDir)
 			} else {
-				s.runtimeOwners[dataDir] = previous
+				s.runtime.owners[dataDir] = previous
 			}
 		}
 	}
@@ -40,9 +47,9 @@ func (s *Service) runtimeGeneration(ctx context.Context, dataDir string) (int64,
 }
 
 func (s *Service) retireRuntime(dataDir string) {
-	s.runtimeMu.Lock()
-	defer s.runtimeMu.Unlock()
-	delete(s.runtimeOwners, dataDir)
+	s.runtime.mu.Lock()
+	defer s.runtime.mu.Unlock()
+	delete(s.runtime.owners, dataDir)
 }
 
 type runtimeInstance struct {
