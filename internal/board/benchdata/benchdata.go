@@ -2,7 +2,7 @@
 // criteria (docs/spec/board.md, "Success criteria"): "mixed 5k" and "mixed
 // 10k". The data comes from a fixed seed, so every run of the same toolchain
 // writes the same data file. The file has the data file format of
-// docs/spec/board-TECH.md section 9 and imports with
+// docs/spec/board-technical-design.md section 9 and imports with
 // `flats board import <slug> <file> --replace`.
 //
 // The board is a grid of tiles. Half of the tiles lie inside a frame and half

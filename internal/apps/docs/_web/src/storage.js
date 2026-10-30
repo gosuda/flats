@@ -8,7 +8,7 @@ export const digest = (s) =>
   globalThis.__flats_docsCodec
     ? globalThis.__flats_docsCodec.digest(s)
     : bytesToHex(sha256(encodeUtf8(s)));
-// Yjs client ids guests own, per document (docs-public-edit-TECH.md 3.5).
+// Yjs client ids guests own, per document (docs-public-edit-technical-design.md 3.5).
 const GUEST_CLIENTS =
   "CREATE TABLE IF NOT EXISTS flats_docs_guest_clients(doc TEXT NOT NULL, client INTEGER NOT NULL, owner TEXT NOT NULL, PRIMARY KEY(doc,client))";
 export function schema(db) {
@@ -608,7 +608,7 @@ export const hasGC = (decoded) =>
 export const hasPending = (doc) =>
   !!(doc.store.pendingStructs || doc.store.pendingDs);
 // dropPending removes them, so they are never encoded into welcomes or
-// checkpoints (docs-public-edit-TECH.md 3.7).
+// checkpoints (docs-public-edit-technical-design.md 3.7).
 export function dropPending(doc) {
   if (!hasPending(doc)) return false;
   doc.store.pendingStructs = null;

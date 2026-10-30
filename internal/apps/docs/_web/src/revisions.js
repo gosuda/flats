@@ -1,7 +1,7 @@
 // Revision capture: every revision boundary records the whole flat in an
 // outbox, in the same transaction as the change it precedes or follows. The
 // host imports the outbox into its revision store and acknowledges it.
-// See docs/spec/document-revisions-TECH.md.
+// See docs/spec/document-revisions-technical-design.md.
 import * as Y from "yjs";
 import { base64, utf8Bytes, LIMITS, GUEST } from "./protocol.js";
 import { applyText } from "./merge.js";
@@ -134,7 +134,7 @@ function documentFile(db, path, known) {
   return { path, hash, size, guest_lines: lines };
 }
 
-// --- guest text (docs-public-edit-TECH.md 3.5, 3.9) ---
+// --- guest text (docs-public-edit-technical-design.md 3.5, 3.9) ---
 
 // flats_docs_guest_clients holds the Yjs client ids guests own and, so a
 // guest cannot claim one first, the presence ids members announced (owner
@@ -682,7 +682,7 @@ export function sync(db, content, generation, now = Date.now()) {
   };
 }
 
-// --- public access (docs-public-edit-TECH.md 3.1, 3.6) ---
+// --- public access (docs-public-edit-technical-design.md 3.1, 3.6) ---
 
 const ACCESS_LEVELS = ["", "view", "edit"];
 // accessOf is the stored public access level and its epoch.
@@ -1040,7 +1040,7 @@ export function setBudget(db, body) {
   }
   setMeta(db, "budget", { quota, other, until });
 }
-// --- the guests' byte budget (docs-public-edit-TECH.md 3.8) ---
+// --- the guests' byte budget (docs-public-edit-technical-design.md 3.8) ---
 
 // measuredBytes is the part of the disk check this database determines:
 // its pages and the texts recorded but not imported yet.

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Board canvas end-to-end checks in headless Chrome over the DevTools
-// Protocol (board-TECH.md section 14, "Browser automation"). It drives a
+// Protocol (board-technical-design.md section 14, "Browser automation"). It drives a
 // running Flats host: boards are created with the flats CLI, edited through
 // real mouse, keyboard and IME input events, and judged against the page
 // state, the server (CLI reads) and downloaded files. Synthetic data only.

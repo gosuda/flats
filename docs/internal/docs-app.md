@@ -307,7 +307,7 @@ rendered in the client; assets in `content.assets` are still the host's responsi
 
 A Public document at level `edit` lets anyone with the link edit after
 typing a name ([docs-public-edit.md](../spec/docs-public-edit.md); design in
-[docs-public-edit-TECH.md](../spec/docs-public-edit-TECH.md)). Core stores
+[docs-public-edit-technical-design.md](../spec/docs-public-edit-technical-design.md)). Core stores
 the level and its epoch (`flats.access_seq`); this section is the worker
 and runtime side.
 

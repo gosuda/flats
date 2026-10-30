@@ -23,7 +23,7 @@ const (
 )
 
 // Public connections of a worker whose module asks for separate Public
-// pools (the built-in docs app, docs/spec/docs-public-edit-TECH.md 3.3):
+// pools (the built-in docs app, docs/spec/docs-public-edit-technical-design.md 3.3):
 // their own slots, send budget and event queue, so Public visitors never
 // take what Private connections use.
 const (

@@ -26,7 +26,7 @@ import (
 	"github.com/gosuda/flats/internal/store"
 )
 
-// Boards (docs/spec/board.md, docs/spec/board-TECH.md): a board runs as a
+// Boards (docs/spec/board.md, docs/spec/board-technical-design.md): a board runs as a
 // board.Instance inside the host process, behind an internal shell version
 // like a design. Its current state lives in flats/<slug>/board/board.db;
 // core imports the revision boundaries the instance records in its outbox

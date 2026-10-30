@@ -3,7 +3,7 @@
 Status: partly implemented. The board type runs end to end, but not every
 success criterion is met or measured yet; see
 [Current state](#current-state). The technical design is in
-[board-TECH.md](board-TECH.md).
+[board-technical-design.md](board-technical-design.md).
 
 This page sets what to build, why, and the rules a board must keep. The
 technical design decides the storage format, where computation runs and the

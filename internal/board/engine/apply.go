@@ -28,7 +28,7 @@ const (
 // ErrLimit marks a change that grows an item's excess over a limit (4.5).
 var ErrLimit = errors.New("over a board limit")
 
-// Guest refusals (board-public-edit-TECH.md 3.2, 3.5): a guest batch that
+// Guest refusals (board-public-edit-technical-design.md 3.2, 3.5): a guest batch that
 // names an asset no live element references, or revives a row the guest
 // did not delete in its session, is refused whole.
 var (

@@ -6,7 +6,7 @@ import (
 	"errors"
 )
 
-// Board revisions (docs/spec/board-TECH.md 5.2, 5.3): a board records its
+// Board revisions (docs/spec/board-technical-design.md 5.2, 5.3): a board records its
 // revision boundaries in the outbox of its board.db and core imports them
 // into the revision store. board_imports maps each imported outbox entry
 // (and its operation id) to its revision; board_rev_stats keeps the element

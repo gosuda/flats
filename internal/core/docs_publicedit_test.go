@@ -21,7 +21,7 @@ import (
 )
 
 // Anonymous public editing of documents, core side
-// (docs/spec/docs-public-edit-TECH.md 2). fakeDocsWorker answers the host
+// (docs/spec/docs-public-edit-technical-design.md 2). fakeDocsWorker answers the host
 // operations of TECH 3.6 with the request and response shapes the document
 // worker implements, so approval, import, pinning and level changes run
 // through the real Service and store. The real worker's behavior for these

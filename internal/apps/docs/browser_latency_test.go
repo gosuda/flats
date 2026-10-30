@@ -16,7 +16,7 @@ import (
 )
 
 // TestBrowserDisplayLatency measures the spec's display target
-// (docs/spec/docs-public-edit-TECH.md 8, row "Limits"): a member's change is
+// (docs/spec/docs-public-edit-technical-design.md 8, row "Limits"): a member's change is
 // visible in another member's editor within 200 ms p95. Two Private member
 // pages run in separate headless Chromium contexts; page A inserts a marker
 // every 250 ms and page B records when each marker first appears in its

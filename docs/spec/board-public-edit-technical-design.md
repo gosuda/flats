@@ -3,7 +3,7 @@
 Status: implemented on an unreleased branch; design for the feature of
 [board-public-edit.md](board-public-edit.md). Rule numbers refer to that page
 unless they say "board rule", which refers to [board.md](board.md). Section
-numbers such as (TECH 7.3) refer to [board-TECH.md](board-TECH.md); plain
+numbers such as (TECH 7.3) refer to [board-technical-design.md](board-technical-design.md); plain
 numbers such as (3.2) refer to this page.
 
 ## 1. Decision summary
@@ -559,7 +559,7 @@ a revision through `board_imports`.
 - `docs/agent/topics/approvals.md`: `access`, `public_edit_blocked`.
 - MCP instructions stay under the 2,300-byte cap; no change there.
 - Regenerate references with `make docs-generate`.
-- board.md, content-models.md, surfaces.md, design.md and board-TECH.md get the
+- board.md, content-models.md, surfaces.md, design.md and board-technical-design.md get the
   changes listed in the spec's "Changes to existing specs" when this ships.
 
 ## 10. Verification plan

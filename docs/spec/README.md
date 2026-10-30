@@ -6,7 +6,7 @@ change that needs to break one updates the page first.
 - `<name>.md` is the product spec (PRD): principles and requirements,
   independent of any implementation. It may describe a target that is not
   implemented yet.
-- `<name>-TECH.md` is the technical design of a spec whose feature has not
+- `<name>-technical-design.md` is the technical design of a spec whose feature has not
   shipped yet. When the feature ships, its durable design moves into the
   architecture docs (see below) and the TECH page is removed. Principles that
   span several features, such as the content data models, have no TECH page.

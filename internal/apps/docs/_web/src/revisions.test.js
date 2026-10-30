@@ -715,7 +715,7 @@ test("stored pending update data never becomes visible or counts", () => {
   ackAll(db);
   // A remote replica inserts a character, then 200 KB after it; the second
   // update was stored first, before updates leaving pending data were
-  // refused (docs-public-edit-TECH.md 3.7).
+  // refused (docs-public-edit-technical-design.md 3.7).
   const remote = new Y.Doc();
   const s = current(db, c.documents[0], c.hash, undefined, generation);
   Y.applyUpdate(remote, Y.encodeStateAsUpdate(s.doc));
@@ -1224,7 +1224,7 @@ test("a truncation's success never clears a later failure's generation", () => {
   assert.equal(revisions.getMeta(a, "wal_generation"), 2);
 });
 
-// --- anonymous public editing (docs-public-edit-TECH.md 3) ---
+// --- anonymous public editing (docs-public-edit-technical-design.md 3) ---
 
 // timedEdit appends text to a document at now, as a member (editor and
 // label) or as a guest (guest: name), with the guest's client id claimed.
