@@ -10,11 +10,12 @@
 
 import { parseArgs } from 'node:util';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, mkdtempSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, rmSync, mkdtempSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import http from 'node:http';
-import { launchChrome, Tab, sleep } from './lib/cdp.mjs';
+import { launchChrome, sleep } from '../lib/cdp.mjs';
+import { Tab } from './lib/cdp.mjs';
 import { makePNG, readPNG, readZip, decodePNG } from './lib/files.mjs';
 import { PIXEL_BOARD, pixelErrors } from './lib/pixels.mjs';
 
@@ -36,7 +37,6 @@ if (opt.help) {
   process.exit(0);
 }
 
-const SECTIONS = ['setup', 'tools', 'select', 'keys', 'text', 'collab', 'a11y', 'find', 'share', 'png', 'data', 'history', 'converge', 'public'];
 const only = opt.only ? new Set(['setup', ...opt.only.split(',')]) : null;
 const skip = new Set(opt.skip ? opt.skip.split(',') : []);
 if (opt.public === 'off') skip.add('public');

@@ -22,7 +22,8 @@
 // last snapshot part, and when every image in view finished decoding.
 
 import { writeFileSync } from 'node:fs';
-import { args, watchdog, launchChrome, nameScript, stats, environment, uptime, throttle, READY_FN } from './lib.mjs';
+import { launchChrome } from '../lib/cdp.mjs';
+import { args, watchdog, Page, nameScript, stats, environment, uptime, throttle, READY_FN } from './lib.mjs';
 
 const opt = args({ url: '', expected: 5000, runs: 5, rtt: 0, mbps: 0, width: 1440, height: 900, scale: 0, chrome: '', out: '' });
 if (!opt.url) { console.error('usage: node first-screen.mjs --url <board url> --expected <elements>'); process.exit(2); }
@@ -39,8 +40,8 @@ const probe = (expected) => `(() => {
       this.addEventListener('open', () => { if (P.ws.open == null) P.ws.open = performance.now(); });
       this.addEventListener('message', (e) => {
         const s = typeof e.data === 'string' ? e.data : '';
-        if (P.ws.welcome == null && /"t":\s*"welcome"/.test(s)) P.ws.welcome = performance.now();
-        if (/"t":\s*"snapshot"/.test(s)) { P.parts++; P.ws.lastSnapshotPart = performance.now(); }
+        if (P.ws.welcome == null && /"t":s*"welcome"/.test(s)) P.ws.welcome = performance.now();
+        if (/"t":s*"snapshot"/.test(s)) { P.parts++; P.ws.lastSnapshotPart = performance.now(); }
       });
     }
   };
@@ -99,7 +100,7 @@ const before = uptime();
 for (let i = 0; i < opt.runs; i++) {
   const chrome = await launchChrome({ headless: !!opt.headless, width: opt.width, height: opt.height, scale: opt.scale || 0, chrome: opt.chrome || undefined });
   try {
-    const page = await chrome.cdp.firstPage();
+    const page = await Page.first(chrome.cdp);
     await page.send('Page.addScriptToEvaluateOnNewDocument', { source: nameScript('perf-viewer') + '\n' + probe(opt.expected) });
     viewport = await page.setWindow(opt.width, opt.height);
     if (opt.rtt || opt.mbps) await throttle(page, opt.rtt, opt.mbps);
