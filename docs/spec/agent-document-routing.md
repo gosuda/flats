@@ -73,7 +73,8 @@ the file it changed, so `--undo` works from the files alone.
 4. **Instruction blocks.** A block starts with the line
    `<!-- flats:documents:begin -->` and ends with `<!-- flats:documents:end -->`.
    A marker counts only when it is the whole line and lies outside a fenced code
-   block (a fence of backticks or tildes), so a file that documents the markers
+   block (a fence of backticks or tildes). As in CommonMark, a line of three or
+   more backticks followed by text that holds a backtick does not open a fence. So a file that documents the markers
    is not mistaken for one that holds a block. A file without a block gets one
    appended: the command makes sure the text before it ends in a newline, adds a
    blank line, then the block. An empty file gets the block alone. A file with a
@@ -274,7 +275,9 @@ temporary directories, except where noted.
   fenced code blocks, CRLF files, and empty and whitespace-only files; a file
   that ends inside a fence that never closes (backtick and tilde fences, a
   shorter fence that does not close a longer one, CRLF), refused by setup and
-  left alone by undo, and a block before such a fence, which is still found.
+  left alone by undo, and a block before such a fence, which is still found; a
+  line of backticks followed by text that holds a backtick, which opens no
+  fence, and a tilde fence whose info string holds backticks.
   The command-level test shows the refusal writes nothing and that closing the
   fence lets setup run once and be idempotent.
 - Settings (5): a table of real-world shapes (tabs, two and four spaces, CRLF,
