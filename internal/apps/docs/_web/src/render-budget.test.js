@@ -23,16 +23,13 @@ test("a continuous burst renders at a steady gap and delivers the last edit", (t
   const start = Date.now();
   const times = [];
   const refresh = coalescedRefresh(() => times.push(Date.now() - start), 150);
-  // 40 updates per second for two seconds, on a 1 ms clock.
   for (let ms = 0; ms < 3000; ms++) {
     if (ms < 2000 && ms % 25 === 0) refresh.request();
     t.mock.timers.tick(1);
   }
-  // The first update renders at once, then one render per 150 ms gap.
   assert.equal(times[0], 1);
   const gaps = times.slice(1).map((v, i) => v - times[i]);
   assert.deepEqual(new Set(gaps), new Set([150]));
-  // 80 updates, 15 renders; the last one (2101 ms) shows the last update.
   assert.equal(times.length, 15);
   assert.ok(times.at(-1) >= 1975, `last render at ${times.at(-1)}`);
 });

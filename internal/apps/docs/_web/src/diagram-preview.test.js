@@ -144,8 +144,8 @@ test("Done closes and Edit source reopens nested and EOF fences without changing
     "> - ```mermaid\n>   graph TD; A-->B\n>   ```",
   ]) {
     let state = EditorState.create({ doc: text });
-    let blocks = diagramBlocks(state, true);
-    let keys = diagramKeys(blocks);
+    const blocks = diagramBlocks(state, true);
+    const keys = diagramKeys(blocks);
     const key = keys.get(blocks[0].from);
     state = state.update({ selection: { anchor: blocks[0].edit } }).state;
     const close = state.update({

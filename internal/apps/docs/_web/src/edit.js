@@ -166,7 +166,9 @@ function hashInto(list, text, digest) {
       need.map((b) => text.slice(b.start, b.end)),
       digest,
     );
-  need.forEach((b, i) => (b.hash = hashes[i]));
+  need.forEach((b, i) => {
+    b.hash = hashes[i];
+  });
 }
 function addHash(map, b) {
   const bucket = map.get(b.hash);

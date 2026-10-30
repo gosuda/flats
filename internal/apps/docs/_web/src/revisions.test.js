@@ -114,7 +114,7 @@ test("the first activation records a created entry, and a restart records nothin
     c = content("v1", doc("a.md", "# A\n"), doc("b.md", "# B\n"));
   const gen = next();
   transaction(db, () => revisions.ensureFlat(db, c, gen));
-  let e = entries(db);
+  const e = entries(db);
   assert.equal(e.length, 1);
   assert.equal(e[0].kind, "created");
   assert.equal(e[0].message, "");
@@ -172,7 +172,7 @@ test("groups close when due and credit only who edited since", () => {
     t0 - revisions.GROUP_IDLE,
   ]);
   transaction(db, () => revisions.sync(db, c, generation, t0));
-  let e = entries(db);
+  const e = entries(db);
   assert.equal(e.length, 2);
   assert.deepEqual(e[1].authors, ["Ada", "Bo"]);
   // Bo's group survives without unrecorded edits: the next due close
