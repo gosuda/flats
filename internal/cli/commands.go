@@ -170,6 +170,13 @@ func (a *app) deployExisting(slug string, n int) error {
 	if err != nil {
 		return err
 	}
+	return a.deployOutcome(resp, res)
+}
+
+// deployOutcome reports a deploy or rollback result: a request waiting for
+// the operator's approval routes through action (exit 3); otherwise --json
+// emits the raw reply and the deploy receipt prints.
+func (a *app) deployOutcome(resp response, res deployResult) error {
 	if res.Status == "pending_approval" {
 		return a.action(resp, res.pendingAction(), "")
 	}
@@ -443,15 +450,7 @@ func (a *app) rollback(args []string) error {
 	if err != nil {
 		return err
 	}
-	if res.Status == "pending_approval" {
-		return a.action(resp, res.pendingAction(), "")
-	}
-	if a.jsonOut {
-		a.emitRaw(resp)
-		return nil
-	}
-	printDeploy(a.out, res)
-	return nil
+	return a.deployOutcome(resp, res)
 }
 
 func (a *app) preview(args []string) error {

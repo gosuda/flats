@@ -213,6 +213,17 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	_ = enc.Encode(v)
 }
 
+// writeActionResult writes a core.ActionResult: 202 while the action waits
+// for the operator's approval, 200 once it applied (cleanup pending still
+// counts as applied: the metadata change is durable).
+func writeActionResult(w http.ResponseWriter, res core.ActionResult) {
+	code := http.StatusOK
+	if res.Status == "pending_approval" {
+		code = http.StatusAccepted
+	}
+	writeJSON(w, code, res)
+}
+
 // DecisionError retains the persisted approval and its typed execution cause.
 type DecisionError struct {
 	ErrorBody
@@ -724,11 +735,7 @@ func (s *Server) visibility(w http.ResponseWriter, r *http.Request, via core.Via
 		fail(w, err)
 		return
 	}
-	code := 200
-	if res.Status == "pending_approval" {
-		code = 202
-	}
-	writeJSON(w, code, res)
+	writeActionResult(w, res)
 }
 
 // publicEdit reports whether a board or document can become editable by
@@ -780,11 +787,7 @@ func (s *Server) deleteFlat(w http.ResponseWriter, r *http.Request, via core.Via
 		fail(w, err)
 		return
 	}
-	code := 200
-	if res.Status == "pending_approval" {
-		code = 202
-	}
-	writeJSON(w, code, res)
+	writeActionResult(w, res)
 }
 
 func (s *Server) logs(w http.ResponseWriter, r *http.Request, _ core.Via) {
@@ -1314,11 +1317,7 @@ func (s *Server) deleteVersion(w http.ResponseWriter, r *http.Request, via core.
 		fail(w, err)
 		return
 	}
-	code := http.StatusOK
-	if out.Status == "pending_approval" {
-		code = http.StatusAccepted
-	}
-	writeJSON(w, code, out)
+	writeActionResult(w, out)
 }
 func (s *Server) putVersionQuota(w http.ResponseWriter, r *http.Request, via core.Via) {
 	var in struct {
