@@ -50,8 +50,8 @@ export function mount(main, _params, ctx) {
   // The "…" button of each shown row, by slug, to move focus after a delete.
   let menuButtons = new Map();
   // While a delete from a row menu is pending the list is not redrawn, so
-  // the menu holding it stays; a redraw asked for meanwhile happens after.
-  // shownAtDelete is the order of the rows when it started, for focus after.
+  // the menu holding it stays; a redraw asked for meanwhile happens after,
+  // and shownAtDelete keeps the row order for focus afterwards.
   let deleting = 0;
   let redrawLater = false;
   let shownAtDelete = null;
