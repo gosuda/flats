@@ -10,7 +10,7 @@ print(value)' "$1"
 }
 
 gate_request() {
-  local payload code id link state receipt deadline timeout
+  local payload code id link receipt timeout
   if payload=$("$F" --json "$@"); then code=0; else code=$?; fi
   if [ "$code" -ne 3 ]; then
     echo "Expected an approval request (exit 3), got $code: $payload" >&2
@@ -31,25 +31,10 @@ gate_request() {
   fi
   timeout=${FLATS_GATE_APPROVAL_TIMEOUT:-600}
   case "$timeout" in ''|*[!0-9]*) echo "Approval timeout must be seconds" >&2; return 1;; esac
-  deadline=$(( $(date +%s) + timeout ))
-  while [ "$(date +%s)" -le "$deadline" ]; do
-    receipt=$(curl -fsS --max-time 30 "$FLATS_URL/api/approvals/$id") || return 1
-    state=$(gate_json status <<<"$receipt") || return 1
-    case "$state" in
-      approved)
-        if python3 -c 'import json,sys; sys.exit(0 if (json.load(sys.stdin).get("result_data") or {}).get("cleanup_pending") else 1)' <<<"$receipt"; then
-          echo "Deletion applied but cleanup is pending; inspect the receipt and repair storage before restarting. Do not repeat deletion." >&2
-          echo "$receipt" >&2
-          return 1
-        fi
-        printf '%s\n' "$receipt"; return 0;;
-      failed|rejected) echo "Approval $id ended $state: $receipt" >&2; return 1;;
-      pending|applying) sleep 1;;
-      *) echo "Unknown approval state: $receipt" >&2; return 1;;
-    esac
-  done
-  echo "Timed out waiting for operator decision for $id; request remains pending at $link" >&2
-  return 1
+  # The wait verb succeeds only for an approval that applied without pending
+  # storage cleanup; its stderr already explains any refusal or timeout.
+  receipt=$("$F" --json approvals wait "$id" --timeout "$timeout") || return 1
+  printf '%s\n' "$receipt"
 }
 
 gate_create_saved() {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	flatsapp "github.com/gosuda/flats/internal/app"
 	"golang.org/x/sys/unix"
 	"io"
@@ -390,6 +391,103 @@ func TestListInfoVersionsApprovals(t *testing.T) {
 	r = run(t, srv.URL, "", "info", "nope")
 	if r.code != ExitError || !strings.Contains(r.stderr, "not found") {
 		t.Errorf("missing flat: %d %s", r.code, r.stderr)
+	}
+}
+
+func TestApprovalsWait(t *testing.T) {
+	api, srv := newFakeAPI(t)
+	var mu sync.Mutex
+	counts := map[string]int{}
+	// serveState registers the canned receipt sequence for one approval and
+	// counts how often the CLI polled it.
+	serveState := func(id string, queue ...string) {
+		api.routes["GET /api/approvals/"+id] = func(w http.ResponseWriter, _ *http.Request, _ []byte) {
+			mu.Lock()
+			defer mu.Unlock()
+			state := queue[0]
+			if len(queue) > 1 {
+				queue = queue[1:]
+			}
+			counts[id]++
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"id": %q, "status": %q, "result": "version 2 is live", "result_data": {"version": 2}}`, id, state)
+		}
+	}
+	polls := func(id string) int {
+		mu.Lock()
+		defer mu.Unlock()
+		return counts[id]
+	}
+	wait := func(args ...string) result {
+		return runEnv(t, Env{PollInterval: time.Millisecond}, srv.URL, args...)
+	}
+
+	serveState("apr-ok", "approved")
+	r := wait("approvals", "wait", "apr-ok")
+	if r.code != ExitOK || !strings.Contains(r.stdout, "Approval apr-ok approved: version 2 is live") || strings.Contains(r.stdout, "result_data") {
+		t.Errorf("plain wait: %d %q %q", r.code, r.stdout, r.stderr)
+	}
+	if polls("apr-ok") != 1 {
+		t.Errorf("a decided receipt should end the wait: %d polls", polls("apr-ok"))
+	}
+	r = wait("--json", "approvals", "wait", "apr-ok", "--timeout", "5")
+	if r.code != ExitOK || !strings.Contains(r.stdout, `"status": "approved"`) || strings.Contains(r.stdout, "approved:") {
+		t.Errorf("json wait: %d %q", r.code, r.stdout)
+	}
+	if p := api.last("GET /api/approvals/apr-ok").path; p != "/api/approvals/apr-ok" {
+		t.Errorf("wait path = %q", p)
+	}
+
+	// A refused approval ends the wait without polling again.
+	serveState("apr-no", "rejected")
+	r = wait("approvals", "wait", "apr-no")
+	if r.code != ExitError || !strings.Contains(r.stderr, "Approval apr-no ended rejected") || r.stdout != "" {
+		t.Errorf("refused: %d %q %q", r.code, r.stdout, r.stderr)
+	}
+	if polls("apr-no") != 1 {
+		t.Errorf("refusal should not be re-polled: %d", polls("apr-no"))
+	}
+
+	// Pending then approved polls until the decision lands.
+	serveState("apr-later", "pending", "pending", "approved")
+	r = wait("approvals", "wait", "apr-later")
+	if r.code != ExitOK || !strings.Contains(r.stdout, "Approval apr-later approved") || polls("apr-later") != 3 {
+		t.Errorf("pending then approved: %d %q %d", r.code, r.stdout, polls("apr-later"))
+	}
+
+	// An approval that leaves storage cleanup pending is not success.
+	api.handle("GET /api/approvals/apr-mess", 200, `{"id": "apr-mess", "status": "approved", "result_data": {"cleanup_pending": true}}`)
+	r = wait("approvals", "wait", "apr-mess")
+	if r.code != ExitError || !strings.Contains(r.stderr, "Do not repeat deletion") || !strings.Contains(r.stderr, "apr-mess") || r.stdout != "" {
+		t.Errorf("cleanup pending: %d %q %q", r.code, r.stdout, r.stderr)
+	}
+
+	// Unknown states and timeouts fail instead of waiting forever.
+	serveState("apr-odd", "weird")
+	r = wait("approvals", "wait", "apr-odd")
+	if r.code != ExitError || !strings.Contains(r.stderr, "Unknown approval state") {
+		t.Errorf("unknown state: %d %q %q", r.code, r.stdout, r.stderr)
+	}
+	serveState("apr-slow", "pending")
+	start := time.Now()
+	r = wait("approvals", "wait", "apr-slow", "--timeout", "1")
+	if r.code != ExitError || !strings.Contains(r.stderr, "Timed out waiting for operator decision for apr-slow") {
+		t.Errorf("timeout: %d %q %q", r.code, r.stdout, r.stderr)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("timeout waited %s", elapsed)
+	}
+
+	// Usage problems stay usage problems.
+	if r := wait("approvals", "wait"); r.code != ExitUsage {
+		t.Errorf("missing id: %d %q", r.code, r.stderr)
+	}
+	if r := wait("approvals", "wait", "apr-ok", "--timeout", "0"); r.code != ExitUsage {
+		t.Errorf("bad timeout: %d %q", r.code, r.stderr)
+	}
+	api.handle("GET /api/approvals", 200, `{"approvals": []}`)
+	if r := wait("approvals"); r.code != ExitOK || !strings.Contains(r.stdout, "No approval requests.") {
+		t.Errorf("list routing broke: %d %q", r.code, r.stdout)
 	}
 }
 
