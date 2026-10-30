@@ -1,0 +1,48 @@
+{
+	"$schema": "https://biomejs.dev/schemas/2.6.4/schema.json",
+	"formatter": { "enabled": false },
+	"assist": { "enabled": false },
+	"linter": {
+		"enabled": true,
+		"rules": {
+			"preset": "recommended",
+			"style": {
+				"useConst": "error",
+				"useTemplate": "warn",
+				"useNodejsImportProtocol": "off"
+			},
+			"suspicious": {
+				"noVar": "error",
+				"noExplicitAny": "off",
+				"noAssignInExpressions": "warn"
+			},
+			"correctness": {
+				"noUnusedVariables": "error",
+				"noUnusedImports": "error"
+			},
+			"complexity": {
+				"noExcessiveCognitiveComplexity": {
+					"level": "warn",
+					"options": { "maxAllowedComplexity": 25 }
+				},
+				"noForEach": "off",
+				"noUselessStringConcat": "warn",
+				"noUselessTernary": "warn",
+				"useOptionalChain": "warn"
+			}
+		}
+	},
+	"javascript": {
+		"globals": ["describe", "it", "beforeEach", "afterEach"]
+	},
+	"files": {
+		"includes": [
+			"**/*.js",
+			"**/*.mjs",
+			"**/*.cjs",
+			"!**/node_modules/**",
+			"!internal/apps/docs/dist/**",
+			"!internal/apps/docs/_web/src/prelude.js"
+		]
+	}
+}

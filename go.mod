@@ -50,6 +50,7 @@ require (
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/fullsailor/pkcs7 v0.0.0-20190404230743-d7302db945fa // indirect
 	github.com/fxamacker/cbor/v2 v2.9.3 // indirect
+	github.com/fzipp/gocyclo v0.6.0 // indirect
 	github.com/gaissmai/bart v0.29.0 // indirect
 	github.com/getsentry/sentry-go v0.43.0 // indirect
 	github.com/go-chi/chi/v5 v5.2.4 // indirect
@@ -201,3 +202,5 @@ require (
 	nhooyr.io/websocket v1.8.17 // indirect
 	zombiezen.com/go/capnproto2 v2.18.0+incompatible // indirect
 )
+
+tool github.com/fzipp/gocyclo/cmd/gocyclo
