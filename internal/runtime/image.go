@@ -36,7 +36,11 @@ func imagesEnabled() bool { return os.Getenv("FLATS_NO_IMAGES") != "1" }
 
 func imagesForced() bool { return os.Getenv("FLATS_FORCE_IMAGES") == "1" }
 
-// documentImage is this process's state for one image path.
+// documentImage is this process's state for one image path. Lifecycle: load
+// hands out the in-memory or file image (a corrupt file is deleted); a miss
+// captures a fresh image, which stays in data until the worker reported
+// ready (isReady) and write publishes it to path; refuse latches refused and
+// the process loads documents as before.
 type documentImage struct {
 	path string
 

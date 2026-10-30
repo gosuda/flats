@@ -46,6 +46,12 @@ type spare struct {
 	sock string
 }
 
+// spareState is the Manager's spare machinery. The spare itself moves
+// scheduled (timer set) → starting (newSpare running outside mu) → cur
+// (waiting for adoption), and leaves cur only by adoption (takeSpare), an
+// early exit (spareExited) or a stop (untrack at zero instances, Close);
+// every adoption asks for a replacement after spareRefillDelay, every
+// premature exit retries with backoff.
 type spareState struct {
 	mu       sync.Mutex
 	live     int    // instances that are not stopped
@@ -172,9 +178,17 @@ func (m *Manager) refillSpare() {
 	s.mu.Unlock()
 }
 
+// spareStartableLocked reports whether a spare may be started now: the
+// Manager wants one (an instance is tracked), none is waiting or being
+// started, and Close has not been called.
+func (m *Manager) spareStartableLocked() bool {
+	s := &m.spare
+	return !m.NoSpare && !s.closed && s.live > 0 && s.cur == nil && !s.starting
+}
+
 func (m *Manager) scheduleSpareLocked(delay time.Duration) {
 	s := &m.spare
-	if m.NoSpare || s.closed || s.live == 0 || s.cur != nil || s.starting || s.timer != nil {
+	if s.timer != nil || !m.spareStartableLocked() {
 		return
 	}
 	s.seq++
@@ -200,7 +214,7 @@ func (m *Manager) startSpare(seq uint64) {
 		return
 	}
 	s.timer = nil
-	if m.NoSpare || s.closed || s.live == 0 || s.cur != nil || s.starting {
+	if !m.spareStartableLocked() {
 		s.mu.Unlock()
 		return
 	}

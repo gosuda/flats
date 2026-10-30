@@ -230,7 +230,12 @@ func (m *Manager) startChild(ctx context.Context, spec core.RuntimeSpec) (*insta
 	return in, nil
 }
 
-// instance is a running server flat: one worker process at a time.
+// instance is a running server flat: one worker process at a time. The
+// lifecycle has four states, all read from the fields under mu (WorkerState):
+// stopped, running (p != nil), starting (a restart in progress) and backoff
+// (the worker exited; retryAt gates the next restart). The transitions are
+// the only writers: ensure walks backoff → starting → running on demand,
+// exited walks running → backoff, Stop lands in stopped.
 type instance struct {
 	m     *Manager
 	spec  core.RuntimeSpec
