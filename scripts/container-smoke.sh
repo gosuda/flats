@@ -58,6 +58,8 @@ fail() {
 	exit 1
 }
 
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=lib-gate.sh
 . "$(cd "$(dirname "$0")" && pwd)/lib-gate.sh"
 # A binary from before internal/buildinfo, such as an older commit image built
 # by the Commit images workflow, reports the stamp itself and no system.build
