@@ -13,7 +13,6 @@ export function createWheelPan({ horizontalOnly = false } = {}) {
     const time = e.timeStamp;
     if (Number.isFinite(time) && last !== null && time - last > 200) reset();
     if (swapped === null) swapped = Math.abs(dy) > Math.abs(dx);
-    // Missing or backwards timestamps must not force a new mapping.
     if (Number.isFinite(time) && (last === null || time >= last)) last = time;
     return { x: swapped ? dy : dx, y: horizontalOnly ? 0 : swapped ? dx : dy };
   };

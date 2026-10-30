@@ -200,9 +200,8 @@ function applyView() {
   $('.world').style.transform = `translate(${S.view.x}px, ${S.view.y}px) scale(${S.view.z})`;
   const out = $('.zoom output');
   if (out) out.textContent = Math.round(S.view.z * 100) + '%';
-  // keep titles readable: counter-scale strips
-  // and keep each strip within its board's on-screen width so titles of
-  // neighbouring boards never overlap at low zoom
+  // Counter-scale the title strips so board names stay readable and titles
+  // of neighbouring boards never overlap at low zoom.
   for (const f of S.frames.values()) {
     f.strip.style.transform = `scale(${1 / S.view.z})`;
     f.strip.style.maxWidth = (parseFloat(f.el.style.width) || 0) * S.view.z + 'px';
@@ -223,7 +222,7 @@ function bounds() {
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   for (const b of Object.values(c.boards || {})) { x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y - 30); x1 = Math.max(x1, b.x + b.w); y1 = Math.max(y1, b.y + b.h); }
   for (const n of Object.values(c.notes || {})) { x0 = Math.min(x0, n.x); y0 = Math.min(y0, n.y); x1 = Math.max(x1, n.x + (n.w || 240)); y1 = Math.max(y1, n.y + 80); }
-  return isFinite(x0) ? { x0, y0, x1, y1 } : { x0: 0, y0: 0, x1: 800, y1: 600 };
+  return Number.isFinite(x0) ? { x0, y0, x1, y1 } : { x0: 0, y0: 0, x1: 800, y1: 600 };
 }
 function fit() {
   const vp = $('.viewport').getBoundingClientRect();
@@ -344,7 +343,6 @@ function loadFrame(f, path, hash) {
   if (f.error && f.errorAt !== f.loadedAt) { f.error.remove(); f.error = null; }
   const iframe = h('iframe', {
     title: `Artboard ${path}`, loading: 'lazy', referrerpolicy: 'no-referrer',
-   
     src: fileURL(path, hash),
   });
   f.iframe = iframe;
@@ -433,7 +431,7 @@ function makeNote(id, n) {
   }
   return el;
 }
-function editNote(el, textEl, id, n) {
+function editNote(_el, textEl, id, n) {
   const ta = h('textarea', { 'aria-label': 'Note text' });
   ta.value = n.text;
   textEl.replaceWith(ta); ta.focus();
@@ -533,7 +531,8 @@ async function openTextEditor(path, f, m) {
   closeTextEditor();
   // Only the latest pick may open an editor: a slower earlier request, or
   // one answered after edit mode ended, is dropped.
-  const ticket = (S.pickTicket = (S.pickTicket || 0) + 1);
+  S.pickTicket = (S.pickTicket || 0) + 1;
+  const ticket = S.pickTicket;
   let node;
   try { node = await api(`/_design/api/node?path=${encodeURIComponent(path)}&node=${m.node}&gen=${Number(m.gen) || 0}`); }
   catch (err) {
@@ -749,7 +748,7 @@ function ago(ts) {
   if (s < 86400) return Math.floor(s / 3600) + ' h ago';
   return new Date(ts).toLocaleString();
 }
-function revItem(r, revs) {
+function revItem(r, _revs) {
   const who = { agent: 'Agent', person: 'Person', rollback: 'Rollback', created: 'Created' }[r.kind] || r.kind;
   const authors = (r.authors || []).filter((a) => a && a !== who).join(', ');
   const current = r.number === S.state.revision && !S.state.pending;
