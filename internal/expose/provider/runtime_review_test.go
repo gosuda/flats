@@ -280,7 +280,7 @@ func TestReviewerReproDeleteLeavesPublicRoute(t *testing.T) {
 				t.Fatal(err)
 			}
 			approveReview(t, f.svc, r)
-			if _, ok := f.manager.take("site", id, false); ok || f.public.stops == 0 {
+			if _, ok := f.manager.routeHost("site", id); ok || f.public.stops == 0 {
 				t.Fatal("deleted route still registered")
 			}
 			response, err := http.Get(publicURL)
@@ -401,10 +401,10 @@ func TestManagerRenameRedirectExpiryAndPrivateTeardown(t *testing.T) {
 			}
 			f.clock.Add(int64(8 * 24 * time.Hour))
 			f.svc.Sweep(t.Context())
-			if _, ok := f.manager.take("site", id, false); ok {
+			if _, ok := f.manager.routeHost("site", id); ok {
 				t.Fatal("expired public redirect registered")
 			}
-			if _, ok := f.manager.take("site", Local, false); ok {
+			if _, ok := f.manager.routeHost("site", Local); ok {
 				t.Fatal("expired Private redirect registered")
 			}
 			response, err = client.Get(old)
@@ -420,7 +420,7 @@ func TestManagerRenameRedirectExpiryAndPrivateTeardown(t *testing.T) {
 				t.Fatal(err)
 			}
 			approveReview(t, f.svc, r)
-			if _, ok := f.manager.take("moved", id, false); ok {
+			if _, ok := f.manager.routeHost("moved", id); ok {
 				t.Fatal("renamed provider survives deletion")
 			}
 		})
@@ -437,7 +437,7 @@ func TestRedirectExpiryRetriesUnconfirmedProviderStop(t *testing.T) {
 	f.public.stopErr = errors.New("lease unregister unconfirmed")
 	f.clock.Add(int64(8 * 24 * time.Hour))
 	f.svc.Sweep(t.Context())
-	if _, ok := f.manager.take("site", Portal, false); !ok {
+	if _, ok := f.manager.routeHost("site", Portal); !ok {
 		t.Fatal("unconfirmed stop lost route tracking")
 	}
 	if f.svc.Redirects()["site"] != "moved" {
@@ -448,7 +448,7 @@ func TestRedirectExpiryRetriesUnconfirmedProviderStop(t *testing.T) {
 	}
 	f.public.stopErr = nil
 	f.svc.Sweep(t.Context())
-	if _, ok := f.manager.take("site", Portal, false); ok {
+	if _, ok := f.manager.routeHost("site", Portal); ok {
 		t.Fatal("retry left expired lease registered")
 	}
 	if _, ok := f.svc.Redirects()["site"]; ok {

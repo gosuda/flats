@@ -451,7 +451,7 @@ func TestManagerPublicStopControlOutageClosesFunnelAndDefersIdentityRetirement(t
 	if state := tailnet.FunnelStatus("offline-transition"); state.State != tsnet.FunnelUnavailable {
 		t.Fatalf("Funnel remained reachable after confirmed listener close: %+v", state)
 	}
-	if _, tracked := m.take("offline-transition", Funnel, false); tracked {
+	if _, tracked := m.routeHost("offline-transition", Funnel); tracked {
 		t.Fatal("closed Funnel stayed registered as a public route")
 	}
 	if pending, err := m.hasPendingTailnet("offline-transition", "offline-transition"); err != nil || !pending {
