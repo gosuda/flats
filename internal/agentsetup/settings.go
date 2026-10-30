@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"reflect"
 	"slices"
 	"strings"
@@ -473,6 +474,9 @@ func decodeObject(b []byte) (map[string]any, error) {
 	var m map[string]any
 	if err := dec.Decode(&m); err != nil {
 		return nil, err
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return nil, errors.New("text follows the JSON object")
 	}
 	return m, nil
 }

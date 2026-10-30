@@ -162,6 +162,48 @@ func ProjectDir(start string) (dir string, found bool) {
 	}
 }
 
+// sameDir reports whether a and b name the same directory, however each is
+// spelled.
+func sameDir(a, b string) bool {
+	if filepath.Clean(a) == filepath.Clean(b) {
+		return true
+	}
+	fa, errA := os.Stat(a)
+	fb, errB := os.Stat(b)
+	return errA == nil && errB == nil && os.SameFile(fa, fb)
+}
+
+// resolveMissing returns where a setup creates path, which does not exist:
+// the resolved path of its nearest existing ancestor joined with the rest. A
+// symbolic link on the way that points nowhere, or an ancestor that is not a
+// directory, is an error, because the write would fail.
+func resolveMissing(path string) (string, error) {
+	rest := filepath.Base(path)
+	for d := filepath.Dir(path); ; d = filepath.Dir(d) {
+		li, err := os.Lstat(d)
+		if errors.Is(err, fs.ErrNotExist) {
+			if parent := filepath.Dir(d); parent != d {
+				rest = filepath.Join(filepath.Base(d), rest)
+				continue
+			}
+		}
+		if err != nil {
+			return "", err
+		}
+		real, err := filepath.EvalSymlinks(d)
+		if err != nil {
+			if li.Mode()&fs.ModeSymlink != 0 {
+				return "", fmt.Errorf("%s is a symbolic link that cannot be followed: %w", d, err)
+			}
+			return "", err
+		}
+		if fi, err := os.Stat(real); err != nil || !fi.IsDir() {
+			return "", fmt.Errorf("%s is not a directory", d)
+		}
+		return filepath.Join(real, rest), nil
+	}
+}
+
 // NewPlan computes the changes for o without writing.
 func NewPlan(o Options) (*Plan, error) {
 	p := &Plan{}
@@ -171,7 +213,7 @@ func NewPlan(o Options) (*Plan, error) {
 		var found bool
 		project, found = ProjectDir(o.Cwd)
 		p.Project, p.NoRepo = project, !found
-		if filepath.Clean(project) == filepath.Clean(o.Home) {
+		if sameDir(project, o.Home) {
 			return nil, ErrProjectIsHome
 		}
 	}
@@ -254,21 +296,25 @@ func target(agent Agent, kind Kind, path string, o Options, mode, dirMode fs.Fil
 		if o.Undo {
 			return nil
 		}
+		if it.Real, err = resolveMissing(path); err != nil {
+			it.Real, it.Err = path, err
+		}
 		return it
 	}
 	if err != nil {
 		it.Err = err
 		return it
 	}
-	if li.Mode()&fs.ModeSymlink != 0 {
-		it.Link = true
-		real, err := filepath.EvalSymlinks(path)
-		if err != nil {
-			it.Err = fmt.Errorf("%s is a symbolic link that cannot be followed: %w", path, err)
-			return it
+	it.Link = li.Mode()&fs.ModeSymlink != 0
+	real, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		if it.Link {
+			err = fmt.Errorf("%s is a symbolic link that cannot be followed: %w", path, err)
 		}
-		it.Real = real
+		it.Err = err
+		return it
 	}
+	it.Real = real
 	fi, err := os.Stat(it.Real)
 	if err != nil {
 		it.Err = err

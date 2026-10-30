@@ -88,7 +88,8 @@ flats agent-setup docs [--agent claude|codex|cursor|all] [--scope user|project] 
 `$CODEX_HOME` or `~/.codex`, and Cursor's user directory is `~/.cursor`. The
 project is the nearest directory, starting at the current one and going up, that
 holds a `.git` entry. Without one, the project is the current directory and the
-plan says so. The command refuses a project that is your home directory.
+plan says so. The command refuses a project that is your home directory, also
+when it is reached through a link.
 
 Every target gets the same short routing text. It covers a document that people
 will read, share or edit afterwards, and tells the agent to create it with the
@@ -133,7 +134,8 @@ the question `Apply these changes? [y/N]`. Without a terminal and without
 existing file, it copies the file into `agent-setup-backups/`, next to
 `connection.json` in the `flats-client` directory of the user config directory.
 It follows symbolic links and edits the target, so a link kept by a dotfile
-manager stays a link. It writes files one by one. If one write fails, the others
+manager stays a link. A link that points nowhere, on the file or on a directory
+above it, is refused in the plan, and then nothing is written. It writes files one by one. If one write fails, the others
 still go through, the failure is reported per file with exit 1, and a rerun
 finishes the rest.
 

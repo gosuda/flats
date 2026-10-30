@@ -33,7 +33,7 @@ the file it changed, so `--undo` works from the files alone.
    one and going up, that holds a `.git` entry. If there is none, the project is
    the current directory and the plan says that no repository was found. The
    plan always names the project directory. A project that is the user's home
-   directory is refused, with a message to run the command inside a repository
+   directory is refused, whatever path spells either of them, with a message to run the command inside a repository
    or to use user scope. The command runs on macOS and Linux, like the rest of
    the CLI. Its output is text, and `--json` is a usage error. Ctrl-C at the
    question ends the command without writing.
@@ -156,8 +156,9 @@ the file it changed, so `--undo` works from the files alone.
    refusal exits 1.
 
 7. **Writing.** The command resolves symbolic links and edits the target, so a
-   link kept by a dotfile manager stays a link. A dangling link or a target that
-   is not a regular file is refused. Before it changes or deletes an existing
+   link kept by a dotfile manager stays a link. A dangling link, on the target
+   or on a directory above it, and a target that is not a regular file are
+   refused while planning, so nothing is written. Before it changes or deletes an existing
    file it copies the file into `agent-setup-backups/`, a directory next to
    `connection.json` in the `flats-client` directory of the user config
    directory. A backup is named `<UTC time as 20060102T150405Z>-<first 8 hex digits of the SHA-256 of
@@ -266,7 +267,8 @@ temporary directories, except where noted.
   the two scopes treat differently, a directory or a dangling link of that
   name), the project
   root search from a subdirectory, outside a repository and at the home
-  directory, project scope with
+  directory, also when the home or the working directory is spelled through a
+  link, project scope with
   and without `--undo`, a Codex file one byte under and over the limit, and an
   over-limit file that stays unchanged or shrinks.
 - Routing text (3): a test checks the size, that no URL or host is present, and
@@ -288,7 +290,8 @@ temporary directories, except where noted.
   and a check by hand against a large real `settings.json`, whose result the
   final report gives, because such a file cannot be committed.
 - Flow (6, 7): `--dry-run`, a refused target with `--dry-run`, no terminal, decline, `--yes` with and without a
-  terminal, symbolic links, modes, backups and their names, a leftover temporary
+  terminal, symbolic links, a dangling link to an agent directory, backups
+  named by the resolved path under a linked directory, modes, a leftover temporary
   file after a failure, a file that changes between plan and write, and a write
   failure in the middle.
 - Undo (8): setup then undo returns an existing instruction file to its
