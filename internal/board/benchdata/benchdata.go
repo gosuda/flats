@@ -100,7 +100,6 @@ type Asset struct {
 	W, H int
 }
 
-// Board is generated board data.
 type Board struct {
 	Mix      Mix
 	Title    string
@@ -429,7 +428,6 @@ func sha256Hex(data []byte) string {
 	return hex.EncodeToString(h[:])
 }
 
-// WriteFile generates m from seed and writes its data file to path.
 func WriteFile(path string, m Mix, seed uint64) (*Board, error) {
 	b, err := Generate(m, seed)
 	if err != nil {

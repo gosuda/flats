@@ -288,7 +288,6 @@ func Open(dir string, b Backend, opts Options) (in *Instance, created bool, err 
 	return in, created, nil
 }
 
-// Slug returns the board's slug.
 func (in *Instance) Slug() string { return in.slug }
 
 // StoreID is the random id of this board.db's outbox (5.3), for the import
