@@ -24,8 +24,6 @@ import (
 // Anonymous public editing in the document worker
 // (docs/spec/docs-public-edit-technical-design.md 3).
 
-// --- Yjs version 1 updates, encoded for tests ---
-
 func varuint(b []byte, n uint64) []byte {
 	for n >= 0x80 {
 		b = append(b, byte(n)|0x80)
@@ -49,8 +47,9 @@ type yItem struct {
 // yDel deletes length characters of client from clock.
 type yDel struct{ client, clock, length uint64 }
 
-// yUpdate encodes one update: each item as its own client group, then the
-// delete set. Texts are ASCII, so their Yjs length is their byte length.
+// yUpdate encodes one Yjs version 1 update: each item as its own client
+// group, then the delete set. Texts are ASCII, so their Yjs length is their
+// byte length.
 func yUpdate(items []yItem, dels []yDel) string {
 	b := varuint(nil, uint64(len(items)))
 	for _, it := range items {
@@ -167,8 +166,6 @@ func awaitPresence(t *testing.T, s *socket, id uint64) map[string]any {
 		}
 	}
 }
-
-// --- connections ---
 
 // connectWith opens a WebSocket to a document with request headers.
 func connectWith(t *testing.T, url, doc string, headers map[string]string) (*socket, error) {
@@ -346,8 +343,6 @@ func docsModule(version string, texts map[string]string) string {
 	b, _ := json.Marshal(map[string]any{"format": 1, "hash": version, "entry": entry, "title": "Shared", "documents": docs, "assets": []string{}})
 	return "export default " + string(b) + ";\n"
 }
-
-// --- tests ---
 
 func TestGuestAndViewerAdmission(t *testing.T) {
 	t.Parallel()
