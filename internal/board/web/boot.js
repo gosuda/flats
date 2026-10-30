@@ -16,7 +16,7 @@
       if (Date.now() - (Number(sessionStorage.getItem(key)) || 0) < 10000) return;
       sessionStorage.setItem(key, String(Date.now()));
     } catch {
-      return; // without storage a reload could repeat forever
+      return;
     }
     location.reload();
   }, true);

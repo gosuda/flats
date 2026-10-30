@@ -32,7 +32,7 @@ for (const [name, t] of Object.entries(THEMES)) {
 }
 
 test('fractional keys stay ordered and never end in 0', () => {
-  let keys = [keyBetween(null, null)];
+  const keys = [keyBetween(null, null)];
   for (let i = 0; i < 200; i++) {
     const j = Math.floor((i * 7919) % (keys.length + 1));
     const k = keyBetween(j ? keys[j - 1] : null, j < keys.length ? keys[j] : null);

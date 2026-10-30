@@ -32,8 +32,8 @@ export function writeZip(files, date = new Date()) {
     const local = new DataView(new ArrayBuffer(30));
     local.setUint32(0, 0x04034b50, true);
     local.setUint16(4, 20, true);
-    local.setUint16(6, 0x0800, true); // UTF-8 names
-    local.setUint16(8, 0, true);      // stored
+    local.setUint16(6, 0x0800, true);
+    local.setUint16(8, 0, true);
     local.setUint16(10, dosTime, true);
     local.setUint16(12, dosDate, true);
     local.setUint32(14, crc, true);

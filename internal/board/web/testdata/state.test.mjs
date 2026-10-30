@@ -108,7 +108,7 @@ test('board metadata ignores unknown keys such as __proto__', () => {
   assert.equal(s.meta.title, 'T');
   assert.equal(Object.getPrototypeOf(s.meta), Object.prototype);
   assert.equal(s.meta.polluted, undefined);
-  assert.ok(!Object.prototype.hasOwnProperty.call(s.metaV, '__proto__'));
+  assert.ok(!Object.hasOwn(s.metaV, '__proto__'));
   s.push([JSON.parse('{"op":"meta","g":"__proto__","val":{"polluted":true}}')]);
   assert.equal(s.viewMeta().polluted, undefined);
 });

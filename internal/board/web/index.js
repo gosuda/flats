@@ -7,11 +7,11 @@ const LARGE_CELLS = 4;
 
 export class SpatialIndex {
   constructor() {
-    this.cells = new Map();   // "cx,cy" -> Set<id>
-    this.large = new Map();   // id -> rect
-    this.boxes = new Map();   // id -> rect
-    this.attached = new Map(); // target id -> Set<connector id>
-    this.targets = new Map();  // connector id -> [target ids]
+    this.cells = new Map();
+    this.large = new Map();
+    this.boxes = new Map();
+    this.attached = new Map();
+    this.targets = new Map();
   }
 
   clear() {
@@ -57,14 +57,14 @@ export class SpatialIndex {
     return old;
   }
 
-  // query returns the ids whose rect intersects r.
+  // query returns the ids whose rect intersects r. Queries covering more
+  // cells than currently occupied scan cells directly.
   query(r) {
     const out = new Set();
     const hitRect = (b) => b.x <= r.x + r.w && r.x <= b.x + b.w && b.y <= r.y + r.h && r.y <= b.y + b.h;
     const nx = Math.floor((r.x + r.w) / CELL) - Math.floor(r.x / CELL) + 1;
     const ny = Math.floor((r.y + r.h) / CELL) - Math.floor(r.y / CELL) + 1;
     if (nx * ny > this.cells.size) {
-      // A query wider than the occupied cells is cheaper as a scan.
       for (const s of this.cells.values()) for (const id of s) if (!out.has(id) && hitRect(this.boxes.get(id))) out.add(id);
     } else {
       for (const k of this.#cellKeys(r)) {

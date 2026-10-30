@@ -4,9 +4,9 @@
 export class HandTool {
   constructor(app) { this.app = app; }
 
-  down(e, p, s) { this.from = { s, cam: { ...this.app.cam } }; this.app.renderer.dyn.classList.add('panning'); }
+  down(_e, _p, s) { this.from = { s, cam: { ...this.app.cam } }; this.app.renderer.dyn.classList.add('panning'); }
 
-  move(e, p, s) {
+  move(_e, _p, s) {
     if (!this.from) return;
     const { cam } = this.from;
     this.app.setCam(cam.x - (s[0] - this.from.s[0]) / cam.z, cam.y - (s[1] - this.from.s[1]) / cam.z, cam.z);

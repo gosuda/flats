@@ -17,7 +17,7 @@ export class PenTool {
 
   activate() { this.app.styleBar.update(); }
 
-  down(e, p) { this.pts = [p]; }
+  down(_e, p) { this.pts = [p]; }
 
   move(e, p) {
     if (!this.pts) return;
@@ -32,7 +32,7 @@ export class PenTool {
     this.pts = null;
     const app = this.app;
     app.renderer.dynamic();
-    if (!pts || !pts.length) return;
+    if (!pts?.length) return;
     const g = penFromPoints(pts, 0.5 / app.cam.z);
     const marker = this.mode === 'marker';
     const style = { width: marker ? 'marker' : 'pen', stroke: marker && this.color === 'ink' ? 'highlight' : this.color };
@@ -43,7 +43,7 @@ export class PenTool {
   cancel() { this.pts = null; this.app.renderer.dynamic(); }
 
   draw(ctx, r) {
-    if (!this.pts || !this.pts.length) return;
+    if (!this.pts?.length) return;
     const marker = this.mode === 'marker';
     ctx.strokeStyle = inkColor(r.theme, marker && this.color === 'ink' ? 'highlight' : this.color);
     ctx.lineWidth = (marker ? 16 : 3) * this.app.cam.z;

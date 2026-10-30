@@ -20,7 +20,7 @@ export class Undo {
   }
 
   ack(m, batch) {
-    if (!batch || !batch.undo) return;
+    if (!batch?.undo) return;
     const r = Array.isArray(m.results) ? m.results[0] : m.results;
     if (!r || typeof r !== 'object') return;
     const sk = r.skipped || {};
