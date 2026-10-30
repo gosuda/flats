@@ -25,7 +25,6 @@ import { connectorPoints } from '../../internal/board/web/geom.js';
 
 const MIN_TEXT = 12;     // px at 100% zoom (board.md success criteria)
 const EPS = 0.5;         // px; the host stores coordinates to 0.1 px
-const LINE = 1.38;       // render.js line height factor
 const FRAME_LABEL = 13;  // render.js draws frame names at 13 / zoom px
 const FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif';
 

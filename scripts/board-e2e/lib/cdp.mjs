@@ -1,188 +1,8 @@
-// Minimal Chrome DevTools Protocol client: launches headless Chrome with a
-// temporary profile, speaks CDP over the global WebSocket of Node 22+ and
-// drives pages through real input events (Input.dispatch*). No dependencies.
+// Tab is one page target attached through a flattened session; the board-e2e
+// harness drives pages through real input events (Input.dispatch*).
 
-import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
-
-export const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-export async function launchChrome({ chrome, headless = true, size = [1440, 900] }) {
-  const profile = mkdtempSync(join(tmpdir(), 'board-e2e-chrome-'));
-  const args = [
-    `--user-data-dir=${profile}`, '--remote-debugging-port=0', '--no-first-run', '--no-default-browser-check',
-    '--disable-background-networking', '--disable-component-update', '--disable-sync', '--disable-extensions',
-    '--disable-default-apps', '--metrics-recording-only', '--password-store=basic', '--use-mock-keychain',
-    '--no-proxy-server', '--force-color-profile=srgb', '--hide-scrollbars', '--mute-audio',
-    '--disable-renderer-backgrounding', '--disable-background-timer-throttling', '--disable-backgrounding-occluded-windows',
-    `--window-size=${size[0]},${size[1]}`,
-  ];
-  if (headless) args.push('--headless=new');
-  args.push('about:blank');
-  // Chrome starts in a process group of its own (detached), so close() can
-  // end it with every helper it started, and an interrupt of this script
-  // does not reach it directly; the handlers below end it instead.
-  const proc = spawn(chrome, args, { stdio: ['ignore', 'ignore', 'pipe'], detached: true });
-  const owned = () => profileProcesses(chrome, profile, proc.pid);
-  const stopNow = () => { signalGroup(proc.pid, 'SIGKILL'); killAll(owned()); };
-  const onSignal = (sig) => { stopNow(); process.exit(sig === 'SIGINT' ? 130 : 143); };
-  process.once('exit', stopNow);
-  process.once('SIGINT', onSignal);
-  process.once('SIGTERM', onSignal);
-  const wsURL = await new Promise((resolve, reject) => {
-    let buf = '';
-    const t = setTimeout(() => reject(new Error('Chrome did not report a DevTools endpoint in 30s')), 30000);
-    proc.stderr.on('data', (d) => {
-      buf += d.toString();
-      const m = buf.match(/DevTools listening on (ws:\/\/\S+)/);
-      if (m) { clearTimeout(t); resolve(m[1]); }
-    });
-    proc.on('exit', (code) => { clearTimeout(t); reject(new Error(`Chrome exited early (${code}): ${buf.slice(-500)}`)); });
-  });
-  const cdp = await CDP.connect(wsURL);
-  const version = await cdp.send('Browser.getVersion');
-  return {
-    cdp, proc, profile, version,
-    // leftovers lists this browser's processes that still run, or returns
-    // null when the process list cannot be read.
-    leftovers: owned,
-    // close asks Chrome to quit, then ends its process group and any of its
-    // processes still running (helpers such as the network service can
-    // outlive the browser process), and removes the profile. It returns the
-    // processes that had to be ended, or null when the process list cannot
-    // be read.
-    async close() {
-      await Promise.race([cdp.send('Browser.close').catch(() => { /* already gone */ }), sleep(5000)]);
-      await Promise.race([new Promise((r) => (proc.exitCode !== null || proc.signalCode !== null ? r() : proc.once('exit', r))), sleep(5000)]);
-      cdp.close();
-      const killed = owned();
-      signalGroup(proc.pid, 'SIGTERM');
-      for (const p of killed || []) signal(p.pid, 'SIGTERM');
-      const end = Date.now() + 5000;
-      while (owned()?.length && Date.now() < end) await sleep(100);
-      signalGroup(proc.pid, 'SIGKILL');
-      killAll(owned());
-      process.removeListener('exit', stopNow);
-      process.removeListener('SIGINT', onSignal);
-      process.removeListener('SIGTERM', onSignal);
-      try { rmSync(profile, { recursive: true, force: true }); } catch { /* best effort */ }
-      return killed;
-    },
-  };
-}
-
-function signal(pid, sig) {
-  try { process.kill(pid, sig); } catch { /* gone */ }
-}
-
-// signalGroup signals Chrome's process group; the group exists only while
-// one of its processes runs.
-function signalGroup(pid, sig) {
-  if (pid > 0) signal(-pid, sig);
-}
-
-// profileProcesses lists this browser's running processes (see
-// ownedProcesses), or returns null when the process list cannot be read.
-export function profileProcesses(chrome, profile, group) {
-  const r = spawnSync('ps', ['-axww', '-o', 'pid=,pgid=,command='], { encoding: 'utf8' });
-  if (r.status !== 0 || r.error) return null;
-  return ownedProcesses(r.stdout, chrome, profile, group).filter((p) => p.pid !== process.pid);
-}
-
-// ownedProcesses picks from a `ps -o pid=,pgid=,command=` listing this
-// browser's processes: those in its process group, and those of the Chrome
-// executable itself (on macOS, of its .app bundle, where the helpers live)
-// that have exactly this profile as a whole --user-data-dir argument. The
-// profile directory is new for each launch. Another profile, even one whose
-// path starts with this one, another program, and an argument that only
-// contains the flag are never picked.
-export function ownedProcesses(listing, chrome, profile, group) {
-  const app = chrome.indexOf('.app/');
-  const isChrome = (cmd) => (app >= 0 ? cmd.startsWith(chrome.slice(0, app + 5)) : cmd === chrome || cmd.startsWith(chrome + ' '));
-  const flag = `--user-data-dir=${profile}`;
-  const hasFlag = (cmd) => {
-    for (let i = cmd.indexOf(flag); i >= 0; i = cmd.indexOf(flag, i + 1)) {
-      const before = i === 0 ? ' ' : cmd[i - 1], after = cmd[i + flag.length];
-      if (/\s/.test(before) && (after === undefined || /\s/.test(after))) return true;
-    }
-    return false;
-  };
-  const out = [];
-  for (const line of listing.split('\n')) {
-    const m = line.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/);
-    if (!m) continue;
-    const [pid, pgid, cmd] = [Number(m[1]), Number(m[2]), m[3]];
-    if ((group > 0 && pgid === group) || (isChrome(cmd) && hasFlag(cmd))) out.push({ pid, command: cmd.slice(0, 120) });
-  }
-  return out;
-}
-
-function killAll(list) {
-  for (const p of list || []) signal(p.pid, 'SIGKILL');
-}
-
-export class CDP {
-  static connect(url) {
-    return new Promise((resolve, reject) => {
-      const ws = new WebSocket(url);
-      ws.onopen = () => resolve(new CDP(ws));
-      ws.onerror = (e) => reject(new Error('CDP connection failed: ' + (e.message || 'error')));
-    });
-  }
-
-  constructor(ws) {
-    this.ws = ws;
-    this.id = 0;
-    this.calls = new Map();
-    this.listeners = new Set();
-    ws.onmessage = (ev) => {
-      const m = JSON.parse(ev.data);
-      if (m.id !== undefined) {
-        const c = this.calls.get(m.id);
-        if (!c) return;
-        this.calls.delete(m.id);
-        if (m.error) c.reject(new Error(`${c.method}: ${m.error.message}${m.error.data ? ' ' + m.error.data : ''}`));
-        else c.resolve(m.result);
-        return;
-      }
-      for (const l of [...this.listeners]) l(m);
-    };
-    ws.onclose = () => { for (const c of this.calls.values()) c.reject(new Error('CDP socket closed')); this.calls.clear(); };
-  }
-
-  send(method, params = {}, sessionId) {
-    const id = ++this.id;
-    const msg = { id, method, params };
-    if (sessionId) msg.sessionId = sessionId;
-    return new Promise((resolve, reject) => {
-      // A closed socket drops sends without an error, so the call would
-      // never settle.
-      if (this.ws.readyState !== WebSocket.OPEN) { reject(new Error(`${method}: CDP socket closed`)); return; }
-      this.calls.set(id, { resolve, reject, method });
-      this.ws.send(JSON.stringify(msg));
-    });
-  }
-
-  // on registers a listener for one event method (and session); it returns
-  // an unsubscribe function.
-  on(method, fn, sessionId) {
-    const l = (m) => { if (m.method === method && (sessionId === undefined || m.sessionId === sessionId)) fn(m.params, m); };
-    this.listeners.add(l);
-    return () => this.listeners.delete(l);
-  }
-
-  waitEvent(method, { sessionId, pred = () => true, timeout = 15000 } = {}) {
-    return new Promise((resolve, reject) => {
-      let off = null;
-      const t = setTimeout(() => { off(); reject(new Error(`timed out waiting for ${method}`)); }, timeout);
-      off = this.on(method, (p) => { if (pred(p)) { clearTimeout(t); off(); resolve(p); } }, sessionId);
-    });
-  }
-
-  close() { try { this.ws.close(); } catch { /* ignore */ } }
-}
+import { writeFileSync } from 'node:fs';
+import { sleep } from '../../lib/cdp.mjs';
 
 // Key definitions for Input.dispatchKeyEvent (US layout).
 const SPECIAL = {
@@ -196,12 +16,11 @@ const MOD = { alt: 1, ctrl: 2, meta: 4, shift: 8 };
 
 function keyDef(key) {
   if (SPECIAL[key]) return { key, ...SPECIAL[key] };
-  if (/^[a-zA-Z]$/.test(key)) return { key, code: 'Key' + key.toUpperCase(), vk: key.toUpperCase().charCodeAt(0), text: key };
-  if (/^[0-9]$/.test(key)) return { key, code: 'Digit' + key, vk: key.charCodeAt(0), text: key };
-  throw new Error('unknown key ' + key);
+  if (/^[a-zA-Z]$/.test(key)) return { key, code: `Key${key.toUpperCase()}`, vk: key.toUpperCase().charCodeAt(0), text: key };
+  if (/^[0-9]$/.test(key)) return { key, code: `Digit${key}`, vk: key.charCodeAt(0), text: key };
+  throw new Error(`unknown key ${key}`);
 }
 
-// Tab is one page target attached through a flattened session.
 export class Tab {
   constructor(cdp, sessionId, targetId, name) {
     this.cdp = cdp;
@@ -209,6 +28,8 @@ export class Tab {
     this.targetId = targetId;
     this.name = name;
     this.dialogs = [];
+    // Dialogs are recorded and auto-accepted, so a stray alert never blocks
+    // the harness.
     cdp.on('Page.javascriptDialogOpening', (p) => {
       this.dialogs.push(p);
       this.send('Page.handleJavaScriptDialog', { accept: true }).catch(() => {});
@@ -245,7 +66,7 @@ export class Tab {
     ]);
     if (r.exceptionDetails) {
       const d = r.exceptionDetails;
-      throw new Error(`page error: ${(d.exception && d.exception.description) || d.text} in ${expression.slice(0, 120)}`);
+      throw new Error(`page error: ${(d.exception?.description) || d.text} in ${expression.slice(0, 120)}`);
     }
     return r.result.value;
   }
@@ -274,8 +95,6 @@ export class Tab {
     }
     throw new Error(`timed out after ${timeout} ms waiting for ${desc || expression.slice(0, 120)} (last: ${JSON.stringify(last)})`);
   }
-
-  // ---- input ----
 
   mods(m) { return (m || []).reduce((a, k) => a | MOD[k], 0); }
 

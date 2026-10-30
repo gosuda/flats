@@ -48,7 +48,8 @@
 //   the summary has "guard": {"pass": false, ...} and the exit status is 1.
 
 import { writeFileSync } from 'node:fs';
-import { args, watchdog, launchChrome, waitReady, nameScript, stats, environment, uptime } from './lib.mjs';
+import { launchChrome } from '../lib/cdp.mjs';
+import { args, watchdog, Page, waitReady, nameScript, stats, environment, uptime } from './lib.mjs';
 
 const opt = args({ url: '', expected: 5000, seconds: 60, floor: 0.2, 'min-ref': 5, width: 1440, height: 900, scale: 0, chrome: '', out: '' });
 if (!opt.url) { console.error('usage: node pan-zoom.mjs --url <board url> --expected <elements>'); process.exit(2); }
@@ -258,7 +259,7 @@ const chrome = await launchChrome({ headless: !!opt.headless, width: opt.width, 
 const exceptions = [];
 let guardPass = false;
 try {
-  const page = await chrome.cdp.firstPage();
+  const page = await Page.first(chrome.cdp);
   chrome.cdp.on((m) => {
     if (m.method === 'Runtime.exceptionThrown') exceptions.push(m.params.exceptionDetails.exception?.description || m.params.exceptionDetails.text);
     if (m.method === 'Runtime.consoleAPICalled' && m.params.type === 'error') exceptions.push('console.error: ' + m.params.args.map((a) => a.value ?? a.description).join(' '));
