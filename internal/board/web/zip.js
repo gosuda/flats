@@ -102,6 +102,31 @@ export async function readZipEntry(bytes, entry) {
   const raw = bytes.subarray(start, start + entry.csize);
   if (entry.method === 0) return raw;
   if (entry.method !== 8) throw new Error('unsupported zip compression');
+  // Inflate in bounded chunks: the declared entry.size is the protocol limit
+  // and 512 MiB is a hard ceiling, so a small csize cannot expand into
+  // renderer memory without end.
+  const limit = 512 * 1024 * 1024;
   const stream = new Blob([raw]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
-  return new Uint8Array(await new Response(stream).arrayBuffer());
+  const reader = stream.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.length;
+      if (total > entry.size) throw new Error('zip entry exceeds declared size');
+      if (total > limit) throw new Error('zip entry exceeds size limit');
+      chunks.push(value);
+    }
+  } catch (e) {
+    // Shed the pipeline: an over-limit or corrupt entry must not keep
+    // inflating in the background until GC.
+    await reader.cancel().catch(() => {});
+    throw e;
+  }
+  const out = new Uint8Array(total);
+  let p = 0;
+  for (const c of chunks) { out.set(c, p); p += c.length; }
+  return out;
 }
