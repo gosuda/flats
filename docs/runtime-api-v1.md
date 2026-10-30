@@ -1124,6 +1124,10 @@ Rules:
 * Give the user `approval_url` exactly as returned. Poll
   `get_approval {id}` until `approved`, `rejected` or `failed`; while it is
   `pending` (or `applying`), say you are waiting for operator approval.
+* The CLI can wait for the same decision noninteractively: `flats approvals
+  wait {id}` polls until `approved`, `rejected` or `failed` and exits nonzero
+  on rejection or a `cleanup_pending` result. Use it when a script needs the
+  outcome instead of polling `get_approval`.
 * Never approve your own request, call console routes or send console
   headers. MCP has no approval or provider-grant tool. Console routes have
   same-origin CSRF checks but no separate authentication, and a local process

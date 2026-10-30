@@ -191,7 +191,7 @@ On the Flats host, the flats CLI talks to the same server. Commands that request
 - ` + "`flats save-draft <slug> <dir> --expected-revision N`" + `: save a Private Draft from a build directory.
 - ` + "`flats deploy --flat <slug> --version N`" + `: request approval to deploy a previously created version. Does not upload or create versions.
 - ` + "`flats create-version <slug> --revision N --hash HASH`" + `: request approval to create a version from a frozen Draft.
-- ` + "`flats approvals --json`" + `, ` + "`flats info <slug>`" + `, ` + "`flats logs <slug>`" + `: follow approvals, endpoints and events.
+- ` + "`flats approvals --json`" + `, ` + "`flats approvals wait <id>`" + `, ` + "`flats info <slug>`" + `, ` + "`flats logs <slug>`" + `: follow approvals, wait for a decision, endpoints and events.
 - ` + "`flats help`" + ` lists every command.
 
 ## Guide topics
