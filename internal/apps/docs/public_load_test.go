@@ -156,7 +156,6 @@ func TestGuestLoad(t *testing.T) {
 	final := a.markdown(t, "index.md")
 	loadEnd := uptime()
 
-	// --- report ---
 	l.mu.Lock()
 	lat := slices.Clone(l.latencies)
 	missing := len(l.pending)
@@ -241,7 +240,6 @@ func TestGuestLoad(t *testing.T) {
 	}
 	t.Logf("LOAD uptime at end: %s", loadEnd)
 
-	// --- robust facts ---
 	if e := b.endReason(); e != "" {
 		t.Errorf("member B's socket closed: %s", e)
 	}
@@ -304,12 +302,10 @@ func (l *loadRun) startFlood(t *testing.T) {
 		time.Since(start).Round(time.Millisecond), l.guestsJoined.Load(), l.viewersJoined.Load())
 }
 
-// --- a minimal concurrent WebSocket client ---
-
-// loadConn is a client socket like a browser's: sends are queued and never
-// block the reader, numbered frames are confirmed with cumulative received
-// receipts as the page sends them, and
-// server pings are answered.
+// loadConn is a minimal concurrent client socket like a browser's: sends are
+// queued and never block the reader, numbered frames are confirmed with
+// cumulative received receipts as the page sends them, and server pings are
+// answered.
 type loadConn struct {
 	conn   net.Conn
 	reader *bufio.Reader
@@ -616,8 +612,6 @@ func (s *loadConn) flushReceipt() {
 		s.send(map[string]any{"t": "received", "n": n})
 	}
 }
-
-// --- the run ---
 
 type loadRun struct {
 	url string
@@ -934,8 +928,6 @@ func (l *loadRun) rollback(t *testing.T, a *app, texts map[string]string) (time.
 	l.mu.Unlock()
 	return time.Since(start), time.Since(restoreStart)
 }
-
-// --- guests ---
 
 // loadGuestWindow is how many updates a guest page keeps sent and
 // unacknowledged (provider.js GUEST_WINDOW).
@@ -1398,7 +1390,6 @@ func (l *loadRun) churn() {
 		})
 		c.start()
 		var outcome string
-		// Alternate guest and viewer hellos.
 		if attempt%2 == 0 {
 			m := guestHello(c, doc, "Churn", "", first)
 			outcome = fmt.Sprint("guest ", m["t"], " ", m["code"])
@@ -1474,8 +1465,6 @@ func (l *loadRun) checkAfterRollback(t *testing.T, a *app, final string, finalAt
 	}
 	t.Logf("LOAD after the rollback (at %v): %d acknowledged texts checked", rel(after), checked)
 }
-
-// --- helpers ---
 
 func pct(d []time.Duration, q float64) time.Duration {
 	if len(d) == 0 {
