@@ -1,6 +1,7 @@
 // One Chrome DevTools Protocol harness for the board scripts: it launches
 // Chrome with a throwaway profile, speaks CDP over the global WebSocket of
 // Node 22+, and ends every browser process it started. No dependencies.
+'use strict';
 
 import { spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';

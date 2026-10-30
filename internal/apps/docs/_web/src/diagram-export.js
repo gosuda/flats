@@ -1,6 +1,8 @@
 // Image-mode SVG cannot fetch external styles/images. Snapshot resolved styles
 // and use a data URL so foreignObject labels remain origin-clean in canvas.
 // https://developer.mozilla.org/en-US/docs/Web/SVG/Guides/SVG_as_an_image
+'use strict';
+
 const maxSide = 8192,
   maxPixels = 16 * 1024 * 1024;
 export function pngSize(width, height) {

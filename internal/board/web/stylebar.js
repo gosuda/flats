@@ -2,6 +2,8 @@
 // quick-create handles (rule 16), alignment (rule 15), the alt text editor
 // and the context menu. There is no properties panel.
 
+'use strict';
+
 import { $, h, icon, menu, popover, closePopover } from './ui.js';
 import { STICKY_COLORS, INK_COLORS, SHAPES, SHAPE_NAMES, FONT_SIZES, KIND_NAMES, style, LIMITS } from './schema.js';
 import { stickyColor, inkColor, shapeFill, frameFill } from './theme.js';

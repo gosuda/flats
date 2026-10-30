@@ -5,6 +5,8 @@
 // the same guest from the server's text.
 //
 //	node guest_refusal.mjs <url> <evidence dir>
+'use strict';
+
 import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";

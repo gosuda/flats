@@ -3,6 +3,7 @@
 // that also holds its key. Every setting, provider, key, address and fact is
 // the same row; fields stage changes for one save bar per page, while buttons
 // such as Turn on, Add, Replace and Delete act at once.
+'use strict';
 
 import { h, dateTime, relTime, plural } from './dom.js';
 import { api } from './api.js';

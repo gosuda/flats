@@ -1,5 +1,6 @@
 // Shared helpers for the board agent evaluation: argument parsing and
 // reading a board through the host's HTTP API (every page of one read).
+'use strict';
 
 export function args(argv, spec) {
   const out = { ...spec };

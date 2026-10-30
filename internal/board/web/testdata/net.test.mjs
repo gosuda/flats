@@ -1,3 +1,5 @@
+'use strict';
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { batchFrames, batchFits, queueBatch, utf8Length, FRAME_MAX, PART_DATA_MAX, TooLargeError, Net } from '../net.js';

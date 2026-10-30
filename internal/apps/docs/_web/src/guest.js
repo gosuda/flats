@@ -3,6 +3,8 @@
 // fields they send and the texts of guest refusals. Kept free of the DOM so
 // node tests cover every popup decision; guest-ui.js draws them.
 
+'use strict';
+
 export const GUEST_NAME_MAX = 40;
 export const VIEWERS_LISTED = 20;
 

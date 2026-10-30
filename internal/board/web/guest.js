@@ -2,6 +2,8 @@
 // viewer labels, the guest badge and the messages for guest refusals and
 // fatal codes. Guest names are only ever drawn as text.
 
+'use strict';
+
 import { h } from './ui.js';
 import { utf8Length } from './net.js';
 

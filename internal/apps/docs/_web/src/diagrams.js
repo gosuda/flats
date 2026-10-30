@@ -1,3 +1,5 @@
+'use strict';
+
 import { createDiagramRuntime, tooLarge } from "./diagram-runtime.js";
 import { diagramTools, uniqueSVG } from "./diagram-tools.js";
 let loading,

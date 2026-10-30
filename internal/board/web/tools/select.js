@@ -2,6 +2,8 @@
 // area selection, moving with snapping and frame membership, resizing,
 // rotating and dragging connector ends. Each drag sends one batch on release.
 
+'use strict';
+
 import { endWorld, attachAt, rotateAround, toLocal, boxCorners, union, elementBounds, containsRect } from '../geom.js';
 import { clampGeom, clampPoint, geomOf, round1 } from '../schema.js';
 import * as ops from '../ops.js';

@@ -1,6 +1,8 @@
 // Find (rule 9, TECH 11.2): case-insensitive substring search over element
 // text, connector labels, frame names and image alternative text.
 
+'use strict';
+
 export function searchable(el) {
   if (el.type === 'image') return el.alt || '';
   if (el.type === 'pen') return '';

@@ -5,6 +5,8 @@
 // the guest's diagram.
 //
 //	node hostile_content.mjs <url> <evidence dir>
+'use strict';
+
 import assert from "node:assert/strict";
 import path from "node:path";
 import { pathToFileURL } from "node:url";

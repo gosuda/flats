@@ -1,3 +1,5 @@
+'use strict';
+
 import { h, icon, visibilityOf, accessOf, publicEditOf, ACCESS, PUBLIC_ACCESS_NOTICE, PUBLIC_NETWORKS, plural } from './dom.js';
 import { api } from './api.js';
 import { setVisibility, stopGuestEditing } from './actions.js';

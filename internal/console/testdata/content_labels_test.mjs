@@ -1,5 +1,7 @@
 // Reuse the console's DOM harness and run its regression suite before these
 // focused cross-content-model checks. The Go runner copies both scripts.
+'use strict';
+
 import './ui_test.mjs';
 import assert from 'node:assert/strict';
 import { mount as analytics } from './analytics.js';

@@ -2,6 +2,8 @@
 // endpointWorld and defaultAt must match the Go implementation (TECH 4.4);
 // both read the vectors in internal/board/model/testdata/geometry.json.
 
+'use strict';
+
 import { style } from './schema.js';
 
 const RAD = Math.PI / 180;

@@ -2,6 +2,8 @@
 // names; this table maps them to light and dark values. The CSS custom
 // properties in app.css hold the same UI tokens for the DOM.
 
+'use strict';
+
 export const THEMES = {
   light: {
     paper: '#ffffff', canvas: '#f4f4f0', ink: '#242924', muted: '#566056', line: '#dce0d8', by: '#454d45',

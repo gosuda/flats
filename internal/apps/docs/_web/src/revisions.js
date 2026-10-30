@@ -2,6 +2,8 @@
 // outbox, in the same transaction as the change it precedes or follows. The
 // host imports the outbox into its revision store and acknowledges it.
 // See docs/spec/document-revisions-technical-design.md.
+'use strict';
+
 import * as Y from "yjs";
 import { base64, utf8Bytes, LIMITS, GUEST } from "./protocol.js";
 import { applyText } from "./merge.js";

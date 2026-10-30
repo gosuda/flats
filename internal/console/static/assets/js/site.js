@@ -1,3 +1,5 @@
+'use strict';
+
 import { h, icon } from './dom.js';
 import { extLink, openTargets } from './ui.js';
 import { hasServer, isLive, typeIcon } from './list.js';

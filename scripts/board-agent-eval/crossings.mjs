@@ -6,6 +6,7 @@
 // attached on the side facing away from the other end). It never fails.
 //
 // usage: node crossings.mjs --url http://127.0.0.1:17940 --slug feedback-1
+'use strict';
 
 import { args, readBoard } from './lib.mjs';
 import { connectorPoints } from '../../internal/board/web/geom.js';

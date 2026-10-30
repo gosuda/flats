@@ -1,4 +1,6 @@
 // Real browser test: normal CORS and CSP enforcement, no external traffic.
+'use strict';
+
 import assert from 'node:assert/strict';
 import { createServer } from 'node:http';
 import { readFile } from 'node:fs/promises';

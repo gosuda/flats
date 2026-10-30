@@ -1,5 +1,6 @@
 // Renders console pages against a minimal fake DOM and a stubbed fetch.
 // Run by TestConsoleUI (console_ui_test.go) next to copies of assets/js.
+'use strict';
 
 import assert from 'node:assert/strict';
 

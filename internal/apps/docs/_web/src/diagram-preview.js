@@ -1,3 +1,5 @@
+'use strict';
+
 import { ySyncAnnotation } from "y-codemirror.next";
 import { StateEffect, Transaction } from "@codemirror/state";
 

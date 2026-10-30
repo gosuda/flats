@@ -1,5 +1,6 @@
 // Shared UI pieces: confirm dialogs, popup menus, toasts, error panels and
 // copyable snippets.
+'use strict';
 
 import { h, clear, icon, linkTargets } from './dom.js';
 

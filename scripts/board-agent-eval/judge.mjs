@@ -17,6 +17,7 @@
 // usage: node judge.mjs --url http://127.0.0.1:17940 --slug feedback-1 \
 //          --baseline baseline.json [--measure auto|chrome|approx] [--json out.json]
 // Exit status: 0 when every check passes, 1 when one fails, 2 on errors.
+'use strict';
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { args, readBoard } from './lib.mjs';

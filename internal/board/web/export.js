@@ -2,6 +2,8 @@
 // board, a frame or the selection; the data file; importing data and
 // recovery files; and creating recovery files of unsent edits.
 
+'use strict';
+
 import { $, h, icon, dialog, toast, download, plural } from './ui.js';
 import { Painter } from './render.js';
 import { elementBounds, union, inflate, center } from './geom.js';

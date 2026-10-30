@@ -1,3 +1,5 @@
+'use strict';
+
 import * as Y from "yjs";
 import { writeFile } from "node:fs/promises";
 const encode = (u) => Buffer.from(u).toString("base64");

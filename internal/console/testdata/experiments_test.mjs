@@ -3,6 +3,8 @@
 // Reuses the console's DOM harness and runs its regression suite first; the
 // Go runner (console_experiments_test.go) copies both scripts and writes
 // autopilot_ops.json, the server's list of operation IDs.
+'use strict';
+
 import './ui_test.mjs';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';

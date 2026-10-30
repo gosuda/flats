@@ -2,6 +2,8 @@
 // recovery files (TECH 9). No compression library: the reader inflates with
 // the platform DecompressionStream when an entry is deflated.
 
+'use strict';
+
 const enc = new TextEncoder();
 
 let table = null;

@@ -1,6 +1,7 @@
 // The pixel oracle of the PNG export check: a small board with known
 // content, and a comparison of an exported image with what that board must
 // look like. Synthetic data only.
+'use strict';
 
 // The light theme colors the board below uses (web/theme.js). A frame's
 // fill is its color blended over the canvas.

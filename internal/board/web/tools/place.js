@@ -2,6 +2,8 @@
 // default size centered on the pointer, or drag to size it. The new element
 // joins the topmost frame that contains its center (rule 3).
 
+'use strict';
+
 import * as ops from '../ops.js';
 
 export class PlaceTool {

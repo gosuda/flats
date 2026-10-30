@@ -1,6 +1,8 @@
 // Hand tool: drag to pan (rule 8). The app pans for every tool on Space,
 // the middle button and one-finger touch.
 
+'use strict';
+
 export class HandTool {
   constructor(app) { this.app = app; }
 

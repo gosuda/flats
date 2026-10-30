@@ -2,6 +2,8 @@
 // operations (TECH 4.1 to 4.5, Appendix A). The view argument is the
 // BoardState (get, incOf, all).
 
+'use strict';
+
 import { newId, newGroupId, keyBetween, keysBetween, zCompare } from './ids.js';
 import { clampGeom, clampPoint, contentOf, geomOf } from './schema.js';
 import { elementBounds, elementCenter, endWorld, insideBox, union, center, sideAnchor, rectFromPoints } from './geom.js';

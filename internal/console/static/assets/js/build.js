@@ -1,6 +1,7 @@
 // The running build, shown next to the brand: the release (v1.2.3), or the
 // commit of a development build (dba5279, dba5279-dirty). It links to the
 // release or commit on GitHub when one exists there.
+'use strict';
 
 import { h } from './dom.js';
 import { extLink } from './ui.js';

@@ -46,6 +46,7 @@
 //   frame is zoomed in further than the reference. A reference under
 //   --min-ref elements fails the phase. Any failing frame fails the run:
 //   the summary has "guard": {"pass": false, ...} and the exit status is 1.
+'use strict';
 
 import { writeFileSync } from 'node:fs';
 import { launchChrome } from '../lib/cdp.mjs';

@@ -1,3 +1,5 @@
+'use strict';
+
 import { PlaceTool } from './place.js';
 
 // Shape tool: R rectangle, O ellipse, D diamond (TECH 11.2).

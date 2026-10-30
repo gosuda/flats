@@ -3,6 +3,8 @@
 // element deleted meanwhile keeps the editor until composition ends, and
 // then offers "Keep my text" instead of committing.
 
+'use strict';
+
 import { h, toast } from './ui.js';
 import { style, textLimit, KIND_NAMES, clampGeom, geomOf } from './schema.js';
 import { stickyColor, inkColor } from './theme.js';

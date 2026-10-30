@@ -1,5 +1,7 @@
 // Test-only Yjs client: applies the live welcome state and generates real edits.
 // Bundled into testdata so Go tests need neither Node nor node_modules.
+'use strict';
+
 import * as Y from "yjs";
 export default {
   async fetch(request) {

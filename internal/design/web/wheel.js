@@ -3,6 +3,8 @@
 // when quantization changes which axis is larger. Event creation times keep
 // delayed handling from splitting a gesture; coalesced samples keep its mapping.
 // horizontalOnly constrains the design canvas; other viewers retain both axes.
+'use strict';
+
 export function createWheelPan({ horizontalOnly = false } = {}) {
   let swapped = null, last = null;
   const reset = () => { swapped = null; last = null; };

@@ -3,6 +3,8 @@
 // storage, WebSocket, media queries) and gives the test the socket so it can
 // play the server.
 
+'use strict';
+
 import { readFileSync } from 'node:fs';
 import { installDOM } from './dom.mjs';
 

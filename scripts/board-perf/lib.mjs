@@ -1,6 +1,7 @@
 // Shared helpers of the board performance harness: the measured Page, the
 // board-ready probe, statistics and environment records, on top of the
 // shared CDP module.
+'use strict';
 
 import { execFileSync } from 'node:child_process';
 import { cpus, totalmem, release, platform } from 'node:os';

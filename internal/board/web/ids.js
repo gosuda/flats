@@ -1,5 +1,7 @@
 // Element and group ids, and fractional stacking keys (TECH 3.1, Appendix A).
 
+'use strict';
+
 const DIGITS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
 
 // randomBase62 returns n base62 characters; bytes >= 248 (4 * 62) are rejected to keep digits uniform.

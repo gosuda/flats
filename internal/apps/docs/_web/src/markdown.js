@@ -1,6 +1,8 @@
 // The Markdown renderer and its link rules, shared by the rendered view and
 // the live-preview editor so both agree on which links exist and where they
 // lead.
+'use strict';
+
 import MarkdownIt from "markdown-it";
 
 export function createMarkdown() {
