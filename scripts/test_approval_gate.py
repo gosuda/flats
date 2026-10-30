@@ -40,13 +40,35 @@ class GateApprovalTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             cli = Path(directory) / "flats"
             cli.write_text("""#!/usr/bin/env python3
-import json,sys
+import json,os,sys,time,urllib.request
 args=sys.argv[1:]
 assert args[0]=='--json',args
 if args[1]=='save-draft':
  assert args[2:]==['gate','build'],args
  print(json.dumps({'draft':{'revision':7,'hash':'saved-hash'}}))
  sys.exit(0)
+if args[1]=='approvals':
+ # Emulates `flats approvals wait`: poll the approval until it is decided,
+ # print the receipt only for a clean approval, fail on everything else.
+ assert args[2]=='wait',args
+ identity=args[3]
+ assert args[4:]==['--timeout','2'],args
+ deadline=time.time()+2
+ while True:
+  receipt=json.load(urllib.request.urlopen(os.environ['FLATS_URL']+'/api/approvals/'+identity))
+  state=receipt['status']
+  if state=='approved' and (receipt.get('result_data') or {}).get('cleanup_pending'):
+   sys.stderr.write('Deletion applied but cleanup is pending; inspect the receipt and repair storage before restarting. Do not repeat deletion.\\n'+json.dumps(receipt)+'\\n')
+   sys.exit(1)
+  if state=='approved':
+   print(json.dumps(receipt));sys.exit(0)
+  if state in ('failed','rejected'):
+   sys.stderr.write('Approval '+identity+' ended '+state+': '+json.dumps(receipt)+'\\n');sys.exit(1)
+  if state not in ('pending','applying'):
+   sys.stderr.write('Unknown approval state: '+json.dumps(receipt)+'\\n');sys.exit(1)
+  if time.time()>=deadline:
+   sys.stderr.write('Timed out waiting for operator decision for '+identity+'\\n');sys.exit(1)
+  time.sleep(0.05)
 if args[1]=='create-version':
  assert args[2:]==['gate','--revision','7','--hash','saved-hash'],args
  identity='apr-create'
@@ -205,6 +227,10 @@ elif args==['--json','save-document','document',os.environ['work']+'/document']:
  print(json.dumps({'flat':{'type':'docs','running':True}}));sys.exit(0)
 elif args==['approvals','--status','pending','--json']:
  print(json.dumps({'approvals':[]}));sys.exit(0)
+elif args[:3]==['--json','approvals','wait']:
+ # Emulates `flats approvals wait` deciding instantly on this fake server.
+ assert args[3] in ('apr-created-seven','apr-deploy-eleven'),args
+ print(json.dumps({'status':'approved','result_data':{'version':11}}));sys.exit(0)
 else: raise AssertionError(args)
 print(json.dumps({'status':'pending_approval','approval':{'id':identity}}));sys.exit(3)
 """)
@@ -213,15 +239,12 @@ print(json.dumps({'status':'pending_approval','approval':{'id':identity}}));sys.
 import json,os,sys
 args=sys.argv[1:];url=args[-1]
 method=args[args.index('-X')+1] if '-X' in args else 'GET'
+assert method=='POST',args
 with open(os.environ['CALL_LOG'],'a') as stream: stream.write(json.dumps(['http',method,url])+'\\n')
 identities=('apr-created-seven','apr-deploy-eleven')
-if method=='POST':
- assert any(url.endswith('/console/api/approvals/'+identity+'/approve') for identity in identities),args
- for header in ('X-Flats-Console: 1','Origin: http://127.0.0.1:9999','Sec-Fetch-Site: same-origin'): assert header in args,args
- print('{}')
-else:
- assert any(url.endswith('/api/approvals/'+identity) for identity in identities),args
- print(json.dumps({'status':'approved','result_data':{'version':11}}))
+assert any(url.endswith('/console/api/approvals/'+identity+'/approve') for identity in identities),args
+for header in ('X-Flats-Console: 1','Origin: http://127.0.0.1:9999','Sec-Fetch-Site: same-origin'): assert header in args,args
+print('{}')
 """)
             executable.chmod(0o700)
             curl.chmod(0o700)
@@ -232,7 +255,7 @@ else:
                    "url": "http://127.0.0.1:9999", "CALL_LOG": str(log),
                    "PATH": str(root) + os.pathsep + os.environ["PATH"]}
             result = subprocess.run(
-                ["sh", "-euc", 'fail(){ echo "$*" >&2; exit 1; }; wait_for(){ shift; "$@"; }; . "$1"; deploy_approved hello; deploy_document document',
+                ["sh", "-euc", 'fail(){ echo "$*" >&2; exit 1; }; . "$1"; deploy_approved hello; deploy_document document',
                  "container-test", str(definition)],
                 env=env, capture_output=True, text=True, timeout=10)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -240,8 +263,11 @@ else:
             self.assertEqual([item[2] for item in calls if item[:2] == ["http", "POST"]], [
                 "http://127.0.0.1:9999/console/api/approvals/apr-created-seven/approve",
                 "http://127.0.0.1:9999/console/api/approvals/apr-deploy-eleven/approve"])
+            self.assertEqual([item[1] for item in calls if item[0] == "cli" and item[1][1:3] == ["approvals", "wait"]], [
+                ["--json", "approvals", "wait", "apr-created-seven"],
+                ["--json", "approvals", "wait", "apr-deploy-eleven"]])
             self.assertEqual([item[1][1] for item in calls if item[0] == "cli" and item[1][0] == "--json"],
-                             ["save-draft", "create-version", "deploy", "save-document"])
+                             ["save-draft", "create-version", "approvals", "deploy", "approvals", "save-document"])
 
 
 if __name__ == "__main__":
