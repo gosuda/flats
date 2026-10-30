@@ -7,6 +7,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -159,8 +161,20 @@ func autopilotOf(r store.AutopilotRow) Autopilot {
 	return Autopilot{Enabled: r.Enabled, Allowed: OpSet(r.Ops), Guide: r.Guide, UpdatedAt: r.UpdatedAt}
 }
 
+// autopilotCache caches the stored Autopilot settings for readers; only
+// syncAutopilot replaces it, under mu, from a row it read. stale marks a
+// failed read, warned when the failure was last logged (Unix ms).
+type autopilotCache struct {
+	mu      sync.Mutex
+	current atomic.Pointer[Autopilot]
+	stale   atomic.Bool
+	warned  atomic.Int64
+	// store, when set by a test, replaces the store for Autopilot.
+	store autopilotStore
+}
+
 // autopilotStore is the part of the store Autopilot uses. Tests replace it
-// (Service.apStore) to inject faults.
+// (Service.ap.store) to inject faults.
 type autopilotStore interface {
 	GetAutopilot(ctx context.Context) (store.AutopilotRow, error)
 	UpdateAutopilot(ctx context.Context, now time.Time, change func(store.AutopilotRow) (store.AutopilotRow, string, error)) (store.AutopilotRow, bool, error)
@@ -171,8 +185,8 @@ type autopilotStore interface {
 }
 
 func (s *Service) autopilotStore() autopilotStore {
-	if s.apStore != nil {
-		return s.apStore
+	if s.ap.store != nil {
+		return s.ap.store
 	}
 	return s.st
 }
@@ -182,14 +196,14 @@ func (s *Service) autopilotStore() autopilotStore {
 // reports Autopilot off, which hides the agent tools and authorizes
 // nothing: agent decisions check the stored row themselves.
 func (s *Service) Autopilot() Autopilot {
-	if s.autopilotStale.Load() {
+	if s.ap.stale.Load() {
 		a, err := s.syncAutopilot(context.Background())
 		if err == nil {
 			return a
 		}
 		now := s.now()
-		if last := s.autopilotWarned.Load(); last == 0 || now.Sub(time.UnixMilli(last)) >= time.Minute {
-			s.autopilotWarned.Store(now.UnixMilli())
+		if last := s.ap.warned.Load(); last == 0 || now.Sub(time.UnixMilli(last)) >= time.Minute {
+			s.ap.warned.Store(now.UnixMilli())
 			s.logf("autopilot: settings unavailable: %v", err)
 		}
 		a = s.cachedAutopilot()
@@ -211,7 +225,7 @@ func (s *Service) StoredAutopilot(ctx context.Context) (Autopilot, error) {
 }
 
 func (s *Service) cachedAutopilot() Autopilot {
-	if a := s.autopilot.Load(); a != nil {
+	if a := s.ap.current.Load(); a != nil {
 		return *a
 	}
 	return Autopilot{}
@@ -222,11 +236,11 @@ func (s *Service) cachedAutopilot() Autopilot {
 // read marks the cache stale and leaves it as it was. Lines whose marking
 // fails are logged again at the next sync: the log is at least once.
 func (s *Service) syncAutopilot(ctx context.Context) (Autopilot, error) {
-	s.autopilotMu.Lock()
-	defer s.autopilotMu.Unlock()
+	s.ap.mu.Lock()
+	defer s.ap.mu.Unlock()
 	row, changes, err := s.autopilotStore().AutopilotSync(ctx)
 	if err != nil {
-		s.autopilotStale.Store(true)
+		s.ap.stale.Store(true)
 		return Autopilot{}, err
 	}
 	for _, c := range changes {
@@ -238,8 +252,8 @@ func (s *Service) syncAutopilot(ctx context.Context) (Autopilot, error) {
 		}
 	}
 	a := autopilotOf(row)
-	s.autopilot.Store(&a)
-	s.autopilotStale.Store(false)
+	s.ap.current.Store(&a)
+	s.ap.stale.Store(false)
 	return a, nil
 }
 

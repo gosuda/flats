@@ -87,11 +87,11 @@ func TestBoardForegroundImportEndsRetryBackoff(t *testing.T) {
 	s, _ := newTestService(t)
 	newBoard(t, s, "plan")
 	failed := func() {
-		s.boardRetry.Store("plan", boardBackoff{next: time.Now().Add(time.Hour), delay: boardRetryMax})
+		s.outbox.retry.Store("plan", boardBackoff{next: time.Now().Add(time.Hour), delay: boardRetryMax})
 	}
 	cleared := func(path string) {
 		t.Helper()
-		if _, ok := s.boardRetry.Load("plan"); ok {
+		if _, ok := s.outbox.retry.Load("plan"); ok {
 			t.Fatalf("a successful %s import left the ticker's backoff in place", path)
 		}
 	}

@@ -123,17 +123,17 @@ func TestDocsImagePathLifecycle(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(state, "image.123.tmp"), []byte("partial"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	s.docsMu.Lock()
-	refs := s.docsRefs[live.Dir]
-	s.docsRefs[live.Dir] = 0
-	s.docsMu.Unlock()
+	s.docRefs.mu.Lock()
+	refs := s.docRefs.refs[live.Dir]
+	s.docRefs.refs[live.Dir] = 0
+	s.docRefs.mu.Unlock()
 	again, err := s.build(t.Context(), "notes", v, filepath.Join(dir, "isolated2"), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.docsMu.Lock()
-	s.docsRefs[live.Dir] += refs
-	s.docsMu.Unlock()
+	s.docRefs.mu.Lock()
+	s.docRefs.refs[live.Dir] += refs
+	s.docRefs.mu.Unlock()
 	entries, err := os.ReadDir(state)
 	if err != nil || len(entries) != 1 || entries[0].Name() != docsImageName {
 		t.Fatalf("state after acquisition: %v %v", entries, err)

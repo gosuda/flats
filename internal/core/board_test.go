@@ -501,7 +501,7 @@ func TestBoardRollbackHoldAndSettlement(t *testing.T) {
 	if _, err := in.Rollback(ctx, "committed-op", 3, c, "Agent"); err != nil {
 		t.Fatal(err)
 	}
-	s.boardPending.Delete("plan")
+	s.outbox.pending.Delete("plan")
 	s.Close()
 	s = open()
 	defer s.Close()

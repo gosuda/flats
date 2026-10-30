@@ -126,46 +126,37 @@ type Service struct {
 	logf  func(string, ...any)
 	locks sync.Map // slug -> *sync.Mutex
 
-	docsMu   sync.Mutex
-	docsRefs map[string]int
-	mu       sync.Mutex
-	live     map[string]*liveFlat // slug -> state
-	prevs    map[string]*preview  // host -> preview
-	redir    map[string]*redirect // old slug -> redirect being served
-	// consoleAdding holds console domains whose addition is in progress;
-	// guarded by mu.
-	consoleAdding map[string]bool
-	// previewAdding holds preview hosts chosen but not yet registered;
-	// guarded by mu.
-	previewAdding map[string]bool
-	quotaWarned   map[string]time.Time
-	stop          chan struct{}
-	wg            sync.WaitGroup
-	secretKey     []byte
-	runtimeMu     sync.Mutex
-	runtimeOwners map[string]int64 // data directory -> newest runtime start
-	routeEpochs   sync.Map         // route key -> *routeEpoch
-	designOnce    sync.Once
-	design        *designState
+	// docRefs counts the live references of materialized docs runtime
+	// directories.
+	docRefs docsRefcounts
+
+	mu    sync.Mutex
+	live  map[string]*liveFlat // slug -> state
+	prevs map[string]*preview  // host -> preview
+	redir map[string]*redirect // old slug -> redirect being served
+	// adding holds the host names whose addition is in progress; guarded
+	// by mu.
+	adding      addingHosts
+	quotaWarned map[string]time.Time
+	stop        chan struct{}
+	wg          sync.WaitGroup
+	secretKey   []byte
+	runtime     runtimeGenerations
+	routeEpochs sync.Map // route key -> *routeEpoch
+	design      designCache
 	// docsCatchUps holds when each document last imported for a read.
 	docsCatchUps sync.Map
 	// docsRollbacks holds the ids of document rollbacks in progress, whose
 	// holds are not settled yet.
 	docsRollbacks sync.Map
-	// boardPending holds the boards whose outbox recorded entries the
-	// ticker has not imported yet.
-	boardPending sync.Map
-	// boardRetry holds when the ticker next tries a board whose import
-	// failed, and the delay it waited (boardBackoff).
-	boardRetry sync.Map
-	boardStats boardStats
-	settings   *SettingsSource
-	eventCount sync.Map // slug -> *atomic.Int64, events since the last prune
-	logLimits  sync.Map // slug -> *logLimit
+	outbox        boardOutbox
+	boardStats    boardStats
+	settings      *SettingsSource
+	eventCount    sync.Map // slug -> *atomic.Int64, events since the last prune
+	logLimits     sync.Map // slug -> *logLimit
 	// snapshot holds the host-wide figures of the last Sweep for Metrics.
 	snapshot atomic.Pointer[hostSnapshot]
-	diskMu   sync.Mutex
-	disk     map[string]diskSample // flat ID -> its last disk measurement
+	disk     diskSamples
 	// usageMu serializes usage flushes with the stats reads of Usage, so a
 	// read sees each usage exactly once: stored or still in memory. The
 	// request path never takes it.
@@ -177,16 +168,8 @@ type Service struct {
 	// publicBoardHook, when set by a test, replaces a running board's
 	// public editing interface.
 	publicBoardHook func(*board.Instance) publicBoard
-	// autopilot caches the stored Autopilot settings for readers; only
-	// syncAutopilot replaces it, under autopilotMu, from a row it read.
-	// autopilotStale marks a failed read, autopilotWarned when the failure
-	// was last logged (Unix ms).
-	autopilot       atomic.Pointer[Autopilot]
-	autopilotMu     sync.Mutex
-	autopilotStale  atomic.Bool
-	autopilotWarned atomic.Int64
-	// apStore, when set by a test, replaces the store for Autopilot.
-	apStore autopilotStore
+	// ap caches the stored Autopilot settings for readers.
+	ap autopilotCache
 }
 
 // redirect owns an old slug while its route is served or provider teardown is
@@ -255,7 +238,7 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 		cfg.Settings = memorySettings()
 	}
 	s := &Service{cfg: cfg, st: cfg.Store, now: cfg.Now, logf: cfg.Logf, settings: cfg.Settings,
-		runtimeOwners: map[string]int64{}, docsRefs: map[string]int{}, live: map[string]*liveFlat{}, prevs: map[string]*preview{}, redir: map[string]*redirect{}, quotaWarned: map[string]time.Time{}, stop: make(chan struct{})}
+		runtime: runtimeGenerations{owners: map[string]int64{}}, docRefs: docsRefcounts{refs: map[string]int{}}, live: map[string]*liveFlat{}, prevs: map[string]*preview{}, redir: map[string]*redirect{}, quotaWarned: map[string]time.Time{}, stop: make(chan struct{})}
 	if err := os.MkdirAll(filepath.Join(cfg.DataDir, "flats"), 0o700); err != nil {
 		return nil, err
 	}
@@ -2528,9 +2511,9 @@ func (s *Service) checkQuotas(ctx context.Context, live map[string]*liveFlat, no
 		// its time.
 		used, err := dirSizeErr(s.flatDir(slugName))
 		if err == nil {
-			s.recordDisk(lf.uidOf(), used)
+			s.disk.record(lf.uidOf(), used, s.now())
 		} else {
-			s.diskFailed(lf.uidOf())
+			s.disk.fail(lf.uidOf(), s.now())
 		}
 		if used <= quota {
 			continue

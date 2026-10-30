@@ -14,6 +14,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gosuda/flats/internal/bundle"
@@ -70,9 +71,18 @@ type designState struct {
 	leases map[string]int // slug + "\x00" + hash -> readers
 }
 
+// designCache holds the design state, built once on first use: whichever
+// goroutine wins the compare-and-swap installs the one all callers see.
+type designCache struct {
+	st atomic.Pointer[designState]
+}
+
 func (s *Service) designs() *designState {
-	s.designOnce.Do(func() { s.design = &designState{leases: map[string]int{}} })
-	return s.design
+	if st := s.design.st.Load(); st != nil {
+		return st
+	}
+	s.design.st.CompareAndSwap(nil, &designState{leases: map[string]int{}})
+	return s.design.st.Load()
 }
 
 // --- blobs ---

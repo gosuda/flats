@@ -498,7 +498,7 @@ func TestAutopilotSetterFaults(t *testing.T) {
 		t.Run(st.name+"/cancelled", func(t *testing.T) {
 			s, logs := newAutopilotService(t, apNow)
 			f := &faultyAutopilotStore{Store: s.st}
-			s.apStore = f
+			s.ap.store = f
 			ctx, cancel := context.WithCancel(t.Context())
 			f.set(func(f *faultyAutopilotStore) { f.inChange = cancel })
 			a, err := st.call(s, ctx)
@@ -512,7 +512,7 @@ func TestAutopilotSetterFaults(t *testing.T) {
 		t.Run(st.name+"/error after commit", func(t *testing.T) {
 			s, logs := newAutopilotService(t, apNow)
 			f := &faultyAutopilotStore{Store: s.st, failAfterCommit: true}
-			s.apStore = f
+			s.ap.store = f
 			if _, err := st.call(s, t.Context()); !errors.Is(err, errFault) {
 				t.Fatalf("error %v", err)
 			}
@@ -526,7 +526,7 @@ func TestAutopilotSetterFaults(t *testing.T) {
 		t.Run(st.name+"/sync fails after commit", func(t *testing.T) {
 			s, logs := newAutopilotService(t, apNow)
 			f := &faultyAutopilotStore{Store: s.st, failAfterCommit: true, failSync: 1}
-			s.apStore = f
+			s.ap.store = f
 			if _, err := st.call(s, t.Context()); !errors.Is(err, errFault) {
 				t.Fatalf("error %v", err)
 			}
@@ -543,7 +543,7 @@ func TestAutopilotSetterFaults(t *testing.T) {
 		t.Run(st.name+"/marking fails", func(t *testing.T) {
 			s, logs := newAutopilotService(t, apNow)
 			f := &faultyAutopilotStore{Store: s.st, failMark: true}
-			s.apStore = f
+			s.ap.store = f
 			if _, err := st.call(s, t.Context()); err != nil {
 				t.Fatal(err)
 			}
@@ -562,7 +562,7 @@ func TestAutopilotSetterFaults(t *testing.T) {
 			t.Fatal(err)
 		}
 		f := &faultyAutopilotStore{Store: s.st, failSync: -1, failAfterCommit: true}
-		s.apStore = f
+		s.ap.store = f
 		if _, err := s.SetAutopilotGuide(t.Context(), "x", ""); !errors.Is(err, errFault) {
 			t.Fatal(err)
 		}
@@ -597,7 +597,7 @@ func TestAutopilotTurnOffAfterUnreportedTurnOn(t *testing.T) {
 		t.Fatalf("request %+v %v", r, err)
 	}
 	f := &faultyAutopilotStore{Store: s.st, failAfterCommit: true, failSync: 1}
-	s.apStore = f
+	s.ap.store = f
 	confirmed := ops(OpDeleteFlat)
 	if _, err := s.SetAutopilotEnabled(ctx, true, &confirmed, `tailnet user "a@example.com"`); !errors.Is(err, errFault) {
 		t.Fatalf("turn on: %v", err)

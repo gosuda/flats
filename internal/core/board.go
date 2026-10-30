@@ -59,6 +59,15 @@ const (
 	boardRetryMax = 5 * time.Minute
 )
 
+// boardOutbox tracks the boards with outbox entries to import: pending
+// holds the boards whose outbox recorded entries the ticker has not
+// imported yet; retry holds when the ticker next tries a board whose
+// import failed, and the delay it waited (boardBackoff).
+type boardOutbox struct {
+	pending sync.Map // board slug -> bool
+	retry   sync.Map // board slug -> boardBackoff
+}
+
 // boardBackoff is when the ticker next tries a failing board import.
 type boardBackoff struct {
 	next  time.Time
@@ -125,7 +134,7 @@ func (s *Service) buildBoard(slugName string, v store.Version, title, dataDir st
 	}
 	setBoardAccessEpoch(in, f.AccessSeq)
 	// Import what the board recorded while it was not running.
-	s.boardPending.Store(slugName, true)
+	s.outbox.pending.Store(slugName, true)
 	return &deployed{version: v, handler: in, inst: in, redact: identity, environment: env}, nil
 }
 
@@ -796,7 +805,7 @@ func (s *Service) importBoardSafePointLocked(ctx context.Context, slugName strin
 	s.settleBoardHoldsLocked(ctx, slugName, in)
 	// Any successful import, a foreground write, read or rollback as much
 	// as the ticker's, ends the ticker's backoff after an earlier failure.
-	s.boardRetry.Delete(slugName)
+	s.outbox.retry.Delete(slugName)
 	return res, nil
 }
 
@@ -1081,16 +1090,16 @@ func (s *Service) catchUpRevisions(ctx context.Context, slugName string) error {
 // has a deadline (boardTickTimeout).
 func (s *Service) TickBoards(ctx context.Context) {
 	now := time.Now()
-	s.boardPending.Range(func(k, _ any) bool {
+	s.outbox.pending.Range(func(k, _ any) bool {
 		slugName := k.(string)
 		in := s.liveBoard(slugName)
 		if in == nil {
-			s.boardPending.Delete(slugName)
-			s.boardRetry.Delete(slugName)
+			s.outbox.pending.Delete(slugName)
+			s.outbox.retry.Delete(slugName)
 			return true
 		}
 		var backoff boardBackoff
-		if v, ok := s.boardRetry.Load(slugName); ok {
+		if v, ok := s.outbox.retry.Load(slugName); ok {
 			if backoff = v.(boardBackoff); now.Before(backoff.next) {
 				return true
 			}
@@ -1108,15 +1117,15 @@ func (s *Service) TickBoards(ctx context.Context) {
 			return true
 		}
 		// A board that records an entry during the import marks itself again.
-		s.boardPending.Delete(slugName)
+		s.outbox.pending.Delete(slugName)
 		ictx, cancel := context.WithTimeout(ctx, boardTickTimeout)
 		_, err := s.importBoardLocked(ictx, slugName, in)
 		cancel()
 		if err != nil {
-			s.boardPending.Store(slugName, true)
+			s.outbox.pending.Store(slugName, true)
 			backoff.delay = min(max(2*backoff.delay, boardRetryMin), boardRetryMax)
 			backoff.next = time.Now().Add(backoff.delay)
-			s.boardRetry.Store(slugName, backoff)
+			s.outbox.retry.Store(slugName, backoff)
 			s.logf("board revisions of %s (next try in %s): %v", slugName, backoff.delay, err)
 		}
 		return true
@@ -1424,4 +1433,4 @@ func (b boardBackend) Exclusive(ctx context.Context, fn func(ctx context.Context
 	return nil
 }
 
-func (b boardBackend) OutboxReady() { b.s.boardPending.Store(b.slug, true) }
+func (b boardBackend) OutboxReady() { b.s.outbox.pending.Store(b.slug, true) }
