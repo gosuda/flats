@@ -2,6 +2,7 @@ package mcpx
 
 import (
 	"context"
+	json "encoding/json/v2"
 	"errors"
 	"os"
 	"path/filepath"
@@ -279,5 +280,20 @@ func TestToolErrorPreservesLifecycleCauseBeforeConflict(t *testing.T) {
 				t.Fatalf("lost typed cause: %v", err)
 			}
 		})
+	}
+}
+
+func TestToolErrorCarriesPublicEditProblems(t *testing.T) {
+	blocked := &core.PublicEditBlockedError{Problems: []core.PublicEditProblem{{Code: core.ProblemDiskQuotaOff, Message: "quota off"}}}
+	err := toolErr(blocked, "")
+	var detail struct {
+		Problems []core.PublicEditProblem `json:"problems"`
+	}
+	tail := err.Error()[strings.LastIndex(err.Error(), "\n{")+1:]
+	if jerr := json.Unmarshal([]byte(tail), &detail); jerr != nil {
+		t.Fatalf("structured tail not JSON: %v\n%s", jerr, err)
+	}
+	if len(detail.Problems) != 1 || detail.Problems[0].Code != core.ProblemDiskQuotaOff {
+		t.Fatalf("problems = %+v", detail.Problems)
 	}
 }
