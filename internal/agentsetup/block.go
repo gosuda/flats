@@ -84,6 +84,11 @@ func (f *fence) step(text string) bool {
 		}
 		if n >= 3 {
 			if f.char == 0 {
+				// A backtick fence's info string cannot hold a backtick, so such a
+				// line does not open a fence (CommonMark 4.5).
+				if t[0] == '`' && strings.IndexByte(t[n:], '`') >= 0 {
+					return false
+				}
 				f.char, f.count = t[0], n
 				return true
 			}

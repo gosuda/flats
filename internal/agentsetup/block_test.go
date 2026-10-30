@@ -64,6 +64,24 @@ func TestSetBlock(t *testing.T) {
 			Add,
 		},
 		{
+			"backticks with a backtick after them open no fence",
+			"intro\n\n```js```\n\nmore\n",
+			"intro\n\n```js```\n\nmore\n\n" + block("\n"),
+			Add,
+		},
+		{
+			"markers after a backtick line that opens no fence are a block",
+			"``` x `y`\n\n" + block("\n"),
+			"``` x `y`\n\n" + block("\n"),
+			Unchanged,
+		},
+		{
+			"a tilde fence may have backticks in its info string",
+			"~~~ `md`\n" + BeginMarker + "\n" + EndMarker + "\n~~~\n",
+			"~~~ `md`\n" + BeginMarker + "\n" + EndMarker + "\n~~~\n\n" + block("\n"),
+			Add,
+		},
+		{
 			"a marker with other text on its line is not a marker",
 			"see " + BeginMarker + " here\n",
 			"see " + BeginMarker + " here\n\n" + block("\n"),
