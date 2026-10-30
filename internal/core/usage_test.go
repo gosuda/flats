@@ -1496,7 +1496,7 @@ func TestDiskFigureKeepsTheLastCompleteWalk(t *testing.T) {
 	s.state("site") // live, so the quota check walks it too
 	s.Sweep(ctx)
 	f, _ := s.st.GetFlat(ctx, "site")
-	first := s.diskOf(f.ID)
+	first := s.disk.sample(f.ID)
 	if !first.at.Equal(start) {
 		t.Fatalf("first walk %+v", first)
 	}
@@ -1517,7 +1517,7 @@ func TestDiskFigureKeepsTheLastCompleteWalk(t *testing.T) {
 
 	keep := func(what string) {
 		t.Helper()
-		if d := s.diskOf(f.ID); d.bytes != first.bytes || !d.at.Equal(first.at) {
+		if d := s.disk.sample(f.ID); d.bytes != first.bytes || !d.at.Equal(first.at) {
 			t.Fatalf("%s: %+v, want %+v", what, d, first)
 		}
 	}
@@ -1536,7 +1536,7 @@ func TestDiskFigureKeepsTheLastCompleteWalk(t *testing.T) {
 	}
 	advance(time.Minute)
 	s.Sweep(ctx)
-	if d := s.diskOf(f.ID); d.bytes != first.bytes+4096 || !d.at.Equal(*clock.Load()) {
+	if d := s.disk.sample(f.ID); d.bytes != first.bytes+4096 || !d.at.Equal(*clock.Load()) {
 		t.Fatalf("readable again: %+v", d)
 	}
 	// A flat directory never created holds nothing; it is no error.

@@ -30,9 +30,9 @@ func TestDocsIdleCommitFailurePreservesOldAuthority(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	s.runtimeMu.Lock()
-	generation := s.runtimeOwners[s.dataDirOf("notes")]
-	s.runtimeMu.Unlock()
+	s.runtime.mu.Lock()
+	generation := s.runtime.owners[s.dataDirOf("notes")]
+	s.runtime.mu.Unlock()
 	// Abort exactly the live-pointer update inside CommitPublished's transaction,
 	// after candidate startup, while leaving ordinary draft writes available.
 	db, err := sql.Open("sqlite", filepath.Join(dir, "flats.db"))
@@ -71,9 +71,9 @@ func TestDocsIdleCommitFailurePreservesOldAuthority(t *testing.T) {
 	if after.LiveVersion != before.LiveVersion || s.currentDeployment("notes") != old {
 		t.Fatal("failed commit replaced old authority")
 	}
-	s.runtimeMu.Lock()
-	gotGeneration := s.runtimeOwners[s.dataDirOf("notes")]
-	s.runtimeMu.Unlock()
+	s.runtime.mu.Lock()
+	gotGeneration := s.runtime.owners[s.dataDirOf("notes")]
+	s.runtime.mu.Unlock()
 	if gotGeneration != generation {
 		t.Fatalf("old runtime authority not restored: %d -> %d", generation, gotGeneration)
 	}
