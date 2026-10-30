@@ -28,7 +28,10 @@ const el = (tag, props = {}, ...children) => {
     else if (v !== undefined && v !== null && v !== false)
       node.setAttribute(k, v === true ? "" : v);
   }
-  node.append(...children.filter((c) => c !== null && c !== undefined));
+  // Children append one by one: no filtered copy of the list and no
+  // spread-argument array per element.
+  for (const c of children)
+    if (c !== null && c !== undefined) node.append(c);
   return node;
 };
 
@@ -52,13 +55,20 @@ async function api(path, options = {}) {
 }
 
 // creditNodes draws a revision's credit: guest names as text, each
-// followed by the guest badge.
-const creditNodes = (r) =>
-  credit(r).flatMap((p) =>
-    typeof p === "string"
-      ? [p]
-      : [p.guest, " ", el("span", { class: "guest-badge", text: "guest" })],
-  );
+// followed by the guest badge. The parts collect into one list without
+// flatMap's per-part arrays.
+const creditNodes = (r) => {
+  const out = [];
+  for (const p of credit(r))
+    if (typeof p === "string") out.push(p);
+    else
+      out.push(
+        p.guest,
+        " ",
+        el("span", { class: "guest-badge", text: "guest" }),
+      );
+  return out;
+};
 
 export function initHistory({ path, name, liveText, onView, onLive, status }) {
   const toggle = $("#history-toggle"),
@@ -242,7 +252,8 @@ export function initHistory({ path, name, liveText, onView, onLive, status }) {
       const page = await api(
         `?limit=${limit}` + (!reset && next ? `&before=${next}` : ""),
       );
-      revisions = reset ? page.revisions : revisions.concat(page.revisions);
+      if (reset) revisions = page.revisions;
+      else for (const r of page.revisions) revisions.push(r);
       next = page.next || 0;
       if (note.dataset.kind !== "action") say("");
       render();
@@ -395,32 +406,30 @@ export function initHistory({ path, name, liveText, onView, onLive, status }) {
     });
 
   function diffView(lines, caption) {
-    return [
-      el("p", { class: "diff-caption", text: caption }),
-      el(
-        "pre",
-        { class: "diff" },
-        ...lines.map((l) =>
-          el(
-            "span",
-            { class: "diff-" + l.kind },
-            el("span", {
-              class: "diff-mark",
-              "aria-hidden": "true",
-              text: l.kind === "added" ? "+" : l.kind === "removed" ? "−" : " ",
-            }),
-            srLabel(
-              l.kind === "added"
-                ? "Added: "
-                : l.kind === "removed"
-                  ? "Removed: "
-                  : "",
-            ),
-            l.line + "\n",
+    // One span per line, appended straight into the pre: no mapped list of
+    // the whole diff and no spread of it back into el().
+    const pre = el("pre", { class: "diff" });
+    for (const l of lines)
+      pre.append(
+        el(
+          "span",
+          { class: "diff-" + l.kind },
+          el("span", {
+            class: "diff-mark",
+            "aria-hidden": "true",
+            text: l.kind === "added" ? "+" : l.kind === "removed" ? "−" : " ",
+          }),
+          srLabel(
+            l.kind === "added"
+              ? "Added: "
+              : l.kind === "removed"
+                ? "Removed: "
+                : "",
           ),
+          l.line + "\n",
         ),
-      ),
-    ];
+      );
+    return [el("p", { class: "diff-caption", text: caption }), pre];
   }
 
   function drawView() {
