@@ -570,7 +570,7 @@ func (a *app) action(resp response, res actionResult, requested string) error {
 		if res.Message != "" {
 			fmt.Fprintln(a.out, res.Message)
 		}
-		if res.CleanupPending {
+		if res.CleanupPending || res.Status == "cleanup_pending" {
 			fmt.Fprintln(a.out, "Status: cleanup_pending (deletion applied; do not repeat it)")
 		}
 		if pending {
