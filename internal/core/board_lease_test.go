@@ -12,9 +12,14 @@ import (
 	"github.com/gosuda/flats/internal/board"
 )
 
+func leased(s *Service, slugName, hash string) bool {
+	d := s.designs()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.leases[slugName+"\x00"+hash] > 0
+}
+
 // TestBoardHeldRevisionContentAndLease keeps a revision's files leased
-// until the caller releases them, and a blob leased through the backend
-// survives a sweep that would otherwise remove it (board-TECH 5.5).
 func TestBoardHeldRevisionContentAndLease(t *testing.T) {
 	ctx := context.Background()
 	s, _ := newTestService(t)
@@ -38,14 +43,14 @@ func TestBoardHeldRevisionContentAndLease(t *testing.T) {
 		t.Fatalf("revision %d content has no image: %+v", rev, c.Assets)
 	}
 	for _, f := range files {
-		if !s.leased("plan", f.Hash) {
+		if !leased(s, "plan", f.Hash) {
 			t.Fatalf("%s is not leased while held", f.Path)
 		}
 	}
 	release()
 	release()
 	for _, f := range files {
-		if s.leased("plan", f.Hash) {
+		if leased(s, "plan", f.Hash) {
 			t.Fatalf("%s is still leased after release", f.Path)
 		}
 	}

@@ -168,19 +168,6 @@ var snapshotRE = regexp.MustCompile(`^(?:before-(?:v\d+|redeploy-v\d+|restore)|f
 // keepFailedSnapshots bounds failed-v* snapshots separately.
 const keepFailedSnapshots = 3
 
-// markFailedSnapshot renames a pre-deploy snapshot after its deploy failed
-// and returns the new name.
-func (s *Service) markFailedSnapshot(slugName, snap string, n int) string {
-	ms := snapshotTime(snap)
-	name := fmt.Sprintf("failed-v%d-%d.sqlite", n, ms)
-	dir := s.snapshotDir(slugName)
-	if err := os.Rename(filepath.Join(dir, snap), filepath.Join(dir, name)); err != nil {
-		return snap
-	}
-	s.pruneSnapshots(slugName, name)
-	return name
-}
-
 func validSnapshotName(name string) bool { return snapshotRE.MatchString(name) }
 
 func snapshotTime(name string) int64 {
