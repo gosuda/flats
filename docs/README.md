@@ -17,7 +17,7 @@ deploy.
 
 | Page | Covers |
 | --- | --- |
-| [Connecting agents](agents.md) | Plugin, `flats connect`, direct MCP setup, the `guide` tool, llms.txt |
+| [Connecting agents](agents.md) | Plugin, `flats connect`, direct MCP setup, using Flats for documents with `flats agent-setup docs`, the `guide` tool, llms.txt |
 | [Runtime API v1](runtime-api-v1.md) | The complete server-flat contract: handler, FILES, DB, encoding, limits (generated) |
 | [Content types](content-types.md) | Websites, HTML pages, Markdown documents, HTML design canvases and whiteboards (generated) |
 | [Boards](content-types.md#boards) | Create and edit whiteboards with people and agents; structured operations, imports and revision history (generated) |

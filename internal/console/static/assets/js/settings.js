@@ -1804,6 +1804,14 @@ async function agentsPage(page) {
       row({ title: 'MCP address', meta: ['Uses the address you’re on now'], ctl: [h('code', { text: url }), copyButton(() => url, 'MCP address')] }),
       h('div', { class: 's-row stack' }, tablist, panel, note),
       row({ title: 'Check the connection', desc: ['Restart or reconnect the agent and list its tools. Its first call is ', h('code', { text: 'check_client' }), '. In a terminal, ', h('code', { text: 'flats status' }), ' checks that the CLI reaches this host, and ', h('code', { text: 'flats mcp-config' }), ' prints the setup commands for the host the CLI uses.'] }))),
+    // The console cannot write the agent's files, so it shows the command only
+    // (docs/spec/agent-document-routing.md rule 12).
+    group('agent-setup', 'Use Flats for documents', 'Optional', list(
+      h('div', { class: 's-row stack' }, codeBlock({
+        title: 'Makes your agents create documents in Flats instead of another document tool. Run it on the machine where the agent runs. It shows a preview before it writes anything.',
+        copy: 'agent-setup command',
+        text: 'flats agent-setup docs',
+      }, 'setup')))),
     decide,
     group('agent-limits', 'What the agent tools can’t do', 'MCP tools and the agent API', list(
       row({ title: 'Read or set keys', desc: ['No agent tool reads or sets a network key. Keys are set here, under each network, or with ', h('code', { text: 'flats key set' }), ' on the host.'],

@@ -350,6 +350,9 @@ assert.ok(!main.textContent.includes('Autopilot on'));
 assert.ok(!main.textContent.includes('What agents can decide'));
 assert.ok(main.textContent.includes('Approve requests') && main.textContent.includes('No agent tool decides an approval'));
 assert.ok(!main.textContent.includes('Decide other requests'));
+// The command group sits between Connect and the groups that follow it, with or without Autopilot.
+const groupIds = (root) => all(root, (e) => e.tagName === 'SECTION').map((e) => e.getAttribute('id'));
+assert.deepEqual(groupIds(main), ['connect', 'agent-setup', 'agent-limits']);
 assert.ok(byId(main, 'agent-limit-experiments').textContent.includes('Change Experiments'));
 assert.ok(main.textContent.includes('No agent tool changes Experiments. Agents are told never to change them, also not through a browser; Flats cannot tell them apart from you.'));
 stop();
@@ -361,6 +364,7 @@ assert.equal(all(intro(main), (e) => e.tagName === 'A')[0].getAttribute('href'),
 const pill = all(main, (e) => (e.getAttribute('class') || '').startsWith('pill '))[0];
 assert.equal(pill.textContent, 'Autopilot on');
 assert.equal(pill.getAttribute('class'), 'pill pill-on');
+assert.deepEqual(groupIds(main), ['connect', 'agent-setup', 'agent-decide', 'agent-limits']);
 const decide = byId(main, 'agent-decide');
 assert.ok(decide.textContent.includes('What agents can decide'));
 assert.ok(decide.textContent.includes('Agents may approve and reject requests for Create versions, Deploy, Delete versions and Make Public. Every other request waits for you.'), decide.textContent);

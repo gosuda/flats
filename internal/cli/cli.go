@@ -75,7 +75,9 @@ type Env struct {
 	Executable       func() (string, error) // nil: os.Executable
 	ReleaseTransport http.RoundTripper      // release downloads only
 	CandidateProbe   func(context.Context, string) (selfupdate.Identity, error)
-	ConfigDir        string // client settings parent; "" = os.UserConfigDir
+	ConfigDir        string               // client settings parent; "" = os.UserConfigDir
+	Cwd              string               // where project scope starts and relative agent directories resolve; "" = os.Getwd
+	IsTerminal       func(io.Reader) bool // nil: a terminal file descriptor
 }
 
 // OSEnv is the real process environment.
@@ -133,6 +135,7 @@ func init() {
 		{"connect", "choose which host this CLI and `flats mcp` talk to (to connect an agent, see mcp-config)", "connect [<url>] [--clear]", (*app).connect},
 		{"mcp", "relay the host's MCP tools over stdio (what the agent plugins run)", "mcp [--url url]", (*app).mcpBridge},
 		{"mcp-config", "print setup commands for Claude Code, Codex and Cursor", "mcp-config [--url url]", (*app).mcpConfig},
+		{"agent-setup", "make Flats your agents' document tool (opt-in, with a preview)", "agent-setup docs [--agent claude|codex|cursor|all] [--scope user|project] [--dry-run] [--yes] [--undo]", (*app).agentSetup},
 		{"config", "manage the host configuration (config.json)", "", (*app).config},
 		{"key", "manage the host's Tailscale, zrok and NetBird keys while it is stopped", "", (*app).key},
 		{"client", "check local client compatibility", "client check [--skill-file path]", (*app).clientCommand},
@@ -167,6 +170,14 @@ var commandAbout = map[string]string{
 	"mcp-config": "Prints the commands that register this host's MCP endpoint with Claude Code, Codex and Cursor,\n" +
 		"and the commands that install the Flats plugin. Use --url for a host at another address. --json\n" +
 		"prints the endpoint and the registration commands as JSON, without the plugin commands.",
+	"agent-setup": "Makes Flats the document tool of the agents you choose. It adds a short instruction to the agent's\n" +
+		"CLAUDE.md or AGENTS.md (Cursor: a rule file) and, for Claude Code at user scope, blocks the Claude Docs\n" +
+		"connector and skill, which otherwise win by default.\n\n" +
+		"It shows every change first and asks before it writes. Without a terminal it needs --yes, and --dry-run\n" +
+		"only prints the plan. Each changed file is backed up first. --undo reverses the setup; it also removes a\n" +
+		"settings entry that was already there before. --scope user is the default. At user scope --agent defaults\n" +
+		"to the agents found in your home directory; at project scope it is required.\n\n" +
+		"The agent still needs Flats connected: see `flats mcp-config`.",
 	"client": "Checks whether this CLI is compatible with the host and, with --skill-file, whether the named\n" +
 		"standalone skill file is current. The check changes nothing. `flats update` replaces a CLI that\n" +
 		"the check reports as incompatible.",

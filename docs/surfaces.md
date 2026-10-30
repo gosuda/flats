@@ -287,14 +287,15 @@ for server flats); `flats config` and
 | `env`, `network`, `secret` | Manage server settings; changing `network` origins or `secret` values works only from the host itself (loopback) |
 | `approvals [--status s]` | List approvals (read-only) |
 | `status`, `install`, `uninstall`, `connect`, `mcp`, `mcp-config` | Host and client setup ([Connecting agents](agents.md)). `connect` chooses the host the CLI and `mcp` use; `mcp-config` prints the agent setup commands |
+| `agent-setup docs [--agent a] [--scope user\|project] [--dry-run] [--yes] [--undo]` | Make Flats the document tool of Claude Code, Codex or Cursor. It prints a plan and changes files on this machine only after you confirm; `--undo` reverses it ([Use Flats for documents](agents.md#use-flats-for-documents)) |
 | `client check`, `update`, `skill sync`, `version` | Client freshness ([Updating a client](release.md#updating-a-client)) |
 
 `flats help` lists the commands, then names `status` and `mcp-config` before the
 exit codes. `flats help <command>` prints the usage line, the synopsis and, for
-`connect`, `mcp`, `mcp-config` and `client`, a longer description. `flats
-<command> -h` prints the same for commands that take flags, then lists the
-flags. Subcommand groups such as `board`, `config`, `env`, `key`, `network` and
-`secret`, and `serve`, handle `-h` themselves.
+`connect`, `mcp`, `mcp-config`, `client` and `agent-setup`, a longer
+description. `flats <command> -h` prints the same for commands that take flags,
+then lists the flags. Subcommand groups such as `board`, `config`, `env`, `key`,
+`network` and `secret`, and `serve`, handle `-h` themselves.
 
 Exit codes: 0 success, 1 error, 2 usage, 3 pending approval, 78 configuration
 the operator must fix. Every request that waits for approval exits 3 in text
