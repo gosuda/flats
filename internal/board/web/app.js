@@ -1,6 +1,6 @@
 // Flats board canvas app. Plain ES modules, no build step, no third-party
 // code. It renders the board on Canvas 2D and edits it through the live
-// WebSocket protocol of board-TECH.md.
+// WebSocket protocol of board-technical-design.md.
 
 import { BoardState, activityCounts } from './state.js';
 import { Net, queueBatch } from './net.js';
@@ -934,7 +934,10 @@ export class App {
         ctx.globalAlpha = 0.45;
         ctx.lineWidth = 5;
         ctx.beginPath();
-        pts.forEach(([x, y], i) => (i ? ctx.lineTo(...r.toScreen(x, y)) : ctx.moveTo(...r.toScreen(x, y))));
+        pts.forEach(([x, y], i) => {
+          if (i) ctx.lineTo(...r.toScreen(x, y));
+          else ctx.moveTo(...r.toScreen(x, y));
+        });
         ctx.stroke();
         ctx.globalAlpha = 1;
         continue;

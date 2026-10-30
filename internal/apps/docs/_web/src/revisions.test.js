@@ -114,7 +114,7 @@ test("the first activation records a created entry, and a restart records nothin
     c = content("v1", doc("a.md", "# A\n"), doc("b.md", "# B\n"));
   const gen = next();
   transaction(db, () => revisions.ensureFlat(db, c, gen));
-  let e = entries(db);
+  const e = entries(db);
   assert.equal(e.length, 1);
   assert.equal(e[0].kind, "created");
   assert.equal(e[0].message, "");
@@ -172,7 +172,7 @@ test("groups close when due and credit only who edited since", () => {
     t0 - revisions.GROUP_IDLE,
   ]);
   transaction(db, () => revisions.sync(db, c, generation, t0));
-  let e = entries(db);
+  const e = entries(db);
   assert.equal(e.length, 2);
   assert.deepEqual(e[1].authors, ["Ada", "Bo"]);
   // Bo's group survives without unrecorded edits: the next due close
@@ -715,7 +715,7 @@ test("stored pending update data never becomes visible or counts", () => {
   ackAll(db);
   // A remote replica inserts a character, then 200 KB after it; the second
   // update was stored first, before updates leaving pending data were
-  // refused (docs-public-edit-TECH.md 3.7).
+  // refused (docs-public-edit-technical-design.md 3.7).
   const remote = new Y.Doc();
   const s = current(db, c.documents[0], c.hash, undefined, generation);
   Y.applyUpdate(remote, Y.encodeStateAsUpdate(s.doc));
@@ -1224,7 +1224,7 @@ test("a truncation's success never clears a later failure's generation", () => {
   assert.equal(revisions.getMeta(a, "wal_generation"), 2);
 });
 
-// --- anonymous public editing (docs-public-edit-TECH.md 3) ---
+// --- anonymous public editing (docs-public-edit-technical-design.md 3) ---
 
 // timedEdit appends text to a document at now, as a member (editor and
 // label) or as a guest (guest: name), with the guest's client id claimed.

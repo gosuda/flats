@@ -4,7 +4,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import zlib from 'node:zlib';
-import { ownedProcesses } from './cdp.mjs';
+import { ownedProcesses } from '../../lib/cdp.mjs';
 import { makePNG, decodePNG } from './files.mjs';
 
 test('ownedProcesses picks only this browser with exactly this profile', () => {

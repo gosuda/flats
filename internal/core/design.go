@@ -250,13 +250,6 @@ func (s *Service) removeUnleasedBlob(slugName, hash, p string, cutoff time.Time)
 	_ = os.Remove(p)
 }
 
-func (s *Service) leased(slugName, hash string) bool {
-	d := s.designs()
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.leases[slugName+"\x00"+hash] > 0
-}
-
 // lockCtx takes the per-flat lock like s.lock, but gives up when ctx ends.
 // Request paths use it: rename and delete hold the lock while they stop the
 // design instance, which cancels its requests, so a request waiting here
@@ -292,12 +285,6 @@ func (s *Service) lockStorageCtx(ctx context.Context, slugName string) (func(), 
 }
 
 // --- type and access ---
-
-// isDesign reports whether f is a design.
-func (s *Service) isDesign(ctx context.Context, f store.Flat) (bool, error) {
-	t, err := s.flatType(ctx, f)
-	return t == contenttype.Design, err
-}
 
 // refuseUnversioned refuses Version-model operations on documents, designs
 // and boards.
@@ -1196,10 +1183,6 @@ func (s *Service) retainAllRevisions(ctx context.Context, docs bool) {
 		}
 		s.retainRevisions(ctx, st.Flat, st.Type)
 	}
-}
-
-func (s *Service) retainDesign(ctx context.Context, slugName string) {
-	s.retainRevisions(ctx, slugName, contenttype.Design)
 }
 
 // retainRevisions applies retention to one flat under its lock and sweeps

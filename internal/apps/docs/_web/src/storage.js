@@ -8,7 +8,7 @@ export const digest = (s) =>
   globalThis.__flats_docsCodec
     ? globalThis.__flats_docsCodec.digest(s)
     : bytesToHex(sha256(encodeUtf8(s)));
-// Yjs client ids guests own, per document (docs-public-edit-TECH.md 3.5).
+// Yjs client ids guests own, per document (docs-public-edit-technical-design.md 3.5).
 const GUEST_CLIENTS =
   "CREATE TABLE IF NOT EXISTS flats_docs_guest_clients(doc TEXT NOT NULL, client INTEGER NOT NULL, owner TEXT NOT NULL, PRIMARY KEY(doc,client))";
 export function schema(db) {
@@ -282,11 +282,17 @@ export function activate(db, source, versionHash, cached, runtimeGeneration) {
       updated_at: Date.now(),
     };
     const encoded = base64(state);
-    // The seed text lives in flats_docs_seeds (see migrate).
-    db.exec(
-      "INSERT INTO flats_docs_documents VALUES(?,?,?,?,?,?,?)",
-      Object.values({ ...row, seed_text: "" }),
-    );
+    // The seed text lives in flats_docs_seeds (see migrate); the column is
+    // filled with "" directly, without copying the row object.
+    db.exec("INSERT INTO flats_docs_documents VALUES(?,?,?,?,?,?,?)", [
+      row.doc,
+      row.epoch,
+      row.seq,
+      row.chain,
+      row.seed_hash,
+      "",
+      row.updated_at,
+    ]);
     setSeed(db, row.doc, source.text);
     db.exec("INSERT INTO flats_docs_checkpoints VALUES(?,?,?,?,?)", [
       row.doc,
@@ -608,7 +614,7 @@ export const hasGC = (decoded) =>
 export const hasPending = (doc) =>
   !!(doc.store.pendingStructs || doc.store.pendingDs);
 // dropPending removes them, so they are never encoded into welcomes or
-// checkpoints (docs-public-edit-TECH.md 3.7).
+// checkpoints (docs-public-edit-technical-design.md 3.7).
 export function dropPending(doc) {
   if (!hasPending(doc)) return false;
   doc.store.pendingStructs = null;
@@ -640,14 +646,16 @@ export function guestLines(doc, owned) {
     }
     line += breaks;
   }
-  while (ranges.length > MAX_GUEST_RANGES) {
-    const merged = [];
-    for (let i = 0; i < ranges.length; i += 2)
-      merged.push(
-        i + 1 < ranges.length ? [ranges[i][0], ranges[i + 1][1]] : ranges[i],
-      );
-    ranges.splice(0, ranges.length, ...merged);
+  // Each pass halves the list in place: pass m writes to index i/2, never
+  // ahead of the reads at i and i+1, so no merged list or splice is needed.
+  let n = ranges.length;
+  while (n > MAX_GUEST_RANGES) {
+    let m = 0;
+    for (let i = 0; i < n; i += 2)
+      ranges[m++] = i + 1 < n ? [ranges[i][0], ranges[i + 1][1]] : ranges[i];
+    n = m;
   }
+  ranges.length = n;
   return ranges;
 }
 export function structureCount(doc) {

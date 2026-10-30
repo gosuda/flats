@@ -75,7 +75,7 @@ func TestEndpointStatesFollowBackendState(t *testing.T) {
 		t.Fatalf("unsorted: %+v", got)
 	}
 	// A registration that is gone is reported stopped, as ExposureStatus does.
-	if _, ok := m.take("other", Tailscale, true); !ok {
+	if _, ok := m.dropRoute("other", Tailscale); !ok {
 		t.Fatal("missing tailscale route")
 	}
 	got = m.EndpointStates()

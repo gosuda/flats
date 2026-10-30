@@ -1,4 +1,4 @@
-// Package board runs one board flat (docs/spec/board-TECH.md): its board.db,
+// Package board runs one board flat (docs/spec/board-technical-design.md): its board.db,
 // the single apply loop that changes it, the live WebSocket protocol, the
 // HTTP routes of the board's origin, uploads, data files and the disk quota
 // check. The editing rules themselves live in internal/board/engine; core
@@ -288,7 +288,6 @@ func Open(dir string, b Backend, opts Options) (in *Instance, created bool, err 
 	return in, created, nil
 }
 
-// Slug returns the board's slug.
 func (in *Instance) Slug() string { return in.slug }
 
 // StoreID is the random id of this board.db's outbox (5.3), for the import

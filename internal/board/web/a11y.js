@@ -15,7 +15,7 @@ export class A11yTree {
     this.tree = $('#element-tree');
     this.stale = true;
     this.timer = 0;
-    this.current = null;     // focused element id
+    this.current = null;
     this.collapsed = new Set();
     this.tree.addEventListener('keydown', (e) => this.key(e));
     this.tree.addEventListener('focusin', (e) => {

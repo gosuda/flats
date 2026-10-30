@@ -25,7 +25,7 @@ export class StyleBar {
     const ui = $('.board-ui');
     ui.append(this.el, this.handles);
     this.raf = 0;
-    this.busy = false; // a drag is in progress
+    this.dragging = false;
   }
 
   update() {
@@ -37,8 +37,8 @@ export class StyleBar {
   build() {
     const app = this.app;
     const els = app.selected();
-    if (!app.canEdit || !els.length || this.busy || app.editor || app.tool !== app.tools.select) {
-      if (app.canEdit && app.tool === app.tools.pen && !this.busy) { this.penBar(); return; }
+    if (!app.canEdit || !els.length || this.dragging || app.editor || app.tool !== app.tools.select) {
+      if (app.canEdit && app.tool === app.tools.pen && !this.dragging) { this.penBar(); return; }
       this.hide();
       return;
     }

@@ -4,7 +4,6 @@
 // send the same messages, so the canvas treats them as hints: a change
 // always needs input the person makes in the canvas itself.
 (() => {
-  'use strict';
   if (window.__flatsBridge) return;
   window.__flatsBridge = true;
   const parentWin = window.parent !== window ? window.parent : null;

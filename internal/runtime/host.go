@@ -463,8 +463,6 @@ func dbExec(ctx context.Context, c *sql.Conn, query string, raw json.RawMessage)
 	return string(b), nil
 }
 
-// --- FILES ---
-
 var errBadKey = errors.New("invalid key")
 
 // checkKey validates a FILES key: a relative slash-separated path without

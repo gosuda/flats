@@ -1,5 +1,5 @@
 // Hostile guest Markdown on member, viewer and guest pages
-// (docs-public-edit-TECH.md 3.10): no script the text carries runs, no
+// (docs-public-edit-technical-design.md 3.10): no script the text carries runs, no
 // request leaves the flat's origin, links carry rel="noopener noreferrer"
 // and unsafe destinations are not links, also after the member asks to see
 // the guest's diagram.

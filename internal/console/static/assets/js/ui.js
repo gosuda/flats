@@ -74,10 +74,7 @@ export function slideConfirm({ text, name, busyText, busyAnnouncement, onEnd }) 
   const setState = (s) => el.setAttribute('data-state', s);
   const settled = () => state() === 'busy' || state() === 'locked';
   // travel is how far the handle moves, in pixels, from start to end.
-  const travel = () => {
-    const t = el.clientWidth - handle.offsetWidth - 2 * handle.offsetLeft;
-    return t > 0 ? t : 0;
-  };
+  const travel = () => Math.max(0, el.clientWidth - handle.offsetWidth - 2 * handle.offsetLeft);
   function show(value) {
     p = Math.min(1, Math.max(0, value));
     el.style.setProperty('--p', String(p));

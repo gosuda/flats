@@ -159,7 +159,6 @@ func openStore(path string) (s *store, fresh bool, err error) {
 
 func (s *store) close() { s.db.Close() }
 
-// walPath is the write-ahead log of board.db.
 func (s *store) walPath() string { return s.path + "-wal" }
 
 // pages returns page_count − freelist_count inside tx.

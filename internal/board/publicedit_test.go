@@ -21,7 +21,7 @@ import (
 	"github.com/gosuda/flats/internal/wsconn"
 )
 
-// Tests of anonymous public editing (docs/spec/board-public-edit-TECH.md
+// Tests of anonymous public editing (docs/spec/board-public-edit-technical-design.md
 // section 10, the board's part).
 
 // limits changes the board's guest limits in the apply loop.

@@ -78,7 +78,7 @@ function stack(cx) {
 }
 
 function linkEnd(cx, next, start) {
-  if (next != 93 /* ']' */) return -1;
+  if (next !== 93 /* ']' */) return -1;
   const s = stack(cx);
   if (!s.opens.length) return -1;
   const i = s.opens[s.opens.length - 1],
@@ -89,8 +89,8 @@ function linkEnd(cx, next, start) {
   if (
     !part.side ||
     (part.type === LinkStart && part.from < s.invalidBefore) ||
-    (cx.skipSpace(part.to) == start &&
-      !/[(\[]/.test(cx.slice(start + 1, start + 2)))
+    (cx.skipSpace(part.to) === start &&
+      !/[([]/.test(cx.slice(start + 1, start + 2)))
   ) {
     cx.parts[i] = null;
     s.opens.pop();
@@ -116,28 +116,28 @@ function finishLink(cx, content, type, start, startPos) {
     offset = cx.offset,
     next = cx.char(startPos);
   let endPos = startPos;
-  content.unshift(cx.elt("LinkMark", start, start + (type == "Image" ? 2 : 1)));
+  content.unshift(cx.elt("LinkMark", start, start + (type === "Image" ? 2 : 1)));
   content.push(cx.elt("LinkMark", startPos - 1, startPos));
-  if (next == 40 /* '(' */) {
+  if (next === 40 /* '(' */) {
     let pos = cx.skipSpace(startPos + 1),
       title;
     const dest = parseURL(cx, text, pos - offset, offset);
     if (dest) {
       pos = cx.skipSpace(dest.to);
       // The destination and title must be separated by whitespace.
-      if (pos != dest.to) {
+      if (pos !== dest.to) {
         title = parseLinkTitle(cx, text, pos - offset, offset);
         if (title) pos = cx.skipSpace(title.to);
       }
     }
-    if (cx.char(pos) == 41 /* ')' */) {
+    if (cx.char(pos) === 41 /* ')' */) {
       content.push(cx.elt("LinkMark", startPos, startPos + 1));
       endPos = pos + 1;
       if (dest) content.push(dest);
       if (title) content.push(title);
       content.push(cx.elt("LinkMark", pos, endPos));
     }
-  } else if (next == 91 /* '[' */) {
+  } else if (next === 91 /* '[' */) {
     const label = parseLinkLabel(cx, text, startPos - offset, offset);
     if (label) {
       content.push(label);
@@ -147,23 +147,23 @@ function finishLink(cx, content, type, start, startPos) {
   return cx.elt(type, start, endPos, content);
 }
 
-const space = (ch) => ch == 32 || ch == 9 || ch == 10 || ch == 13;
+const space = (ch) => ch === 32 || ch === 9 || ch === 10 || ch === 13;
 
 function parseURL(cx, text, start, offset) {
   const next = text.charCodeAt(start);
-  if (next == 60 /* '<' */) {
+  if (next === 60 /* '<' */) {
     for (let pos = start + 1; pos < text.length; pos++) {
       const ch = text.charCodeAt(pos);
-      if (ch == 62 /* '>' */)
+      if (ch === 62 /* '>' */)
         return cx.elt("URL", start + offset, pos + 1 + offset);
-      if (ch == 60 || ch == 10 /* '<\n' */) return false;
+      if (ch === 60 || ch === 10 /* '<\n' */) return false;
     }
     return null;
   }
   const pos = urlEnd(cx, start + offset) - offset;
   return pos > start
     ? cx.elt("URL", start + offset, pos + offset)
-    : pos == text.length
+    : pos === text.length
       ? null
       : false;
 }
@@ -183,7 +183,7 @@ function urlEnd(cx, pos) {
     !run ||
     pos < run.from ||
     pos >= run.to ||
-    (pos > run.from && cx.char(pos - 1) != 40) /* '(' */
+    (pos > run.from && cx.char(pos - 1) !== 40) /* '(' */
   ) {
     const text = cx.text,
       from = pos - cx.offset;
@@ -199,12 +199,12 @@ function urlEnd(cx, pos) {
       while (stack.length && depth < level[stack[stack.length - 1]])
         lower[stack.pop()] = k;
       stack.push(k);
-      if (k == length) break;
+      if (k === length) break;
       const ch = text.charCodeAt(from + k);
       if (escaped) escaped = false;
-      else if (ch == 40 /* '(' */) depth++;
-      else if (ch == 41 /* ')' */) depth--;
-      else if (ch == 92 /* '\\' */) escaped = true;
+      else if (ch === 40 /* '(' */) depth++;
+      else if (ch === 41 /* ')' */) depth--;
+      else if (ch === 92 /* '\\' */) escaped = true;
     }
     run = cx[urlRun] = {
       from: pos,
@@ -219,8 +219,8 @@ const urlRun = Symbol("urlRun");
 
 function parseLinkTitle(cx, text, start, offset) {
   const next = text.charCodeAt(start);
-  if (next != 39 && next != 34 && next != 40 /* '"\'(' */) return false;
-  const at = unescaped(cx, next == 40 ? 41 : next, start + offset + 1);
+  if (next !== 39 && next !== 34 && next !== 40 /* '"\'(' */) return false;
+  const at = unescaped(cx, next === 40 ? 41 : next, start + offset + 1);
   return at < 0 ? null : cx.elt("LinkTitle", start + offset, at + 1);
 }
 
@@ -241,9 +241,9 @@ function unescaped(cx, ch, pos) {
     const j = text.indexOf(needle, i);
     if (j < 0) break;
     let backslashes = 0;
-    while (j - backslashes > from && text.charCodeAt(j - backslashes - 1) == 92)
+    while (j - backslashes > from && text.charCodeAt(j - backslashes - 1) === 92)
       backslashes++;
-    if (backslashes % 2 == 0) {
+    if (backslashes % 2 === 0) {
       at = j + cx.offset;
       break;
     }
@@ -263,10 +263,10 @@ function parseLinkLabel(cx, text, start, offset) {
   ) {
     const ch = text.charCodeAt(pos);
     if (escaped) escaped = false;
-    else if (ch == 93 /* ']' */)
+    else if (ch === 93 /* ']' */)
       return cx.elt("LinkLabel", start + offset, pos + 1 + offset);
-    else if (ch == 91 /* '[' */) return false;
-    else if (ch == 92 /* '\\' */) escaped = true;
+    else if (ch === 91 /* '[' */) return false;
+    else if (ch === 92 /* '\\' */) escaped = true;
   }
   return null;
 }
@@ -303,7 +303,7 @@ function resolveMarkers(from) {
     if (p instanceof Element) item = { elt: p };
     else if (
       p != null &&
-      typeof p.type == "object" &&
+      typeof p.type === "object" &&
       p.type.resolve &&
       p.side & 3
     ) {
@@ -352,7 +352,7 @@ function resolveMarkers(from) {
         !(
           emp &&
           (close.side & 1 || open.side & 2) &&
-          (openSize + closeSize) % 3 == 0 &&
+          (openSize + closeSize) % 3 === 0 &&
           (openSize % 3 || closeSize % 3)
         )
       )
@@ -374,7 +374,7 @@ function resolveMarkers(from) {
       const size = Math.min(2, open.to - open.from, closeSize);
       start = open.to - size;
       end = close.from + size;
-      type = size == 1 ? "Emphasis" : "StrongEmphasis";
+      type = size === 1 ? "Emphasis" : "StrongEmphasis";
     }
     const content = [];
     if (open.type.mark) content.push(this.elt(open.type.mark, start, open.to));
@@ -388,12 +388,12 @@ function resolveMarkers(from) {
     element.prev = open;
     element.next = close;
     open.next = close.prev = element;
-    if (emp && open.from != start) {
+    if (emp && open.from !== start) {
       open.to = start;
       for (const f of floors.values())
         for (let k = 0; k < 6; k++) f[k] = Math.min(f[k], open.from);
     } else unlink(open);
-    if (emp && close.to != end) {
+    if (emp && close.to !== end) {
       // The leftover closer is matched again.
       close.from = end;
     } else {
@@ -433,7 +433,7 @@ const urlTag =
 // htmlTag is lezer's HTMLTag parser with the unbounded lazy searches
 // ("<?...?>", "<!X...>", "<![CDATA[...]]>") answered by find.
 function htmlTag(cx, next, start) {
-  if (next != 60 /* '<' */ || start == cx.end - 1) return -1;
+  if (next !== 60 /* '<' */ || start === cx.end - 1) return -1;
   const after = cx.slice(start + 1, cx.end);
   const url = urlTag.exec(after);
   if (url)
@@ -449,7 +449,7 @@ function htmlTag(cx, next, start) {
     return cx.append(cx.elt("Comment", start, start + 1 + comment[0].length));
   const c1 = after.charCodeAt(0),
     c2 = after.charCodeAt(1);
-  if (c1 == 63 /* '?' */) {
+  if (c1 === 63 /* '?' */) {
     const at = find(cx, "?>", start + 2);
     // Nothing else lezer accepts starts with "?".
     return at < 0
@@ -457,7 +457,7 @@ function htmlTag(cx, next, start) {
       : cx.append(cx.elt("ProcessingInstruction", start, at + 2));
   }
   let end = -1;
-  if (c1 == 33 /* '!' */ && c2 >= 65 && c2 <= 90 /* A-Z */) {
+  if (c1 === 33 /* '!' */ && c2 >= 65 && c2 <= 90 /* A-Z */) {
     const at = find(cx, ">", start + 3);
     end = at < 0 ? -1 : at + 1;
   } else if (after.startsWith("![CDATA[")) {
@@ -496,7 +496,7 @@ const plainLong = {
     const end = leaf.start + leaf.content.length;
     cx.addLeafElement(
       leaf,
-      /^\[[ xX]\][ \t]/.test(leaf.content) && cx.parentType().name == "ListItem"
+      /^\[[ xX]\][ \t]/.test(leaf.content) && cx.parentType().name === "ListItem"
         ? cx.elt("Task", leaf.start, end, [
             cx.elt("TaskMarker", leaf.start, leaf.start + 3),
           ])

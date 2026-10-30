@@ -120,9 +120,10 @@ export function lineChanges(before, after) {
       part.value
         .split("\n")
         .slice(0, count)
-        .forEach((text, j) =>
-          text.trim() ? changed.add(line + j) : blanks.push(line + j),
-        );
+        .forEach((text, j) => {
+          if (text.trim()) changed.add(line + j);
+          else blanks.push(line + j);
+        });
     if (part.removed && !visible(parts[i + 1]) && !visible(parts[i - 1]))
       removed.set(line, (removed.get(line) || 0) + count);
     if (!part.removed) line += count;

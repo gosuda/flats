@@ -17,7 +17,6 @@ import (
 	"github.com/gosuda/flats/internal/store"
 )
 
-// KeyUsage lists the `flats key` subcommands.
 const KeyUsage = `key ls [--config path | --data dir]
        flats key set tailscale|zrok|netbird [--from-file path] [--config path | --data dir]   (value from stdin)
        flats key rm tailscale|zrok|netbird [--config path | --data dir]`
@@ -120,8 +119,7 @@ func KeyCommand(ctx context.Context, args []string, in io.Reader, out io.Writer)
 	return nil
 }
 
-// readKeyValue reads a key from --from-file, or from in: on a terminal it
-// prompts without echo.
+// readKeyValue prompts without echo on a terminal.
 func readKeyValue(id, fromFile string, in io.Reader, out io.Writer) (string, error) {
 	if fromFile != "" {
 		return readKeyFile(fromFile, "--from-file")

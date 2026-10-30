@@ -1002,7 +1002,7 @@ function parseOrigins(text) {
     const defaultPort = origin.startsWith('https:') ? '443' : '80';
     const keys = !port || port === defaultPort ? [host, host + ':' + defaultPort] : [authority];
     if (keys.some((key) => authorities.has(key))) return { error: `Address ${i + 1}: this host and port are already listed. Use one scheme per address.` };
-    keys.forEach((key) => authorities.add(key));
+    for (const key of keys) authorities.add(key);
   }
   return { values };
 }
@@ -1250,7 +1250,7 @@ export function toBase(text, factor, whole) {
 }
 
 // Only destructive retention settings use isDecrease. Version quotas keep all existing versions.
-export function isDecrease(key, current, next) {
+export function isDecrease(_key, current, next) {
   const cur = Number(current);
   const n = Number(next);
   return n < cur;

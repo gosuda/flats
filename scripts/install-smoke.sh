@@ -33,23 +33,8 @@ fail() {
 	exit 1
 }
 
-# expected_version prints the version a binary built with the stamp $1
-# reports. A v0.0.0-… stamp is a development build (a main commit image is
-# v0.0.0-sha-<commit>), which reports the commit it was built from, read here
-# from the binary $2's own build information.
-expected_version() {
-	case $1 in
-	v0.0.0-*)
-		info=$(go version -m "$2") || fail "cannot read the build information of $2"
-		rev=$(printf '%s\n' "$info" | sed -n 's/.*vcs\.revision=\([0-9a-f]*\).*/\1/p')
-		[ -n "$rev" ] || fail "$2 records no commit"
-		dirty=
-		printf '%s\n' "$info" | grep -q 'vcs\.modified=true' && dirty=-dirty
-		printf '%.7s%s\n' "$rev" "$dirty"
-		;;
-	*) printf '%s\n' "$1" ;;
-	esac
-}
+# shellcheck source=scripts/lib-gate.sh
+. "$root/scripts/lib-gate.sh"
 
 main_pid() {
 	if [ "$(uname -s)" = Darwin ]; then

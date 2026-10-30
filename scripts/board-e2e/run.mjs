@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // Board canvas end-to-end checks in headless Chrome over the DevTools
-// Protocol (board-TECH.md section 14, "Browser automation"). It drives a
+// Protocol (board-technical-design.md section 14, "Browser automation"). It drives a
 // running Flats host: boards are created with the flats CLI, edited through
 // real mouse, keyboard and IME input events, and judged against the page
 // state, the server (CLI reads) and downloaded files. Synthetic data only.
@@ -10,11 +10,12 @@
 
 import { parseArgs } from 'node:util';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, writeFileSync, readFileSync, existsSync, rmSync, mkdtempSync } from 'node:fs';
+import { mkdirSync, writeFileSync, readFileSync, rmSync, mkdtempSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import http from 'node:http';
-import { launchChrome, Tab, sleep } from './lib/cdp.mjs';
+import { launchChrome, sleep } from '../lib/cdp.mjs';
+import { Tab } from './lib/cdp.mjs';
 import { makePNG, readPNG, readZip, decodePNG } from './lib/files.mjs';
 import { PIXEL_BOARD, pixelErrors } from './lib/pixels.mjs';
 
@@ -36,7 +37,6 @@ if (opt.help) {
   process.exit(0);
 }
 
-const SECTIONS = ['setup', 'tools', 'select', 'keys', 'text', 'collab', 'a11y', 'find', 'share', 'png', 'data', 'history', 'converge', 'public'];
 const only = opt.only ? new Set(['setup', ...opt.only.split(',')]) : null;
 const skip = new Set(opt.skip ? opt.skip.split(',') : []);
 if (opt.public === 'off') skip.add('public');

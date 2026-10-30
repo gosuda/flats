@@ -2,7 +2,7 @@
 // module, then initialized by __flats_init. Provides fetch, Response,
 // Headers, Request, URL, URLSearchParams, btoa/atob, console, the env object
 // and the dispatch entry points the Go side calls with JSON strings.
-(function () {
+(() => {
   "use strict";
   const host = globalThis.__flats_host;
   delete globalThis.__flats_host;
@@ -251,7 +251,7 @@
         this.protocol = m[1].toLowerCase();
         this.hostname = m[2].toLowerCase();
         this.port = m[3] || "";
-        let p = m[4] || "/";
+        const p = m[4] || "/";
         const segs = [];
         for (const s of p.split("/").slice(1)) {
           if (s === "..") segs.pop();
@@ -358,7 +358,8 @@
   class Request {
     constructor(r, init) {
       Object.defineProperty(this, "runtimeGeneration", { value: runtimeGeneration });
-      // Preserve the existing inbound request object's headers and body API.
+      // The inbound request arrives as a plain object; reuse its headers and
+      // body directly instead of re-reading them.
       if (init === undefined && r && typeof r === "object" && !(r instanceof Request) && !(r instanceof URL) && typeof r.url === "string") {
         this.method = r.method;
         this.url = r.url;

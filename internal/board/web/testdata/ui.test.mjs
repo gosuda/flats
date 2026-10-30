@@ -21,7 +21,7 @@ test('kept toasts are capped, and the newest recovery toast always stays', (t) =
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const doc = installDOM([{ cls: 'toasts' }]);
   const host = doc.querySelector('.toasts');
-  let kept = [];
+  const kept = [];
   for (let i = 0; i < 20; i++) kept.push(toast(`Ann changed "note ${i}", so the text you wrote was overwritten.`, { actions: [['Keep my text', () => {}]], timeout: 0 }));
   assert.equal(host.children.length, TOAST_KEEP_MAX, 'bounded');
   assert.deepEqual(host.children, kept.slice(-TOAST_KEEP_MAX), 'the oldest kept toasts go first');

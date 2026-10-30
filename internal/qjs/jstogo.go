@@ -104,7 +104,6 @@ func toGoValue[T any](
 		return v, err
 	}
 
-	// Fallback for all other object types
 	temp, err = jsObjectToGo(tracker, input, sample)
 
 	return v, err
@@ -386,7 +385,7 @@ func jsObjectOrMapToGoStruct[T any](
 	}
 
 	structValue, isStructPtr := setupStructValue(targetType, &temp)
-	fieldMap := getFieldMap(structValue.Type())
+	fieldMap := globalFieldMapper.GetFieldMap(structValue.Type())
 
 	if err := processObjectFields(tracker, obj, structValue, fieldMap); err != nil {
 		return v, err
@@ -569,7 +568,6 @@ func jsObjectToGo[T any](
 		return jsArrayToGoWithContext(tracker, input, sample)
 	}
 
-	// Fallback for other types
 	tempPtr := reflect.New(targetType).Interface()
 
 	jsonString, err := input.JSONStringify()
@@ -583,7 +581,6 @@ func jsObjectToGo[T any](
 		return processTempValue("JsObjectToGo", nil, err, sample)
 	}
 
-	// Dereference the pointer to get the actual value
 	temp := reflect.ValueOf(tempPtr).Elem().Interface()
 
 	return processTempValue("JsObjectToGo", temp, err, sample)
@@ -709,14 +706,12 @@ func convertArgsToJS(
 		args[numFixedArgs].Kind() == reflect.Slice {
 		variadicSlice := args[numFixedArgs]
 
-		// Convert fixed arguments
 		for i := range numFixedArgs {
 			if err := convertArg(args[i].Interface(), i); err != nil {
 				return nil, err
 			}
 		}
 
-		// Convert variadic arguments
 		for i := range variadicSlice.Len() {
 			elem := variadicSlice.Index(i)
 			if err := convertArg(elem.Interface(), numFixedArgs+i); err != nil {
@@ -724,7 +719,6 @@ func convertArgsToJS(
 			}
 		}
 	} else {
-		// Convert all arguments directly
 		for i, arg := range args {
 			if err := convertArg(arg.Interface(), i); err != nil {
 				return nil, err
@@ -847,9 +841,7 @@ func jsStringToGo[T any](input *Value, sample T) (any, error) {
 			return stringVal != "", nil
 		}
 
-		// Handle string-based custom types
 		if targetType.Kind() == reflect.String {
-			// Convert string to custom string type using reflection
 			stringValue := reflect.ValueOf(stringVal)
 			if stringValue.Type().ConvertibleTo(targetType) {
 				return stringValue.Convert(targetType).Interface(), nil

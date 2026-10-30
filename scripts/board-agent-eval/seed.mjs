@@ -69,7 +69,7 @@ const rnd = () => ((state = (Math.imul(state, 1664525) + 1013904223) >>> 0) / 2 
 
 const COLORS = ['yellow', 'orange', 'pink', 'blue', 'green', 'gray'];
 const order = [];
-for (const [topic, texts] of Object.entries(TOPICS)) texts.forEach((t, i) => order.push({ topic, i, text: t }));
+for (const [topic, texts] of Object.entries(TOPICS)) texts.forEach((t, i) => { order.push({ topic, i, text: t }); });
 // Shuffle so topics are interleaved on the canvas.
 for (let i = order.length - 1; i > 0; i--) {
   const j = Math.floor(rnd() * (i + 1));

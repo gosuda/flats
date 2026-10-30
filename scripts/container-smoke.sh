@@ -58,23 +58,9 @@ fail() {
 	exit 1
 }
 
-# expected_version prints the version a binary built with the stamp $1
-# reports. A v0.0.0-… stamp is a development build (a main commit image is
-# v0.0.0-sha-<commit>), which reports the commit it was built from, read here
-# from the binary $2's own build information.
-expected_version() {
-	case $1 in
-	v0.0.0-*)
-		info=$(go version -m "$2") || fail "cannot read the build information of $2"
-		rev=$(printf '%s\n' "$info" | sed -n 's/.*vcs\.revision=\([0-9a-f]*\).*/\1/p')
-		[ -n "$rev" ] || fail "$2 records no commit"
-		dirty=
-		printf '%s\n' "$info" | grep -q 'vcs\.modified=true' && dirty=-dirty
-		printf '%.7s%s\n' "$rev" "$dirty"
-		;;
-	*) printf '%s\n' "$1" ;;
-	esac
-}
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=lib-gate.sh
+. "$(cd "$(dirname "$0")" && pwd)/lib-gate.sh"
 # A binary from before internal/buildinfo, such as an older commit image built
 # by the Commit images workflow, reports the stamp itself and no system.build
 # in /api/status; its version --json has no release field.
@@ -134,18 +120,6 @@ for key in sys.argv[1].split("."): value=value[key]
 print(value)' "$1" "$2"
 }
 
-# approval_applied checks exactly the requested approval, never a pending-list
-# candidate. The disposable test operator is separate from the CLI client.
-approval_applied() {
-	curl -fsS --max-time 5 "$url/api/approvals/$1" >"$work/approval-result" || return 1
-	decision_status=$(json_field status "$work/approval-result") || fail "invalid approval receipt"
-	case "$decision_status" in
-	approved) return 0;;
-	pending|applying) return 1;;
-	*) fail "approval $1 ended $decision_status: $(cat "$work/approval-result")";;
-	esac
-}
-
 # approve_requested LABEL REQUEST approves only the ID captured by that request.
 # This intervention is allowed only against this smoke test's own Docker data.
 approve_requested() {
@@ -154,7 +128,9 @@ approve_requested() {
 	case "$request_id" in ''|*[!a-zA-Z0-9_-]*) fail "invalid approval ID for $1";; esac
 	echo "OPERATOR INTERVENTION (disposable container): approve $request_id for $1" >&2
 	console -X POST "$url/console/api/approvals/$request_id/approve" >/dev/null || fail "approving $request_id for $1 failed"
-	wait_for "approval $request_id" approval_applied "$request_id"
+	# The wait verb succeeds only for an approval that applied without pending
+	# storage cleanup; its stderr already explains any refusal or timeout.
+	"$flats" --json approvals wait "$request_id" >"$work/approval-result" || fail "waiting for approval $request_id failed"
 }
 
 # deploy_approved FLAT saves its Draft, freezes that exact receipt for an

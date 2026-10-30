@@ -58,7 +58,8 @@
 
 import { writeFileSync } from 'node:fs';
 import { createHash, randomBytes } from 'node:crypto';
-import { args, watchdog, launchChrome, waitReady, nameScript, stats, environment, uptime, sleep } from './lib.mjs';
+import { launchChrome, sleep } from '../lib/cdp.mjs';
+import { args, watchdog, Page, waitReady, nameScript, stats, environment, uptime } from './lib.mjs';
 
 const opt = args({ url: '', expected: 5000, minutes: 10, bots: 5, rate: 2, zoom: 0.8, owned: 5, cross: 2, 'cross-rate': 1, 'pres-rate': 10, width: 1440, height: 900, scale: 0, chrome: '', out: '' });
 if (!opt.url) { console.error('usage: node remote-latency.mjs --url <board url> --expected <elements>'); process.exit(2); }
@@ -114,22 +115,21 @@ class Bot {
     this.fatal = null;
     this.welcomes = 0;
     this.k = 0;
-    const self = this;
     this.net = new Net(this.state, {
       hello: () => {
-        const st = self.state;
-        const m = { t: 'hello', v: 1, pending: { count: st.pending.length }, editor: self.editor, name: self.name };
+        const st = this.state;
+        const m = { t: 'hello', v: 1, pending: { count: st.pending.length }, editor: this.editor, name: this.name };
         if (st.session) { m.session = st.session; m.watermark = st.watermark; }
         if (st.pending.length) m.pending.first_n = st.pending[0].n;
         return m;
       },
-      welcome: () => { self.welcomes++; },
+      welcome: () => { this.welcomes++; },
       snapshot: () => {},
       delta: () => {},
-      ack: (m) => { self.acks.push({ n: m.n, seq: m.seq, results: m.results, at: nowMs() }); },
-      reject: (m) => { self.rejects.push({ n: m.n, code: m.code, retry: m.retry }); },
-      fatal: (code) => { self.fatal = code; },
-      pres: () => { self.presReceived++; }, shared: () => {}, status: () => {}, tooLarge: () => { self.rejects.push({ code: 'too_large' }); },
+      ack: (m) => { this.acks.push({ n: m.n, seq: m.seq, results: m.results, at: nowMs() }); },
+      reject: (m) => { this.rejects.push({ n: m.n, code: m.code, retry: m.retry }); },
+      fatal: (code) => { this.fatal = code; },
+      pres: () => { this.presReceived++; }, shared: () => {}, status: () => {}, tooLarge: () => { this.rejects.push({ code: 'too_large' }); },
     });
   }
 
@@ -259,7 +259,7 @@ let obsView = null;
 const bots = [];
 const crossRounds = []; // [{round, id, n: [[bot, batch n]]}]
 try {
-  const page = await chrome.cdp.firstPage();
+  const page = await Page.first(chrome.cdp);
   const exceptions = [];
   chrome.cdp.on((m) => {
     if (m.method === 'Runtime.exceptionThrown') exceptions.push(m.params.exceptionDetails.exception?.description || m.params.exceptionDetails.text);

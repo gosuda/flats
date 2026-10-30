@@ -19,8 +19,7 @@ export class TextEditor {
     this.created = created;
     this.last = el;
     this.start = el.text || '';
-    // baseV is the text version the person sees as they start (TECH 4.9).
-    this.baseV = ops.textVersion(app.state, el.id);
+    this.baseTextVersion = ops.textVersion(app.state, el.id);
     this.composing = false;
     this.vanished = false;
     this.done = false;
@@ -133,12 +132,12 @@ export class TextEditor {
         this.start = el.text || '';
         this.ta.value = this.start;
       }
-      this.baseV = ops.textVersion(this.app.state, this.id);
-    } else if (this.baseV == null) {
+      this.baseTextVersion = ops.textVersion(this.app.state, this.id);
+    } else if (this.baseTextVersion == null) {
       // An element this tab created gets its first version from its own
       // add; the person started from that text if the server still has it.
       const base = this.app.state.server.get(this.id);
-      if (base && (base.text || '') === this.start) this.baseV = ops.textVersion(this.app.state, this.id);
+      if (base && (base.text || '') === this.start) this.baseTextVersion = ops.textVersion(this.app.state, this.id);
     }
     this.place();
   }
@@ -167,7 +166,7 @@ export class TextEditor {
       return;
     }
     const list = [];
-    if (text !== this.start) list.push(ops.textOp(app.state, el, text, this.baseV));
+    if (text !== this.start) list.push(ops.textOp(app.state, el, text, this.baseTextVersion));
     if (height != null && Math.abs(height - el.h) >= 1) {
       list.push({ op: 'set', id: el.id, inc: app.state.incOf(el.id), g: 'geom', val: clampGeom({ ...geomOf(el), h: height }) });
     }

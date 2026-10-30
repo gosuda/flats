@@ -5,7 +5,7 @@ Status: implemented on an unreleased branch; design for
 rules 8, 11 and 15. Where the implementation settled a detail differently, the
 text below describes the implementation. Rule numbers refer to that page;
 "board rule N" refers to [board-public-edit.md](board-public-edit.md) and
-"board TECH N" to [board-public-edit-TECH.md](board-public-edit-TECH.md).
+"board TECH N" to [board-public-edit-technical-design.md](board-public-edit-technical-design.md).
 The document app internals are in [docs-app.md](../internal/docs-app.md).
 
 ## 1. Decision summary
@@ -635,7 +635,7 @@ be split. Three measures keep the cost bounded (spec rule 21b):
   boundaries, disk quota, history panel (spec "Changes to existing specs").
 - `docs/agent/topics/docs.md` and `approvals.md`; `make docs-generate`.
 - `content-models.md` rules 4, 6, 11 and Quotas 4.
-- `board-public-edit.md` current state and `board-public-edit-TECH.md` 3.3 and
+- `board-public-edit.md` current state and `board-public-edit-technical-design.md` 3.3 and
   8.1 for the board changes; the TECH summary row about `member:N` is
   corrected to the `p:N` labels the code uses.
 - The specs' status lines and "Current state" sections.

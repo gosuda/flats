@@ -289,7 +289,7 @@ func TestPublicStopLeavesPrivateAndReportsUnconfirmed(t *testing.T) {
 	if !m2.File().Allows(Portal) {
 		t.Fatal("grant did not survive a new manager")
 	}
-	if _, ok := m2.take("notes", Portal, false); ok {
+	if _, ok := m2.routeHost("notes", Portal); ok {
 		t.Fatal("a new manager restored a public route")
 	}
 }
@@ -314,7 +314,7 @@ func TestPublicStopSeparatesClosedFunnelFromPendingIdentityRetirement(t *testing
 	if !slices.Equal(stopped.Stopped, []ID{Funnel}) || len(stopped.Unconfirmed) != 0 {
 		t.Fatalf("confirmed listener was reported as reachable: %+v", stopped)
 	}
-	if _, tracked := m.take("offline-private", Funnel, false); tracked {
+	if _, tracked := m.routeHost("offline-private", Funnel); tracked {
 		t.Fatal("closed Funnel stayed registered as a public route")
 	}
 	if pending, err := m.hasPendingTailnet("offline-private", "offline-private"); err != nil || !pending {
@@ -947,7 +947,7 @@ func TestExposureStatusMarksFormerRegistrationStopped(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := m.take("former", Tailscale, true); !ok {
+	if _, ok := m.dropRoute("former", Tailscale); !ok {
 		t.Fatal("missing registered tailscale route")
 	}
 	status, err := m.ExposureStatus(t.Context(), "former")

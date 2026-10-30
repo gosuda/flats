@@ -208,7 +208,6 @@ func (o *EvalOption) Handle() (handle uint64) {
 		byteCodeHandle = o.byteCodeValue.Raw()
 	}
 
-	// Create QuickJS option struct via WASM call
 	option := o.c.Call(
 		"QJS_CreateEvalOption",
 		codeHandle,

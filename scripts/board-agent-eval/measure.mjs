@@ -6,11 +6,10 @@
 // in Node with an estimated glyph width; use it only when Chrome is missing,
 // and treat results near 12 px as uncertain.
 
-import { readFileSync, mkdtempSync, rmSync, existsSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';
-import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import { findChrome, launchChrome } from '../lib/cdp.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const RENDER = join(here, '../../internal/board/web/render.js');
@@ -37,53 +36,27 @@ return out.map((r, i) => ({ ...r, width: labelWidths[i] }));
 })()`;
 }
 
-const CHROME = [
-  process.env.CHROME,
-  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
-  '/usr/bin/google-chrome',
-  '/usr/bin/chromium',
-  '/usr/bin/chromium-browser',
-].filter(Boolean);
-
-export function findChrome() {
-  return CHROME.find((p) => existsSync(p)) || null;
-}
-
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
+// inChrome runs the program once in a headless Chrome the shared launcher
+// owns: the page target Chrome opened at start evaluates it, so the result
+// carries real font metrics.
 async function inChrome(chrome, expr) {
-  const profile = mkdtempSync(join(tmpdir(), 'board-eval-chrome-'));
-  const proc = spawn(chrome, ['--headless=new', '--remote-debugging-port=0', `--user-data-dir=${profile}`,
-    '--no-first-run', '--no-default-browser-check', '--disable-extensions', 'about:blank'], { stdio: 'ignore' });
+  const browser = await launchChrome({ chrome, headless: true });
   try {
-    let port = null;
-    for (let i = 0; i < 300 && !port; i++) {
-      await sleep(100);
-      try { port = readFileSync(join(profile, 'DevToolsActivePort'), 'utf8').split('\n')[0]; } catch { /* not yet */ }
+    let target = null;
+    for (let i = 0; i < 100 && !target; i++) {
+      const { targetInfos } = await browser.cdp.send('Target.getTargets');
+      target = targetInfos.find((t) => t.type === 'page');
+      if (!target) await sleep(100);
     }
-    if (!port) throw new Error('headless Chrome did not start');
-    let page = null;
-    for (let i = 0; i < 100 && !page; i++) {
-      const list = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json();
-      page = list.find((t) => t.type === 'page');
-      if (!page) await sleep(100);
-    }
-    if (!page) throw new Error('no Chrome page target');
-    const ws = new WebSocket(page.webSocketDebuggerUrl);
-    await new Promise((res, rej) => { ws.onopen = res; ws.onerror = rej; });
-    const reply = new Promise((res) => {
-      ws.onmessage = (m) => { const d = JSON.parse(m.data); if (d.id === 1) res(d); };
-    });
-    ws.send(JSON.stringify({ id: 1, method: 'Runtime.evaluate', params: { expression: expr, returnByValue: true } }));
-    const d = await reply;
-    ws.close();
-    if (d.result.exceptionDetails) throw new Error('measure failed in Chrome: ' + JSON.stringify(d.result.exceptionDetails).slice(0, 400));
-    const ua = (await (await fetch(`http://127.0.0.1:${port}/json/version`)).json()).Browser;
-    return { values: d.result.result.value, engine: `chrome (${ua})` };
+    if (!target) throw new Error('no Chrome page target');
+    const { sessionId } = await browser.cdp.send('Target.attachToTarget', { targetId: target.targetId, flatten: true });
+    const d = await browser.cdp.send('Runtime.evaluate', { expression: expr, returnByValue: true }, sessionId);
+    if (d.exceptionDetails) throw new Error('measure failed in Chrome: ' + JSON.stringify(d.exceptionDetails).slice(0, 400));
+    return { values: d.result.value, engine: `chrome (${browser.version.product})` };
   } finally {
-    proc.kill();
-    await sleep(200);
-    rmSync(profile, { recursive: true, force: true });
+    await browser.close();
   }
 }
 

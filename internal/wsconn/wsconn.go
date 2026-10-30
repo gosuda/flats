@@ -104,7 +104,7 @@ type Conn struct {
 	sharedBudget *Budget
 	wmu          sync.Mutex
 	closed       atomic.Bool
-	sendQ        chan []byte
+	sendQ        chan string
 	done         chan struct{}
 	gone         chan struct{} // closed once Close has closed the connection
 	writerDone   chan struct{} // queued data has been sent or released
@@ -114,7 +114,7 @@ type Conn struct {
 }
 
 func newConn(c net.Conn, br *bufio.Reader, client bool) *Conn {
-	ws := &Conn{c: c, br: br, client: client, sendQ: make(chan []byte, 256), done: make(chan struct{}), gone: make(chan struct{}), writerDone: make(chan struct{})}
+	ws := &Conn{c: c, br: br, client: client, sendQ: make(chan string, 256), done: make(chan struct{}), gone: make(chan struct{}), writerDone: make(chan struct{})}
 	ws.budget.limit.Store(DefaultQueuedBytes)
 	return ws
 }
@@ -196,11 +196,14 @@ func (ws *Conn) WriteFrame(op byte, payload []byte) error {
 		rand.Read(key[:])
 		copy(hdr[n:], key[:])
 		n += 4
-		masked := make([]byte, l)
+		// The masked bytes are written and dropped inside this call, and
+		// wmu serializes all writers, so the scratch can come from the pool.
+		mbp, masked := getFrameBuf(l)
 		for i := range payload {
 			masked[i] = payload[i] ^ key[i&3]
 		}
 		payload = masked
+		defer putFrameBuf(mbp)
 	}
 	ws.c.SetWriteDeadline(time.Now().Add(writeTimeout))
 	if _, err := ws.c.Write(hdr[:n]); err != nil {
@@ -225,10 +228,41 @@ func (e *CloseError) Error() string {
 // timeout between messages: the reader's position in the stream is lost.
 var errReadBroken = errors.New("websocket: an earlier read failed; the connection cannot continue")
 
+// frameBufs recycles frame payload buffers. Payloads never escape a
+// ReadMessage call as owned memory: control frames are answered or
+// summarized internally, fragments are appended into the message, and a
+// final frame's bytes are copied out by the string conversion, so every
+// buffer comes back to the pool once nothing aliases it. Buffers larger
+// than maxPooledFrame are left to the garbage collector rather than pinned.
+var frameBufs = sync.Pool{New: func() any { b := make([]byte, 0, 4096); return &b }}
+
+const maxPooledFrame = 1 << 16
+
+// getFrameBuf returns a pooled buffer of at least n bytes and its pool
+// slot. The slot goes back through putFrameBuf once no live slice aliases
+// the buffer; dropping a slot on an error path is always safe (the buffer
+// is then just collected).
+func getFrameBuf(n int) (*[]byte, []byte) {
+	bp := frameBufs.Get().(*[]byte)
+	if cap(*bp) < n {
+		*bp = make([]byte, n)
+	}
+	return bp, (*bp)[:n]
+}
+
+// putFrameBuf recycles a slot whose buffer no live slice aliases.
+func putFrameBuf(bp *[]byte) {
+	if cap(*bp) > maxPooledFrame {
+		return
+	}
+	frameBufs.Put(bp)
+}
+
 // readFrame reads one frame. started reports whether any byte of it was
 // consumed, so the caller can tell a timeout between frames (nothing lost)
-// from one inside a frame.
-func (ws *Conn) readFrame(max int) (fin bool, op byte, payload []byte, started bool, err error) {
+// from one inside a frame. The payload comes from the buffer pool; the
+// caller owns returning bp once it stops aliasing payload.
+func (ws *Conn) readFrame(max int) (fin bool, op byte, bp *[]byte, payload []byte, started bool, err error) {
 	var h [2]byte
 	if h[0], err = ws.br.ReadByte(); err != nil {
 		return
@@ -239,12 +273,12 @@ func (ws *Conn) readFrame(max int) (fin bool, op byte, payload []byte, started b
 	}
 	fin = h[0]&0x80 != 0
 	if h[0]&0x70 != 0 {
-		return false, 0, nil, true, &CloseError{1002, "reserved bits set"}
+		return false, 0, nil, nil, true, &CloseError{1002, "reserved bits set"}
 	}
 	op = h[0] & 0x0F
 	masked := h[1]&0x80 != 0
 	if masked == ws.client {
-		return false, 0, nil, true, &CloseError{1002, "bad masking"}
+		return false, 0, nil, nil, true, &CloseError{1002, "bad masking"}
 	}
 	l := uint64(h[1] & 0x7F)
 	switch l {
@@ -262,10 +296,10 @@ func (ws *Conn) readFrame(max int) (fin bool, op byte, payload []byte, started b
 		l = binary.BigEndian.Uint64(b[:])
 	}
 	if op >= OpClose && (l > 125 || !fin) {
-		return false, 0, nil, true, &CloseError{1002, "bad control frame"}
+		return false, 0, nil, nil, true, &CloseError{1002, "bad control frame"}
 	}
 	if l > uint64(max) {
-		return false, 0, nil, true, &CloseError{1009, "message too big"}
+		return false, 0, nil, nil, true, &CloseError{1009, "message too big"}
 	}
 	var key [4]byte
 	if masked {
@@ -273,7 +307,7 @@ func (ws *Conn) readFrame(max int) (fin bool, op byte, payload []byte, started b
 			return
 		}
 	}
-	payload = make([]byte, l)
+	bp, payload = getFrameBuf(int(l))
 	if _, err = io.ReadFull(ws.br, payload); err != nil {
 		return
 	}
@@ -321,8 +355,18 @@ func (ws *Conn) ReadMessage(max int) (string, error) {
 
 // readMessage reports idle for a timeout that arrived between messages, the
 // only read error after which reading can continue.
+//
+// Frame buffers come from the pool and every payload is consumed here, so
+// each slot returns to the pool: control frames immediately, fragment
+// payloads once their bytes are appended, and a first frame's buffer after
+// the string conversion. Whether append grew the message in place inside
+// that buffer or moved it to a fresh one, the slot's array is unaliased by
+// the time string(msg) has copied the bytes out, so one put at the end
+// covers both. Growth is append's amortized doubling, so assembly copies
+// O(total message length) overall.
 func (ws *Conn) readMessage(max int) (string, bool, error) {
-	var msg []byte
+	var msg []byte     // message under assembly; starts as the first frame's pooled buffer
+	var msgBuf *[]byte // that buffer's pool slot, returned once msg is copied out
 	inMsg := false
 	for {
 		// Re-arm after each completed frame, including ping/pong keepalives.
@@ -332,10 +376,9 @@ func (ws *Conn) readMessage(max int) (string, bool, error) {
 				return "", false, err
 			}
 		}
-		fin, op, p, started, err := ws.readFrame(max)
+		fin, op, bp, p, started, err := ws.readFrame(max)
 		if err != nil {
-			var ne net.Error
-			if !errors.As(err, &ne) || !ne.Timeout() {
+			if ne, ok := errors.AsType[net.Error](err); !ok || !ne.Timeout() {
 				return "", false, err
 			}
 			if started || inMsg {
@@ -346,8 +389,10 @@ func (ws *Conn) readMessage(max int) (string, bool, error) {
 		switch op {
 		case OpPing:
 			ws.WriteFrame(OpPong, p)
+			putFrameBuf(bp)
 			continue
 		case OpPong:
+			putFrameBuf(bp)
 			continue
 		case OpClose:
 			code, reason := 1005, ""
@@ -355,17 +400,20 @@ func (ws *Conn) readMessage(max int) (string, bool, error) {
 				code = int(binary.BigEndian.Uint16(p))
 				reason = string(p[2:])
 			}
+			putFrameBuf(bp)
 			return "", false, &CloseError{code, reason}
 		case OpText, OpBinary:
 			if inMsg {
 				return "", false, &CloseError{1002, "unexpected data frame"}
 			}
-			msg, inMsg = p, true
+			inMsg = true
+			msg, msgBuf = p, bp
 		case OpCont:
 			if !inMsg {
 				return "", false, &CloseError{1002, "unexpected continuation"}
 			}
 			msg = append(msg, p...)
+			putFrameBuf(bp)
 		default:
 			return "", false, &CloseError{1002, "unknown opcode"}
 		}
@@ -373,7 +421,9 @@ func (ws *Conn) readMessage(max int) (string, bool, error) {
 			return "", false, &CloseError{1009, "message too big"}
 		}
 		if fin {
-			return string(msg), false, nil
+			s := string(msg)
+			putFrameBuf(msgBuf)
+			return s, false, nil
 		}
 	}
 }
@@ -449,7 +499,12 @@ func (ws *Conn) writer() {
 	for {
 		select {
 		case m := <-ws.sendQ:
-			err := ws.WriteFrame(OpText, m)
+			// Send queued the string unconverted; the one unavoidable
+			// string-to-bytes copy happens here, into a pooled buffer.
+			bp, b := getFrameBuf(len(m))
+			copy(b, m)
+			err := ws.WriteFrame(OpText, b)
+			putFrameBuf(bp)
 			ws.release(int64(len(m)))
 			if err != nil {
 				ws.Close(1006, "")
@@ -466,7 +521,10 @@ func (ws *Conn) writer() {
 			for {
 				select {
 				case m := <-ws.sendQ:
-					err := ws.WriteFrame(OpText, m)
+					bp, b := getFrameBuf(len(m))
+					copy(b, m)
+					err := ws.WriteFrame(OpText, b)
+					putFrameBuf(bp)
 					ws.release(int64(len(m)))
 					if err != nil {
 						return
@@ -500,7 +558,7 @@ func (ws *Conn) Send(text string) error {
 		return errors.New("WebSocket flat send byte limit exceeded")
 	}
 	select {
-	case ws.sendQ <- []byte(text):
+	case ws.sendQ <- text:
 		ws.qmu.Unlock()
 		return nil
 	default:

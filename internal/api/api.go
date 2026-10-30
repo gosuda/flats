@@ -187,8 +187,6 @@ func (s *Server) Handler() http.Handler {
 	return mux
 }
 
-// --- helpers ---
-
 // ErrorBody is the JSON error shape.
 type ErrorBody struct {
 	Error    string             `json:"error"`
@@ -213,6 +211,17 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	_ = enc.Encode(v)
+}
+
+// writeActionResult writes a core.ActionResult: 202 while the action waits
+// for the operator's approval, 200 once it applied (cleanup pending still
+// counts as applied: the metadata change is durable).
+func writeActionResult(w http.ResponseWriter, res core.ActionResult) {
+	code := http.StatusOK
+	if res.Status == "pending_approval" {
+		code = http.StatusAccepted
+	}
+	writeJSON(w, code, res)
 }
 
 // DecisionError retains the persisted approval and its typed execution cause.
@@ -332,8 +341,6 @@ func isLoopback(r *http.Request) bool {
 	ip := net.ParseIP(host)
 	return ip != nil && ip.IsLoopback()
 }
-
-// --- handlers ---
 
 func (s *Server) status(w http.ResponseWriter, r *http.Request, _ core.Via) {
 	var sys any
@@ -728,11 +735,7 @@ func (s *Server) visibility(w http.ResponseWriter, r *http.Request, via core.Via
 		fail(w, err)
 		return
 	}
-	code := 200
-	if res.Status == "pending_approval" {
-		code = 202
-	}
-	writeJSON(w, code, res)
+	writeActionResult(w, res)
 }
 
 // publicEdit reports whether a board or document can become editable by
@@ -784,11 +787,7 @@ func (s *Server) deleteFlat(w http.ResponseWriter, r *http.Request, via core.Via
 		fail(w, err)
 		return
 	}
-	code := 200
-	if res.Status == "pending_approval" {
-		code = 202
-	}
-	writeJSON(w, code, res)
+	writeActionResult(w, res)
 }
 
 func (s *Server) logs(w http.ResponseWriter, r *http.Request, _ core.Via) {
@@ -995,7 +994,6 @@ func (s *Server) zrokAccountAdmin(w http.ResponseWriter) (ZrokAccountAdmin, Prov
 	return z, p, true
 }
 
-// connectZrok enables a zrok environment with the operator's account token.
 func (s *Server) connectZrok(w http.ResponseWriter, r *http.Request, _ core.Via) {
 	z, p, ok := s.zrokAccountAdmin(w)
 	if !ok {
@@ -1015,7 +1013,6 @@ func (s *Server) connectZrok(w http.ResponseWriter, r *http.Request, _ core.Via)
 	writeJSON(w, 200, map[string]any{"providers": p.NetworkProviders(r.Context())})
 }
 
-// disconnectZrok unregisters the host's zrok environment.
 func (s *Server) disconnectZrok(w http.ResponseWriter, r *http.Request, _ core.Via) {
 	z, p, ok := s.zrokAccountAdmin(w)
 	if !ok {
@@ -1072,7 +1069,6 @@ func (s *Server) setTailscaleKey(w http.ResponseWriter, r *http.Request, _ core.
 	s.writeKeys(w, r, k)
 }
 
-// deleteTailscaleKey removes the stored Tailscale auth key.
 func (s *Server) deleteTailscaleKey(w http.ResponseWriter, r *http.Request, _ core.Via) {
 	s.keyAction(w, r, KeyAdmin.DeleteTailscaleKey)
 }
@@ -1097,12 +1093,10 @@ func (s *Server) setNetbirdKey(w http.ResponseWriter, r *http.Request, _ core.Vi
 	s.writeKeys(w, r, k)
 }
 
-// deleteNetbirdKey removes the stored NetBird setup key.
 func (s *Server) deleteNetbirdKey(w http.ResponseWriter, r *http.Request, _ core.Via) {
 	s.keyAction(w, r, KeyAdmin.DeleteNetbirdKey)
 }
 
-// dismissNetbirdLegacyPeer hides the notice about the old shared peer.
 func (s *Server) dismissNetbirdLegacyPeer(w http.ResponseWriter, r *http.Request, _ core.Via) {
 	s.keyAction(w, r, KeyAdmin.DismissNetbirdLegacyPeer)
 }
@@ -1323,11 +1317,7 @@ func (s *Server) deleteVersion(w http.ResponseWriter, r *http.Request, via core.
 		fail(w, err)
 		return
 	}
-	code := http.StatusOK
-	if out.Status == "pending_approval" {
-		code = http.StatusAccepted
-	}
-	writeJSON(w, code, out)
+	writeActionResult(w, out)
 }
 func (s *Server) putVersionQuota(w http.ResponseWriter, r *http.Request, via core.Via) {
 	var in struct {

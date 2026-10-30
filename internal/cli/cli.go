@@ -70,7 +70,7 @@ type Env struct {
 	Launchd          launchd.Runner         // nil: the real launchctl
 	Home             string                 // launchd home; "" = os.UserHomeDir
 	GOOS             string                 // "" = runtime.GOOS
-	PollInterval     time.Duration          // logs --follow; 0 = 2s
+	PollInterval     time.Duration          // logs --follow and approvals wait; 0 = 2s (wait: 1s)
 	InstallWait      time.Duration          // how long install waits for the server; 0 = 10s
 	Executable       func() (string, error) // nil: os.Executable
 	ReleaseTransport http.RoundTripper      // release downloads only
@@ -126,7 +126,7 @@ func init() {
 		{"env", "manage ordinary server environment variables", "env set <slug> <NAME> <VALUE>\n       flats env rm <slug> <NAME>\n       flats env ls <slug>", (*app).envVars},
 		{"network", "manage server HTTP(S) origin permissions", "network ls <slug>\n       flats network set <slug> <origin>...\n       flats network clear <slug>", (*app).network},
 		{"secret", "manage server-flat secrets", "secret set <slug> <NAME>   (value from stdin)\n       flats secret rm <slug> <NAME>\n       flats secret ls <slug>", (*app).secret},
-		{"approvals", "list approval requests", "approvals [--status pending|approved|rejected|failed]", (*app).approvals},
+		{"approvals", "list approval requests, or wait for one to be decided", "approvals [--status pending|approved|rejected|failed]\n       flats approvals wait <id> [--timeout seconds]", (*app).approvals},
 		{"status", "show server and service status", "status", (*app).status},
 		{"install", "run `flats serve` at login (launchd/systemd)", "install [--config path] [--data dir] [--executable path] [-- legacy serve flags...]", (*app).install},
 		{"uninstall", "remove the launchd agent", "uninstall", (*app).uninstall},

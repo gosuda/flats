@@ -18,10 +18,10 @@ export const LIMITS = Object.freeze({
   activations: 1000,
   sendBytes: 4 * 1024 * 1024,
   flatSendBytes: 16 * 1024 * 1024,
-  // Guests and viewers together (docs/spec/docs-public-edit-TECH.md 3.3).
+  // Guests and viewers together (docs/spec/docs-public-edit-technical-design.md 3.3).
   publicSendBytes: 4 * 1024 * 1024,
 });
-// Anonymous public editing (docs/spec/docs-public-edit-TECH.md 3.3 to 3.8).
+// Anonymous public editing (docs/spec/docs-public-edit-technical-design.md 3.3 to 3.8).
 export const GUEST = Object.freeze({
   // Connections: guests, and viewers as the earlier reader pool.
   connections: 30,
@@ -119,6 +119,7 @@ export function unbase64(s, max = LIMITS.update) {
 export function utf8Bytes(s) {
   if (s.length > 65536 && globalThis.__flats_docsCodec)
     return globalThis.__flats_docsCodec.length(s);
+  // biome-ignore lint/suspicious/noControlCharactersInRegex: ASCII check intentionally matches control characters 0x00-0x1f
   if (/^[\x00-\x7f]*$/.test(s)) return s.length;
   let n = 0;
   for (let i = 0; i < s.length; i++) {
@@ -178,6 +179,7 @@ export function encodePresence(items) {
 }
 export const cleanName = (name) =>
   (typeof name === "string" ? name : "Guest")
+    // biome-ignore lint/suspicious/noControlCharactersInRegex: sanitizing ASCII control characters and DEL
     .replace(/[\u0000-\u001f\u007f]/g, "")
     .trim()
     .slice(0, 64) || "Guest";

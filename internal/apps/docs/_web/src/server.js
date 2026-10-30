@@ -66,7 +66,7 @@ const escapeHTML = (s) =>
   );
 // Members connect on a Private route; on a Public route a connection is a
 // guest after a valid guest hello while the flat is open for editing, else
-// a viewer (docs/spec/docs-public-edit-TECH.md 3.3).
+// a viewer (docs/spec/docs-public-edit-technical-design.md 3.3).
 const MEMBER = "member",
   GUEST_KIND = "guest",
   VIEWER = "viewer";
@@ -1094,7 +1094,7 @@ async function edit(request, env, d) {
   if (result.changed) globalThis.__flats_docsWake?.(d.path);
   return json(200, result);
 }
-// Host only: revision capture and its outbox (docs/spec/document-revisions-TECH.md).
+// Host only: revision capture and its outbox (docs/spec/document-revisions-technical-design.md).
 const revisionStatus = {
   invalid: 400,
   conflict: 409,

@@ -1,7 +1,7 @@
 // Revision capture: every revision boundary records the whole flat in an
 // outbox, in the same transaction as the change it precedes or follows. The
 // host imports the outbox into its revision store and acknowledges it.
-// See docs/spec/document-revisions-TECH.md.
+// See docs/spec/document-revisions-technical-design.md.
 import * as Y from "yjs";
 import { base64, utf8Bytes, LIMITS, GUEST } from "./protocol.js";
 import { applyText } from "./merge.js";
@@ -22,6 +22,9 @@ export const GROUP_MAX_AGE = 5 * 60 * 1000;
 const STAGED_TTL = 60 * 60 * 1000;
 const PAGE_BYTES = 4 * 1024 * 1024;
 const MAX_AUTHORS = 32;
+// One empty guest_lines list shared by every recorded document without
+// ranges; it is only serialized, never mutated.
+const NO_GUEST_LINES = [];
 
 export function getMeta(db, key) {
   const row = db.query("SELECT value FROM flats_docs_meta WHERE key=?", [
@@ -134,7 +137,7 @@ function documentFile(db, path, known) {
   return { path, hash, size, guest_lines: lines };
 }
 
-// --- guest text (docs-public-edit-TECH.md 3.5, 3.9) ---
+// --- guest text (docs-public-edit-technical-design.md 3.5, 3.9) ---
 
 // flats_docs_guest_clients holds the Yjs client ids guests own and, so a
 // guest cannot claim one first, the presence ids members announced (owner
@@ -307,7 +310,10 @@ const sameDocuments = (a, b) =>
 // changed since the newest entry. It returns the entry's seq, or 0.
 export function record(db, o) {
   const overrides = o.overrides || {},
-    paths = [...new Set([...o.paths, ...Object.keys(overrides)])].sort(),
+    // One set, filled without copying o.paths or the override keys twice.
+    seen = new Set(o.paths);
+  for (const p of Object.keys(overrides)) seen.add(p);
+  const paths = [...seen].sort((a, b) => (a < b ? -1 : a > b ? 1 : 0)),
     documents = [],
     texts = {};
   for (const path of paths) {
@@ -342,6 +348,10 @@ export function record(db, o) {
     .map((a) => a.slice(0, 200))
     .slice(0, MAX_AUTHORS);
   const guests = dirtyGuests(db);
+  // The stored row lists guest_lines for every document; the entries without
+  // one are filled in place instead of copied (key order stays path, hash,
+  // size, guest_lines, so the stored JSON is unchanged).
+  for (const d of documents) if (d.guest_lines === undefined) d.guest_lines = NO_GUEST_LINES;
   db.exec(
     "INSERT INTO flats_docs_outbox(created_at,kind,authors,message,rollback_of,op,source,documents,guests,guests_more) VALUES(?,?,?,?,?,?,?,?,?,?)",
     [
@@ -352,9 +362,7 @@ export function record(db, o) {
       o.rollbackOf ?? null,
       o.op ?? null,
       o.source,
-      JSON.stringify(
-        documents.map((d) => ({ ...d, guest_lines: d.guest_lines || [] })),
-      ),
+      JSON.stringify(documents),
       JSON.stringify(guests.slice(0, GUEST.credited)),
       Math.max(0, guests.length - GUEST.credited),
     ],
@@ -682,7 +690,7 @@ export function sync(db, content, generation, now = Date.now()) {
   };
 }
 
-// --- public access (docs-public-edit-TECH.md 3.1, 3.6) ---
+// --- public access (docs-public-edit-technical-design.md 3.1, 3.6) ---
 
 const ACCESS_LEVELS = ["", "view", "edit"];
 // accessOf is the stored public access level and its epoch.
@@ -808,6 +816,12 @@ export function outbox(db, after) {
       row.authors.length +
       row.message.length +
       (row.guests?.length || 0);
+    // The parsed rows are private to this entry; filling guest_lines in
+    // place avoids copying every document (same key order, so the same
+    // JSON when the host serializes the entries).
+    const documents = JSON.parse(row.documents);
+    for (const d of documents)
+      if (d.guest_lines === undefined) d.guest_lines = NO_GUEST_LINES;
     entries.push({
       seq: row.seq,
       created_at: row.created_at,
@@ -817,10 +831,7 @@ export function outbox(db, after) {
       rollback_of: row.rollback_of ?? undefined,
       op: row.op ?? undefined,
       source: row.source,
-      documents: JSON.parse(row.documents).map((d) => ({
-        ...d,
-        guest_lines: d.guest_lines || [],
-      })),
+      documents,
       guests: row.guests ? JSON.parse(row.guests) : [],
       guests_more: row.guests_more || 0,
     });
@@ -1040,7 +1051,7 @@ export function setBudget(db, body) {
   }
   setMeta(db, "budget", { quota, other, until });
 }
-// --- the guests' byte budget (docs-public-edit-TECH.md 3.8) ---
+// --- the guests' byte budget (docs-public-edit-technical-design.md 3.8) ---
 
 // measuredBytes is the part of the disk check this database determines:
 // its pages and the texts recorded but not imported yet.
@@ -1109,8 +1120,10 @@ function pageCount(db) {
 function forgetUnimported(db, hashes) {
   for (let i = 0; i < hashes.length; i += 500) {
     const batch = hashes.slice(i, i + 500);
+    // "?,?..." built by repeat: no per-batch array of placeholder strings.
+    const marks = "?" + ",?".repeat(batch.length - 1);
     db.exec(
-      `DELETE FROM flats_docs_unimported WHERE hash IN (${batch.map(() => "?").join(",")})`,
+      `DELETE FROM flats_docs_unimported WHERE hash IN (${marks})`,
       batch,
     );
   }

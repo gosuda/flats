@@ -7,10 +7,10 @@ For a cleanup or restructure of existing docs, use
 ## Specs
 
 - [ ] Spec conventions (status line, `Current state`, `Open questions`,
-  when a `-TECH.md` page exists) are in
+  when a `-technical-design.md` page exists) are in
   [the spec index](../../../../docs/spec/README.md). Follow them; do not copy
   them elsewhere.
-- [ ] A `-TECH.md` page exists only while its feature is unshipped. When it
+- [ ] A `-technical-design.md` page exists only while its feature is unshipped. When it
   ships, fold its durable design into the architecture docs.
 - [ ] When folding or deleting docs, have an independent reviewer compare the
   deleted text with what remains. API contracts and storage-format details are

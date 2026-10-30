@@ -17,7 +17,7 @@ import (
 )
 
 // Opt-in browser tests of anonymous public editing
-// (docs/spec/docs-public-edit-TECH.md 8, rows "Refusal" and "Rendering").
+// (docs/spec/docs-public-edit-technical-design.md 8, rows "Refusal" and "Rendering").
 // Each runs a script in testdata with the installed Playwright; they skip
 // unless FLATS_DOCS_BROWSER_TEST=1 and FLATS_PLAYWRIGHT_MODULE are set.
 // FLATS_DOCS_BROWSER_EVIDENCE keeps screenshots and downloaded files.
