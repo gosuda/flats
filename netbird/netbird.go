@@ -25,7 +25,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -111,23 +110,37 @@ type Net struct {
 
 	mu      sync.Mutex
 	closed  bool
-	peers   map[string]client // started peers by name
+	peers   map[string]client
 	entries map[string]*entry // role/name
 	locks   map[string]*sync.Mutex
 	ops     sync.WaitGroup
-	// stopping holds, by name, peers whose Stop failed: their teardown may
-	// still run, so the name is neither started again nor its identity
-	// deleted until a later Stop succeeds.
-	stopping map[string]client
-	// starting holds, by name, starts that went on after their caller gave
-	// up; the channel closes once that start (and, if it connected late, its
-	// teardown) has ended. Until then the name is not started again and its
-	// identity is not deleted.
-	starting map[string]chan struct{}
-	// keyRefused records, by name, the setup key a late start found unable
-	// to register (ErrKeyNoExtraLabels), so the next start with the same key
-	// fails at once instead of waiting for NetBird's retries again.
-	keyRefused map[string]string
+	// peerStates holds, by name, the lifecycle residue of one peer: a
+	// stopping peer whose Stop failed, a start its caller gave up on, or a
+	// setup key a start found refused. Entries are dropped once all fields
+	// are empty.
+	peerStates map[string]*peerState
+}
+
+// peerState carries, for one peer name, the state a start or stop left
+// behind:
+//   - stopping holds a peer whose Stop failed: its teardown may still run,
+//     so the name is neither started again nor its identity deleted until a
+//     later Stop succeeds.
+//   - starting holds a start that went on after its caller gave up; the
+//     channel closes once that start (and, if it connected late, its
+//     teardown) has ended. Until then the name is not started again and its
+//     identity is not deleted.
+//   - keyRefused records the setup key a late start found unable to register
+//     (ErrKeyNoExtraLabels), so the next start with the same key fails at
+//     once instead of waiting for NetBird's retries again.
+type peerState struct {
+	stopping   client
+	starting   chan struct{}
+	keyRefused string
+}
+
+func (s *peerState) empty() bool {
+	return s.stopping == nil && s.starting == nil && s.keyRefused == ""
 }
 
 type entry struct {
@@ -139,7 +152,7 @@ type entry struct {
 	done            chan struct{}
 	stopping        atomic.Bool
 
-	first     chan error // first outcome, buffered
+	first     chan error
 	firstOnce sync.Once
 
 	mu     sync.Mutex
@@ -187,7 +200,7 @@ func New(cfg Config) (*Net, error) {
 		logf = func(string, ...any) {}
 	}
 	return &Net{cfg: cfg, logf: logf, retryMin: 2 * time.Second, retryMax: time.Minute,
-		peers: map[string]client{}, entries: map[string]*entry{}, locks: map[string]*sync.Mutex{}, stopping: map[string]client{}, starting: map[string]chan struct{}{}, keyRefused: map[string]string{}}, nil
+		peers: map[string]client{}, entries: map[string]*entry{}, locks: map[string]*sync.Mutex{}, peerStates: map[string]*peerState{}}, nil
 }
 
 type logWriter struct{ logf func(string, ...any) }
@@ -210,6 +223,17 @@ func (n *Net) lockFor(name string) *sync.Mutex {
 		n.locks[name] = l
 	}
 	return l
+}
+
+// peerStateLocked returns name's lifecycle state, creating it if absent. It
+// runs under n.mu.
+func (n *Net) peerStateLocked(name string) *peerState {
+	s := n.peerStates[name]
+	if s == nil {
+		s = &peerState{}
+		n.peerStates[name] = s
+	}
+	return s
 }
 
 func (n *Net) beginOp() bool {
@@ -277,7 +301,8 @@ func (n *Net) ensurePeer(ctx context.Context, name string) (client, error) {
 		}
 	}
 	n.mu.Lock()
-	refused := key != "" && n.keyRefused[name] == key
+	s := n.peerStates[name]
+	refused := key != "" && s != nil && s.keyRefused == key
 	n.mu.Unlock()
 	if refused {
 		return nil, ErrKeyNoExtraLabels
@@ -317,13 +342,16 @@ func (n *Net) ensurePeer(ctx context.Context, name string) (client, error) {
 		// name busy until it has.
 		pending := make(chan struct{})
 		n.mu.Lock()
-		n.starting[name] = pending
+		n.peerStateLocked(name).starting = pending
 		n.mu.Unlock()
 		go func() {
 			ferr := <-final
 			n.mu.Lock()
-			if n.starting[name] == pending {
-				delete(n.starting, name)
+			if s := n.peerStates[name]; s != nil && s.starting == pending {
+				s.starting = nil
+				if s.empty() {
+					delete(n.peerStates, name)
+				}
 			}
 			n.mu.Unlock()
 			close(pending)
@@ -333,7 +361,7 @@ func (n *Net) ensurePeer(ctx context.Context, name string) (client, error) {
 			}
 			if isKeyNoExtraLabels(ferr) {
 				n.mu.Lock()
-				n.keyRefused[name] = key
+				n.peerStateLocked(name).keyRefused = key
 				n.mu.Unlock()
 				ferr = ErrKeyNoExtraLabels
 			}
@@ -347,7 +375,7 @@ func (n *Net) ensurePeer(ctx context.Context, name string) (client, error) {
 			return nil, ErrPeerRejected
 		case isKeyNoExtraLabels(err):
 			n.mu.Lock()
-			n.keyRefused[name] = key
+			n.peerStateLocked(name).keyRefused = key
 			n.mu.Unlock()
 			return nil, ErrKeyNoExtraLabels
 		case errors.Is(err, context.DeadlineExceeded):
@@ -380,7 +408,8 @@ func isPeerRejected(err error) bool {
 // runs.
 func (n *Net) startPending(name string) error {
 	n.mu.Lock()
-	_, busy := n.starting[name]
+	s := n.peerStates[name]
+	busy := s != nil && s.starting != nil
 	n.mu.Unlock()
 	if busy {
 		return fmt.Errorf("netbird: %s: an earlier start of this peer is still running; retry when it has ended (the log shows it)", name)
@@ -392,7 +421,11 @@ func (n *Net) startPending(name string) error {
 // lock.
 func (n *Net) finishStop(name string) error {
 	n.mu.Lock()
-	c := n.stopping[name]
+	s := n.peerStates[name]
+	var c client
+	if s != nil {
+		c = s.stopping
+	}
 	n.mu.Unlock()
 	if c == nil {
 		return nil
@@ -411,8 +444,11 @@ func (n *Net) finishStop(name string) error {
 		return fmt.Errorf("netbird: %s: the peer did not stop: %w; retried by the next change of this name", name, err)
 	}
 	n.mu.Lock()
-	if n.stopping[name] == c {
-		delete(n.stopping, name)
+	if s := n.peerStates[name]; s != nil && s.stopping == c {
+		s.stopping = nil
+		if s.empty() {
+			delete(n.peerStates, name)
+		}
 	}
 	n.mu.Unlock()
 	return nil
@@ -438,7 +474,7 @@ func (n *Net) releasePeer(name string, retire bool) error {
 	}
 	if c := n.peers[name]; c != nil {
 		delete(n.peers, name)
-		n.stopping[name] = c
+		n.peerStateLocked(name).stopping = c
 	}
 	n.mu.Unlock()
 	if err := n.finishStop(name); err != nil {
@@ -893,10 +929,12 @@ func (n *Net) Close() error {
 	n.entries = map[string]*entry{}
 	peers := n.peers
 	n.peers = map[string]client{}
-	for name, c := range n.stopping {
-		peers[name] = c
+	for name, s := range n.peerStates {
+		if s.stopping != nil {
+			peers[name] = s.stopping
+			s.stopping = nil
+		}
 	}
-	n.stopping = map[string]client{}
 	n.mu.Unlock()
 	var errs []error
 	for _, e := range entries {
@@ -922,7 +960,12 @@ func (n *Net) Close() error {
 	// Starts their callers abandoned still own their peer's state: wait for
 	// them, so the data directory is not released while they run.
 	n.mu.Lock()
-	pending := maps.Clone(n.starting)
+	pending := make(map[string]chan struct{}, len(n.peerStates))
+	for name, s := range n.peerStates {
+		if s.starting != nil {
+			pending[name] = s.starting
+		}
+	}
 	n.mu.Unlock()
 	deadline := time.After(n.cfg.ShutdownTimeout)
 	for name, done := range pending {
