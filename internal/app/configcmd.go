@@ -126,7 +126,6 @@ func (c *configCmd) paths() (configPath, dataDir string, err error) {
 	return configPath, dataDir, err
 }
 
-// parseFlags parses a subcommand that takes only flags.
 func (c *configCmd) parseFlags(args []string) error {
 	_, rest, err := c.parse(args, 0)
 	if err == nil && len(rest) > 0 {
@@ -137,7 +136,6 @@ func (c *configCmd) parseFlags(args []string) error {
 
 func (c *configCmd) printf(format string, args ...any) { fmt.Fprintf(c.out, format, args...) }
 
-// load reads an existing config for an offline command.
 func load(path string) (*config.Loaded, *config.Config, error) {
 	l, err := config.Load(path)
 	if err != nil {
@@ -150,7 +148,6 @@ func load(path string) (*config.Loaded, *config.Config, error) {
 	return l, cfg, nil
 }
 
-// lockOffline takes the data lock for an offline change.
 func lockOffline(dir string) (*os.File, error) {
 	f, err := lockDataDir(dir)
 	if errors.Is(err, errDataDirInUse) {
