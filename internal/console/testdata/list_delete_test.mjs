@@ -24,7 +24,7 @@ Element.prototype.querySelectorAll = function (selector) {
   }
   return baseQSA.call(this, selector);
 };
-Element.prototype.getClientRects = function () { return [{}]; };
+Element.prototype.getClientRects = () => [{}];
 // A node counts as connected while it is inside a mounted page or the body.
 Object.defineProperty(Element.prototype, 'isConnected', {
   get() { for (let x = this; x; x = x.parentNode) if (x.tagName === 'MAIN' || x.tagName === 'BODY') return true; return false; },
@@ -171,7 +171,7 @@ assert.ok(ev.prevented);
 assert.equal(d.menu.hidden, true);
 assert.equal(document.activeElement, moreButton(main, 'notes'));
 assert.equal(deletes(), 0);
-let menu = openMenu(main, 'notes');
+const menu = openMenu(main, 'notes');
 assert.deepEqual(entries(menu).slice(-1), ['menuitem:Delete']);
 // A press outside and Tab close it too, before the end.
 menu.childNodes.find((e) => e.textContent === 'Delete').dispatch('click');
@@ -650,7 +650,7 @@ release();
 await tick();
 assert.equal(d.menu.hidden, true);
 fire('pointerdown', { target: document.createElement('div') });
-let later = { detail: 1, prevented: false, preventDefault() { this.prevented = true; }, stopPropagation() {} };
+const later = { detail: 1, prevented: false, preventDefault() { this.prevented = true; }, stopPropagation() {} };
 fire('click', later);
 assert.ok(!later.prevented, 'no blocker is left after an unreleased press');
 

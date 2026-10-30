@@ -319,14 +319,14 @@ document.getElementById = origGetElementById;
 assert.deepEqual(JSON.parse(calls.find((c) => c.key === 'POST /console/api/flats/blog/versions').body), { revision: 3, hash: 'c' });
 assert.ok(calls.some((c) => c.key === 'POST /console/api/approvals/apr-publish/approve'));
 assert.ok(pubToastBox.textContent.includes('Saved version 3. It is not live yet: publish it when ready.'), pubToastBox.textContent);
-all(document.body, (e) => e.tagName === 'DIALOG').forEach((d) => d.close('ok'));
+all(document.body, (e) => e.tagName === 'DIALOG').forEach((d) => { d.close('ok'); });
 await tick();
 
 // The operator deletes one non-live version directly, after an explicit
 // destructive confirmation. The live version and old pruned records cannot
 // be selected for deletion.
 assert.equal(byText(liveRow, 'Delete').length, 0);
-let oldRow = all(flatMain, (e) => e.tagName === 'TR' && e.textContent.startsWith('v1'))[0];
+const oldRow = all(flatMain, (e) => e.tagName === 'TR' && e.textContent.startsWith('v1'))[0];
 assert.equal(byText(oldRow, 'Delete').length, 1);
 const deletedBefore = calls.filter((c) => c.key === 'DELETE /console/api/flats/blog/versions/1').length;
 byText(oldRow, 'Delete')[0].dispatch('click');
@@ -655,7 +655,7 @@ assert.deepEqual(JSON.parse(envPut.body), { value: '' }, 'saving an empty value 
 // Deleting is confirmed, and does not send the value or mutate secrets.
 byText(envPanel, 'Delete')[0].dispatch('click');
 await tick();
-let envDelete = all(document.body, (e) => e.tagName === 'DIALOG')[0];
+const envDelete = all(document.body, (e) => e.tagName === 'DIALOG')[0];
 assert.ok(envDelete.textContent.includes('Delete variable APP_MODE?'));
 assert.ok(envDelete.textContent.includes('next approved activation or Flats host restart'));
 assert.equal(calls.some((c) => c.key === 'DELETE /console/api/flats/blog/env/APP_MODE'), false);
@@ -923,9 +923,9 @@ assert.ok(cursorSnippet.includes('Then install Flats from the Cursor plugin list
 for (const i of [0, 1, 2, 3]) {
   agentTabs[i].dispatch('click');
   const blocks = all(byId(page, 'agent-snippet'), (e) => e.tagName === 'PRE').map((pre) => pre.textContent);
-  blocks.forEach((text, b) => assert.ok(!text.includes("'"), `tab ${i} block ${b} has no apostrophe`));
+  blocks.forEach((text, b) => { assert.ok(!text.includes("'"), `tab ${i} block ${b} has no apostrophe`); });
   const shell = i === 3 ? blocks : blocks.slice(0, 1);
-  shell.forEach((text) => assert.ok(!text.split('\n').some((line) => line.trim().startsWith('#')), `tab ${i} shell block has no # line`));
+  shell.forEach((text) => { assert.ok(!text.split('\n').some((line) => line.trim().startsWith('#')), `tab ${i} shell block has no # line`); });
 }
 const cliSnippet = snippetOf(agentTabs, 3);
 // The plugin and the direct registration are alternatives, so each client tab
@@ -1049,7 +1049,7 @@ let put = puts().at(-1);
 assert.equal(put.headers['If-Match'], '"etag-1"');
 assert.deepEqual(JSON.parse(put.body), { upload_max_bytes: String(30 * 1048576) });
 assert.equal(byId(page, 'set-upload_max_bytes').value, '30');
-let alert = all(page, (e) => e.getAttribute('role') === 'alert' && e.textContent.includes('Settings not saved'))[0];
+const alert = all(page, (e) => e.getAttribute('role') === 'alert' && e.textContent.includes('Settings not saved'))[0];
 assert.ok(alert && alert.textContent.includes('restart Flats') && alert.textContent.includes('still in the form'));
 assert.ok(page.textContent.includes('config.json changed on disk'), 'the notice must appear after a 412');
 
@@ -1069,12 +1069,12 @@ routes['PUT /console/api/settings'] = { settings: SETTINGS, applied: ['version_q
 page = await mountSettings(['limits']);
 form = byId(page, 'limits-form');
 byId(page, 'set-version_quota').value = '1.5';
-let quotaPutCount = puts().length;
+const quotaPutCount = puts().length;
 form.dispatch('submit'); await tick();
 assert.equal(puts().length, quotaPutCount);
 assert.equal(byId(page, 'set-version_quota').getAttribute('aria-invalid'), 'true');
 byId(page, 'set-version_quota').value = '1';
-let quotaImpactCount = calls.filter((c) => c.key === 'POST /console/api/settings/impact').length;
+const quotaImpactCount = calls.filter((c) => c.key === 'POST /console/api/settings/impact').length;
 form.dispatch('submit'); await tick();
 assert.equal(puts().length, quotaPutCount + 1);
 assert.deepEqual(JSON.parse(puts().at(-1).body), { version_quota: '1' });
@@ -1208,7 +1208,7 @@ routes['PUT /console/api/settings'] = { settings: SETTINGS, applied: ['revision_
 page = await mountSettings(['limits']);
 byId(page, 'set-revision_quota').value = '40';
 putCount = puts().length;
-let impactCalls = calls.filter((c) => c.key === 'POST /console/api/settings/impact').length;
+const impactCalls = calls.filter((c) => c.key === 'POST /console/api/settings/impact').length;
 byId(page, 'limits-form').dispatch('submit');
 await tick();
 assert.equal(puts().length, putCount, 'a revision quota drop must not save before the confirmation');
@@ -2732,7 +2732,7 @@ const minutesEdit = { ...minutes, public_access: 'edit', public_presence: { gues
   byId(px, 'proxy-template-form').dispatch('input');
   byId(px, 'proxy-template-form').dispatch('submit');
   await tick();
-  let confirmTemplate = openDialogs().pop();
+  const confirmTemplate = openDialogs().pop();
   assert.ok(confirmTemplate.textContent.includes('Change the address template?'));
   assert.ok(confirmTemplate.textContent.includes('Every pending approval becomes stale'), confirmTemplate.textContent);
   assert.ok(confirmTemplate.textContent.includes('version deployments and visibility changes'));
