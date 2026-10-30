@@ -272,6 +272,11 @@ func requestJSON(p reqPayload, body []byte) []byte {
 		return out
 	}
 	head, _ := json.Marshal(requestHead{Method: p.Method, URL: p.URL, Headers: p.Headers})
+	// readBody caps bodies at MaxRequestBody, so the capacity arithmetic
+	// below stays orders of magnitude under int overflow; assert it.
+	if len(body) > MaxRequestBody {
+		panic(fmt.Sprintf("requestJSON body %d exceeds MaxRequestBody %d", len(body), MaxRequestBody))
+	}
 	out := make([]byte, 0, len(head)+len(`,"body":`)+jsonQuotedLen(body))
 	out = append(out, head[:len(head)-1]...)
 	out = append(out, `,"body":`...)
