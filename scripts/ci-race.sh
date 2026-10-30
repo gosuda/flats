@@ -30,9 +30,7 @@ set -u
 lane=$1
 shift
 
-# The runtime tests that exercise concurrency: FILES and WASI calls, and the
-# WebSocket resource limits.
-runtime_race='TestConcurrentFiles|TestWASIRejectsJSHostABI|TestWebSocket(AdmissionCeiling|RejectedUpgrade|PostFailureReleasesSlot|DefaultByteLimits|MessageLimit)$'
+runtime_concurrency='TestConcurrentFiles|TestWASIRejectsJSHostABI|TestWebSocket(AdmissionCeiling|RejectedUpgrade|PostFailureReleasesSlot|DefaultByteLimits|MessageLimit)$'
 engine_seeds=16
 # The longest board tests under -race: about half of the package's time.
 board_1='^(TestTwentyGuestsHourOfRevisions|TestLargeFrameMoveDeltaArrivesInParts|TestGuestGroupWindows|TestGuestIdentityEveryFrame|TestStalledGuestsStayInTheirShare)$'
@@ -48,7 +46,7 @@ core)
 	;;
 services)
 	run go test -race "$@" ./internal/api ./internal/app ./internal/mcpx ./internal/store ./internal/expose/portal ./internal/wsconn
-	run go test -race "$@" -run "$runtime_race" ./internal/runtime
+	run go test -race "$@" -run "$runtime_concurrency" ./internal/runtime
 	run env BOARD_SEEDS=$engine_seeds go test -race "$@" ./internal/board/engine ./internal/board/model ./internal/board/schema
 	;;
 board-1)
