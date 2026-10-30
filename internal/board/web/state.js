@@ -27,6 +27,8 @@ export function activityCounts(d, r) {
 }
 
 export class BoardState {
+  #ctx = null;
+
   constructor() {
     this.server = new Map();    // id -> PrivateElement (content + inc + v)
     this.meta = { title: '', grid: true };
@@ -42,6 +44,14 @@ export class BoardState {
     this.preview = null;        // id -> element while dragging
     this.myText = new Map();    // id -> {v, text} of this tab's last committed text
     this.unacked = new Map();   // n -> batch whose delta arrived before its ack
+    // The applyOp context is bound once; #rebuild runs it on every update.
+    this.#ctx = {
+      get: (id) => this.base(id),
+      put: (el) => this.overlay.set(el.id, el),
+      del: (id) => this.overlay.set(id, null),
+      all: () => this.#baseAll(),
+      meta: (g, val) => { if (META_KEYS.has(g)) this.overlayMeta[g] = val; },
+    };
   }
 
   // ---- reading the screen state ----
@@ -129,8 +139,9 @@ export class BoardState {
       if (c.id === '_board') {
         for (const [g, e] of Object.entries(c.set || {})) {
           if (!META_KEYS.has(g)) continue;
-          const [val, v] = this.public || !Array.isArray(e) ? [e, null] : e;
-          this.meta[g] = val;
+          const pair = !this.public && Array.isArray(e);
+          this.meta[g] = pair ? e[0] : e;
+          const v = pair ? e[1] : null;
           if (v != null) this.metaV[g] = v;
         }
         continue;
@@ -152,9 +163,10 @@ export class BoardState {
         let el = { ...prev, v: { ...prev.v } };
         if (c.inc != null) el.inc = c.inc;
         for (const [g, e] of Object.entries(c.set || {})) {
-          const [val, v] = this.public || !Array.isArray(e) ? [e, null] : e;
+          const pair = !this.public && Array.isArray(e);
+          const val = pair ? e[0] : e;
           el = withBundle(el, g, val);
-          if (v != null) el.v[g] = v;
+          if (pair && e[1] != null) el.v[g] = e[1];
         }
         // Authorship travels beside set; an empty value means the field is gone.
         if (c.ta !== undefined) {
@@ -176,9 +188,11 @@ export class BoardState {
     }
     this.watermark = d.seq;
     if (mine) {
-      const b = this.pending.find((p) => p.n === n);
-      if (b) {
-        this.pending = this.pending.filter((p) => p !== b);
+      let i = 0;
+      while (i < this.pending.length && this.pending[i].n !== n) i++;
+      if (i < this.pending.length) {
+        const b = this.pending[i];
+        this.pending.splice(i, 1);
         this.unacked.set(n, b);
         if (this.unacked.size > 200) this.unacked.delete(this.unacked.keys().next().value);
       }
@@ -200,17 +214,21 @@ export class BoardState {
   ack(n) {
     const early = this.unacked.get(n);
     if (early) { this.unacked.delete(n); return { batch: early, changed: new Set() }; }
-    const batch = this.pending.find((b) => b.n === n) || null;
-    if (!batch) return { batch: null, changed: new Set() };
-    this.pending = this.pending.filter((b) => b !== batch);
+    let i = 0;
+    while (i < this.pending.length && this.pending[i].n !== n) i++;
+    if (i >= this.pending.length) return { batch: null, changed: new Set() };
+    const batch = this.pending[i];
+    this.pending.splice(i, 1);
     return { batch, changed: this.#rebuild() };
   }
 
   // reject drops a permanently refused batch; a transient one stays queued.
   reject(n, retry) {
-    const batch = this.pending.find((b) => b.n === n) || null;
+    let i = 0;
+    while (i < this.pending.length && this.pending[i].n !== n) i++;
+    const batch = i < this.pending.length ? this.pending[i] : null;
     if (!batch || retry) return { batch, changed: new Set() };
-    this.pending = this.pending.filter((b) => b !== batch);
+    this.pending.splice(i, 1);
     return { batch, changed: this.#rebuild() };
   }
 
@@ -219,8 +237,9 @@ export class BoardState {
   // later pending batches, also unsent, move down by one: the next batch the
   // server receives is still max_n + 1 (TECH 4.8).
   discard(n) {
-    const i = this.pending.findIndex((b) => b.n === n);
-    if (i < 0) return { batch: null, changed: new Set() };
+    let i = 0;
+    while (i < this.pending.length && this.pending[i].n !== n) i++;
+    if (i >= this.pending.length) return { batch: null, changed: new Set() };
     const batch = this.pending[i];
     this.pending.splice(i, 1);
     for (const o of batch.ops) if (o.op === 'add') this.created.delete(o.el.id);
@@ -233,14 +252,7 @@ export class BoardState {
     const old = this.overlay;
     this.overlay = new Map();
     this.overlayMeta = {};
-    const ctx = {
-      get: (id) => this.base(id),
-      put: (el) => this.overlay.set(el.id, el),
-      del: (id) => this.overlay.set(id, null),
-      all: () => this.#baseAll(),
-      meta: (g, val) => { if (META_KEYS.has(g)) this.overlayMeta[g] = val; },
-    };
-    for (const b of this.pending) for (const op of b.ops) applyOp(op, ctx);
+    for (const b of this.pending) for (const op of b.ops) applyOp(op, this.#ctx);
     const changed = new Set(old.keys());
     for (const id of this.overlay.keys()) changed.add(id);
     return changed;
@@ -268,6 +280,7 @@ export function applyOp(op, c) {
         const follows = op.carry === 'members'
           ? (m) => m.frame === el.id
           : (m) => el.group && m.group === el.group && m.id !== el.id;
+        // Snapshot: put() adds to the overlay Map the generator walks.
         for (const m of [...c.all()]) if (follows(m)) shiftElement(m, dx, dy, c);
       }
       return;
@@ -279,6 +292,7 @@ export function applyOp(op, c) {
       for (const id of op.ids) { const m = c.get(id); if (m) c.put({ ...m, group: op.group }); }
       return;
     case 'ungroup':
+      // Snapshot: put() adds to the overlay Map the generator walks.
       for (const m of [...c.all()]) if (m.group === op.group) c.put({ ...m, group: null });
       return;
     case 'delete':
@@ -328,6 +342,7 @@ function deleteLocal(ids, c) {
   const gone = new Set(ids);
   const victims = new Map();
   for (const id of ids) { const m = c.get(id); if (m) victims.set(id, m); }
+  // Snapshot: put() adds to the overlay Map the generator walks.
   for (const m of [...c.all()]) {
     if (gone.has(m.id)) continue;
     let n = m;
@@ -344,10 +359,15 @@ function deleteLocal(ids, c) {
 }
 
 function zorderLocal(op, c) {
-  const targets = op.ids.map((id) => c.get(id)).filter((m) => m && !m.locked);
+  const targets = [];
+  for (const id of op.ids) { const m = c.get(id); if (m && !m.locked) targets.push(m); }
   if (!targets.length) return;
-  const set = new Set(targets.map((m) => m.id));
-  const rest = [...c.all()].filter((m) => !set.has(m.id)).map((m) => m.z).sort();
+  const set = new Set();
+  for (const m of targets) set.add(m.id);
+  // No element is written while iterating, so the generator needs no snapshot.
+  const rest = [];
+  for (const m of c.all()) if (!set.has(m.id)) rest.push(m.z);
+  rest.sort(); // z keys are strings; the default order is their order
   let lo = null, hi = null;
   if (op.to === 'front') lo = rest[rest.length - 1] ?? null;
   else if (op.to === 'back') hi = rest[0] ?? null;

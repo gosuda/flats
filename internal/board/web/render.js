@@ -5,12 +5,21 @@
 
 import { currentTheme, stickyColor, inkColor, shapeFill, frameFill } from './theme.js';
 import { style, authorOf } from './schema.js';
-import { connectorPoints, pointAlong, penWorldPoints, penWidth, labelBox, boxCorners } from './geom.js';
+import { connectorPoints, pointAlong, penWorldPoints, penWidth, labelBox } from './geom.js';
 import { zCompare } from './ids.js';
 
 export const FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif';
 const LINE = 1.38;
 const MIN_FONT = 10;
+
+// Shared dash arrays for ctx.setLineDash (the canvas copies the values) and
+// constant font strings, so the draw loop allocates neither per element.
+const NO_DASH = [];
+const DASH = [0, 0];
+const AUTHOR_FONT = `11px ${FONT}`;
+const BADGE_FONT = `600 9px ${FONT}`;
+const TAG_FONT = `600 11px ${FONT}`;
+const NO_AUTHOR = { name: '' };
 
 // ---- text layout ----
 
@@ -158,9 +167,20 @@ function rounded(ctx, x, y, w, h, r) {
 
 function dashOf(el, sw) {
   const d = style(el, 'dash');
-  if (d === 'dashed') return [sw * 4, sw * 3];
-  if (d === 'dotted') return [sw, sw * 2];
-  return [];
+  if (d === 'dashed') { DASH[0] = sw * 4; DASH[1] = sw * 3; return DASH; }
+  if (d === 'dotted') { DASH[0] = sw; DASH[1] = sw * 2; return DASH; }
+  return NO_DASH;
+}
+
+// arrowHead fills the triangle of one connector end, s pixels long.
+function arrowHead(ctx, tip, from, s) {
+  const a = Math.atan2(tip[1] - from[1], tip[0] - from[0]);
+  ctx.beginPath();
+  ctx.moveTo(tip[0], tip[1]);
+  ctx.lineTo(tip[0] - s * Math.cos(a - 0.45), tip[1] - s * Math.sin(a - 0.45));
+  ctx.lineTo(tip[0] - s * Math.cos(a + 0.45), tip[1] - s * Math.sin(a + 0.45));
+  ctx.closePath();
+  ctx.fill();
 }
 
 // Painter draws elements in canvas coordinates. The renderer and the PNG
@@ -174,6 +194,7 @@ export class Painter {
     this.showAuthors = !!opts.showAuthors;
     this.hidden = opts.hidden || null; // id whose text an editor overlay covers
     this.layouts = new Map();
+    this.fonts600 = new Map(); // px -> 600-weight font string
     this.dpr = opts.dpr || 1;
   }
 
@@ -184,6 +205,28 @@ export class Painter {
     if (this.layouts.size > 20000) this.layouts.clear();
     this.layouts.set(el.id, { key, value });
     return value;
+  }
+
+  // fit caches fitText by its raw inputs, so a redraw builds no key string
+  // and no closure per element.
+  #fit(ctx, el, text, maxW, maxH, size, shrink) {
+    const c = this.layouts.get(el.id);
+    if (c && c.text === text && c.w === maxW && c.h === maxH && c.fs === size && c.shrink === shrink) return c.value;
+    const value = fitText(ctx, text, maxW, maxH, size, shrink);
+    if (this.layouts.size > 20000) this.layouts.clear();
+    this.layouts.set(el.id, { text, w: maxW, h: maxH, fs: size, shrink, value });
+    return value;
+  }
+
+  // font600 returns the shared 600-weight font string for a pixel size.
+  font600(px) {
+    let f = this.fonts600.get(px);
+    if (f === undefined) {
+      f = `600 ${px}px ${FONT}`;
+      if (this.fonts600.size > 512) this.fonts600.clear();
+      this.fonts600.set(px, f);
+    }
+    return f;
   }
 
   draw(ctx, el, z) {
@@ -211,12 +254,14 @@ export class Painter {
     const lh = lay.size * LINE;
     if (lod === 1) {
       ctx.fillStyle = this.theme.line;
-      lay.lines.forEach((line, i) => {
-        if (!line) return;
+      const lines = lay.lines;
+      for (let i = 0; i < lines.length; i++) {
+        const line = lines[i];
+        if (!line) continue;
         const w = Math.min(maxW, line.length * lay.size * 0.5);
         const lx = align === 'center' ? x + (maxW - w) / 2 : align === 'right' ? x + maxW - w : x;
         ctx.fillRect(lx, y + i * lh + lh * 0.3, w, lh * 0.4);
-      });
+      }
       return;
     }
     ctx.font = lay.font;
@@ -224,10 +269,11 @@ export class Painter {
     ctx.textBaseline = 'top';
     ctx.textAlign = align;
     const ax = align === 'center' ? x + maxW / 2 : align === 'right' ? x + maxW : x;
-    lay.lines.forEach((line, i) => ctx.fillText(line, ax, y + i * lh + lay.size * 0.15));
+    const lines = lay.lines;
+    for (let i = 0; i < lines.length; i++) ctx.fillText(lines[i], ax, y + i * lh + lay.size * 0.15);
     ctx.textAlign = 'left';
     if (lay.overflow) {
-      ctx.font = `600 ${lay.size}px ${FONT}`;
+      ctx.font = this.font600(lay.size);
       ctx.textAlign = 'right';
       ctx.fillText('…', x + maxW, y + lay.lines.length * lh - lh * 0.2);
       ctx.textAlign = 'left';
@@ -241,13 +287,12 @@ export class Painter {
     rounded(ctx, el.x, el.y, el.w, el.h, 4);
     ctx.fill();
     if (lod === 2) return;
-    const author = this.showAuthors ? authorOf(el, this.names) : { name: '' };
+    const author = this.showAuthors ? authorOf(el, this.names) : NO_AUTHOR;
     const pad = 12, foot = author.name ? 26 : 12;
     if (this.hidden !== el.id && el.text) {
       const fs = style(el, 'fontSize');
       const auto = fs === 'auto';
-      const lay = this.layout(el, `${el.text}|${el.w}|${el.h}|${fs}|${foot}`, () =>
-        fitText(ctx, el.text, el.w - pad * 2, el.h - pad - foot, auto ? 16 : fs, auto));
+      const lay = this.#fit(ctx, el, el.text, el.w - pad * 2, el.h - pad - foot, auto ? 16 : fs, auto);
       this.lines(ctx, lay, el.x + pad, el.y + pad, el.w - pad * 2, 'left', t.ink, lod);
     }
     if (author.name && lod === 0 && z >= 0.45) this.author(ctx, author, el.x + pad, el.y + el.h - 10, el.w - pad * 2);
@@ -260,10 +305,10 @@ export class Painter {
     ctx.textBaseline = 'alphabetic';
     let bw = 0;
     if (guest) {
-      ctx.font = `600 9px ${FONT}`;
+      ctx.font = BADGE_FONT;
       bw = ctx.measureText('guest').width + 8;
     }
-    ctx.font = `11px ${FONT}`;
+    ctx.font = AUTHOR_FONT;
     ctx.fillStyle = t.by;
     const room = Math.max(0, max - (bw ? bw + 4 : 0));
     ctx.fillText(name, x, y, room);
@@ -273,7 +318,7 @@ export class Painter {
     ctx.lineWidth = 1;
     rounded(ctx, bx, y - 10, bw, 13, 6.5);
     ctx.stroke();
-    ctx.font = `600 9px ${FONT}`;
+    ctx.font = BADGE_FONT;
     ctx.fillText('guest', bx + 4, y);
   }
 
@@ -298,13 +343,13 @@ export class Painter {
     ctx.strokeStyle = inkColor(t, style(el, 'stroke'));
     ctx.setLineDash(dashOf(el, sw));
     ctx.stroke();
-    ctx.setLineDash([]);
+    ctx.setLineDash(NO_DASH);
     if (lod === 2 || !el.text || this.hidden === el.id) return;
     const inset = style(el, 'shape') === 'diamond' ? 0.25 : style(el, 'shape') === 'ellipse' ? 0.15 : 0;
     const pad = 8;
     const bw = el.w * (1 - inset * 2) - pad * 2, bh = el.h * (1 - inset * 2) - pad * 2;
     const fs = style(el, 'fontSize');
-    const lay = this.layout(el, `${el.text}|${bw}|${bh}|${fs}`, () => fitText(ctx, el.text, bw, bh, fs, true));
+    const lay = this.#fit(ctx, el, el.text, bw, bh, fs, true);
     const th = lay.lines.length * lay.size * LINE;
     this.lines(ctx, lay, el.x + el.w * inset + pad, el.y + (el.h - th) / 2, bw, 'center', t.ink, lod);
   }
@@ -312,7 +357,7 @@ export class Painter {
   text(ctx, el, z, lod) {
     if (this.hidden === el.id || !el.text) return;
     const fs = style(el, 'fontSize');
-    const lay = this.layout(el, `${el.text}|${el.w}|${fs}`, () => fitText(ctx, el.text, el.w - 8, Infinity, fs, false));
+    const lay = this.#fit(ctx, el, el.text, el.w - 8, Infinity, fs, false);
     this.lines(ctx, lay, el.x + 4, el.y + 4, el.w - 8, style(el, 'align'), inkColor(this.theme, style(el, 'color')), lod);
   }
 
@@ -334,7 +379,7 @@ export class Painter {
     if (this.hidden === el.id) return;
     // The name keeps a readable screen size at every zoom level.
     const fs = 13 / z;
-    ctx.font = `600 ${fs}px ${FONT}`;
+    ctx.font = this.font600(fs);
     ctx.fillStyle = t.muted;
     ctx.textBaseline = 'alphabetic';
     ctx.fillText(el.text || 'Frame', el.x, el.y - 8 / z, Math.max(el.w, 40 / z));
@@ -355,19 +400,9 @@ export class Painter {
     ctx.moveTo(pts[0][0], pts[0][1]);
     for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
     ctx.stroke();
-    ctx.setLineDash([]);
-    const head = (tip, from) => {
-      const a = Math.atan2(tip[1] - from[1], tip[0] - from[0]);
-      const s = 8 + sw * 2;
-      ctx.beginPath();
-      ctx.moveTo(tip[0], tip[1]);
-      ctx.lineTo(tip[0] - s * Math.cos(a - 0.45), tip[1] - s * Math.sin(a - 0.45));
-      ctx.lineTo(tip[0] - s * Math.cos(a + 0.45), tip[1] - s * Math.sin(a + 0.45));
-      ctx.closePath();
-      ctx.fill();
-    };
-    if (style(el, 'head1') === 'arrow') head(pts[pts.length - 1], pts[pts.length - 2]);
-    if (style(el, 'head0') === 'arrow') head(pts[0], pts[1]);
+    ctx.setLineDash(NO_DASH);
+    if (style(el, 'head1') === 'arrow') arrowHead(ctx, pts[pts.length - 1], pts[pts.length - 2], 8 + sw * 2);
+    if (style(el, 'head0') === 'arrow') arrowHead(ctx, pts[0], pts[1], 8 + sw * 2);
     if (!el.text || lod === 2 || this.hidden === el.id) return;
     const mid = pointAlong(pts, 0.5);
     const b = labelBox(el, mid);
@@ -375,7 +410,7 @@ export class Painter {
     rounded(ctx, b.x, b.y, b.w, b.h, 3);
     ctx.fill();
     const fs = style(el, 'fontSize');
-    const lay = this.layout(el, `${el.text}|${fs}`, () => fitText(ctx, el.text, b.w, Infinity, fs, false));
+    const lay = this.#fit(ctx, el, el.text, b.w, Infinity, fs, false);
     this.lines(ctx, lay, b.x, b.y + 3, b.w, 'center', t.ink, lod);
   }
 
@@ -396,7 +431,7 @@ export function strokeSmooth(ctx, pts) {
   ctx.beginPath();
   ctx.moveTo(pts[0][0], pts[0][1]);
   if (pts.length < 3) {
-    for (const p of pts.slice(1)) ctx.lineTo(p[0], p[1]);
+    for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
   } else {
     for (let i = 1; i < pts.length - 1; i++) {
       const mx = (pts[i][0] + pts[i + 1][0]) / 2, my = (pts[i][1] + pts[i + 1][1]) / 2;
@@ -517,9 +552,10 @@ export class Renderer {
       for (const r of this.world) {
         rects.push({ x: (r.x - cam.x) * cam.z - 2, y: (r.y - cam.y) * cam.z - 28, w: r.w * cam.z + 4, h: r.h * cam.z + 30 });
       }
-      this.world = [];
+      this.world.length = 0;
       this.screen = [];
-      const clipped = rects.map((r) => clip(r, this.w, this.h)).filter(Boolean);
+      const clipped = [];
+      for (const r of rects) { const c = clip(r, this.w, this.h); if (c) clipped.push(c); }
       if (clipped.length > 24) this.#region(0, 0, this.w, this.h);
       else for (const r of merge(clipped)) this.#region(r.x, r.y, r.w, r.h);
     }
@@ -614,27 +650,47 @@ export class Renderer {
   // ---- drawing helpers for overlays (screen coordinates) ----
 
   outline(ctx, el, pad = 0) {
+    const cam = this.app.cam, z = cam.z;
     if (el.type === 'connector' || el.type === 'pen') {
       const r = this.app.doc.index.bounds(el.id);
       if (!r) return;
-      const [x, y] = this.toScreen(r.x, r.y);
       ctx.beginPath();
-      ctx.rect(x - pad, y - pad, r.w * this.app.cam.z + pad * 2, r.h * this.app.cam.z + pad * 2);
+      ctx.rect((r.x - cam.x) * z - pad, (r.y - cam.y) * z - pad, r.w * z + pad * 2, r.h * z + pad * 2);
       return;
     }
-    const pts = boxCorners(el).map(([x, y]) => this.toScreen(x, y));
-    const [cx, cy] = this.toScreen(el.x + el.w / 2, el.y + el.h / 2);
+    // Rotated box corners in screen coordinates, one scalar at a time: same
+    // arithmetic as boxCorners plus toScreen, minus the arrays. For
+    // el.rot === 0 the corners pass through unchanged, as rotateAround does.
+    const hw = el.w / 2, hh = el.h / 2;
+    const cx = el.x + hw, cy = el.y + hh;
+    const scx = (cx - cam.x) * z, scy = (cy - cam.y) * z;
+    const rot = el.rot || 0;
+    const c = rot ? Math.cos((rot * Math.PI) / 180) : 1;
+    const s = rot ? Math.sin((rot * Math.PI) / 180) : 0;
     ctx.beginPath();
-    pts.forEach(([x, y], i) => {
-      const dx = x - cx, dy = y - cy, l = Math.hypot(dx, dy) || 1;
+    const corner = (i, wx, wy) => {
+      let x, y;
+      if (rot) {
+        const dx = wx - cx, dy = wy - cy;
+        x = (cx + dx * c - dy * s - cam.x) * z;
+        y = (cy + dx * s + dy * c - cam.y) * z;
+      } else {
+        x = (wx - cam.x) * z;
+        y = (wy - cam.y) * z;
+      }
+      const dx = x - scx, dy = y - scy, l = Math.hypot(dx, dy) || 1;
       const px = x + (dx / l) * pad * 1.414, py = y + (dy / l) * pad * 1.414;
       if (i) ctx.lineTo(px, py); else ctx.moveTo(px, py);
-    });
+    };
+    corner(0, el.x, el.y);
+    corner(1, el.x + el.w, el.y);
+    corner(2, el.x + el.w, el.y + el.h);
+    corner(3, el.x, el.y + el.h);
     ctx.closePath();
   }
 
   tag(ctx, text, x, y, color) {
-    ctx.font = `600 11px ${FONT}`;
+    ctx.font = TAG_FONT;
     const w = ctx.measureText(text).width + 12;
     ctx.fillStyle = color;
     rounded(ctx, x, y - 18, w, 18, 4);
@@ -651,20 +707,26 @@ function clip(r, w, h) {
   return x1 > x0 && y1 > y0 ? { x: x0, y: y0, w: x1 - x0, h: y1 - y0 } : null;
 }
 
-// merge joins overlapping rects so a region is never painted twice.
+// merge joins overlapping rects so a region is never painted twice. It
+// compacts the array in place; the result holds the same set of merged
+// rectangles either way, since the union of a cluster of overlapping rects
+// is their joint bounding box however the merges are ordered.
 function merge(rects) {
-  const out = [];
-  for (let r of rects) {
-    for (let i = 0; i < out.length; i++) {
-      const o = out[i];
+  let n = 0;
+  for (let i = 0; i < rects.length; i++) {
+    let r = rects[i];
+    let j = 0;
+    while (j < n) {
+      const o = rects[j];
       if (r.x <= o.x + o.w && o.x <= r.x + r.w && r.y <= o.y + o.h && o.y <= r.y + r.h) {
         const x = Math.min(r.x, o.x), y = Math.min(r.y, o.y);
         r = { x, y, w: Math.max(r.x + r.w, o.x + o.w) - x, h: Math.max(r.y + r.h, o.y + o.h) - y };
-        out.splice(i, 1);
-        i = -1;
-      }
+        rects[j] = rects[--n];
+        j = 0;
+      } else j++;
     }
-    out.push(r);
+    rects[n++] = r;
   }
-  return out;
+  rects.length = n;
+  return rects;
 }

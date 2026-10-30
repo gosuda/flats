@@ -14,7 +14,11 @@ export function incOf(view, ids) {
   return out;
 }
 
-const live = (view, ids) => ids.map((id) => view.get(id)).filter(Boolean);
+const live = (view, ids) => {
+  const out = [];
+  for (const id of ids) { const el = view.get(id); if (el) out.push(el); }
+  return out;
+};
 
 // ---- stacking order ----
 
@@ -87,8 +91,10 @@ export function addOp(view, el, local = new Set()) {
 // move their free ends and everything else moves itself. Members of a moved
 // frame are left out, so nothing moves twice.
 export function moveUnits(view, ids) {
-  const sel = live(view, ids).filter((el) => !el.locked);
-  const frames = new Set(sel.filter((el) => el.type === 'frame').map((el) => el.id));
+  const sel = [];
+  for (const el of live(view, ids)) if (!el.locked) sel.push(el);
+  const frames = new Set();
+  for (const el of sel) if (el.type === 'frame') frames.add(el.id);
   const units = [];
   const groups = new Set();
   for (const el of sel) {
@@ -149,15 +155,17 @@ export function movePreview(view, units, dx, dy) {
 
 export function moveOps(view, ids, dx, dy, { reparent = false } = {}) {
   const units = moveUnits(view, ids);
-  const ops = units.flatMap((u) => shiftOps(view, u, dx, dy));
-  if (reparent) ops.push(...reparentOps(view, units, dx, dy));
+  const ops = [];
+  for (const u of units) for (const op of shiftOps(view, u, dx, dy)) ops.push(op);
+  if (reparent) for (const op of reparentOps(view, units, dx, dy)) ops.push(op);
   return ops;
 }
 
 // reparentOps adds the membership change for elements whose center ended a
 // drag inside a different frame or outside their frame (4.5).
 export function reparentOps(view, units, dx, dy) {
-  const moving = new Set(units.filter((u) => u.kind === 'frame').map((u) => u.el.id));
+  const moving = new Set();
+  for (const u of units) if (u.kind === 'frame') moving.add(u.el.id);
   const byTarget = new Map();
   for (const u of units) {
     if (u.kind === 'frame') continue;
@@ -185,9 +193,15 @@ export function alignOps(view, ids, mode) {
   const units = moveUnits(view, ids).filter((u) => u.kind !== 'conn');
   if (units.length < 2) return [];
   const boxes = units.map((u) => unitBounds(view, u));
-  const minX = Math.min(...boxes.map((b) => b.x)), maxX = Math.max(...boxes.map((b) => b.x + b.w));
-  const minY = Math.min(...boxes.map((b) => b.y)), maxY = Math.max(...boxes.map((b) => b.y + b.h));
-  return units.flatMap((u, i) => {
+  let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+  for (const b of boxes) {
+    if (b.x < minX) minX = b.x;
+    if (b.x + b.w > maxX) maxX = b.x + b.w;
+    if (b.y < minY) minY = b.y;
+    if (b.y + b.h > maxY) maxY = b.y + b.h;
+  }
+  const ops = [];
+  units.forEach((u, i) => {
     const b = boxes[i];
     let dx = 0, dy = 0;
     if (mode === 'left') dx = minX - b.x;
@@ -196,8 +210,9 @@ export function alignOps(view, ids, mode) {
     else if (mode === 'top') dy = minY - b.y;
     else if (mode === 'middle') dy = (minY + maxY) / 2 - (b.y + b.h / 2);
     else if (mode === 'bottom') dy = maxY - (b.y + b.h);
-    return shiftOps(view, u, dx, dy);
+    for (const op of shiftOps(view, u, dx, dy)) ops.push(op);
   });
+  return ops;
 }
 
 export function distributeOps(view, ids, axis) {
@@ -214,7 +229,7 @@ export function distributeOps(view, ids, axis) {
   const ops = [];
   for (const it of items) {
     const d = at - it.b[pos];
-    ops.push(...shiftOps(view, it.u, axis === 'h' ? d : 0, axis === 'h' ? 0 : d));
+    for (const op of shiftOps(view, it.u, axis === 'h' ? d : 0, axis === 'h' ? 0 : d)) ops.push(op);
     at += it.b[size] + gap;
   }
   return ops;
@@ -223,25 +238,33 @@ export function distributeOps(view, ids, axis) {
 // ---- simple operations ----
 
 export function deleteOps(view, ids) {
-  const targets = live(view, ids).filter((el) => !el.locked).map((el) => el.id);
+  const targets = [];
+  for (const el of live(view, ids)) if (!el.locked) targets.push(el.id);
   return targets.length ? [{ op: 'delete', ids: targets, inc_of: incOf(view, targets) }] : [];
 }
 
 export function deleteFrameContentsOps(view, frameIds) {
-  return live(view, frameIds).filter((f) => f.type === 'frame' && !f.locked)
-    .map((f) => ({ op: 'delete_frame_contents', frame: f.id, inc: view.incOf(f.id) }));
+  const ops = [];
+  for (const f of live(view, frameIds)) {
+    if (f.type === 'frame' && !f.locked) ops.push({ op: 'delete_frame_contents', frame: f.id, inc: view.incOf(f.id) });
+  }
+  return ops;
 }
 
 export function setOps(view, ids, g, val, { allowLocked = false } = {}) {
-  return live(view, ids).filter((el) => allowLocked || !el.locked)
-    .map((el) => ({ op: 'set', id: el.id, inc: view.incOf(el.id), g, val }));
+  const ops = [];
+  for (const el of live(view, ids)) {
+    if (allowLocked || !el.locked) ops.push({ op: 'set', id: el.id, inc: view.incOf(el.id), g, val });
+  }
+  return ops;
 }
 
 export const styleOps = (view, ids, key, val) => setOps(view, ids, 'style.' + key, val);
 export const lockOps = (view, ids, locked) => setOps(view, ids, 'locked', locked, { allowLocked: true });
 
 export function zorderOps(view, ids, dir) {
-  const targets = live(view, ids).filter((el) => !el.locked);
+  const targets = [];
+  for (const el of live(view, ids)) if (!el.locked) targets.push(el);
   if (!targets.length) return [];
   const tids = targets.map((el) => el.id);
   let to = dir;
@@ -249,15 +272,22 @@ export function zorderOps(view, ids, dir) {
     const box = targets.reduce((r, el) => union(r, elementBounds(el, get(view))), null);
     const sorted = [...view.all()].sort(zCompare);
     const sel = new Set(tids);
-    const idx = sorted.map((el, i) => (sel.has(el.id) ? i : -1)).filter((i) => i >= 0);
+    // Only the outermost selected positions matter; find them in one pass.
+    let min = -1, max = -1;
+    for (let i = 0; i < sorted.length; i++) {
+      if (!sel.has(sorted[i].id)) continue;
+      if (min < 0) min = i;
+      max = i;
+    }
+    if (min < 0) return [];
     const overlaps = (el) => { const b = elementBounds(el, get(view)); return b && box && b.x < box.x + box.w && box.x < b.x + b.w && b.y < box.y + box.h && box.y < b.y + b.h; };
     let ref = null;
     if (dir === 'forward') {
-      for (let i = Math.max(...idx) + 1; i < sorted.length && !ref; i++) if (!sel.has(sorted[i].id) && overlaps(sorted[i])) ref = sorted[i];
+      for (let i = max + 1; i < sorted.length && !ref; i++) if (!sel.has(sorted[i].id) && overlaps(sorted[i])) ref = sorted[i];
       if (!ref) return [];
       to = { after: ref.id, inc: view.incOf(ref.id) };
     } else {
-      for (let i = Math.min(...idx) - 1; i >= 0 && !ref; i--) if (!sel.has(sorted[i].id) && overlaps(sorted[i])) ref = sorted[i];
+      for (let i = min - 1; i >= 0 && !ref; i--) if (!sel.has(sorted[i].id) && overlaps(sorted[i])) ref = sorted[i];
       if (!ref) return [];
       to = { before: ref.id, inc: view.incOf(ref.id) };
     }
@@ -266,14 +296,18 @@ export function zorderOps(view, ids, dir) {
 }
 
 export function groupOps(view, ids) {
-  const targets = live(view, ids).filter((el) => !el.locked).map((el) => el.id);
+  const targets = [];
+  for (const el of live(view, ids)) if (!el.locked) targets.push(el.id);
   if (targets.length < 2) return [];
   return [{ op: 'group', ids: targets, inc_of: incOf(view, targets), group: newGroupId() }];
 }
 
 export function ungroupOps(view, ids) {
-  const groups = new Set(live(view, ids).map((el) => el.group).filter(Boolean));
-  return [...groups].map((group) => ({ op: 'ungroup', group }));
+  const groups = new Set();
+  for (const el of live(view, ids)) if (el.group) groups.add(el.group);
+  const ops = [];
+  for (const group of groups) ops.push({ op: 'ungroup', group });
+  return ops;
 }
 
 // textVersion is the server's v.text of an element, or null when the server
@@ -323,12 +357,14 @@ export function copyPayload(view, ids) {
 }
 
 function payloadBounds(elements) {
-  const byId = new Map(elements.map((e) => [e.id, e]));
+  const byId = new Map();
+  for (const e of elements) byId.set(e.id, e);
   const g = (id) => byId.get(id) || null;
   let r = null;
   for (const el of elements) {
     if (el.type === 'connector') {
-      const pts = el.ends.map((e) => endWorld(e, g)).filter(Boolean);
+      const pts = [];
+      for (const e of el.ends) { const p = endWorld(e, g); if (p) pts.push(p); }
       if (pts.length) r = union(r, rectFromPoints(pts));
     } else r = union(r, { x: el.x, y: el.y, w: el.w, h: el.h });
   }
@@ -343,12 +379,15 @@ export function pasteOps(view, payload, at) {
   const b = payloadBounds(els);
   const [cx, cy] = center(b);
   const dx = at[0] - cx, dy = at[1] - cy;
-  const ids = new Map(els.map((e) => [e.id, newId()]));
+  const ids = new Map();
+  for (const e of els) ids.set(e.id, newId());
   const groups = new Map();
   for (const e of els) if (e.group && !groups.has(e.group)) groups.set(e.group, newGroupId());
   const [lo, hi] = zRange(view);
-  const frames = els.filter((e) => e.type === 'frame');
-  const others = els.filter((e) => e.type !== 'frame');
+  const frames = [], others = [];
+  for (const e of els) {
+    if (e.type === 'frame') frames.push(e); else others.push(e);
+  }
   const frameZ = keysBetween(null, lo, frames.length);
   const otherZ = keysBetween(hi, null, others.length);
   const out = [];
@@ -363,21 +402,34 @@ export function pasteOps(view, payload, at) {
   }
   // Top-level pasted elements join the topmost existing frame at their
   // center; a group joins as a whole so its members share a frame.
-  const local = new Map(out.map((e) => [e.id, e]));
+  const local = new Map();
+  for (const e of out) local.set(e.id, e);
   const lget = (id) => local.get(id) || view.get(id);
   const placed = new Set();
   for (const n of out) {
     if (n.type === 'frame' || n.frame || placed.has(n.id)) continue;
-    const members = n.group ? out.filter((m) => m.group === n.group) : [n];
+    const members = [n];
+    if (n.group) {
+      members.length = 0;
+      for (const m of out) if (m.group === n.group) members.push(m);
+    }
     let r = null;
     for (const m of members) r = union(r, elementBounds(m, lget));
     const [mx, my] = r ? center(r) : elementCenter(n, lget);
     const f = topFrameAt(view, mx, my);
     for (const m of members) { placed.add(m.id); if (f) m.frame = f.id; }
   }
-  const order = [...out.filter((e) => e.type === 'frame'), ...out.filter((e) => e.type !== 'frame' && e.type !== 'connector'), ...out.filter((e) => e.type === 'connector')];
-  const newIds = new Set(out.map((e) => e.id));
-  return { ops: order.map((e) => addOp(view, e, newIds)), ids: order.map((e) => e.id) };
+  // Frames first, then plain elements, then connectors, so adds never
+  // reference a target that does not exist yet.
+  const order = [];
+  for (const e of out) if (e.type === 'frame') order.push(e);
+  for (const e of out) if (e.type !== 'frame' && e.type !== 'connector') order.push(e);
+  for (const e of out) if (e.type === 'connector') order.push(e);
+  const newIds = new Set();
+  for (const e of out) newIds.add(e.id);
+  const ops = [], outIds = [];
+  for (const e of order) { ops.push(addOp(view, e, newIds)); outIds.push(e.id); }
+  return { ops, ids: outIds };
 }
 
 // pasteTextOps creates one sticky per non-empty line in a grid, or one text
@@ -385,11 +437,14 @@ export function pasteOps(view, payload, at) {
 export function pasteTextOps(view, text, at, asOne) {
   if (asOne) {
     const lines = text.split('\n');
-    const w = Math.min(800, Math.max(160, Math.max(...lines.map((l) => l.length)) * 11));
+    let max = 0;
+    for (const l of lines) if (l.length > max) max = l.length;
+    const w = Math.min(800, Math.max(160, max * 11));
     const el = newElement(view, 'text', { x: at[0] - w / 2, y: at[1], w, h: lines.length * 28 + 8 }, { text: text.slice(0, 4000) });
     return { ops: [addOp(view, el)], ids: [el.id] };
   }
-  const lines = text.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+  const lines = [];
+  for (const raw of text.split(/\r?\n/)) { const l = raw.trim(); if (l) lines.push(l); }
   const cols = Math.min(5, Math.ceil(Math.sqrt(lines.length)));
   const ops = [], ids = [];
   const [, hi] = zRange(view);
@@ -404,10 +459,12 @@ export function pasteTextOps(view, text, at, asOne) {
   return { ops, ids };
 }
 
+const QUICK_DIRS = { right: [1, 0], left: [-1, 0], down: [0, 1], up: [0, -1] };
+
 // quickCreateOps creates an element of the same type and size 80px away from
 // src in direction dir, connected to it (rule 16, 11.2).
 export function quickCreateOps(view, src, dir) {
-  const d = { right: [1, 0], left: [-1, 0], down: [0, 1], up: [0, -1] }[dir];
+  const d = QUICK_DIRS[dir];
   const geom = { x: src.x + d[0] * (src.w + 80), y: src.y + d[1] * (src.h + 80), w: src.w, h: src.h, rot: 0 };
   const extra = { text: '' };
   if (src.style) extra.style = { ...src.style };
