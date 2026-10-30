@@ -231,7 +231,7 @@ func fromArchive(r io.Reader, lim Limits, overhead int64) ([]File, error) {
 	c := newCollector(lim)
 	switch {
 	case bytes.HasPrefix(magic, []byte("PK\x03\x04")) || bytes.HasPrefix(magic, []byte("PK\x05\x06")):
-		raw, rerr := io.ReadAll(io.LimitReader(br, capacity))
+		raw, rerr := io.ReadAll(io.LimitReader(br, capacity+1))
 		if rerr != nil {
 			return nil, rerr
 		}
