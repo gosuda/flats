@@ -24,7 +24,7 @@ const routes = [
 
 let cleanup = null;
 let generation = 0;
-let rendered = false; // false until the first page is drawn
+let rendered = false;
 
 function match(pathname) {
   for (const r of routes) {

@@ -309,10 +309,9 @@ export function deleteInPlace(flat, ctl, on) {
   }
 }
 
-// setVisibility changes visibility after a confirm; widening shows the notice.
-// access ('view' or 'edit') is the public access level of a board or a
-// document flat. Stopping
-// guest editing and allowing it have their own steps.
+// setVisibility changes visibility after a confirm; widening shows the
+// notice. access ('view' or 'edit') is the public access level of a board or
+// a document flat. Stopping and allowing guest editing have their own steps.
 export async function setVisibility(flat, vis, access) {
   const fromKey = accessOf(flat);
   if (vis === 'public' && access === 'edit') return allowGuestEditing(flat);
@@ -429,7 +428,7 @@ const check = (ok, ...text) => h('li', { class: 'check' + (ok ? ' ok' : ' no') }
 const PROBLEMS = {
   disk_quota_off: { text: () => [h('strong', { text: 'Disk quota is off.' }), ' Set a disk quota in Settings, Limits.'], action: 'limits' },
   revision_quota_unlimited: { text: (f) => [h('strong', { text: 'Revision quota is unlimited.' }), ` Set a revision quota for ${label(f)} in Settings, Limits, or in this flat's settings.`], action: 'revisions' },
-  pin_quota_full: { text: (f, pre) => [h('strong', { text: `Pin quota is full (${pre.pins} of ${pre.pin_quota}).` }), ' Flats needs one free pin for the safe point. Unpin a revision in History.'], action: 'history' },
+  pin_quota_full: { text: (_f, pre) => [h('strong', { text: `Pin quota is full (${pre.pins} of ${pre.pin_quota}).` }), ' Flats needs one free pin for the safe point. Unpin a revision in History.'], action: 'history' },
 };
 
 // blockedDialog lists what must change before guests can edit, with one

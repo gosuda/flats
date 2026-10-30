@@ -822,7 +822,7 @@ function logsPanel(slug, ctx, timers) {
     }
   }
   function stop() { if (timer) clearInterval(timer); timer = null; }
-  auto.addEventListener('change', () => (auto.checked ? (poll(), start()) : stop()));
+  auto.addEventListener('change', () => { if (auto.checked) { poll(); start(); } else stop(); });
   return { el, poll, start, stop };
 }
 
