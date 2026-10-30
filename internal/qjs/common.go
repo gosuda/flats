@@ -6,6 +6,7 @@ import (
 	"hash/fnv"
 	"math"
 	"reflect"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -94,8 +95,8 @@ type FieldMapper struct {
 
 // FieldPath stores the path to a field through embedded structs.
 type FieldPath struct {
-	indices []int               // Path to the field through embedded structs
-	field   reflect.StructField // Field info
+	indices []int
+	field   reflect.StructField
 }
 
 // NewFieldMapper creates a new field mapper with initialized cache.
@@ -105,12 +106,10 @@ func NewFieldMapper() *FieldMapper {
 	}
 }
 
-// Global field mapper instance for backward compatibility.
 var globalFieldMapper = NewFieldMapper()
 
 // GetFieldMap returns or builds a field map for a struct type.
 func (fm *FieldMapper) GetFieldMap(structType reflect.Type) map[string]FieldPath {
-	// First try read lock for existing cache
 	fm.mu.RLock()
 
 	if fieldMap, exists := fm.cache[structType]; exists {
@@ -121,11 +120,9 @@ func (fm *FieldMapper) GetFieldMap(structType reflect.Type) map[string]FieldPath
 
 	fm.mu.RUnlock()
 
-	// Upgrade to write lock to build the map
 	fm.mu.Lock()
 	defer fm.mu.Unlock()
 
-	// Double-check after acquiring write lock
 	if fieldMap, exists := fm.cache[structType]; exists {
 		return fieldMap
 	}
@@ -135,7 +132,6 @@ func (fm *FieldMapper) GetFieldMap(structType reflect.Type) map[string]FieldPath
 
 	fm.processFields(structType, []int{}, seen, fieldMap)
 
-	// Cache the field map
 	fm.cache[structType] = fieldMap
 
 	return fieldMap
@@ -150,9 +146,8 @@ func (fm *FieldMapper) processFields(
 ) {
 	for i := range structType.NumField() {
 		field := structType.Field(i)
-		fieldIndices := append(append([]int{}, indexPrefix...), i)
+		fieldIndices := append(slices.Clone(indexPrefix), i)
 
-		// Handle non-embedded fields
 		if !field.Anonymous {
 			if !field.IsExported() {
 				continue
@@ -172,27 +167,26 @@ func (fm *FieldMapper) processFields(
 			continue
 		}
 
-		// Handle embedded fields
 		fieldType := field.Type
 		if fieldType.Kind() == reflect.Ptr {
 			fieldType = fieldType.Elem()
 		}
 
 		if fieldType.Kind() == reflect.Struct {
-			// Process fields from embedded struct
 			fm.processFields(fieldType, fieldIndices, seen, fieldMap)
 		}
 	}
 }
 
 // getJSONFieldName extracts the JSON field name from struct tags.
+// Returns "" for fields marked json:"-".
 func (fm *FieldMapper) getJSONFieldName(field reflect.StructField) string {
 	fieldName := field.Name
 
 	if tag := field.Tag.Get("json"); tag != "" {
 		parts := strings.Split(tag, ",")
 		if parts[0] == "-" {
-			return "" // Skip this field
+			return ""
 		}
 
 		if parts[0] != "" {
@@ -201,11 +195,6 @@ func (fm *FieldMapper) getJSONFieldName(field reflect.StructField) string {
 	}
 
 	return fieldName
-}
-
-// getFieldMap provides backward compatibility for the old API.
-func getFieldMap(structType reflect.Type) map[string]FieldPath {
-	return globalFieldMapper.GetFieldMap(structType)
 }
 
 // Tracker tracks objects during Go-JS conversion to detect circular references.
@@ -257,7 +246,7 @@ func (ct *CircularTracker[T]) trackPtr(ctx *Tracker[T], ptr T) error {
 	return nil
 }
 
-// // trackValue sets up circular reference tracking for a JS value.
+// trackValue sets up circular reference tracking for a JS value.
 func (ct *CircularTracker[T]) trackValue(ctx *Tracker[T], value *Value) error {
 	var ptr any = value.Raw()
 
@@ -318,7 +307,7 @@ func (nc *JsNumericToGoConverter) Convert(floatVal float64) (any, error) {
 	return result, nil
 }
 
-// JsArrayToGoConverter handles array conversions with better error handling and performance.
+// JsArrayToGoConverter handles array conversions.
 type JsArrayToGoConverter[T any] struct {
 	tracker    *Tracker[uint64]
 	input      *Value
@@ -766,7 +755,6 @@ func VerifyGoFunc(fnType reflect.Type, sample any) error {
 		return newInvalidGoTypeErr("function", sample)
 	}
 
-	// Validate that all return values are convertible to JS
 	for i := range fnType.NumOut() {
 		err := IsConvertibleToJs(fnType.Out(i), make(map[reflect.Type]bool), "func return")
 		if err != nil {
@@ -774,7 +762,6 @@ func VerifyGoFunc(fnType reflect.Type, sample any) error {
 		}
 	}
 
-	// Validate that all parameters are convertible from JS
 	for i := range fnType.NumIn() {
 		err := IsConvertibleToJs(fnType.In(i), make(map[reflect.Type]bool), "func param")
 		if err != nil {
@@ -825,15 +812,12 @@ func hashBytes(data []byte) uint64 {
 // ParseTimezone attempts to parse a timezone string as either an IANA location name
 // or a UTC offset format (+/-HH:MM). Returns UTC location if parsing fails.
 func ParseTimezone(tz string) *time.Location {
-	// First try to parse as IANA timezone name (e.g., "America/New_York", "Asia/Tokyo")
 	if loc, err := time.LoadLocation(tz); err == nil {
 		return loc
 	}
 
-	// If IANA parsing fails, try to parse as UTC offset (e.g., "+05:30", "-08:00")
 	hasSign := tz[0] == '+' || tz[0] == '-'
 	if len(tz) >= 3 && hasSign {
-		// Parse formats like "+05:30", "-08:00", "+0530", "-0800"
 		var sign = 1
 		if tz[0] == '-' {
 			sign = -1
@@ -843,7 +827,6 @@ func ParseTimezone(tz string) *time.Location {
 
 		var hours, minutes int
 
-		// Handle both "+05:30" and "+0530" formats
 		switch {
 		case len(offset) == 5 && offset[2] == ':':
 			_, _ = fmt.Sscanf(offset, "%02d:%02d", &hours, &minutes)
@@ -860,7 +843,6 @@ func ParseTimezone(tz string) *time.Location {
 		}
 	}
 
-	// Fallback to UTC if parsing fails
 	return time.UTC
 }
 
@@ -880,7 +862,6 @@ func ChannelToJSObjectValue(
 	}
 
 	return withJSObject(c, func(obj *Value) error {
-		// Check channel direction
 		chanDir := rtype.ChanDir()
 		canSend := chanDir == reflect.BothDir || chanDir == reflect.SendDir
 		canRecv := chanDir == reflect.BothDir || chanDir == reflect.RecvDir
@@ -918,9 +899,9 @@ func CreateChannelSendFunc(chanRValue reflect.Value) any {
 	errValue := ErrZeroRValue
 	chanElemRType := chanRValue.Type().Elem()
 	funcRType := reflect.FuncOf(
-		[]reflect.Type{chanElemRType}, // params
-		[]reflect.Type{ErrRType},      // returns
-		false,                         // variadic
+		[]reflect.Type{chanElemRType},
+		[]reflect.Type{ErrRType},
+		false,
 	)
 
 	fn := reflect.MakeFunc(funcRType, func(args []reflect.Value) []reflect.Value {
@@ -938,7 +919,6 @@ func CreateChannelSendFunc(chanRValue reflect.Value) any {
 		return []reflect.Value{errValue}
 	})
 
-	// Successful send
 	return fn.Interface()
 }
 
@@ -950,7 +930,7 @@ func CreateChannelReceiveFunc(chanRValue reflect.Value) func() (any, error) {
 			{Dir: reflect.SelectDefault},
 		})
 
-		// First: Check default case was chosen - no data available
+		// Default case was chosen - no data available
 		if chosen == 1 {
 			return nil, ErrChanReceive
 		}
@@ -960,7 +940,6 @@ func CreateChannelReceiveFunc(chanRValue reflect.Value) func() (any, error) {
 			return nil, ErrChanClosed
 		}
 
-		// Successful receive
 		return recv.Interface(), nil
 	}
 }
@@ -968,7 +947,6 @@ func CreateChannelReceiveFunc(chanRValue reflect.Value) func() (any, error) {
 // CreateChannelCloseFunc creates a function for closing a channel.
 func CreateChannelCloseFunc(rval reflect.Value) func() error {
 	return func() error {
-		// Only close if it's a send or bidirectional channel
 		if rval.Type().ChanDir() == reflect.RecvDir {
 			return ErrChanCloseReceiveOnly
 		}

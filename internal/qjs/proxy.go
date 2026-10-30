@@ -246,7 +246,6 @@ func retrieveGoResources(
 	functionHandle uint64,
 	jsContextHandle uint64,
 ) (Function, *Context) {
-	// Retrieve and validate function
 	fn, _ := registry.Get(functionHandle)
 	goFunc, _ := fn.(Function)
 	jsContext, _ := registry.Get(jsContextHandle)
@@ -261,7 +260,6 @@ func readArgsFromWasmMem(mem api.Memory, argc uint32, argv uint32) []uint64 {
 	args := make([]uint64, argc)
 
 	for i := range argc {
-		// Calculate the offset for the i-th argument
 		offset := argv + (i * 8)
 		data, _ := mem.Read(offset, 8)
 		// Convert the 8 bytes to a uint64 (little-endian encoding)

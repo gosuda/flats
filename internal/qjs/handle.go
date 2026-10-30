@@ -12,7 +12,7 @@ import (
 type Handle struct {
 	raw     uint64
 	runtime *Runtime
-	freed   int32 // atomic flag to prevent double-free
+	freed   atomic.Bool // prevents double-free
 }
 
 // NewHandle creates a new Handle wrapping the given pointer value.
@@ -25,7 +25,6 @@ func NewHandle(runtime *Runtime, ptr uint64) *Handle {
 	return &Handle{
 		raw:     ptr,
 		runtime: runtime,
-		freed:   0,
 	}
 }
 
@@ -37,15 +36,14 @@ func (h *Handle) Free() {
 		return
 	}
 
-	// Use atomic compare-and-swap to ensure single free
-	if atomic.CompareAndSwapInt32(&h.freed, 0, 1) && h.raw != 0 {
+	if h.freed.CompareAndSwap(false, true) && h.raw != 0 {
 		h.runtime.FreeHandle(h.raw)
 	}
 }
 
 // IsFreed returns true if the handle has been freed.
 func (h *Handle) IsFreed() bool {
-	return h == nil || atomic.LoadInt32(&h.freed) != 0
+	return h == nil || h.freed.Load()
 }
 
 // Raw returns the underlying raw pointer or 0 if the handle is nil or freed.
@@ -95,15 +93,12 @@ func ConvertToSigned[T Signed](h *Handle) T {
 
 	switch any(result).(type) {
 	case int8:
-		// Extract lower 8 bits and sign extend
 		val := int8(uint8(h.raw))
 		result = T(val)
 	case int16:
-		// Extract lower 16 bits and sign extend
 		val := int16(uint16(h.raw))
 		result = T(val)
 	case int32:
-		// Extract lower 32 bits and sign extend
 		val := int32(uint32(h.raw))
 		result = T(val)
 	case int64:
@@ -117,7 +112,6 @@ func ConvertToSigned[T Signed](h *Handle) T {
 			result = T(int64(h.raw))
 		}
 	default:
-		// Fallback for any other signed integer types
 		result = T(h.raw)
 	}
 
@@ -184,7 +178,6 @@ func (h *Handle) String() string {
 		return ""
 	}
 
-	// Check for exceptions in the JavaScript context
 	if h.raw == 0 {
 		if h.runtime != nil && h.runtime.context != nil && h.runtime.context.HasException() {
 			panic(h.runtime.context.Exception())
@@ -209,13 +202,10 @@ func (h *Handle) Bytes() []byte {
 		return nil
 	}
 
-	// Ensure we free the address after reading
 	defer h.runtime.FreeHandle(uint64(addr))
 
-	// Read from WebAssembly memory
 	data := h.runtime.mem.MustRead(addr, uint64(size))
 
-	// Create a copy to ensure the returned slice is safe to use
 	result := make([]byte, size)
 	copy(result, data)
 

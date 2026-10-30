@@ -77,7 +77,6 @@ func JsFuncArgsToGo(jsArgs []*Value, fnType reflect.Type) ([]reflect.Value, erro
 			goArgs = append(goArgs, goVal)
 		}
 
-		// Handle variadic slice
 		variadicSlice, err := CreateVariadicSlice(jsArgs[fixedArgs:], fnType.In(numGoArgs-1), fixedArgs)
 		if err != nil {
 			return nil, err
@@ -97,7 +96,6 @@ func JsFuncArgsToGo(jsArgs []*Value, fnType reflect.Type) ([]reflect.Value, erro
 		goArgs = append(goArgs, goVal)
 	}
 
-	// Fill missing arguments with zero values
 	for i := argsToProcess; i < numGoArgs; i++ {
 		goArgs = append(goArgs, reflect.Zero(fnType.In(i)))
 	}
@@ -219,32 +217,26 @@ func GoFuncResultToJs(c *Context, results []reflect.Value) (*Value, error) {
 		return nil, nil
 	}
 
-	// Check if last return value is an error
 	lastIdx := len(results) - 1
 	lastResult := results[lastIdx]
 
-	// Last return is error
 	if IsImplementError(lastResult.Type()) {
-		// Last return is non-nil error -> throw in JS context
 		if !lastResult.IsNil() {
 			resultErr, _ := lastResult.Interface().(error)
 
 			return nil, resultErr
 		}
 
-		// Error is nil, handle remaining return values
 		remaining := results[:lastIdx]
 
 		if len(remaining) == 0 {
 			return nil, nil
 		}
 
-		// Single remaining value -> return that value
 		if len(remaining) == 1 {
 			return ToJsValue(c, remaining[0].Interface())
 		}
 
-		// Multiple remaining values -> return as JS array
 		jsValues := make([]any, len(remaining))
 		for i, result := range remaining {
 			jsValues[i] = result.Interface()
@@ -253,12 +245,10 @@ func GoFuncResultToJs(c *Context, results []reflect.Value) (*Value, error) {
 		return ToJsValue(c, jsValues)
 	}
 
-	// Single return value -> return that value
 	if len(results) == 1 {
 		return ToJsValue(c, results[0].Interface())
 	}
 
-	// Multiple return values -> return as JS array
 	jsValues := make([]any, len(results))
 	for i, result := range results {
 		jsValues[i] = result.Interface()

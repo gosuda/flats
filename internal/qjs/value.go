@@ -460,10 +460,6 @@ func (v *Value) IsUndefined() bool {
 	return v.Call("QJS_IsUndefined", v.Raw()).handle.Bool()
 }
 
-// func (v *Value) IsException() bool {
-// 	return v.Call("QJS_IsException", v.Raw()).handle.Bool()
-// }
-
 func (v *Value) IsUninitialized() bool {
 	return v.Call("QJS_IsUninitialized", v.Raw()).handle.Bool()
 }
@@ -662,8 +658,7 @@ func (v *Value) DateTime(tzs ...string) *time.Time {
 
 	epoch := epochValue.handle.Float64()
 
-	// Check for NaN which indicates an invalid Date
-	// Note: NaN != NaN is true, so this checks for NaN
+	// NaN != NaN, so this detects the NaN that an invalid Date returns.
 	if epoch != epoch {
 		return nil
 	}
@@ -680,7 +675,7 @@ func (v *Value) Bool() bool {
 }
 
 // Int32 returns the int32 value of the value.
-// in c int is 32 bit, but in go it is depends on the architecture.
+// QJS_ToInt32 follows C int semantics (32-bit); Go int is platform-dependent.
 func (v *Value) Int32() int32 {
 	return v.Call("QJS_ToInt32", v.Ctx(), v.Raw()).handle.Int32()
 }

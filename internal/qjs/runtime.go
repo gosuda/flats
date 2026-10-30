@@ -350,9 +350,7 @@ func (r *Runtime) NewStringHandle(v string) *Handle {
 	// Allocate len+1 for null terminator
 	ptr := r.Malloc(uint64(len(v) + 1))
 
-	// Write string data
 	r.mem.MustWrite(uint32(ptr), []byte(v))
-	// Add null terminator
 	r.mem.MustWrite(uint32(ptr)+uint32(len(v)), []byte{0})
 
 	return NewHandle(r, ptr)
@@ -427,11 +425,9 @@ func (p *Pool) Get() (*Runtime, error) {
 		return nil, errors.New("pool is nil")
 	}
 
-	// Try to get from pool first
 	select {
 	case rt := <-p.pools:
 		return p.prepareRuntimeForUse(rt), nil
-	// Pool is empty, need to create new runtime
 	default:
 	}
 
@@ -461,9 +457,7 @@ func (p *Pool) Put(rt *Runtime) {
 
 	select {
 	case p.pools <- rt:
-		// Successfully returned to pool
 	default:
-		// Pool is full, close the runtime
 		rt.Close()
 	}
 }
@@ -484,7 +478,6 @@ func (p *Pool) createNewRuntime() (*Runtime, error) {
 		return nil, fmt.Errorf("failed to create new runtime: %w", err)
 	}
 
-	// Apply setup functions
 	for i, setupFunc := range p.setupFuncs {
 		err := setupFunc(rt)
 		if err != nil {
