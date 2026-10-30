@@ -78,7 +78,7 @@ test('an element deleted during composition offers Keep my text when composition
   assert.equal(ed.done, true);
   assert.equal(app.commits.length, 0, 'nothing is committed for a vanished element');
   const notice = doc.querySelector('.toasts').children[0];
-  assert.ok(notice && notice.querySelectorAll('button').some((b) => b.children.some((c) => c.textContent === 'Keep my text')));
+  assert.ok(notice?.querySelectorAll('button').some((b) => b.children.some((c) => c.textContent === 'Keep my text')));
 });
 
 test('an element restored before composition ends is committed, not offered as lost', (t) => {

@@ -934,7 +934,10 @@ export class App {
         ctx.globalAlpha = 0.45;
         ctx.lineWidth = 5;
         ctx.beginPath();
-        pts.forEach(([x, y], i) => (i ? ctx.lineTo(...r.toScreen(x, y)) : ctx.moveTo(...r.toScreen(x, y))));
+        pts.forEach(([x, y], i) => {
+          if (i) ctx.lineTo(...r.toScreen(x, y));
+          else ctx.moveTo(...r.toScreen(x, y));
+        });
         ctx.stroke();
         ctx.globalAlpha = 1;
         continue;

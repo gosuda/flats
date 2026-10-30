@@ -44,7 +44,7 @@ function parse(hex) {
   const h = hex.replace('#', '');
   return [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16));
 }
-const toHex = (rgb) => '#' + rgb.map((v) => Math.round(v).toString(16).padStart(2, '0')).join('');
+const toHex = (rgb) => `#${rgb.map((v) => Math.round(v).toString(16).padStart(2, '0')).join('')}`;
 
 export function blend(fg, bg, alpha) {
   const a = parse(fg), b = parse(bg);

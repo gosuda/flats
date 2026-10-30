@@ -6,9 +6,9 @@ import * as ops from '../ops.js';
 export class EraserTool {
   constructor(app) { this.app = app; this.hits = null; }
 
-  down(e, p) { this.hits = new Set(); this.collect(p); }
+  down(_e, p) { this.hits = new Set(); this.collect(p); }
 
-  move(e, p) { if (this.hits) this.collect(p); }
+  move(_e, p) { if (this.hits) this.collect(p); }
 
   collect(p) {
     const el = this.app.hitAt(p[0], p[1], { filter: (m) => m.type === 'pen' });

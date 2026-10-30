@@ -7,7 +7,7 @@ export class ShapeTool extends PlaceTool {
     this.shape = 'rect';
   }
 
-  activate(opts) { if (opts && opts.shape) this.shape = opts.shape; }
+  activate(opts) { if (opts?.shape) this.shape = opts.shape; }
 
   extra() { return { text: '', style: { shape: this.shape } }; }
 }

@@ -2,20 +2,20 @@
 
 const DIGITS = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
 
+// randomBase62 returns n base62 characters; bytes >= 248 (4 * 62) are rejected to keep digits uniform.
 function randomBase62(n) {
   const bytes = new Uint8Array(n * 2);
   crypto.getRandomValues(bytes);
   let out = '';
   for (let i = 0; out.length < n; i++) {
     if (i === bytes.length) { crypto.getRandomValues(bytes); i = 0; }
-    // 248 = 4 * 62: rejecting larger bytes keeps every digit equally likely.
     if (bytes[i] < 248) out += DIGITS[bytes[i] % 62];
   }
   return out;
 }
 
-export const newId = () => 'e_' + randomBase62(10);
-export const newGroupId = () => 'g_' + randomBase62(10);
+export const newId = () => `e_${randomBase62(10)}`;
+export const newGroupId = () => `g_${randomBase62(10)}`;
 
 const digit = (c) => DIGITS.indexOf(c);
 

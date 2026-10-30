@@ -391,8 +391,8 @@ export function pasteOps(view, payload, at) {
   const frameZ = keysBetween(null, lo, frames.length);
   const otherZ = keysBetween(hi, null, others.length);
   const out = [];
-  frames.forEach((e, i) => out.push({ ...e, id: ids.get(e.id), z: frameZ[i] }));
-  others.forEach((e, i) => out.push({ ...e, id: ids.get(e.id), z: otherZ[i] }));
+  for (let i = 0; i < frames.length; i++) out.push({ ...frames[i], id: ids.get(frames[i].id), z: frameZ[i] });
+  for (let i = 0; i < others.length; i++) out.push({ ...others[i], id: ids.get(others[i].id), z: otherZ[i] });
   for (const n of out) {
     if (n.type === 'connector') {
       n.ends = n.ends.map((e) => (e.el ? { el: ids.get(e.el), at: e.at } : { pt: clampPoint([e.pt[0] + dx, e.pt[1] + dy]) }));

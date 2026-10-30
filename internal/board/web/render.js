@@ -198,15 +198,6 @@ export class Painter {
     this.dpr = opts.dpr || 1;
   }
 
-  layout(el, key, make) {
-    const c = this.layouts.get(el.id);
-    if (c && c.key === key) return c.value;
-    const value = make();
-    if (this.layouts.size > 20000) this.layouts.clear();
-    this.layouts.set(el.id, { key, value });
-    return value;
-  }
-
   // fit caches fitText by its raw inputs, so a redraw builds no key string
   // and no closure per element.
   #fit(ctx, el, text, maxW, maxH, size, shrink) {

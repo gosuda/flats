@@ -44,8 +44,6 @@ export class SelectTool {
         { kind: 'n', at: mid(nw, ne) }, { kind: 'e', at: mid(ne, se) }, { kind: 's', at: mid(se, sw) }, { kind: 'w', at: mid(sw, nw) },
       ];
       if (el.type !== 'frame') {
-        // The rotation handle sits off the top-right corner, clear of the
-        // quick-create handles beside the sides.
         const c = S(el.x + el.w / 2, el.y + el.h / 2);
         const d = Math.hypot(ne[0] - c[0], ne[1] - c[1]) || 1;
         out.push({ kind: 'rot', at: [ne[0] + ((ne[0] - c[0]) / d) * 22, ne[1] + ((ne[1] - c[1]) / d) * 22], from: ne });
@@ -102,8 +100,6 @@ export class SelectTool {
     if (hd.kind === 'rot') { this.drag = { mode: 'rotate', el: els[0], p0: p }; return; }
     const geo = els.filter((el) => el.type !== 'connector');
     if (geo.length === 1) { this.drag = { mode: 'resize', kind: hd.kind, el: geo[0], p0: p }; return; }
-    // Several elements scale about the opposite corner; members of selected
-    // frames scale with them because resizing a frame never carries members.
     const set = new Map();
     for (const el of geo) {
       set.set(el.id, el);
@@ -132,7 +128,7 @@ export class SelectTool {
         for (const m of u.members) moving.add(m.id);
       }
       Object.assign(d, { mode: 'move', units, box, moving });
-      app.styleBar.busy = true;
+      app.styleBar.dragging = true;
       app.styleBar.hide();
     }
     if (d.mode === 'move') {
@@ -188,7 +184,7 @@ export class SelectTool {
     const d = this.drag;
     this.drag = null;
     this.guides = null;
-    app.styleBar.busy = false;
+    app.styleBar.dragging = false;
     if (!d) return;
     if (d.mode !== 'press' && d.mode !== 'marquee') app.setPreview(null);
     if (d.mode === 'press') {
@@ -221,7 +217,7 @@ export class SelectTool {
     if (this.drag && this.drag.mode !== 'press' && this.drag.mode !== 'marquee') this.app.setPreview(null);
     this.drag = null;
     this.guides = null;
-    this.app.styleBar.busy = false;
+    this.app.styleBar.dragging = false;
     this.app.renderer.dynamic();
   }
 

@@ -21,6 +21,7 @@ const JOINED_KEY = 'flats-board-joined';
 
 // Control (C0, DEL, C1) and Unicode format characters are removed from a
 // name, as the server does (TECH 3.1, cleanGuestName).
+// biome-ignore lint/suspicious/noControlCharactersInRegex: cleanGuestName strips control characters matching server-side validation
 const UNWANTED = /[\u0000-\u001f\u007f-\u009f\p{Cf}]/gu;
 
 export const runeCount = (s) => [...s].length;

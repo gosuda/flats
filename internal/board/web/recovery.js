@@ -6,15 +6,16 @@ import { endWorld } from './geom.js';
 import { writeZip } from './zip.js';
 
 function stable(v) {
-  if (Array.isArray(v)) return '[' + v.map(stable).join(',') + ']';
+  if (Array.isArray(v)) return `[${v.map(stable).join(',')}]`;
   if (v && typeof v === 'object') {
-    return '{' + Object.keys(v).sort().filter((k) => v[k] !== undefined).map((k) => JSON.stringify(k) + ':' + stable(v[k])).join(',') + '}';
+    return `{${Object.keys(v).sort().filter((k) => v[k] !== undefined).map((k) => `${JSON.stringify(k)}:${stable(v[k])}`).join(',')}}`;
   }
   return JSON.stringify(v);
 }
 
-// buildRecovery lists the created and changed elements (changed ones keep
-// their original id in recovered_from) and the deleted ones.
+// buildRecovery lists created and changed elements (retaining original ids
+// in recovered_from) and deleted ones. Dangling references become free ends
+// and clear frame membership.
 export function buildRecovery(state) {
   const elements = [], deleted = [];
   for (const [id, el] of state.overlay) {
@@ -27,7 +28,6 @@ export function buildRecovery(state) {
     if (!base) elements.push(c);
     else if (stable(c) !== stable(contentOf(base))) elements.push({ ...c, recovered_from: id });
   }
-  // References that leave the file become free ends and no membership.
   const ids = new Set(elements.map((e) => e.id));
   const get = (id) => state.base(id);
   for (const e of elements) {
