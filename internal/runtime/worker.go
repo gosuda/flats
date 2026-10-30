@@ -272,24 +272,21 @@ func requestJSON(p reqPayload, body []byte) []byte {
 		return out
 	}
 	head, _ := json.Marshal(requestHead{Method: p.Method, URL: p.URL, Headers: p.Headers})
-	// readBody caps bodies at MaxRequestBody, so the capacity arithmetic
-	// below stays orders of magnitude under int overflow; assert it.
+	// readBody caps bodies at MaxRequestBody before this point, keeping the
+	// copy path small; an oversize body is a caller bug.
 	if len(body) > MaxRequestBody {
 		panic(fmt.Sprintf("requestJSON body %d exceeds MaxRequestBody %d", len(body), MaxRequestBody))
 	}
-	out := make([]byte, 0, len(head)+len(`,"body":`)+jsonQuotedLen(body))
-	out = append(out, head[:len(head)-1]...)
+	out := bytes.Clone(head[:len(head)-1])
 	out = append(out, `,"body":`...)
 	out = appendJSONQuoted(out, body)
 	return append(out, '}')
 }
 
-// jsonQuotedLen and appendJSONQuoted are one escaping written twice: the
-// length sizes the writer's single allocation (over-sized where a raw
-// U+FFFD replaces a multi-byte invalid sequence). Both copy json.Marshal's
-// string escaping byte for byte — HTML-safe <, > and &, U+2028 and U+2029,
-// and a raw U+FFFD per undecodable byte — so a spliced body is
-// indistinguishable from a marshaled one.
+// appendJSONQuoted writes body as a JSON string using json.Marshal's exact
+// escaping — HTML-safe <, > and &, U+2028 and U+2029, and a raw U+FFFD per
+// undecodable byte — so a spliced body is indistinguishable from a
+// marshaled one.
 
 // jsonQuoteSafe marks the bytes json.Marshal leaves raw in a string; the
 // escaped bytes' length comes from the switches below.
@@ -299,34 +296,6 @@ func init() {
 	for b := range jsonQuoteSafe {
 		jsonQuoteSafe[b] = b >= 0x20 && b != '"' && b != '\\' && b != '<' && b != '>' && b != '&'
 	}
-}
-
-func jsonQuotedLen(body []byte) int {
-	n := 2 // the quotes
-	for i := 0; i < len(body); {
-		if b := body[i]; b < utf8.RuneSelf {
-			i++
-			if jsonQuoteSafe[b] {
-				n++
-				continue
-			}
-			switch b {
-			case '"', '\\', '\b', '\f', '\n', '\r', '\t':
-				n += 2
-			default:
-				n += 6
-			}
-			continue
-		}
-		r, size := utf8.DecodeRune(body[i:])
-		i += size
-		if (r == utf8.RuneError && size == 1) || r == '\u2028' || r == '\u2029' {
-			n += 6
-		} else {
-			n += size
-		}
-	}
-	return n
 }
 
 func appendJSONQuoted(dst []byte, body []byte) []byte {
