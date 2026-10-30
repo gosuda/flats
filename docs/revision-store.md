@@ -427,7 +427,7 @@ counted, as for every other disk quota check.
 
 A board's current state, its sessions, undo stacks and edit groups live in
 `flats/<slug>/board/board.db`, owned by one `board.Instance` in the host
-process ([board technical design](spec/board-TECH.md)). The host never writes
+process ([board technical design](spec/board-technical-design.md)). The host never writes
 that database: it reaches it through the instance's apply loop.
 
 **Creating a board** (`CreateBoard`, under the flat lock):

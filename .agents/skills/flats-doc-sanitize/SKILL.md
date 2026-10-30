@@ -18,7 +18,7 @@ Maintain a contradiction-free, single-source-of-truth documentation tree by dyna
 6. **Delete low-value or volatile content**: Remove information that lacks ongoing maintenance value:
    - Ephemeral worker/branch handoff notes, `git merge-base` receipts, and temporary scratch hashes. (Preserve normative protocol test vectors such as RFC SHA-1 vectors, and ask the user before removing durable milestone/gate acceptance evidence that an index explicitly names.)
    - One-off review or polish artifacts once their change has shipped.
-   - Separate implementation design notes (`*-TECH.md`) for already-shipped features **after** folding their durable architectural invariants into the canonical architecture docs, updating the spec index in the same change, and confirming with the user when deleting standalone design files.
+   - Separate implementation design notes (`*-technical-design.md`) for already-shipped features **after** folding their durable architectural invariants into the canonical architecture docs, updating the spec index in the same change, and confirming with the user when deleting standalone design files.
 
 ## Handling Spec vs. Implementation Divergence
 
@@ -94,7 +94,7 @@ Compare the discovered documents against each other and the live codebase:
 
 ### Step 3: Ask User on Ambiguities & Spec-vs-Code Gaps (No Guessing Gate)
 
-If any conflict, unimplemented/partial spec requirement, or proposed document merge/split/deletion (including deleting `*-TECH.md` or gate evidence files) has more than one reasonable interpretation:
+If any conflict, unimplemented/partial spec requirement, or proposed document merge/split/deletion (including deleting `*-technical-design.md` or gate evidence files) has more than one reasonable interpretation:
 - Batch the questions and ask the user before editing.
 - Never guess product intent, silently drop an unimplemented PRD requirement, or enshrine a code bug as documentation.
 

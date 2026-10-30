@@ -22,7 +22,7 @@ import (
 )
 
 // Anonymous public editing in the document worker
-// (docs/spec/docs-public-edit-TECH.md 3).
+// (docs/spec/docs-public-edit-technical-design.md 3).
 
 // --- Yjs version 1 updates, encoded for tests ---
 

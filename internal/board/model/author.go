@@ -7,7 +7,7 @@ import (
 )
 
 // Editor kinds: who wrote something, without saying which person
-// (docs/spec/board-public-edit-TECH.md 3.3, 7).
+// (docs/spec/board-public-edit-technical-design.md 3.3, 7).
 const (
 	KindMember = "member"
 	KindGuest  = "guest"

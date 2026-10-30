@@ -340,7 +340,7 @@ writes, and waits up to 5 s for handlers to return.
 
 A board is an infinite-canvas whiteboard of stickies, shapes, connectors, text,
 pen strokes, images and frames that people and agents edit live
-([product spec](spec/board.md), [technical design](spec/board-TECH.md)). Like
+([product spec](spec/board.md), [technical design](spec/board-technical-design.md)). Like
 a design it runs in the host process behind a shell `flats.json` that core
 writes once at creation, and every public bundle path refuses a board
 manifest. `internal/board` runs one `board.Instance` per board: a single apply

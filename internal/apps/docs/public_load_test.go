@@ -26,7 +26,7 @@ import (
 )
 
 // TestGuestLoad is the opt-in socket-level load test of anonymous public
-// editing (docs/spec/docs-public-edit-TECH.md 8, row "Limits"; spec
+// editing (docs/spec/docs-public-edit-technical-design.md 8, row "Limits"; spec
 // docs/spec/docs-public-edit.md, success criterion "Limits"). It measures
 // socket delivery, a lower bound of the display time the spec targets.
 //

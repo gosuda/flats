@@ -14,7 +14,7 @@ import (
 	"github.com/gosuda/flats/internal/board/model"
 )
 
-// Anonymous public editing (docs/spec/board-public-edit-TECH.md): guests,
+// Anonymous public editing (docs/spec/board-public-edit-technical-design.md): guests,
 // viewers' numbers, the access level and its epoch, the guest limits and
 // the safe point.
 

@@ -37,7 +37,7 @@ the full list.
 | --- | --- |
 | [Content data models](spec/content-models.md) | The Version model (websites, pages) and the Revision model (documents, design); implemented |
 | [Design content type](spec/design-type.md) | Canvas of HTML artboards with live editing and revisions; background in [research](research/claude-artifacts-design.md) |
-| [Board content type](spec/board.md) | Infinite-canvas whiteboard people and agents edit together, with revisions; [technical design](spec/board-TECH.md) |
+| [Board content type](spec/board.md) | Infinite-canvas whiteboard people and agents edit together, with revisions; [technical design](spec/board-technical-design.md) |
 
 ## Design and contracts
 
