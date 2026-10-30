@@ -289,6 +289,11 @@ func retrieveGoResources(
 	return goFunc, goContext
 }
 
+// maxProxyArgs caps the guest-supplied argument count. Real argument lists
+// are small; the header alone carries 4 slots. 1<<16 bounds a single read to
+// 512 KiB no matter how large the guest memory is.
+const maxProxyArgs = 1 << 16
+
 // readArgsFromWasmMem reads the argument array from WASM memory with proper
 // validation. The header carries function ID, context ID, async flag and
 // promise handle, so argc must be at least 4; each argument is 8 bytes
@@ -297,6 +302,9 @@ func readArgsFromWasmMem(mem api.Memory, argc uint32, argv uint32) ([]uint64, er
 	const headerArgs = 4
 	if argc < headerArgs {
 		return nil, fmt.Errorf("jsFunctionProxy: argc %d < %d", argc, headerArgs)
+	}
+	if argc > maxProxyArgs {
+		return nil, fmt.Errorf("jsFunctionProxy: too many arguments")
 	}
 	if uint64(argc) > uint64(math.MaxUint32-argv)/8 {
 		return nil, fmt.Errorf("jsFunctionProxy: argv range overflows")

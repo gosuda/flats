@@ -2,6 +2,7 @@ package qjs
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/tetratelabs/wazero"
@@ -94,5 +95,23 @@ func TestGetProxyFuncParamsUnknownHandles(t *testing.T) {
 	_, ctxOut, _, err = getProxyFuncParams(registry, mem, 0, 4, 0)
 	if err == nil || ctxOut != nil {
 		t.Fatalf("want context error and nil context, got err=%v ctx=%v", err, ctxOut)
+	}
+}
+
+// A guest passing argc just under the memory size must be rejected by the
+// protocol cap before any allocation, even when the read would fit.
+func TestReadArgsRejectsAbsurdArgc(t *testing.T) {
+	// (module (memory 16)): 1 MiB — argc=1<<17 needs exactly 1 MiB at argv 0.
+	bin := []byte{0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00,
+		0x05, 0x03, 0x01, 0x00, 0x10}
+	r := wazero.NewRuntime(t.Context())
+	t.Cleanup(func() { _ = r.Close(context.Background()) })
+	mod, err := r.Instantiate(t.Context(), bin)
+	if err != nil {
+		t.Fatalf("instantiate: %v", err)
+	}
+	if _, err := readArgsFromWasmMem(mod.Memory(), 1<<17, 0); err == nil ||
+		!strings.Contains(err.Error(), "too many arguments") {
+		t.Fatalf("want too-many-arguments error, got %v", err)
 	}
 }
