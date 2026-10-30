@@ -105,7 +105,7 @@ async function advance(ms) {
   await tick();
 }
 const defer = () => { let resolve; const promise = new Promise((r) => { resolve = r; }); return { promise, resolve }; };
-let calls = [];
+const calls = [];
 let approvalReply = { approvals: null };
 let flatsReply = { flats: [] };
 let approvalWait;
@@ -177,7 +177,7 @@ assert.equal(timers.size, 1);
 const search = all(page.main, (e) => e.getAttribute('type') === 'search')[0];
 search.value = 'example'; search.focus(); search.dispatch('input');
 const row = all(page.main, (e) => e.className === 'flat')[0];
-let flatsCalls = countCalls('/flats');
+const flatsCalls = countCalls('/flats');
 approvalReply = { approvals: [pending()] };
 await advance(15000);
 assert.equal(countCalls('/flats'), flatsCalls);
@@ -212,7 +212,7 @@ assert.ok(!page.main.textContent.includes('last successful check'));
 
 // Hidden pages do not poll; returning visible refreshes flats and approvals.
 visible('hidden');
-let requestCount = calls.length;
+const requestCount = calls.length;
 await advance(60000);
 assert.equal(calls.length, requestCount);
 visible('visible');
@@ -224,7 +224,7 @@ flatsReply.flats[0].draft = { dirty: true, revision: 1, hash: 'synthetic' };
 visible('visible'); await tick();
 approvalWait = defer();
 await advance(15000);
-let beforeAction = countCalls('/approvals');
+const beforeAction = countCalls('/approvals');
 byText(page.main, 'Save as v1')[0].dispatch('click');
 all(document.body, (e) => e.tagName === 'DIALOG')[0].close('ok');
 await tick();

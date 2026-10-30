@@ -42,7 +42,9 @@
 			"**/*.cjs",
 			"!**/node_modules/**",
 			"!internal/apps/docs/dist/**",
-			"!internal/apps/docs/_web/src/prelude.js"
+			"!internal/apps/docs/_web/src/prelude.js",
+			"!internal/apps/docs/testdata/client-edits.js",
+			"!internal/apps/docs/testdata/spike.js"
 		]
 	}
 }
