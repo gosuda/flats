@@ -1,6 +1,8 @@
 // Flats preview check. Run it in your browser tool's JavaScript runner (or the
 // DevTools console) on a Draft preview, once per width and color scheme. It
 // only reads the rendered page; it cannot see console errors logged earlier.
+// The file is one expression, so tools that take a function can run it as
+// `() => <script>`; strict mode is declared inside the arrow function.
 (() => {
   'use strict';
   const root = document.documentElement;
@@ -144,4 +146,4 @@
     src: pending.slice(0, 5).map((img) => img.currentSrc || img.getAttribute("src") || img.getAttribute("srcset")),
     fix: "still loading or not requested yet (lazy): scroll to them and run again, or fetch their URLs, before calling images fine" });
   return out;
-})
+})()
