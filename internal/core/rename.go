@@ -299,7 +299,7 @@ func (s *Service) serveRedirect(ctx context.Context, old, cur string) {
 			s.Event(ctx, cur, "error", "rename", err.Error(), nil)
 		}
 		public := false
-		if f.Visibility.Public() && f.LiveVersion > 0 {
+		if f.Visibility.Public() && (!f.CreatedPublicInstance || f.LiveVersion > 0) {
 			res, err := n.ServeExposure(ctx, ExposureRequest{Slug: old, Host: old, Visibility: "public", Audience: AudienceCurrent, Handler: h, PrivateHandler: h, Permitted: ids, Hidden: true})
 			for _, ep := range res.Endpoints {
 				if PublicProvider(ep.Provider) {
@@ -322,7 +322,7 @@ func (s *Service) serveRedirect(ctx context.Context, old, cur string) {
 	prev := s.redir[old]
 	s.mu.Unlock()
 	public := prev != nil && prev.public
-	if f.Visibility.Public() && f.LiveVersion > 0 && s.cfg.Public != nil {
+	if f.Visibility.Public() && (!f.CreatedPublicInstance || f.LiveVersion > 0) && s.cfg.Public != nil {
 		if _, err := s.cfg.Public.Serve(ctx, old, s.redirectHandler(true, func(ProviderID, bool) string { return s.cfg.Public.URL(cur) }), true); err != nil {
 			s.Event(ctx, cur, "error", "rename", "could not serve public redirect from "+old+": "+err.Error(), nil)
 		} else {

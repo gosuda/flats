@@ -262,7 +262,7 @@ func printURLs(w io.Writer, f flatView) {
 		fmt.Fprintf(w, "  public:  %s\n", f.PublicURL)
 		fmt.Fprintf(w, "  note: %s\n", publicNotice(f))
 	}
-	if f.PrivateURL == "" && f.PublicURL == "" {
+	if f.PrivateLinksOff && f.PrivateURL == "" && f.PublicURL == "" {
 		fmt.Fprintf(w, "  no link yet (%s)\n", f.ConnectionState)
 	}
 }
@@ -334,7 +334,7 @@ func (a *app) list(args []string) error {
 	var notes []string
 	for _, f := range out.Flats {
 		u := f.PrivateURL
-		if u == "" {
+		if f.PrivateLinksOff && u == "" {
 			u = fmt.Sprintf("no link yet (%s)", f.ConnectionState)
 		}
 		if f.PublicURL != "" {

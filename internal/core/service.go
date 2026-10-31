@@ -678,7 +678,7 @@ func (s *Service) ensureExposure(ctx context.Context, f store.Flat) error {
 	}
 	lf := s.state(f.Slug)
 	if lf.cur.Load() == nil {
-		if f.Visibility.Public() && f.LiveVersion > 0 {
+		if f.Visibility.Public() && (!f.CreatedPublicInstance || f.LiveVersion > 0) {
 			return fmt.Errorf("%w: no current runtime is serving", ErrNotDeployed)
 		}
 		return nil
@@ -851,7 +851,7 @@ func (s *Service) view(ctx context.Context, f store.Flat) FlatView {
 		v.PortalListing = mode
 	}
 	v.PortalHidden = s.listingHidden(v.PortalListing)
-	if f.Visibility.Canonical().Public() && f.LiveVersion > 0 && s.cfg.Public != nil {
+	if f.Visibility.Canonical().Public() && (!f.CreatedPublicInstance || f.LiveVersion > 0) && s.cfg.Public != nil {
 		if ok, _ := s.st.ProviderPermitted(ctx, f.Slug, store.ProviderPortal); ok {
 			v.PublicURL = s.cfg.Public.URL(f.Slug)
 			v.ConnectionState = "unavailable"
@@ -927,6 +927,9 @@ func (s *Service) view(ctx context.Context, f store.Flat) FlatView {
 		}
 	} else if v.ConnectionState == "" {
 		v.ConnectionState = v.PrivateState
+	}
+	if f.CreatedPublicInstance && f.Visibility.Public() && f.LiveVersion == 0 {
+		v.PublicURL, v.ConnectionState = "", "unavailable"
 	}
 	if v.ConnectionState == "" && f.LiveVersion > 0 {
 		v.ConnectionState = "unavailable"

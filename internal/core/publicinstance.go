@@ -101,6 +101,7 @@ func (s *Service) publicInstanceStatus(ctx context.Context, p PublicInstance) (P
 // Turning on requires the default public network the operator confirmed.
 func (s *Service) SetPublicInstance(ctx context.Context, on bool, confirmedNetwork, who string) (PublicInstanceStatus, error) {
 	ctx = context.WithoutCancel(ctx)
+	// Lock order: pi.mu → store write → settings mutex.
 	s.pi.mu.Lock()
 	row, changed, err := s.st.UpdatePublicInstance(ctx, s.now(), func(row store.PublicInstanceRow) (store.PublicInstanceRow, string, error) {
 		state := "off"

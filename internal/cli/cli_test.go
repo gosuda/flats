@@ -960,8 +960,8 @@ func TestFlatLinksWithoutPrivateURL(t *testing.T) {
 	}{
 		{"public", `"private_url":"","public_url":"https://notes.example","public_notice":"Anyone can open this flat."`, "https://notes.example", "Anyone can open this flat."},
 		{"public notice fallback", `"public_url":"https://notes.example"`, "https://notes.example", publicURLNotice},
-		{"unpublished", `"connection_state":"unavailable"`, "no link yet (unavailable)", ""},
-		{"provider error", `"connection_state":"error"`, "no link yet (error)", ""},
+		{"unpublished", `"private_links_off":true,"connection_state":"unavailable"`, "no link yet (unavailable)", ""},
+		{"provider error", `"private_links_off":true,"connection_state":"error"`, "no link yet (error)", ""},
 		{"private unchanged", `"private_url":"https://notes.ts","private_state":"starting","private_detail":"connecting"`, "https://notes.ts", ""},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

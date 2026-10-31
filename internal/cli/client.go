@@ -165,6 +165,7 @@ type flatView struct {
 	OldSlug         string         `json:"old_slug,omitempty"`
 	OldSlugTill     *time.Time     `json:"old_slug_until,omitempty"`
 	PrivateURL      string         `json:"private_url"`
+	PrivateLinksOff bool           `json:"private_links_off,omitempty"`
 	PrivateState    string         `json:"private_state,omitempty"`
 	PrivateDetail   string         `json:"private_detail,omitempty"`
 	PublicURL       string         `json:"public_url,omitempty"`
