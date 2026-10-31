@@ -104,9 +104,9 @@ func (a *crashArm) take(t *testing.T, stage string) (string, *fakeCore) {
 
 // TestCrashPointsOfGroupCloseAndAgentWrite kills the process before and
 // after the commit that closes an edit group into an outbox entry, and
-// before and after an agent write's commit (board-TECH 14 Crashes). After a
-// restart the revision count and content and board.db match, there is no
-// empty revision, and every edit acknowledged as saved exists.
+// before and after an agent write's commit (board-technical-design 14 Crashes).
+// After a restart the revision count and content and board.db match, there is
+// no empty revision, and every edit acknowledged as saved exists.
 func TestCrashPointsOfGroupCloseAndAgentWrite(t *testing.T) {
 	ctx := context.Background()
 	b := newTB(t)
@@ -253,7 +253,7 @@ func revKinds(f *fakeCore) []string {
 }
 
 // TestCrashPointsOfRollback kills the process before and after a
-// rollback's commit (board-TECH 14 Crashes, 4.11).
+// rollback's commit (board-technical-design 14 Crashes, 4.11).
 func TestCrashPointsOfRollback(t *testing.T) {
 	ctx := context.Background()
 	b := newTB(t)
@@ -343,9 +343,9 @@ func TestCrashPointsOfRollback(t *testing.T) {
 }
 
 // TestWALBusyIsRetriedAndSurvivesACrash holds a reader on board.db so
-// the WAL truncation after a commit is busy (board-TECH 5.4, 14 Crashes):
-// the commit answers without waiting for the reader, the busy result is
-// recorded in meta.wal_truncate and retried on every later commit, a crash
+// the WAL truncation after a commit is busy (board-technical-design 5.4, 14
+// Crashes): the commit answers without waiting for the reader, the busy result
+// is recorded in meta.wal_truncate and retried on every later commit, a crash
 // in that state loses nothing, and once the reader is gone the next commit
 // truncates the log.
 func TestWALBusyIsRetriedAndSurvivesACrash(t *testing.T) {

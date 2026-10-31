@@ -26,11 +26,11 @@ import (
 	"github.com/gosuda/flats/internal/store"
 )
 
-// Boards (docs/spec/board.md, docs/spec/board-technical-design.md): a board runs as a
-// board.Instance inside the host process, behind an internal shell version
-// like a design. Its current state lives in flats/<slug>/board/board.db;
-// core imports the revision boundaries the instance records in its outbox
-// into the revision store, under the flat lock.
+// Boards (docs/spec/board.md, docs/spec/board-technical-design.md): a board
+// runs as a board.Instance inside the host process, behind an internal shell
+// version like a design. Its current state lives in
+// flats/<slug>/board/board.db; core imports the revision boundaries the
+// instance records in its outbox into the revision store, under the flat lock.
 
 // ErrBoardUnversioned refuses version, Draft, preview, publish and rollback
 // operations on a board, and board manifests on the bundle paths.
@@ -83,7 +83,8 @@ func (s *Service) boardDB(slugName string) string {
 }
 
 // boardOther measures the flat directory without board.db and its log
-// files: the "other" term of the board's disk quota (board-TECH 5.4).
+// files: the "other" term of the board's disk quota (board-technical-design
+// 5.4).
 func (s *Service) boardOther(slugName string) (int64, error) {
 	db := s.boardDB(slugName)
 	return walkSize(s.flatDir(slugName), []string{db, db + "-wal", db + "-shm"})
@@ -364,8 +365,8 @@ type BoardAsset struct {
 	Content []byte `json:"content"`
 }
 
-// BoardUpdate is one update_board call (board-TECH 8.1), as MCP, the HTTP
-// API and the CLI send it.
+// BoardUpdate is one update_board call (board-technical-design 8.1), as MCP,
+// the HTTP API and the CLI send it.
 type BoardUpdate struct {
 	OpID    string           `json:"op_id"`
 	Ops     []engine.AgentOp `json:"ops"`
@@ -498,7 +499,8 @@ func boardAssetRefs(ops []engine.AgentOp, assets []BoardAsset) ([]engine.AgentOp
 	return out, refs, nil
 }
 
-// BoardImport is one import_board call: a board data file (board-TECH 9).
+// BoardImport is one import_board call: a board data file
+// (board-technical-design 9).
 type BoardImport struct {
 	OpID    string
 	Mode    string // add or replace
@@ -573,7 +575,7 @@ func (s *Service) boardRevisionLocked(ctx context.Context, slugName string, in *
 	out.Warning = "the change is applied, but its revision is not recorded yet; list_revisions shows it shortly"
 }
 
-// BoardPage is one page of a get_board read (board-TECH 8.1).
+// BoardPage is one page of a get_board read (board-technical-design 8.1).
 type BoardPage struct {
 	Seq      int64             `json:"seq,omitempty"`
 	Revision int               `json:"revision"`
@@ -709,8 +711,8 @@ type boardImport struct {
 }
 
 // importBoardLocked imports a board's outbox into the revision store and
-// acknowledges it (board-TECH 5.3), then settles the holds of rollbacks
-// that never committed. The caller holds the flat lock.
+// acknowledges it (board-technical-design 5.3), then settles the holds of
+// rollbacks that never committed. The caller holds the flat lock.
 func (s *Service) importBoardLocked(ctx context.Context, slugName string, in *board.Instance) (boardImport, error) {
 	return s.importBoardSafePointLocked(ctx, slugName, in, 0)
 }
@@ -719,7 +721,8 @@ func (s *Service) importBoardLocked(ctx context.Context, slugName string, in *bo
 // revision of outbox entry safePointSeq as the board's safe point, in the
 // transaction that inserts it and before its retention runs, so retention
 // cannot delete it however many entries the same import drains after it
-// (board-public-edit-TECH 2.3). A full pin quota leaves it unpinned.
+// (board-public-edit-technical-design 2.3). A full pin quota leaves it
+// unpinned.
 func (s *Service) importBoardSafePointLocked(ctx context.Context, slugName string, in *board.Instance, safePointSeq int64) (boardImport, error) {
 	res := boardImport{bySeq: map[int64]int{}}
 	start := time.Now()
@@ -952,7 +955,8 @@ func pinFree(ctx context.Context, tx *store.ContentTx, quotas func(store.Content
 }
 
 // boardElementCounts compares the element buckets of two revisions' file
-// lists: the elements cur added, changed and removed (board-TECH 5.2).
+// lists: the elements cur added, changed and removed (board-technical-design
+// 5.2).
 func boardElementCounts(root string, prev, cur []store.RevisionFile) (store.ElementCounts, error) {
 	var c store.ElementCounts
 	old := map[string]string{}
@@ -1021,8 +1025,8 @@ func boardElementCounts(root string, prev, cur []store.RevisionFile) (store.Elem
 // settleBoardHoldsLocked releases the holds of board rollbacks that never
 // committed. A committed rollback keeps its operation in board.db until its
 // entry is imported, which deletes the hold, so a missing operation is
-// definitive (board-TECH 4.11). The caller holds the flat lock, which every
-// rollback holds from its hold to its import.
+// definitive (board-technical-design 4.11). The caller holds the flat lock,
+// which every rollback holds from its hold to its import.
 func (s *Service) settleBoardHoldsLocked(ctx context.Context, slugName string, in *board.Instance) {
 	holds, err := s.st.Holds(ctx, slugName)
 	if err != nil {
@@ -1039,11 +1043,11 @@ func (s *Service) settleBoardHoldsLocked(ctx context.Context, slugName string, i
 // prepareBoardSweepLocked imports a board before its blobs are swept and
 // returns the hashes its board.db references: every asset row (referenced,
 // kept for deletion undo or protected after upload) and every snapshot an
-// unacknowledged entry holds (board-TECH 5.5). It reports false when the
-// sweep must wait: a board that is not running, or whose import failed, may
-// reference blobs no revision names yet. The caller holds the flat lock, so
-// no agent write, import or rollback runs meanwhile; a person's upload that
-// reuses a blob refreshes its modification time (boardBackend.PutBlob).
+// unacknowledged entry holds (board-technical-design 5.5). It reports false
+// when the sweep must wait: a board that is not running, or whose import
+// failed, may reference blobs no revision names yet. The caller holds the flat
+// lock, so no agent write, import or rollback runs meanwhile; a person's upload
+// that reuses a blob refreshes its modification time (boardBackend.PutBlob).
 func (s *Service) prepareBoardSweepLocked(ctx context.Context, slugName string) (*board.Instance, []string, bool) {
 	in := s.liveBoard(slugName)
 	if in == nil {
@@ -1133,7 +1137,7 @@ func (s *Service) TickBoards(ctx context.Context) {
 }
 
 // remeasureBoards starts a new disk measurement of every running board,
-// after a disk quota change (board-TECH 5.4).
+// after a disk quota change (board-technical-design 5.4).
 func (s *Service) remeasureBoards() {
 	s.mu.Lock()
 	var ins []*board.Instance
@@ -1153,8 +1157,8 @@ func (s *Service) remeasureBoards() {
 // --- history ---
 
 // rollbackBoard restores revision n of a board as a new revision
-// (board-TECH 4.11): it holds n, sets the board to n's content in the
-// instance's apply loop and imports the rollback entry, which releases the
+// (board-technical-design 4.11): it holds n, sets the board to n's content in
+// the instance's apply loop and imports the rollback entry, which releases the
 // hold. A rollback is never refused for disk quota. Once the board committed
 // the rollback it succeeds: when its revision is not recorded yet, the result
 // has no revision and a warning, as update_board reports a pending import,
@@ -1230,7 +1234,7 @@ func (s *Service) boardRevisionContent(ctx context.Context, slugName string, n i
 // heldBoardRevisionContent is boardRevisionContent keeping the read lease
 // on the revision's files until the caller calls release, so work that
 // goes on using them (an element recovery until its commit) stays
-// protected from the sweep (board-TECH 5.5). release is never nil.
+// protected from the sweep (board-technical-design 5.5). release is never nil.
 func (s *Service) heldBoardRevisionContent(ctx context.Context, slugName string, n int) (store.Revision, engine.Content, func(), error) {
 	unlock, err := s.lockCtx(ctx, slugName)
 	if err != nil {

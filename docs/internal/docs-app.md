@@ -156,7 +156,8 @@ rendered in the client; assets in `content.assets` are still the host's responsi
   text and emoji remain Markdown source. The client uses CodeMirror 6,
   `y-codemirror.next`, and a `Y.UndoManager` that tracks only its local binding
   origin (including its own undo/redo), never remote or activation changes.
-* The editor keeps up with remote changes (spec rule 21b, TECH 3.11):
+* The editor keeps up with remote changes (spec rule 21b,
+  [technical design 3.11](../spec/docs-public-edit-technical-design.md#311-editor-parse-cost)):
   * Its Markdown language (`_web/src/markdown-inline.js`,
     `editorMarkdown()`) is `@lezer/markdown` 1.7.2 GFM with linear-time
     replacements for link closing, emphasis resolution, unclosed inline HTML

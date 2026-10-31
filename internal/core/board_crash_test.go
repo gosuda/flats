@@ -157,8 +157,8 @@ func ageBlobs(t *testing.T, s *Service, slugName string) {
 // and before the acknowledgement) and of a rollback (after the hold, after
 // the board committed it), restarts from the image, and checks the revision
 // count and content, board.db, no empty revision, and every write reported
-// as saved (board-TECH 14 Crashes). A blob sweep then runs on aged blobs as
-// the first thing after the restart, before any other import.
+// as saved (board-technical-design 14 Crashes). A blob sweep then runs on aged
+// blobs as the first thing after the restart, before any other import.
 func TestBoardKillDuringImportAndRollback(t *testing.T) {
 	ctx := context.Background()
 	s, dir := newTestService(t)

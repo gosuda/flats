@@ -1,7 +1,8 @@
 # Board agent evaluation
 
 These scripts run the board spec's agent success criterion
-([board.md](../../docs/spec/board.md#success-criteria), TECH §14 "Agents"):
+([board.md](../../docs/spec/board.md#success-criteria),
+[technical design 14](../../docs/spec/board-technical-design.md#14-validation-plan) "Agents"):
 a real MCP client sorts 30 stickies, and the result is judged automatically.
 
 | Script | Does |
