@@ -61,6 +61,11 @@ func toGoValue[T any](
 	if temp, ok, err = jsPrimitivesToGo(tracker, input, sample); ok {
 		return v, err
 	}
+	if input.IsArray() {
+		temp, err = jsArrayToGoWithContext(tracker, input, sample)
+
+		return v, err
+	}
 
 	if input.IsGlobalInstanceOf("Date") {
 		temp, err = JsTimeToGo(input)
@@ -94,12 +99,6 @@ func toGoValue[T any](
 
 	if input.IsSet() {
 		temp, err = jsSetToGoWithContext(tracker, input, sample)
-
-		return v, err
-	}
-
-	if input.IsArray() {
-		temp, err = jsArrayToGoWithContext(tracker, input, sample)
 
 		return v, err
 	}
@@ -189,6 +188,10 @@ func JsTimeToGo(input *Value) (time.Time, error) {
 	}
 	defer jsTime.Free()
 
+	if jsTime.IsNaN() {
+		return time.Time{}, newJsToGoErr(input, nil, "invalid Date")
+	}
+
 	ms := jsTime.Int64()
 	seconds := ms / 1000
 	nanoseconds := (ms % 1000) * int64(time.Millisecond)
@@ -217,14 +220,19 @@ func JsTypedArrayToGo(input *Value) ([]byte, error) {
 	if buffer.IsByteArray() {
 		offsetValue := input.GetPropertyStr("byteOffset")
 		defer offsetValue.Free()
+
 		lengthValue := input.GetPropertyStr("byteLength")
 		defer lengthValue.Free()
-		offset := uint(offsetValue.Int64())
-		length := uint(lengthValue.Int64())
 
+		offset := offsetValue.Int64()
+		length := lengthValue.Int64()
 		fullBytes := buffer.ToByteArray()
-		if offset+length > uint(len(fullBytes)) {
-			return nil, newMaxLengthExceededErr(length, int64(len(fullBytes)), 0)
+		size := int64(len(fullBytes))
+
+		if offset < 0 || length < 0 || offset > size || length > size-offset {
+			return nil, fmt.Errorf(
+				"invalid TypedArray bounds: offset %d, length %d, buffer %d", offset, length, size,
+			)
 		}
 
 		return fullBytes[offset : offset+length], nil
@@ -246,6 +254,12 @@ func jsSetToGoWithContext[T any](
 	if !input.IsSet() {
 		return v, newJsToGoErr(input, nil, "Set")
 	}
+
+	if tracker.Track(input.Raw()) {
+		return v, fmt.Errorf("cannot convert JS Set to Go: circular reference")
+	}
+
+	defer tracker.UnTrack(input.Raw())
 
 	setVal := input.ToSet()
 
@@ -282,7 +296,11 @@ func mapEntryToGoWithContext(
 		return k, v, newJsToGoErr(jsKey, keyErr, "map key")
 	}
 
-	k = reflect.ValueOf(goKeyFromJs).Convert(goKeyType)
+	if goKeyFromJs == nil {
+		k = reflect.Zero(goKeyType)
+	} else {
+		k = reflect.ValueOf(goKeyFromJs).Convert(goKeyType)
+	}
 	valueSample := reflect.New(goValueType).Elem().Interface()
 	goValFromJs, valErr := toGoValue(ctx, jsValue, valueSample)
 
@@ -433,8 +451,10 @@ func processObjectFields(
 			return
 		}
 
-		fieldValue := getFieldValue(structValue, fieldInfo.indices)
-		if !fieldValue.IsValid() {
+		fieldValue, err := getFieldValue(structValue, fieldInfo.indices)
+		if err != nil {
+			forEachErr = fmt.Errorf("object/map field '%s': %w", fieldInfo.field.Name, err)
+
 			return
 		}
 
@@ -446,25 +466,39 @@ func processObjectFields(
 	return forEachErr
 }
 
-// getFieldValue navigates to the target field through embedded structs.
-func getFieldValue(structValue reflect.Value, indices []int) reflect.Value {
+func getFieldValue(structValue reflect.Value, indices []int) (reflect.Value, error) {
 	fieldValue := structValue
-	for i, idx := range indices {
-		if fieldValue.Kind() == reflect.Ptr {
-			if fieldValue.IsNil() && fieldValue.CanSet() {
-				fieldValue.Set(reflect.New(fieldValue.Type().Elem()))
-			}
 
-			fieldValue = fieldValue.Elem()
+	for _, idx := range indices {
+		dereferenced, err := dereferenceField(fieldValue)
+		if err != nil {
+			return reflect.Value{}, err
 		}
 
-		fieldValue = fieldValue.Field(idx)
-		if i < len(indices)-1 && !fieldValue.CanSet() {
-			return reflect.Value{}
-		}
+		fieldValue = dereferenced.Field(idx)
 	}
 
-	return fieldValue
+	if !fieldValue.CanSet() {
+		return reflect.Value{}, fmt.Errorf("field %s cannot be set", fieldValue.Type())
+	}
+
+	return fieldValue, nil
+}
+
+func dereferenceField(value reflect.Value) (reflect.Value, error) {
+	if value.Kind() != reflect.Ptr {
+		return value, nil
+	}
+
+	if value.IsNil() {
+		if !value.CanSet() {
+			return reflect.Value{}, fmt.Errorf("cannot allocate embedded pointer to %s", value.Type().Elem())
+		}
+
+		value.Set(reflect.New(value.Type().Elem()))
+	}
+
+	return value.Elem(), nil
 }
 
 // setFieldValue sets the value of a struct field, handling JSON unmarshaling.
@@ -650,9 +684,7 @@ func createJsFunctionHandler(
 
 	jsResult, err := ctx.Invoke(input, ctx.Global(), jsArgs...)
 	if err != nil {
-		results[len(results)-1] = reflect.ValueOf(
-			fmt.Errorf("JS function execution failed: %w", err),
-		)
+		setCallError(fnType, results, fmt.Errorf("JS function execution failed: %w", err))
 
 		return results
 	}
@@ -687,12 +719,10 @@ func convertArgsToJS(
 	convertArg := func(argValue any, argIndex int) error {
 		jsArg, convErr := ToJsValue(ctx, argValue)
 		if convErr != nil {
-			results[len(results)-1] = reflect.ValueOf(
-				fmt.Errorf(
-					"failed to convert go function argument at index %d '%T=%v' to JS: %w",
-					argIndex, argValue, argValue, convErr,
-				),
-			)
+			setCallError(fnType, results, fmt.Errorf(
+				"failed to convert go function argument at index %d '%T=%v' to JS: %w",
+				argIndex, argValue, argValue, convErr,
+			))
 
 			return convErr
 		}
@@ -737,6 +767,9 @@ func handleJsFunctionResult(
 	results []reflect.Value,
 ) []reflect.Value {
 	numOut := fnType.NumOut()
+	if numOut == 0 {
+		return results
+	}
 
 	if jsResult.IsUndefined() || jsResult.IsNull() {
 		results[0] = reflect.Zero(fnType.Out(0))
@@ -749,21 +782,20 @@ func handleJsFunctionResult(
 
 	goResult, err := toGoValue[any](tracker, jsResult)
 	if err != nil {
-		results[len(results)-1] = reflect.ValueOf(
-			fmt.Errorf("failed to convert JS function result '%s' to Go: %w", jsResult.Type(), err),
-		)
+		setCallError(fnType, results, fmt.Errorf(
+			"failed to convert JS function result '%s' to Go: %w", jsResult.Type(), err,
+		))
 
 		return results
 	}
 
-	// Validate that the conversion is possible before attempting it
 	goResultValue := reflect.ValueOf(goResult)
-
 	targetType := fnType.Out(0)
-	if !goResultValue.CanConvert(targetType) {
-		results[len(results)-1] = reflect.ValueOf(
-			fmt.Errorf("failed to convert JS function return value from %T (%v) to %s", goResult, goResult, targetType),
-		)
+
+	if !goResultValue.IsValid() || !goResultValue.CanConvert(targetType) {
+		setCallError(fnType, results, fmt.Errorf(
+			"failed to convert JS function return value from %T (%v) to %s", goResult, goResult, targetType,
+		))
 
 		return results
 	}
@@ -774,6 +806,21 @@ func handleJsFunctionResult(
 	}
 
 	return results
+}
+
+func setCallError(fnType reflect.Type, results []reflect.Value, err error) {
+	if n := fnType.NumOut(); n > 0 {
+		out := fnType.Out(n - 1)
+		value := reflect.ValueOf(err)
+
+		if IsImplementError(out) && value.Type().AssignableTo(out) {
+			results[n-1] = value
+
+			return
+		}
+	}
+
+	panic(fmt.Errorf("%w: converted JS function %s has no error result", err, fnType))
 }
 
 // jsPrimitivesToGo converts JavaScript primitive types to Go types.

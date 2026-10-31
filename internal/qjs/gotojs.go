@@ -87,12 +87,15 @@ func (tracker *Tracker[T]) GoArrayToJs(c *Context, rval reflect.Value) (*Value, 
 }
 
 // GoMapToJs converts a Go map to a JavaScript object.
-// Non-string keys are converted to string representation.
+// Non-string keys are converted to string representation; keys that collide
+// after stringification are reported as an error.
 func (tracker *Tracker[T]) GoMapToJs(
 	c *Context,
 	rval reflect.Value,
 ) (*Value, error) {
 	return withJSObject(c, func(obj *Value) error {
+		seen := make(map[string]struct{}, rval.Len())
+
 		for _, key := range rval.MapKeys() {
 			value := rval.MapIndex(key)
 
@@ -102,6 +105,12 @@ func (tracker *Tracker[T]) GoMapToJs(
 			} else {
 				keyStr = fmt.Sprintf("%v", key.Interface())
 			}
+
+			if _, dup := seen[keyStr]; dup {
+				return fmt.Errorf("cannot convert Go map to JS: keys collide as %q", keyStr)
+			}
+
+			seen[keyStr] = struct{}{}
 
 			jsValue, err := tracker.toJsValue(c, value.Interface())
 			if err != nil {
@@ -266,12 +275,8 @@ func (tracker *Tracker[T]) convertReflectValue(c *Context, v any) (*Value, error
 			return c.NewNull(), nil
 		}
 
-		// Track pointer address for circular reference detection.
-		var addr any = (rval.Pointer())
-
-		addrT, _ := addr.(T)
-		if err := ct.trackPtr(tracker, addrT); err != nil {
-			return nil, newGoToJsErr(GetGoTypeName(reflect.TypeOf(v)), err, "recursive pointer")
+		if err := ct.trackPtr(tracker, T(rval.Pointer())); err != nil {
+			return nil, newGoToJsErr(GetGoTypeName(rtype), err)
 		}
 
 		// If pointer points to a struct,
@@ -294,10 +299,20 @@ func (tracker *Tracker[T]) convertReflectValue(c *Context, v any) (*Value, error
 			return c.NewNull(), nil
 		}
 
+		if rval.Len() > 0 {
+			if err := ct.trackPtr(tracker, T(rval.Pointer())); err != nil {
+				return nil, newGoToJsErr(GetGoTypeName(rtype), err)
+			}
+		}
+
 		return tracker.GoSliceToJs(c, rval)
 	case reflect.Map:
 		if rval.IsNil() {
 			return c.NewNull(), nil
+		}
+
+		if err := ct.trackPtr(tracker, T(uintptr(rval.UnsafePointer()))); err != nil {
+			return nil, newGoToJsErr(GetGoTypeName(rtype), err)
 		}
 
 		return tracker.GoMapToJs(c, rval)
@@ -365,9 +380,17 @@ func (tracker *Tracker[T]) processEmbeddedFields(
 ) error {
 	for i := range rtype.NumField() {
 		field := rtype.Field(i)
-		jsonIgnore := field.Tag.Get("json") == "-"
 
-		if !field.IsExported() || !field.Anonymous || jsonIgnore {
+		if !field.Anonymous {
+			continue
+		}
+
+		jsonName, _, _ := strings.Cut(field.Tag.Get("json"), ",")
+		if jsonName == "-" {
+			continue
+		}
+
+		if !field.IsExported() && !isGoStruct(field.Type) {
 			continue
 		}
 

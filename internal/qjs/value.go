@@ -3,6 +3,7 @@ package qjs
 import (
 	"errors"
 	"fmt"
+	"math"
 	"math/big"
 	"time"
 	"unsafe"
@@ -94,7 +95,11 @@ func (v *Value) Raw() uint64 {
 }
 
 func (v *Value) Free() {
-	if v != nil && v.Raw() != 0 {
+	if v == nil || v.context == nil || v.handle == nil {
+		return
+	}
+
+	if v.handle.raw != 0 {
 		v.context.FreeJsValue(v.handle.raw)
 		v.handle.raw = 0
 	}
@@ -126,19 +131,20 @@ func (v *Value) Type() string {
 		return "QJSProxyValue"
 	}
 
-	if v.IsNaN() {
-		return "NaN"
-	}
-
-	if v.IsInfinity() {
-		return "Infinity"
-	}
-
 	if v.IsBigInt() {
 		return "BigInt"
 	}
 
 	if v.IsNumber() {
+		number := v.Float64()
+		if math.IsNaN(number) {
+			return "NaN"
+		}
+
+		if math.IsInf(number, 0) {
+			return "Infinity"
+		}
+
 		return "Number"
 	}
 
@@ -290,11 +296,21 @@ func (v *Value) GetProperty(name *Value) *Value {
 func (v *Value) SetProperty(name, val *Value) {
 	atom := v.Call("JS_ValueToAtom", v.Ctx(), name.Raw())
 	defer v.Call("JS_FreeAtom", v.Ctx(), atom.Raw())
-	v.Call("JS_SetProperty", v.Ctx(), v.Raw(), atom.Raw(), val.Raw())
+	v.checkPropertySet(v.Call("JS_SetProperty", v.Ctx(), v.Raw(), atom.Raw(), val.Raw()))
+}
+
+func (v *Value) checkPropertySet(result *Value) {
+	if int32(result.handle.raw) >= 0 {
+		return
+	}
+
+	panic(fmt.Errorf("failed to set a JS property: %w", v.context.Exception()))
 }
 
 // GetPropertyStr returns the value of the property with the given name.
 func (v *Value) GetPropertyStr(name string) *Value {
+	requireCString("property name", name)
+
 	nameVal := v.context.NewStringHandle(name)
 	defer v.context.FreeHandle(nameVal.Raw())
 
@@ -304,9 +320,11 @@ func (v *Value) GetPropertyStr(name string) *Value {
 // SetPropertyStr sets the value of the property with the given name.
 func (v *Value) SetPropertyStr(name string, val *Value) {
 	if val != nil {
+		requireCString("property name", name)
+
 		nameVal := v.context.NewStringHandle(name)
 		defer nameVal.handle.Free()
-		v.Call("JS_SetPropertyStr", v.Ctx(), v.Raw(), nameVal.Raw(), val.Raw())
+		v.checkPropertySet(v.Call("JS_SetPropertyStr", v.Ctx(), v.Raw(), nameVal.Raw(), val.Raw()))
 	}
 }
 
@@ -371,7 +389,7 @@ func (v *Value) InvokeJS(fname string, args ...*Value) (*Value, error) {
 
 // SetPropertyIndex sets the value of the property with the given index.
 func (v *Value) SetPropertyIndex(index int64, val *Value) {
-	v.Call("JS_SetPropertyUint32", v.Ctx(), v.Raw(), uint64(index), val.Raw())
+	v.checkPropertySet(v.Call("JS_SetPropertyUint32", v.Ctx(), v.Raw(), uint64(index), val.Raw()))
 }
 
 // GetPropertyIndex returns the value of the property with the given index.
@@ -414,18 +432,66 @@ func (v *Value) ToByteArray() []byte {
 }
 
 func (v *Value) Exception() error {
-	cause := v.String()
+	cause := v.exceptionText()
+	if !v.IsObject() {
+		return errors.New(cause)
+	}
 
 	stack := v.GetPropertyStr("stack")
 	defer stack.Free()
 
-	if stack.IsUndefined() {
+	if v.context.HasException() {
+		v.context.clearException()
+
 		return errors.New(cause)
 	}
 
-	stackStr := stack.String()
+	if !stack.IsString() {
+		return errors.New(cause)
+	}
 
-	return errors.New(cause + "\n" + stackStr)
+	return errors.New(cause + "\n" + stack.String())
+}
+
+func (v *Value) exceptionText() string {
+	if v.IsUndefined() {
+		return "undefined"
+	}
+
+	if v.IsNull() {
+		return "null"
+	}
+
+	if v.IsSymbol() {
+		description := v.GetPropertyStr("description")
+		defer description.Free()
+		if v.context.HasException() {
+			v.context.clearException()
+
+			return "Symbol()"
+		}
+
+		if description.IsString() {
+			return "Symbol(" + description.String() + ")"
+		}
+
+		return "Symbol()"
+	}
+
+	text := v.Call("QJS_ToCString", v.Ctx(), v.Raw())
+	if text.Raw() == 0 {
+		if v.context.HasException() {
+			v.context.clearException()
+		}
+
+		if v.IsObject() {
+			return "unprintable object"
+		}
+
+		return "unprintable value"
+	}
+
+	return v.context.readCString(text.handle)
 }
 
 func (v *Value) IsNumber() bool {
@@ -547,13 +613,11 @@ func (v *Value) Await() (*Value, error) {
 }
 
 func (v *Value) IsMap() bool {
-	return v.IsObject() && v.IsGlobalInstanceOf("Map") ||
-		v.String() == "[object Map]"
+	return v.IsObject() && (v.IsGlobalInstanceOf("Map") || v.String() == "[object Map]")
 }
 
 func (v *Value) IsSet() bool {
-	return v.IsObject() && v.IsGlobalInstanceOf("Set") ||
-		v.String() == "[object Set]"
+	return v.IsObject() && (v.IsGlobalInstanceOf("Set") || v.String() == "[object Set]")
 }
 
 // IsGlobalInstanceOf checks if the value is an instance of the given global constructor.
@@ -572,8 +636,7 @@ func (v *Value) IsGlobalInstanceOf(name string) bool {
 
 // IsByteArray return true if the value is array buffer.
 func (v *Value) IsByteArray() bool {
-	return v.IsObject() && v.IsGlobalInstanceOf("ArrayBuffer") ||
-		v.String() == "[object ArrayBuffer]"
+	return v.IsObject() && (v.IsGlobalInstanceOf("ArrayBuffer") || v.String() == "[object ArrayBuffer]")
 }
 
 // Object returns the object value of the value.
@@ -614,6 +677,14 @@ func (v *Value) ForEach(fn func(key *Value, value *Value)) {
 }
 
 func (v *Value) Bytes() []byte {
+	if v == nil || v.handle == nil {
+		return nil
+	}
+
+	if v.handle.raw > math.MaxUint32 {
+		panic(errors.New("Value.Bytes needs a packed byte handle; use ToByteArray for an ArrayBuffer"))
+	}
+
 	return v.handle.Bytes()
 }
 

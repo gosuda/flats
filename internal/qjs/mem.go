@@ -17,6 +17,10 @@ type Mem struct {
 
 // Size returns the current size of the WebAssembly memory in bytes.
 func (m *Mem) Size() uint32 {
+	if m == nil || m.mem == nil {
+		return 0
+	}
+
 	return m.mem.Size()
 }
 
@@ -51,18 +55,21 @@ func (m *Mem) UnpackPtr(packedPtr uint64) (uint32, uint32) {
 // Read extracts bytes from WebAssembly memory at the specified address.
 // Performs comprehensive validation and bounds checking.
 func (m *Mem) Read(addr uint32, size uint64) ([]byte, error) {
+	if size == 0 {
+		return []byte{}, nil
+	}
+
 	err := m.validateMemoryAccess(addr, size)
 	if err != nil {
 		return nil, err
 	}
 
-	if size == 0 {
-		return []byte{}, nil
+	end := uint64(addr) + size
+	if end > uint64(m.Size()) || end > math.MaxUint32 {
+		return nil, ErrIndexOutOfRange
 	}
 
-	sizeU32 := uint32(size)
-
-	buf, ok := m.mem.Read(addr, sizeU32)
+	buf, ok := m.mem.Read(addr, uint32(size))
 	if !ok {
 		return nil, ErrIndexOutOfRange
 	}
@@ -208,16 +215,19 @@ func (m *Mem) WriteFloat64(ptr uint32, v float64) error {
 // ReadString reads a null-terminated string from WebAssembly memory starting at the given address.
 // It reads up to maxlen bytes and returns the string without the null terminator.
 func (m *Mem) ReadString(addr, maxlen uint32) (string, error) {
+	if maxlen == 0 {
+		return "", nil
+	}
+
 	err := m.validatePointer(addr)
 	if err != nil {
 		return "", err
 	}
 
-	if maxlen == 0 {
-		return "", nil
+	readLen, err := m.calculateSafeReadLength(addr, maxlen)
+	if err != nil {
+		return "", err
 	}
-
-	readLen := m.calculateSafeReadLength(addr, maxlen)
 
 	buf, ok := m.mem.Read(addr, readLen)
 	if !ok {
@@ -294,18 +304,16 @@ func (m *Mem) validateMemoryAccess(ptr uint32, size uint64) error {
 }
 
 // calculateSafeReadLength calculates a safe read length for string operations.
-func (m *Mem) calculateSafeReadLength(addr, maxlen uint32) uint32 {
-	memSize := m.mem.Size()
-
-	if maxlen == math.MaxUint32 {
-		return memSize - addr
+func (m *Mem) calculateSafeReadLength(addr, maxlen uint32) (uint32, error) {
+	memSize := m.Size()
+	if addr >= memSize {
+		return 0, ErrIndexOutOfRange
 	}
 
-	// Calculate safe read length including null terminator space
 	available := memSize - addr
-	if available <= maxlen {
-		return available
+	if maxlen == math.MaxUint32 || available <= maxlen {
+		return available, nil
 	}
 
-	return maxlen + 1
+	return maxlen + 1, nil
 }

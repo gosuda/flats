@@ -11,13 +11,18 @@ import (
 	"io"
 	"io/fs"
 	"math"
+	"os"
+	"path"
+	"path/filepath"
 	"sort"
+	"strings"
 	"sync/atomic"
 
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/api"
 	experimentalsys "github.com/tetratelabs/wazero/experimental/sys"
 	"github.com/tetratelabs/wazero/experimental/sysfs"
+	"github.com/tetratelabs/wazero/sys"
 )
 
 // FORK (flats): runtime images.
@@ -203,8 +208,8 @@ func (r *Runtime) Restored() bool { return r != nil && r.restored }
 // ImageEligible returns why the runtime cannot be captured now, or nil.
 func (r *Runtime) ImageEligible() error {
 	switch {
-	case r == nil || r.module == nil || r.handle == nil || r.context == nil || r.context.handle == nil:
-		return errors.New("qjs: runtime closed")
+	case r == nil || r.module == nil || r.module.IsClosed() || r.handle == nil || r.context == nil || r.context.handle == nil:
+		return fmt.Errorf("qjs: image capture: %w", ErrRuntimeClosed)
 	case r.restored:
 		return errors.New("qjs: runtime was restored from an image")
 	}
@@ -547,14 +552,121 @@ func (o *outputCounter) Write(p []byte) (int, error) {
 	return o.w.Write(p)
 }
 
-// readOnlyMount mounts dir read-only at "/" (as FSConfig.WithReadOnlyDirMount
-// does), counting file opens and closes when census is set.
-func readOnlyMount(dir string, census *Census) wazero.FSConfig {
-	cfg := wazero.NewFSConfig()
-	if census == nil {
-		return cfg.WithReadOnlyDirMount(dir, "/")
+// readOnlyMount mounts dir read-only at "/" and refuses paths that resolve,
+// through a symlink or otherwise, outside dir. Counting file opens and closes
+// happens when census is set.
+func readOnlyMount(dir string, census *Census) (wazero.FSConfig, error) {
+	confined, err := newConfinedFS(dir)
+	if err != nil {
+		return nil, fmt.Errorf("mount %s: %w", dir, err)
 	}
-	return cfg.(sysfs.FSConfig).WithSysFSMount(&sysfs.ReadFS{FS: censusFS{FS: sysfs.DirFS(dir), census: census}}, "/")
+
+	var fsys experimentalsys.FS = &sysfs.ReadFS{FS: confined}
+	if census != nil {
+		fsys = &sysfs.ReadFS{FS: censusFS{FS: confined, census: census}}
+	}
+
+	return wazero.NewFSConfig().(sysfs.FSConfig).WithSysFSMount(fsys, "/"), nil
+}
+
+type confinedFS struct {
+	experimentalsys.UnimplementedFS
+	fs   experimentalsys.FS
+	root string
+}
+
+func newConfinedFS(dir string) (*confinedFS, error) {
+	root, err := filepath.Abs(dir)
+	if err != nil {
+		return nil, err
+	}
+
+	if root, err = filepath.EvalSymlinks(root); err != nil {
+		return nil, err
+	}
+
+	info, err := os.Stat(root)
+	if err != nil {
+		return nil, err
+	}
+
+	if !info.IsDir() {
+		return nil, fmt.Errorf("qjs: %s is not a directory", dir)
+	}
+
+	return &confinedFS{fs: sysfs.DirFS(dir), root: root}, nil
+}
+
+func (f *confinedFS) resolveFile(name string) (string, experimentalsys.Errno) {
+	relative := relativePath(name)
+
+	return f.confine(relative, filepath.Join(f.root, filepath.FromSlash(relative)))
+}
+
+func (f *confinedFS) resolveParent(name string) (string, experimentalsys.Errno) {
+	relative := relativePath(name)
+	target := filepath.Join(f.root, filepath.FromSlash(relative))
+	if relative != "" {
+		target = filepath.Dir(target)
+	}
+
+	return f.confine(relative, target)
+}
+
+func (f *confinedFS) confine(relative, target string) (string, experimentalsys.Errno) {
+	resolved, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		return "", experimentalsys.UnwrapOSError(err)
+	}
+
+	trail, err := filepath.Rel(f.root, resolved)
+	if err != nil || trail == ".." || strings.HasPrefix(trail, ".."+string(filepath.Separator)) {
+		return "", experimentalsys.EPERM
+	}
+
+	return relative, 0
+}
+
+func relativePath(name string) string {
+	relative, _ := strings.CutPrefix(path.Clean("/"+name), "/")
+
+	return relative
+}
+
+func (f *confinedFS) OpenFile(name string, flag experimentalsys.Oflag, perm fs.FileMode) (experimentalsys.File, experimentalsys.Errno) {
+	relative, errno := f.resolveFile(name)
+	if errno != 0 {
+		return nil, errno
+	}
+
+	return f.fs.OpenFile(relative, flag, perm)
+}
+
+func (f *confinedFS) Stat(name string) (sys.Stat_t, experimentalsys.Errno) {
+	relative, errno := f.resolveFile(name)
+	if errno != 0 {
+		return sys.Stat_t{}, errno
+	}
+
+	return f.fs.Stat(relative)
+}
+
+func (f *confinedFS) Lstat(name string) (sys.Stat_t, experimentalsys.Errno) {
+	relative, errno := f.resolveParent(name)
+	if errno != 0 {
+		return sys.Stat_t{}, errno
+	}
+
+	return f.fs.Lstat(relative)
+}
+
+func (f *confinedFS) Readlink(name string) (string, experimentalsys.Errno) {
+	relative, errno := f.resolveParent(name)
+	if errno != 0 {
+		return "", errno
+	}
+
+	return f.fs.Readlink(relative)
 }
 
 type censusFS struct {

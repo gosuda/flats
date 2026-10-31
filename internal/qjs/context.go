@@ -3,8 +3,10 @@ package qjs
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 )
 
@@ -19,42 +21,97 @@ type Context struct {
 	goFunctions map[uint64]*Value
 }
 
+// checkOpen returns ErrRuntimeClosed once the context's runtime is gone.
+func (c *Context) checkOpen() error {
+	if c == nil || c.runtime == nil {
+		return ErrRuntimeClosed
+	}
+
+	return c.runtime.checkOpen()
+}
+
+func cStringError(field, value string) error {
+	if strings.IndexByte(value, 0) < 0 {
+		return nil
+	}
+
+	return fmt.Errorf("%w in %s", ErrStringContainsNUL, field)
+}
+
+func requireCString(field, value string) {
+	if err := cStringError(field, value); err != nil {
+		panic(err)
+	}
+}
+
 func (c *Context) Call(name string, args ...uint64) *Value {
+	if err := c.checkOpen(); err != nil {
+		panic(fmt.Errorf("call %s after the context closed: %w", name, err))
+	}
+
 	return c.NewValue(c.runtime.Call(name, args...))
 }
 
 // CallUnPack delegates function calls and unpacks the result.
 func (c *Context) CallUnPack(name string, args ...uint64) (uint32, uint32) {
+	if err := c.checkOpen(); err != nil {
+		panic(fmt.Errorf("unpack %s after the context closed: %w", name, err))
+	}
+
 	return c.runtime.CallUnPack(name, args...)
 }
 
 // FreeHandle releases memory associated with the given handle pointer.
 func (c *Context) FreeHandle(ptr uint64) {
+	if c == nil || c.runtime == nil {
+		return
+	}
+
 	c.runtime.FreeHandle(ptr)
 }
 
 // FreeJsValue releases memory associated with the JavaScript value.
 func (c *Context) FreeJsValue(val uint64) {
+	if c == nil || c.runtime == nil {
+		return
+	}
+
 	c.runtime.FreeJsValue(val)
 }
 
 // Malloc allocates memory in the WASM runtime.
 func (c *Context) Malloc(size uint64) uint64 {
+	if err := c.checkOpen(); err != nil {
+		panic(fmt.Errorf("allocate %d bytes after the context closed: %w", size, err))
+	}
+
 	return c.runtime.Malloc(size)
 }
 
 // MemRead reads bytes from WASM memory at the given address.
 func (c *Context) MemRead(addr uint32, size uint64) []byte {
+	if err := c.checkOpen(); err != nil {
+		panic(fmt.Errorf("read wasm memory after the context closed: %w", err))
+	}
+
 	return c.runtime.mem.MustRead(addr, size)
 }
 
 // MemWrite writes bytes to WASM memory at the given address.
 func (c *Context) MemWrite(addr uint32, b []byte) {
+	if err := c.checkOpen(); err != nil {
+		panic(fmt.Errorf("write wasm memory after the context closed: %w", err))
+	}
+
 	c.runtime.mem.MustWrite(addr, b)
 }
 
 // NewProxyValue creates a new Value that represents a proxy to a Go value.
 func (c *Context) NewProxyValue(v any) *Value {
+	if err := c.checkOpen(); err != nil {
+		panic(fmt.Errorf("create a proxy value after the context closed: %w", err))
+	}
+
 	proxyID := c.runtime.registry.Register(v)
 
 	return c.Call("QJS_NewProxyValue", c.Raw(), proxyID)
@@ -79,6 +136,10 @@ func (c *Context) String() string {
 
 // Raw returns the raw handle value for low-level operations.
 func (c *Context) Raw() uint64 {
+	if err := c.checkOpen(); err != nil {
+		panic(fmt.Errorf("read the context handle after it closed: %w", err))
+	}
+
 	return c.handle.raw
 }
 
@@ -99,6 +160,10 @@ func (c *Context) Compile(file string, flags ...EvalOptionFunc) ([]byte, error) 
 
 // Global returns the global object, caching it for subsequent calls.
 func (c *Context) Global() *Value {
+	if err := c.checkOpen(); err != nil {
+		panic(fmt.Errorf("read the global object after the context closed: %w", err))
+	}
+
 	if c.global == nil {
 		c.global = c.Call("JS_GetGlobalObject", c.Raw())
 	}
@@ -126,10 +191,17 @@ func (c *Context) SetAsyncFunc(name string, fn AsyncFunction) {
 
 // ParseJSON parses given JSON string and returns an object value.
 func (c *Context) ParseJSON(v string) *Value {
+	requireCString("json", v)
+
 	cStr := c.NewStringHandle(v)
 	defer cStr.handle.Free()
 
-	return c.Call("QJS_ParseJSON", c.Raw(), cStr.Raw())
+	result := c.Call("QJS_ParseJSON", c.Raw(), cStr.Raw())
+	if c.HasException() {
+		panic(fmt.Errorf("parse JSON: %w", c.Exception()))
+	}
+
+	return result
 }
 
 // NewValue creates a new Value wrapper around the given handle.
@@ -204,7 +276,7 @@ func (c *Context) NewString(v string) *Value {
 	str := c.NewStringHandle(v)
 	defer str.handle.Free()
 
-	return c.Call("QJS_NewString", c.Raw(), str.Raw())
+	return c.Call("QJS_NewStringLen", c.Raw(), str.Raw(), uint64(len(v)))
 }
 
 // NewObject creates a new empty JavaScript object.
@@ -241,8 +313,9 @@ func (c *Context) NewSet() *Set {
 
 // NewAtom creates a new Atom from the given string.
 func (c *Context) NewAtom(v string) Atom {
-	cstr := c.NewStringHandle(v)
+	requireCString("atom", v)
 
+	cstr := c.NewStringHandle(v)
 	atomValue := c.Call("JS_NewAtom", c.Raw(), cstr.Raw())
 
 	defer cstr.handle.Free()
@@ -270,6 +343,10 @@ func (c *Context) NewArrayBuffer(binaryData []byte) *Value {
 
 // NewError creates a new JavaScript Error object from Go error.
 func (c *Context) NewError(e error) *Value {
+	if e == nil {
+		panic(errors.New("qjs: NewError called with a nil error"))
+	}
+
 	errString := c.NewString(e.Error())
 	errVal := c.Call("JS_NewError", c.Raw())
 	errVal.SetPropertyStr("message", errString)
@@ -288,6 +365,14 @@ func (c *Context) Exception() error {
 	defer val.Free()
 
 	return val.Exception()
+}
+
+func (c *Context) clearException() {
+	if !c.HasException() {
+		return
+	}
+
+	c.Call("JS_GetException", c.Raw()).Free()
 }
 
 // Throw throws a value as an exception.
@@ -352,6 +437,10 @@ func (c *Context) ThrowInternalError(format string, args ...any) *Value {
 
 // Function creates a JavaScript function that wraps the given Go function.
 func (c *Context) Function(fn Function, isAsyncs ...bool) *Value {
+	if err := c.checkOpen(); err != nil {
+		panic(fmt.Errorf("create a function after the context closed: %w", err))
+	}
+
 	isAsync := uint64(0)
 	if len(isAsyncs) > 0 && isAsyncs[0] {
 		isAsync = 1
@@ -407,6 +496,10 @@ func createJsCallArgs(c *Context, args ...*Value) (uint64, uint64) {
 
 // readCString copies a JS-owned C string, then releases both allocation kinds.
 func (c *Context) readCString(h *Handle) string {
+	if err := c.checkOpen(); err != nil {
+		panic(fmt.Errorf("read a C string after the context closed: %w", err))
+	}
+
 	defer h.Free()
 	if h.Raw() == 0 {
 		return h.String()
