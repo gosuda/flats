@@ -31,6 +31,10 @@ const mermaidJS = mermaid.outputFiles[0].text,
   mermaidURL = `/_docs/assets/mermaid-${createHash("sha256").update(mermaidJS).digest("hex").slice(0, 16)}.js`,
   mermaidDefine = { FLATS_MERMAID_URL: JSON.stringify(mermaidURL) };
 const mermaidGzip = gzipSync(mermaidJS, { level: 9 });
+// zlib writes the operating system it was built for into the tenth gzip header
+// byte (3 on Linux, 19 on macOS, 10 on Windows). Set it to 255, "unknown" in
+// RFC 1952, so the committed bytes are the same wherever dist is built.
+mermaidGzip[9] = 255;
 // The deployed QuickJS host codec accepts at most 1.5 MiB of decoded bytes.
 if (mermaidGzip.length > 1536 * 1024)
   throw new Error("Compressed Mermaid exceeds the host codec limit");
