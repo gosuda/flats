@@ -1,9 +1,10 @@
 // Flats preview check. Run it in your browser tool's JavaScript runner (or the
 // DevTools console) on a Draft preview, once per width and color scheme. It
 // only reads the rendered page; it cannot see console errors logged earlier.
-'use strict';
-
+// The file is one expression, so tools that take a function can run it as
+// `() => <script>`; strict mode is declared inside the arrow function.
 (() => {
+  'use strict';
   const root = document.documentElement;
   const vw = root.clientWidth;
   const out = {
