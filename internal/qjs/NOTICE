@@ -1,8 +1,9 @@
 This directory is a fork of github.com/fastschema/qjs v0.0.6
 (https://github.com/fastschema/qjs), Copyright (c) 2025 Nguyen Ngoc Phuong and
 Contributors, used under the MIT License (see LICENSE in this directory).
-qjs.wasm and qjswasm/ are unchanged from v0.0.6. The upstream *_test.go files
-were not copied (they need testify); fork_test.go covers the changes below.
+qjs.wasm and qjswasm/ are v0.0.6 plus the C changes in items 16 to 18. The
+upstream *_test.go files were not copied (they need testify); fork_test.go,
+audit_regression_test.go and audit_cglue_test.go cover the changes below.
 
 Changes made for Flats (search for "FORK (flats)"):
 
@@ -97,3 +98,47 @@ an atomically swapped per-request context instead (internal/runtime does).
     New also no longer dereferences its nil named result on error paths
     (before, those errors became a recovered nil-pointer panic and the
     wazero runtime leaked).
+16. qjswasm/helpers.c, qjs.wasm: QJS_IsInstanceOf returns false and clears
+    the pending exception when JS_IsInstanceOf fails (-1 used to read as
+    true, so Map/Set/ArrayBuffer detection classified throwing objects as
+    instances and left the context poisoned). detect_entry_point frees each
+    suffix candidate that does not exist. qjs.wasm is rebuilt from these
+    sources with the pinned quickjs-ng d01ca44, clang 23 with the WASI
+    wasm32-wasip1 sysroot, and wasm-opt -O3; the build is not byte-identical
+    to upstream's wasi-sdk 20 binary.
+
+17. qjswasm/eval.c: the bytecode path handed its function object to
+    JS_EvalFunction, which consumes it, and then freed it again when
+    evaluation threw. The first throwing bytecode Eval corrupted the guest
+    heap and the next call trapped. Loading non-module bytecode as a module
+    leaked the compiled module. A resolved entry point is now owned by its
+    caller (detect_entry_point leaked one allocation per file evaluation and
+    per module import), and a module the loader cannot resolve throws a
+    ReferenceError instead of returning a null module with no exception.
+18. qjswasm/helpers.c: QJS_ToInt64, QJS_ToInt32, QJS_ToUint32 and
+    QJS_ToFloat64 clear the pending exception of a failed conversion, so
+    converting a symbol or an object with a throwing valueOf no longer
+    poisons the context (the next, unrelated Eval used to fail with the stale
+    TypeError). QJS_ToEpochTime reports NaN and clears the exception when a
+    Date's getTime throws or returns a non-number, so a hostile Date reads as
+    invalid instead of 1970. QJS_ToCString and QJS_AtomToCString pack the
+    real string length instead of strlen, so a JS string or property key with
+    U+0000 reaches Go whole instead of being truncated at the NUL;
+    QJS_NewStringLen (new export) sets a string from an explicit byte length.
+    QJS_JSONStringify keeps the string it returns (the caller frees it with
+    JS_FreeCString; it used to free it before returning),
+    QJS_GetOwnPropertyNames no longer returns VM-private atoms, every
+    packed-pointer helper throws an out-of-memory exception instead of
+    returning NULL when its wrapper allocation fails, and init of the
+    QJS_PROXY_VALUE prototype frees the prototype object it hands to the
+    constructor.
+19. qjswasm/, scripts/build-qjs-wasm.sh, Makefile: `make qjs-wasm` rebuilds
+    qjs.wasm from the pinned quickjs-ng
+    d01ca4491fb24ccfeccb4c7394e28a3b21fd5986 with Homebrew llvm, wasi-libc,
+    wasi-runtimes and wasm-opt -O3. The script copies the glue from
+    internal/qjs/qjswasm/, fails with a clear message when a tool is missing,
+    and reproduces the shipped binary byte for byte (it configures with
+    -DQJS_BUILD_LIBC=ON, which compiles quickjs-libc.c with the _GNU_SOURCE
+    the quickjs build sets, and -DCMAKE_POLICY_VERSION_MINIMUM=3.5).
+    qjs.wasm SHA-256:
+    79284a9282ad8471573a4d52401362e27d149f1d70b4175cb5affc960a8dc9a9
