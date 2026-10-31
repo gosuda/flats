@@ -189,13 +189,17 @@ func (h *wsHub) close(id int64, code int, reason string) error {
 	return nil
 }
 
-// closeCode keeps a close frame's status in the set RFC 6455 lets an endpoint
-// send: 1004, 1005, 1006 and 1015 are reserved and never belong in a frame.
 func closeCode(code int) int {
-	if code < 1000 || code > 4999 || code == 1004 || code == 1005 || code == 1006 || code == 1015 {
+	switch {
+	case code >= 1000 && code <= 1003:
+		return code
+	case code >= 1007 && code <= 1014:
+		return code
+	case code >= 3000 && code <= 4999:
+		return code
+	default:
 		return 1000
 	}
-	return code
 }
 
 // closeReason bounds a close frame's reason to 123 bytes of valid UTF-8, the
@@ -344,22 +348,15 @@ func (h *wsHub) serve(w http.ResponseWriter, r *http.Request, url string, header
 	for {
 		msg, err := c.ReadMessage(MaxWSMessage)
 		if err != nil {
-			var ce *wsconn.CloseError
-			var ne net.Error
-			switch {
-			case errors.As(err, &ce):
+			if ce, ok := errors.AsType[*wsconn.CloseError](err); ok {
 				code, reason = ce.Code, ce.Reason
-				if code == 1005 {
-					c.Close(1000, "")
-				} else {
-					c.Close(code, "")
-				}
-			case errors.As(err, &ne) && ne.Timeout():
+				c.Close(closeCode(code), "")
+			} else if ne, ok := errors.AsType[net.Error](err); ok && ne.Timeout() {
 				code, reason = 1001, "idle timeout"
 				c.Close(code, reason)
-			default:
+			} else {
 				c.Close(1006, "")
-				if endCode, endWhy := c.CloseStatus(); endCode != 0 { // a concurrent close or full send queue won
+				if endCode, endWhy := c.CloseStatus(); endCode != 0 {
 					code, reason = endCode, endWhy
 				}
 			}

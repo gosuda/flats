@@ -471,12 +471,19 @@
     let info;
     try {
       info = e instanceof Error
-        ? { name: e.name, message: String(e.message), stack: String(e.stack || "") }
+        ? { name: String(e.name), message: String(e.message), stack: String(e.stack || "") }
         : { name: "Error", message: "uncaught: " + fmt(e), stack: "" };
     } catch (_) {
       info = undescribed();
     }
     return info;
+  };
+  const errorJson = (e) => {
+    try {
+      return JSON.stringify({ __error: errInfo(e) });
+    } catch (_) {
+      return JSON.stringify({ __error: undescribed() });
+    }
   };
 
   // --- env ---
@@ -526,7 +533,7 @@
       const res = await mod.fetch(req, env);
       return JSON.stringify(serialize(res));
     } catch (e) {
-      return JSON.stringify({ __error: errInfo(e) });
+      return errorJson(e);
     }
   };
 
@@ -581,7 +588,7 @@
       }
       return "";
     } catch (e) {
-      return JSON.stringify({ __error: errInfo(e) });
+      return errorJson(e);
     }
   };
 })();

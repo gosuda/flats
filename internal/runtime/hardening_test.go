@@ -22,42 +22,194 @@ const hostile = () => new Proxy({}, {
   getPrototypeOf() { throw new Error("prototype trap"); },
   get() { throw new Error("property trap"); },
 });
+class BigIntNameError extends Error {
+  get name() { return 1n; }
+}
+class NumberNameError extends Error {
+  constructor() {
+    super("num-msg");
+    this.name = 42;
+  }
+}
+class ThrowingMessageError extends Error {
+  get message() { throw new Error("message trap"); }
+}
 export default {
-  fetch() { return new Response("http"); },
+  async fetch(req) {
+    const u = new URL(req.url);
+    const check = u.searchParams.get("check");
+    if (check) {
+      let raw;
+      if (check === "boom") {
+        raw = await globalThis.__flats_dispatch(JSON.stringify({
+          method: "GET",
+          url: "http://flat.test/throw?which=boom",
+          headers: {},
+        }));
+      } else if (check === "bigint-name") {
+        raw = await globalThis.__flats_dispatch(JSON.stringify({
+          method: "GET",
+          url: "http://flat.test/throw?which=bigint-name",
+          headers: {},
+        }));
+      } else if (check === "number-name") {
+        raw = await globalThis.__flats_dispatch(JSON.stringify({
+          method: "GET",
+          url: "http://flat.test/throw?which=number-name",
+          headers: {},
+        }));
+      } else if (check === "throw-message") {
+        raw = await globalThis.__flats_dispatch(JSON.stringify({
+          method: "GET",
+          url: "http://flat.test/throw?which=throw-message",
+          headers: {},
+        }));
+      }
+      return new Response(raw, { headers: { "content-type": "application/json" } });
+    }
+    const which = u.searchParams.get("which");
+    if (which === "boom") throw hostile();
+    if (which === "bigint-name") throw new BigIntNameError("bigint-msg");
+    if (which === "number-name") throw new NumberNameError();
+    if (which === "throw-message") throw new ThrowingMessageError();
+    return new Response("http");
+  },
   websocket: {
     open(ws) { ws.send("open"); },
     message(ws, data) {
       if (data === "boom") throw hostile();
+      if (data === "bigint-name") throw new BigIntNameError("bigint-msg");
+      if (data === "number-name") throw new NumberNameError();
+      if (data === "throw-message") throw new ThrowingMessageError();
       ws.send("echo:" + data);
     },
   },
 };`}, "index.js", nil)
 	addr := strings.TrimPrefix(f.srv.URL, "http://")
-	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 	defer cancel()
-	c, err := wsconn.Dial(ctx, func(ctx context.Context) (net.Conn, error) {
+	c1, err := wsconn.Dial(ctx, func(ctx context.Context) (net.Conn, error) {
 		return (&net.Dialer{}).DialContext(ctx, "tcp", addr)
 	}, addr, "/ws")
 	if err != nil {
-		t.Fatalf("dial: %v; logs:\n%s", err, f.logs)
+		t.Fatalf("dial c1: %v; logs:\n%s", err, f.logs)
 	}
-	defer c.Close(1006, "")
-	c.NetConn().SetDeadline(time.Now().Add(10 * time.Second))
-	if got, err := c.ReadMessage(MaxWSMessage); err != nil || got != "open" {
-		t.Fatalf("open = %q, %v; logs:\n%s", got, err, f.logs)
-	}
-	if err := c.WriteFrame(wsconn.OpText, []byte("boom")); err != nil {
-		t.Fatal(err)
-	}
-	if err := c.WriteFrame(wsconn.OpText, []byte("after")); err != nil {
-		t.Fatal(err)
-	}
-	got, err := c.ReadMessage(MaxWSMessage)
+	defer c1.Close(1006, "")
+	c1.NetConn().SetDeadline(time.Now().Add(10 * time.Second))
+
+	c2, err := wsconn.Dial(ctx, func(ctx context.Context) (net.Conn, error) {
+		return (&net.Dialer{}).DialContext(ctx, "tcp", addr)
+	}, addr, "/ws")
 	if err != nil {
-		t.Fatalf("connection was closed by the thrown value: %v; logs:\n%s", err, f.logs)
+		t.Fatalf("dial c2: %v; logs:\n%s", err, f.logs)
 	}
-	if got != "echo:after" {
-		t.Fatalf("message after the thrown value = %q, want echo:after; logs:\n%s", got, f.logs)
+	defer c2.Close(1006, "")
+	c2.NetConn().SetDeadline(time.Now().Add(10 * time.Second))
+
+	if got, err := c1.ReadMessage(MaxWSMessage); err != nil || got != "open" {
+		t.Fatalf("c1 open = %q, %v; logs:\n%s", got, err, f.logs)
+	}
+	if got, err := c2.ReadMessage(MaxWSMessage); err != nil || got != "open" {
+		t.Fatalf("c2 open = %q, %v; logs:\n%s", got, err, f.logs)
+	}
+
+	cases := []struct {
+		name     string
+		trigger  string
+		wantLog  string
+		wantName string
+		wantMsg  string
+	}{
+		{
+			name:     "hostile-proxy",
+			trigger:  "boom",
+			wantLog:  "websocket message handler: Error: uncaught: a value that cannot be described",
+			wantName: "Error",
+			wantMsg:  "uncaught: a value that cannot be described",
+		},
+		{
+			name:     "bigint-name-getter",
+			trigger:  "bigint-name",
+			wantLog:  "websocket message handler: 1: bigint-msg",
+			wantName: "1",
+			wantMsg:  "bigint-msg",
+		},
+		{
+			name:     "number-name",
+			trigger:  "number-name",
+			wantLog:  "websocket message handler: 42: num-msg",
+			wantName: "42",
+			wantMsg:  "num-msg",
+		},
+		{
+			name:     "throwing-message-getter",
+			trigger:  "throw-message",
+			wantLog:  "websocket message handler: Error: uncaught: a value that cannot be described",
+			wantName: "Error",
+			wantMsg:  "uncaught: a value that cannot be described",
+		},
+	}
+
+	for _, tc := range cases {
+		c1.NetConn().SetDeadline(time.Now().Add(10 * time.Second))
+		c2.NetConn().SetDeadline(time.Now().Add(10 * time.Second))
+
+		if err := c1.WriteFrame(wsconn.OpText, []byte(tc.trigger)); err != nil {
+			t.Fatalf("%s: write trigger: %v", tc.name, err)
+		}
+		if err := c1.WriteFrame(wsconn.OpText, []byte("after:"+tc.trigger)); err != nil {
+			t.Fatalf("%s: write after: %v", tc.name, err)
+		}
+		got, err := c1.ReadMessage(MaxWSMessage)
+		if err != nil {
+			t.Fatalf("%s: connection c1 was closed by thrown value: %v; logs:\n%s", tc.name, err, f.logs)
+		}
+		if got != "echo:after:"+tc.trigger {
+			t.Fatalf("%s: c1 message after thrown value = %q, want echo:after:%s; logs:\n%s", tc.name, got, tc.trigger, f.logs)
+		}
+
+		if err := c2.WriteFrame(wsconn.OpText, []byte("ping:"+tc.trigger)); err != nil {
+			t.Fatalf("%s: other connection c2 write failed: %v", tc.name, err)
+		}
+		got2, err := c2.ReadMessage(MaxWSMessage)
+		if err != nil {
+			t.Fatalf("%s: other ws connection c2 was closed by thrown value: %v; logs:\n%s", tc.name, err, f.logs)
+		}
+		if got2 != "echo:ping:"+tc.trigger {
+			t.Fatalf("%s: other ws connection c2 message = %q, want echo:ping:%s; logs:\n%s", tc.name, got2, tc.trigger, f.logs)
+		}
+
+		f.logs.waitFor(t, tc.wantLog)
+
+		var rawEnv struct {
+			Error map[string]any `json:"__error"`
+		}
+		f.json(t, "/?check="+tc.trigger, &rawEnv)
+		nameVal, ok := rawEnv.Error["name"].(string)
+		if !ok {
+			t.Fatalf("%s: expected string name in __error envelope, got %T (%v)", tc.name, rawEnv.Error["name"], rawEnv.Error["name"])
+		}
+		if nameVal != tc.wantName {
+			t.Fatalf("%s: name = %q, want %q", tc.name, nameVal, tc.wantName)
+		}
+		msgVal, ok := rawEnv.Error["message"].(string)
+		if !ok {
+			t.Fatalf("%s: expected string message in __error envelope, got %T (%v)", tc.name, rawEnv.Error["message"], rawEnv.Error["message"])
+		}
+		if msgVal != tc.wantMsg {
+			t.Fatalf("%s: message = %q, want %q", tc.name, msgVal, tc.wantMsg)
+		}
+		if _, ok := rawEnv.Error["stack"].(string); !ok {
+			t.Fatalf("%s: expected string stack in __error envelope, got %T (%v)", tc.name, rawEnv.Error["stack"], rawEnv.Error["stack"])
+		}
+
+		var typedEnv struct {
+			Error jsError `json:"__error"`
+		}
+		f.json(t, "/?check="+tc.trigger, &typedEnv)
+		if typedEnv.Error.Name != tc.wantName || typedEnv.Error.Message != tc.wantMsg {
+			t.Fatalf("%s: unmarshaled jsError = %+v, want name=%q msg=%q", tc.name, typedEnv.Error, tc.wantName, tc.wantMsg)
+		}
 	}
 }
 
