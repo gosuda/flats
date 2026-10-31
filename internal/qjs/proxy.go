@@ -319,6 +319,5 @@ func readArgsFromWasmMem(mem api.Memory, argc uint32, argv uint32) ([]uint64, er
 		args[i] = binary.LittleEndian.Uint64(data[i*8 : i*8+8])
 	}
 
-// refused_by: statement_fold · collision: none (no common ancestor text)
 	return args, nil
 }
