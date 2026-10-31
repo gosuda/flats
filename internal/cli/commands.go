@@ -110,12 +110,7 @@ func (a *app) upload(src, slug, message string, expected int, document bool) err
 	}
 	var out struct {
 		Draft *draftView `json:"draft"`
-		Flat  *struct {
-			Type       string `json:"type"`
-			Running    bool   `json:"running"`
-			Visibility string `json:"visibility"`
-			PrivateURL string `json:"private_url"`
-		} `json:"flat"`
+		Flat  *flatView  `json:"flat"`
 	}
 
 	_ = json.Unmarshal(resp.Body, &out)
@@ -141,7 +136,18 @@ func (a *app) upload(src, slug, message string, expected int, document bool) err
 	if f := out.Flat; f != nil && f.Type == "docs" {
 		// A document has no Draft or publish step: the save runs it.
 		if f.Running {
-			fmt.Fprintf(w, "Saved document %s; it is running now (%s) at %s. Documents have no publish step.\n", slug, f.Visibility, f.PrivateURL)
+			link := "at " + f.PrivateURL
+			if f.PrivateURL == "" {
+				if f.PublicURL != "" {
+					link = "at " + f.PublicURL
+				} else {
+					link = fmt.Sprintf("with no link yet (%s)", f.ConnectionState)
+				}
+			}
+			fmt.Fprintf(w, "Saved document %s; it is running now (%s) %s. Documents have no publish step.\n", slug, f.Visibility, link)
+			if f.PrivateURL == "" && f.PublicURL != "" {
+				fmt.Fprintf(w, "  note: %s\n", publicNotice(*f))
+			}
 		} else {
 			fmt.Fprintf(w, "Saved document %s, but it is not running; `flats logs %s` has details.\n", slug, slug)
 		}
@@ -227,6 +233,9 @@ func printURLs(w io.Writer, f flatView) {
 		fmt.Fprintf(w, "  public:  %s\n", f.PublicURL)
 		fmt.Fprintf(w, "  note: %s\n", publicNotice(f))
 	}
+	if f.PrivateURL == "" && f.PublicURL == "" {
+		fmt.Fprintf(w, "  no link yet (%s)\n", f.ConnectionState)
+	}
 }
 
 // printPending notes that a private host is not answering yet.
@@ -296,6 +305,9 @@ func (a *app) list(args []string) error {
 	var notes []string
 	for _, f := range out.Flats {
 		u := f.PrivateURL
+		if u == "" {
+			u = fmt.Sprintf("no link yet (%s)", f.ConnectionState)
+		}
 		if f.PublicURL != "" {
 			u = f.PublicURL + " (*)"
 			notes = append(notes, fmt.Sprintf("  %s: %s", f.Slug, publicNotice(f)))
