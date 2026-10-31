@@ -177,6 +177,8 @@ func (s *Server) Handler() http.Handler {
 			h("PUT /experiments/autopilot", s.setAutopilotEnabled)
 			h("PUT /experiments/autopilot/operations/{op}", s.setAutopilotOp)
 			h("PUT /experiments/autopilot/guide", s.setAutopilotGuide)
+			h("GET /experiments/public-instance", s.getPublicInstance)
+			h("PUT /experiments/public-instance", s.setPublicInstance)
 		} else {
 			h("POST /flats", s.createFlat)
 			h("GET /flats/{slug}/board", s.getBoard)
