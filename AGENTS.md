@@ -7,6 +7,7 @@ Explicit design-only, implementation-only
 and test-only requests use the corresponding stage and stop at its boundary.
 Each stage includes review by a different model and correction before acceptance.
 Agents without skill discovery must read these same linked instructions directly,
+including the change-type playbooks and cleanup skills the workflow links.
 
 JavaScript: every `.js` and `.mjs` file declares `'use strict';` in its
 directive prologue, after any shebang or leading comment. New files carry it

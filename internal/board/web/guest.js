@@ -78,8 +78,8 @@ export function randomNick(pick = (list) => list[Math.floor(Math.random() * list
 }
 
 // pageNick is the nickname guests see for this page's person (hello.nick,
-// docs-public-edit-TECH 5.2): the typed name when there is one, cut to a
-// guest name's length, else the generated name this browser keeps, made
+// docs-public-edit-technical-design 5.2): the typed name when there is one, cut
+// to a guest name's length, else the generated name this browser keeps, made
 // once.
 export function pageNick(typed, nick = randomNick) {
   const clean = [...cleanGuestName(typed)].slice(0, GUEST_NAME_MAX).join('').trim();

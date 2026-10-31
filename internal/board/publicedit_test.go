@@ -21,8 +21,9 @@ import (
 	"github.com/gosuda/flats/internal/wsconn"
 )
 
-// Tests of anonymous public editing (docs/spec/board-public-edit-technical-design.md
-// section 10, the board's part).
+// Tests of anonymous public editing
+// (docs/spec/board-public-edit-technical-design.md section 10, the board's
+// part).
 
 // limits changes the board's guest limits in the apply loop.
 func (b *tb) limits(fn func(p *publicLimits)) {
@@ -309,8 +310,8 @@ func TestGuestRevive(t *testing.T) {
 // TestGuestFrameScan: no frame a guest receives names a Tailscale login, a
 // member's typed name or an agent label, with two guests at once; guests
 // and members see each other's presence in their own forms, members under
-// their page nicknames (TECH public edit 3.3, 3.4; docs-public-edit-TECH
-// 5.1).
+// their page nicknames (TECH public edit 3.3, 3.4;
+// docs-public-edit-technical-design 5.1).
 func TestGuestFrameScan(t *testing.T) {
 	ctx := context.Background()
 	b := editTB(t)
@@ -400,7 +401,7 @@ func TestGuestFrameScan(t *testing.T) {
 
 // TestGuestSeesMemberWithoutNick: a member that sends no usable nickname,
 // a Tailscale member included, appears to guests as Member N, never under
-// its Tailscale display name or login (docs-public-edit-TECH 5.1).
+// its Tailscale display name or login (docs-public-edit-technical-design 5.1).
 func TestGuestSeesMemberWithoutNick(t *testing.T) {
 	b := editTB(t)
 	g, log := joinLoggedGuest(t, b, "Gus")
@@ -426,7 +427,7 @@ func TestGuestSeesMemberWithoutNick(t *testing.T) {
 
 // TestAccessEpochOnTheWire: welcomes of every kind and level frames carry
 // the stored access epoch core set, also after a restart
-// (docs-public-edit-TECH 5.1).
+// (docs-public-edit-technical-design 5.1).
 func TestAccessEpochOnTheWire(t *testing.T) {
 	b := newTB(t)
 	b.setLevel(AccessView) // epoch 1

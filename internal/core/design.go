@@ -1114,12 +1114,12 @@ func (s *Service) quotas(st store.ContentState) (revisions, pins int) {
 	return revisions, pins
 }
 
-// retainTx applies retention (board-public-edit-TECH 5.3) and returns how
-// many revisions it deleted. With a revision quota Q, unpinned guest-only
-// revisions keep at most floor(Q/2) places (at least one when the newest
-// revision is guest-only), the oldest going first; then the oldest unpinned
-// revisions over Q go. The newest revision and pinned or held revisions are
-// never deleted.
+// retainTx applies retention (board-public-edit-technical-design 5.3) and
+// returns how many revisions it deleted. With a revision quota Q, unpinned
+// guest-only revisions keep at most floor(Q/2) places (at least one when the
+// newest revision is guest-only), the oldest going first; then the oldest
+// unpinned revisions over Q go. The newest revision and pinned or held
+// revisions are never deleted.
 func (s *Service) retainTx(ctx context.Context, tx *store.ContentTx) (int, error) {
 	st, err := tx.State(ctx)
 	if err != nil {

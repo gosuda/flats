@@ -60,8 +60,8 @@ func retainKinds(t *testing.T, q int, kinds string) []int {
 	return kept
 }
 
-// Retention (board-public-edit-TECH 5.3): guest-only revisions keep at most
-// half of the quota, the newest revision and pins always stay.
+// Retention (board-public-edit-technical-design 5.3): guest-only revisions keep
+// at most half of the quota, the newest revision and pins always stay.
 func TestRetentionGuestOnlyShare(t *testing.T) {
 	for _, tc := range []struct {
 		q     int

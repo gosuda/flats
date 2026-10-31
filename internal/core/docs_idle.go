@@ -269,7 +269,7 @@ func withRunningDocs(ctx context.Context, d *deployed) (context.Context, func(),
 // prepareDocsLocked preserves reads/recovery on import or capacity failures.
 // A revoked budget blocks writes until an explicit installation succeeds.
 // The stored public access level and its epoch reach the worker before any
-// request does (docs-public-edit-TECH 2.4).
+// request does (docs-public-edit-technical-design 2.4).
 func (s *Service) prepareDocsLocked(ctx context.Context, slug string, d *deployed) error {
 	if err := s.docsHost(ctx, slug, http.MethodPost, "budget/revoke", map[string]any{}, nil); err != nil {
 		return err
