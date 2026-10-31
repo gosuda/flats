@@ -115,7 +115,7 @@ func newDocumentVM(w *worker, ws wsSink) (*jsVM, error) {
 	if err := vm.newEngine(spec); err != nil {
 		return nil, err
 	}
-	if err := vm.startup(vm.load); err != nil {
+	if err := vm.startup(vm.loadModule); err != nil {
 		vm.close()
 		return nil, err
 	}

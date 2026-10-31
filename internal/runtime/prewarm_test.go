@@ -145,7 +145,7 @@ func TestPrewarmShellReleasedByWASIWorker(t *testing.T) {
 		t.Fatal("the WASI worker still holds the prewarmed shell")
 	}
 	spec := jsengine.Spec{CacheDir: cache, Shell: shell}
-	if eng, err := jsengine.Open(spec, nil); err == nil {
+	if eng, err := jsengine.Open(spec); err == nil {
 		eng.Close()
 		t.Fatal("the released shell is still usable")
 	}

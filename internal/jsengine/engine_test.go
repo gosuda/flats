@@ -20,7 +20,7 @@ func validContext(t *testing.T) context.Context {
 }
 
 func TestNormalEvalAndCall(t *testing.T) {
-	eng, err := Open(Spec{}, nil)
+	eng, err := Open(Spec{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -76,7 +76,7 @@ func TestErrBusyConcurrent(t *testing.T) {
 		return []byte("fast"), nil
 	}
 
-	eng, err := Open(Spec{}, host)
+	eng, err := Open(Spec{Host: host})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -130,7 +130,7 @@ func TestFatalPanickingHostFunction(t *testing.T) {
 		return []byte("ok"), nil
 	}
 
-	eng, err := Open(Spec{}, host)
+	eng, err := Open(Spec{Host: host})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -158,7 +158,7 @@ func TestFatalPanickingHostFunction(t *testing.T) {
 }
 
 func TestFatalPendingExceptionLeak(t *testing.T) {
-	eng, err := Open(Spec{}, nil)
+	eng, err := Open(Spec{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestFatalPendingExceptionLeak(t *testing.T) {
 }
 
 func TestFatalHandleLedgerLeak(t *testing.T) {
-	eng, err := Open(Spec{}, nil)
+	eng, err := Open(Spec{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestFatalHandleLedgerLeak(t *testing.T) {
 }
 
 func TestFatalWasmTrapOrDeepRecursion(t *testing.T) {
-	eng, err := Open(Spec{}, nil)
+	eng, err := Open(Spec{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -231,7 +231,7 @@ func TestFatalWasmTrapOrDeepRecursion(t *testing.T) {
 }
 
 func TestErrNoDeadline(t *testing.T) {
-	eng, err := Open(Spec{}, nil)
+	eng, err := Open(Spec{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -256,7 +256,7 @@ func TestErrNoDeadline(t *testing.T) {
 
 func TestBoundaryMaxInputBytes(t *testing.T) {
 	const n = 10
-	eng, err := Open(Spec{MaxInputBytes: n, Prelude: "globalThis.echo = (x) => x;"}, nil)
+	eng, err := Open(Spec{MaxInputBytes: n, Prelude: "globalThis.echo = (x) => x;"})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -310,7 +310,7 @@ func TestBoundaryMaxInputBytes(t *testing.T) {
 
 func TestBoundaryMaxOutputBytes(t *testing.T) {
 	const n = 10
-	eng, err := Open(Spec{MaxOutputBytes: n}, nil)
+	eng, err := Open(Spec{MaxOutputBytes: n})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -340,7 +340,7 @@ func TestBoundaryMaxOutputBytes(t *testing.T) {
 }
 
 func TestDoubleCloseAndUseAfterClose(t *testing.T) {
-	eng, err := Open(Spec{}, nil)
+	eng, err := Open(Spec{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -365,7 +365,7 @@ func TestDoubleCloseAndUseAfterClose(t *testing.T) {
 }
 
 func TestGuestExceptionLeavesEngineUsable(t *testing.T) {
-	eng, err := Open(Spec{}, nil)
+	eng, err := Open(Spec{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -399,7 +399,7 @@ func TestPrewarmShell(t *testing.T) {
 		t.Fatal("shell should be compatible with matching Spec")
 	}
 
-	eng, err := Open(Spec{Shell: shell}, nil)
+	eng, err := Open(Spec{Shell: shell})
 	if err != nil {
 		t.Fatalf("Open with Shell: %v", err)
 	}
@@ -413,7 +413,7 @@ func TestPrewarmShell(t *testing.T) {
 }
 
 func TestImageSnapshot(t *testing.T) {
-	eng, err := Open(Spec{ImagePath: "/tmp/fake-image"}, nil)
+	eng, err := Open(Spec{ImagePath: "/tmp/fake-image"})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -435,7 +435,7 @@ func TestImageSnapshot(t *testing.T) {
 		t.Fatal("unmarshaled image not compatible")
 	}
 
-	plainEng, err := Open(Spec{}, nil)
+	plainEng, err := Open(Spec{})
 	if err != nil {
 		t.Fatalf("Open plain: %v", err)
 	}
@@ -468,7 +468,7 @@ func TestRawCodecOpDispatch(t *testing.T) {
 			}
 		},
 	}
-	eng, err := Open(spec, nil)
+	eng, err := Open(spec)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -510,7 +510,7 @@ func TestStdoutStderrSplit(t *testing.T) {
 		Stdout: &stdout,
 		Stderr: &stderr,
 	}
-	eng, err := Open(spec, nil)
+	eng, err := Open(spec)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -529,7 +529,7 @@ func TestStdoutStderrSplit(t *testing.T) {
 }
 
 func TestImageBindingCompatibility(t *testing.T) {
-	eng, err := Open(Spec{ImagePath: "/tmp/fake-image", ImageBinding: "binding-alpha"}, nil)
+	eng, err := Open(Spec{ImagePath: "/tmp/fake-image", ImageBinding: "binding-alpha"})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -563,7 +563,7 @@ func TestSnapshotTaintRefusal(t *testing.T) {
 		hostCalled = true
 		return []byte("ok"), nil
 	}
-	eng, err := Open(Spec{ImagePath: "/tmp/fake-image"}, host)
+	eng, err := Open(Spec{ImagePath: "/tmp/fake-image", Host: host})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -601,7 +601,7 @@ func TestReleasedShellOpenFailure(t *testing.T) {
 	if err := shell.Close(); err != nil {
 		t.Fatalf("shell.Close: %v", err)
 	}
-	_, err = Open(Spec{Shell: shell}, nil)
+	_, err = Open(Spec{Shell: shell})
 	if err == nil {
 		t.Fatal("expected Open to fail on released shell")
 	}
@@ -648,7 +648,7 @@ func TestBareHostGlobalAbsent(t *testing.T) {
 	host := func(ctx context.Context, op string, args []byte) ([]byte, error) {
 		return []byte("ok"), nil
 	}
-	eng, err := Open(Spec{}, host)
+	eng, err := Open(Spec{Host: host})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -674,7 +674,7 @@ func TestCaptureAndRestoreWithCodec(t *testing.T) {
 			return Value{}, errors.New("unknown op")
 		},
 	}
-	eng, err := Open(spec, nil)
+	eng, err := Open(spec)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -699,7 +699,7 @@ func TestCaptureAndRestoreWithCodec(t *testing.T) {
 			return Value{}, errors.New("unknown op")
 		},
 	}
-	restoredEng, err := Open(restoreSpec, nil)
+	restoredEng, err := Open(restoreSpec)
 	if err != nil {
 		t.Fatalf("Open restored: %v", err)
 	}
@@ -720,7 +720,7 @@ func TestCaptureAndRestoreWithCodec(t *testing.T) {
 
 func TestGCDrained(t *testing.T) {
 	ctx := validContext(t)
-	eng, err := Open(Spec{Prelude: "globalThis.step = () => {};"}, nil)
+	eng, err := Open(Spec{Prelude: "globalThis.step = () => {};"})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -744,7 +744,7 @@ func TestGCDrained(t *testing.T) {
 func TestCensus(t *testing.T) {
 	ctx := validContext(t)
 	census := &Census{}
-	eng, err := Open(Spec{Census: census}, nil)
+	eng, err := Open(Spec{Census: census})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -767,7 +767,7 @@ func TestSnapshotExclusion(t *testing.T) {
 		<-unblock
 		return []byte("ok"), nil
 	}
-	eng, err := Open(Spec{ImagePath: "/tmp/fake-snap", Host: host}, host)
+	eng, err := Open(Spec{ImagePath: "/tmp/fake-snap", Host: host})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -810,7 +810,7 @@ func TestCloseWaitsForInFlightCall(t *testing.T) {
 		<-unblock
 		return []byte("ok"), nil
 	}
-	eng, err := Open(Spec{Host: host}, host)
+	eng, err := Open(Spec{Host: host})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -860,7 +860,7 @@ func TestCloseFromHostRefusesBusy(t *testing.T) {
 		return []byte("ok"), nil
 	}
 	var err error
-	eng, err = Open(Spec{Host: host}, host)
+	eng, err = Open(Spec{Host: host})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -877,7 +877,7 @@ func TestCloseFromHostRefusesBusy(t *testing.T) {
 }
 
 func TestPostCallChecksOnErrorPath(t *testing.T) {
-	eng, err := Open(Spec{}, nil)
+	eng, err := Open(Spec{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -899,7 +899,7 @@ func TestPostCallChecksOnErrorPath(t *testing.T) {
 		t.Fatalf("call after poison: got %v, want ErrPoisoned", errAfter)
 	}
 
-	eng2, err := Open(Spec{}, nil)
+	eng2, err := Open(Spec{})
 	if err != nil {
 		t.Fatalf("Open eng2: %v", err)
 	}
@@ -916,7 +916,7 @@ func TestPostCallChecksOnErrorPath(t *testing.T) {
 }
 
 func TestCountImageFuncs(t *testing.T) {
-	eng, err := Open(Spec{ImagePath: "/tmp/fake-image"}, nil)
+	eng, err := Open(Spec{ImagePath: "/tmp/fake-image"})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -940,7 +940,7 @@ func TestHostResultOverLimit(t *testing.T) {
 	host := func(ctx context.Context, op string, args []byte) ([]byte, error) {
 		return bytes.Repeat([]byte("a"), maxHost+1), nil
 	}
-	eng, err := Open(Spec{MaxHostArgBytes: maxHost, Host: host}, host)
+	eng, err := Open(Spec{MaxHostArgBytes: maxHost, Host: host})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -965,7 +965,7 @@ func TestHostResultOverLimit(t *testing.T) {
 }
 
 func TestImageEligiblePoisoned(t *testing.T) {
-	eng, err := Open(Spec{}, nil)
+	eng, err := Open(Spec{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -980,7 +980,7 @@ func TestImageEligiblePoisoned(t *testing.T) {
 }
 
 func TestCallMissingFuncNoHandleLeak(t *testing.T) {
-	eng, err := Open(Spec{}, nil)
+	eng, err := Open(Spec{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -1005,7 +1005,7 @@ func TestCompatibleWithDir(t *testing.T) {
 		ImagePath: "/tmp/fake-dir-image",
 		Dir:       dir,
 	}
-	eng, err := Open(spec, nil)
+	eng, err := Open(spec)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -1032,7 +1032,7 @@ func TestCompatibleWithDir(t *testing.T) {
 }
 
 func TestDeadlineClosedModuleFatal(t *testing.T) {
-	eng, err := Open(Spec{TimeoutMS: 50}, nil)
+	eng, err := Open(Spec{TimeoutMS: 50})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -1057,7 +1057,7 @@ func TestDeadlineClosedModuleFatal(t *testing.T) {
 }
 
 func TestOutOfMemoryFatal(t *testing.T) {
-	eng, err := Open(Spec{MemoryPages: 256}, nil)
+	eng, err := Open(Spec{MemoryPages: 256})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -1095,7 +1095,7 @@ func TestMaxHostArgBytesBoundaries(t *testing.T) {
 		}
 		return []byte("ok"), nil
 	}
-	eng, err := Open(Spec{MaxHostArgBytes: limit, Host: host}, host)
+	eng, err := Open(Spec{MaxHostArgBytes: limit, Host: host})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -1147,7 +1147,7 @@ func TestMaxHostArgBytesBoundaries(t *testing.T) {
 }
 
 func TestDeadlineClamping(t *testing.T) {
-	eng, err := Open(Spec{TimeoutMS: 100}, nil)
+	eng, err := Open(Spec{TimeoutMS: 100})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -1166,7 +1166,7 @@ func TestDeadlineClamping(t *testing.T) {
 		t.Fatalf("clamped timeout took %v, want <= 2s", elapsed)
 	}
 
-	eng2, err := Open(Spec{TimeoutMS: 10000}, nil)
+	eng2, err := Open(Spec{TimeoutMS: 10000})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -1198,7 +1198,7 @@ func TestGuestExceptionSubstringDoesNotPoison(t *testing.T) {
 
 	for _, tc := range cases {
 		t.Run(tc, func(t *testing.T) {
-			eng, err := Open(Spec{}, nil)
+			eng, err := Open(Spec{})
 			if err != nil {
 				t.Fatalf("Open: %v", err)
 			}
@@ -1228,7 +1228,7 @@ func TestGuestExceptionSubstringDoesNotPoison(t *testing.T) {
 	}
 
 	t.Run("RealInternalErrorPoisons", func(t *testing.T) {
-		eng, err := Open(Spec{}, nil)
+		eng, err := Open(Spec{})
 		if err != nil {
 			t.Fatalf("Open: %v", err)
 		}
@@ -1247,7 +1247,7 @@ func TestGuestExceptionSubstringDoesNotPoison(t *testing.T) {
 
 func TestSnapshotRefusedAfterUserCodeOrCodec(t *testing.T) {
 	t.Run("UserCodeRefusesSnapshot", func(t *testing.T) {
-		eng, err := Open(Spec{ImagePath: "/tmp/fake-image"}, nil)
+		eng, err := Open(Spec{ImagePath: "/tmp/fake-image"})
 		if err != nil {
 			t.Fatalf("Open: %v", err)
 		}
@@ -1273,7 +1273,7 @@ func TestSnapshotRefusedAfterUserCodeOrCodec(t *testing.T) {
 				return in.NewString("ok"), nil
 			},
 		}
-		eng, err := Open(spec, nil)
+		eng, err := Open(spec)
 		if err != nil {
 			t.Fatalf("Open: %v", err)
 		}
@@ -1293,7 +1293,7 @@ func TestSnapshotRefusedAfterUserCodeOrCodec(t *testing.T) {
 
 	t.Run("BootSourceTrustedWindow", func(t *testing.T) {
 		const trustedBoot = "export const ok = 1;"
-		eng, err := Open(Spec{ImagePath: "/tmp/fake-image", BootSource: trustedBoot}, nil)
+		eng, err := Open(Spec{ImagePath: "/tmp/fake-image", BootSource: trustedBoot})
 		if err != nil {
 			t.Fatalf("Open: %v", err)
 		}
@@ -1316,7 +1316,7 @@ func TestSnapshotRefusedAfterUserCodeOrCodec(t *testing.T) {
 
 	t.Run("BootSourceMismatchRefuses", func(t *testing.T) {
 		const trustedBoot = "export const ok = 1;"
-		eng, err := Open(Spec{ImagePath: "/tmp/fake-image", BootSource: trustedBoot}, nil)
+		eng, err := Open(Spec{ImagePath: "/tmp/fake-image", BootSource: trustedBoot})
 		if err != nil {
 			t.Fatalf("Open: %v", err)
 		}
@@ -1342,8 +1342,9 @@ func TestOpenRefusesHostPanicOrTaintDuringStartup(t *testing.T) {
 		}
 		spec := Spec{
 			Prelude: "try { __flats_host('test', 'arg'); } catch(e) {}",
+			Host:    host,
 		}
-		eng, err := Open(spec, host)
+		eng, err := Open(spec)
 		if err == nil {
 			eng.Close()
 			t.Fatal("Open must refuse if host panicked during prelude")
@@ -1359,8 +1360,9 @@ func TestOpenRefusesHostPanicOrTaintDuringStartup(t *testing.T) {
 		}
 		spec := Spec{
 			Prelude: "try { __flats_host('test', 'arg'); } catch(e) {}",
+			Host:    host,
 		}
-		eng, err := Open(spec, host)
+		eng, err := Open(spec)
 		if err == nil {
 			eng.Close()
 			t.Fatal("Open must refuse if host called during prelude")
@@ -1372,7 +1374,7 @@ func TestOpenRefusesHostPanicOrTaintDuringStartup(t *testing.T) {
 }
 
 func TestExpiredContextRejectedBeforeEntry(t *testing.T) {
-	eng, err := Open(Spec{}, nil)
+	eng, err := Open(Spec{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -1406,7 +1408,7 @@ func TestCodecHandleLeakTripsLedger(t *testing.T) {
 			return in.NewString("ok"), nil
 		},
 	}
-	eng, err := Open(spec, nil)
+	eng, err := Open(spec)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -1435,7 +1437,7 @@ func TestRawCodecValueOwnershipNoUAF(t *testing.T) {
 			return in.NewString("ok"), nil
 		},
 	}
-	eng, err := Open(spec, nil)
+	eng, err := Open(spec)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -1462,7 +1464,7 @@ func TestRawCodecValueOwnershipNoUAF(t *testing.T) {
 }
 
 func TestCallGCForbidden(t *testing.T) {
-	eng, err := Open(Spec{}, nil)
+	eng, err := Open(Spec{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -1486,7 +1488,7 @@ func TestCallGCForbidden(t *testing.T) {
 }
 
 func TestScriptErrorStructuredFields(t *testing.T) {
-	eng, err := Open(Spec{}, nil)
+	eng, err := Open(Spec{})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -1516,7 +1518,7 @@ func TestScriptErrorStructuredFields(t *testing.T) {
 }
 
 func TestCollectCyclesFailureSurfacesError(t *testing.T) {
-	eng, err := Open(Spec{Prelude: "globalThis.step = () => {};"}, nil)
+	eng, err := Open(Spec{Prelude: "globalThis.step = () => {};"})
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}

@@ -56,8 +56,9 @@ func TestOutboundFetchPrelude(t *testing.T) {
 		Prelude:   preludeJS,
 		RawCodec:  codecVM.docsCodec,
 		TimeoutMS: 20000,
+		Host:      hostFunc,
 	}
-	eng, err := jsengine.Open(spec, hostFunc)
+	eng, err := jsengine.Open(spec)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -2,15 +2,12 @@ package jsengine
 
 import (
 	"bytes"
-	"cmp"
 	"context"
 	"errors"
 	"fmt"
 	"io"
-	"slices"
 	"strings"
 	"sync"
-	"sync/atomic"
 
 	"github.com/gosuda/flats/internal/qjs"
 )
@@ -62,11 +59,6 @@ func (w *lineWriter) appendFragment(p []byte) {
 }
 
 func (w *lineWriter) emit() {
-	if w.sink == nil {
-		w.buf = w.buf[:0]
-		w.omitted = 0
-		return
-	}
 	if w.omitted > 0 {
 		msg := fmt.Sprintf("log line omitted: %d bytes is more than the %d KiB limit\n", w.omitted, maxLogLine>>10)
 		_, _ = w.sink.Write([]byte(msg))
@@ -97,14 +89,11 @@ func (e *Engine) hostCall(this *qjs.This) (*qjs.Value, error) {
 			a.Free()
 		}
 	}()
-	if len(args) > 2 {
-		return nil, ErrTooLarge
-	}
 	if len(args) != 2 {
 		return nil, errors.New("bad host call")
 	}
 
-	maxHost := cmp.Or(e.spec.MaxHostArgBytes, DefaultMaxHostArgBytes)
+	maxHost := e.spec.MaxHostArgBytes
 
 	op := args[0].String()
 	raw := args[1].String()
@@ -158,14 +147,11 @@ func (e *Engine) codecCall(this *qjs.This) (*qjs.Value, error) {
 			a.Free()
 		}
 	}()
-	if len(args) > 2 {
-		return nil, ErrTooLarge
-	}
 	if len(args) != 2 {
 		return nil, errors.New("invalid docs codec arguments")
 	}
 
-	memBound := int64(e.spec.MemoryPages) * 65536
+	memBound := e.memBound()
 
 	op := args[0].String()
 	if int64(len(op)) > memBound {
@@ -175,62 +161,42 @@ func (e *Engine) codecCall(this *qjs.This) (*qjs.Value, error) {
 	if e.spec.RawCodec != nil {
 		var inVal Value
 		if args[1].IsByteArray() {
-			inVal = Value{kind: valArrayBuffer, buf: slices.Clone(args[1].ToByteArray()), ctx: this.Context(), eng: e}
-		} else if args[1].IsString() {
-			inVal = Value{kind: valString, str: args[1].String(), ctx: this.Context(), eng: e}
-		} else {
-			e.trackHandle(1)
-			inVal = Value{raw: args[1].Clone(), ctx: this.Context(), eng: e, freed: &atomic.Bool{}}
-		}
-		defer inVal.Free()
-		if inVal.IsByteArray() {
-			if inVal.ByteLen() > memBound {
+			if args[1].ByteLen() > memBound {
 				return nil, ErrTooLarge
 			}
-			e.gcBytes += uint64(inVal.ByteLen())
+			b := args[1].ToByteArray()
+			e.gcBytes += uint64(len(b))
+			inVal = Value{kind: valArrayBuffer, buf: b, ctx: this.Context(), eng: e}
+		} else if args[1].IsString() {
+			s := args[1].String()
+			if int64(len(s)) > memBound {
+				return nil, ErrTooLarge
+			}
+			e.gcBytes += uint64(len(s))
+			inVal = Value{kind: valString, str: s, ctx: this.Context(), eng: e}
 		} else {
+			inVal = e.wrap(args[1].Clone(), this.Context())
 			s := inVal.String()
 			if int64(len(s)) > memBound {
 				return nil, ErrTooLarge
 			}
 			e.gcBytes += uint64(len(s))
 		}
+		defer inVal.Free()
 
 		outVal, err := e.spec.RawCodec(op, inVal)
 		if err != nil {
 			outVal.Free()
 			return nil, err
 		}
-		return e.toQjsValue(this.Context(), outVal, args[1])
-	}
-
-	if e.spec.DocsCodec != nil {
-		var in []byte
-		if args[1].IsByteArray() {
-			in = args[1].ToByteArray()
-		} else {
-			in = []byte(args[1].String())
-		}
-		if int64(len(in)) > memBound {
-			return nil, ErrTooLarge
-		}
-		e.gcBytes += uint64(len(in))
-		res, err := e.spec.DocsCodec(e.swapCtx.current(), op, in)
-		if err != nil {
-			return nil, err
-		}
-		if int64(len(res)) > memBound {
-			return nil, ErrTooLarge
-		}
-		e.gcBytes += uint64(len(res))
-		return this.Context().NewArrayBuffer(res), nil
+		return e.toQjsValue(this.Context(), outVal)
 	}
 
 	return nil, errors.New("docs codec not configured")
 }
 
-func (e *Engine) toQjsValue(c *qjs.Context, v Value, inArg *qjs.Value) (*qjs.Value, error) {
-	memBound := int64(e.spec.MemoryPages) * 65536
+func (e *Engine) toQjsValue(c *qjs.Context, v Value) (*qjs.Value, error) {
+	memBound := e.memBound()
 	if v.raw != nil {
 		if v.raw.IsByteArray() {
 			if v.raw.ByteLen() > memBound {
@@ -251,9 +217,6 @@ func (e *Engine) toQjsValue(c *qjs.Context, v Value, inArg *qjs.Value) (*qjs.Val
 			if v.eng != nil {
 				v.eng.trackHandle(-1)
 			}
-		}
-		if inArg != nil && v.raw == inArg {
-			return v.raw.Clone(), nil
 		}
 		return v.raw, nil
 	}

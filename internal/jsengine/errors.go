@@ -14,7 +14,6 @@ var (
 	ErrSnapshotNotAllowed = errors.New("snapshot not allowed without image path")
 	ErrWasmMismatch       = errors.New("qjs.wasm sha-256 mismatch")
 	ErrImageCorrupt       = errors.New("corrupt image")
-	ErrImageKey           = errors.New("image key mismatch")
 	ErrTainted            = errors.New("engine tainted")
 )
 
@@ -44,14 +43,13 @@ func isIdentifier(s string) bool {
 		return false
 	}
 	for i, r := range s {
-		if i == 0 {
-			if r != '_' && r != '$' && (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') {
-				return false
-			}
-		} else {
-			if r != '_' && r != '$' && (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') {
-				return false
-			}
+		switch {
+		case r == '_' || r == '$':
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case i > 0 && r >= '0' && r <= '9':
+		default:
+			return false
 		}
 	}
 	return true
@@ -95,16 +93,12 @@ func parseScriptError(err error) *ScriptError {
 type Fatal struct {
 	Cause   error
 	Message string
-	Stack   string
 }
 
 func (e *Fatal) Error() string {
 	s := e.Message
 	if s == "" && e.Cause != nil {
 		s = e.Cause.Error()
-	}
-	if e.Stack != "" {
-		s += "\n" + strings.TrimRight(e.Stack, "\n")
 	}
 	return "fatal: " + s
 }

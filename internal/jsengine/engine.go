@@ -32,7 +32,9 @@ const (
 	maxLogLine             = 64 << 10
 
 	pinnedWasmSHA256 = "79284a9282ad8471573a4d52401362e27d149f1d70b4175cb5affc960a8dc9a9"
+)
 
+const (
 	stateReady int32 = iota
 	stateBusy
 	statePoisoned
@@ -58,18 +60,6 @@ type Value struct {
 	str  string
 	i32  int32
 	buf  []byte
-}
-
-func StringValue(s string) Value {
-	return Value{kind: valString, str: s}
-}
-
-func Int32Value(n int32) Value {
-	return Value{kind: valInt32, i32: n}
-}
-
-func ArrayBufferValue(b []byte) Value {
-	return Value{kind: valArrayBuffer, buf: b}
 }
 
 func (v Value) isFreed() bool {
@@ -125,19 +115,6 @@ func (v Value) String() string {
 	return ""
 }
 
-func (v Value) Int32() int32 {
-	if v.isFreed() {
-		return 0
-	}
-	if v.raw != nil {
-		return v.raw.Int32()
-	}
-	if v.kind == valInt32 {
-		return v.i32
-	}
-	return 0
-}
-
 func (v Value) IsString() bool {
 	if v.isFreed() {
 		return false
@@ -156,49 +133,25 @@ func (v Value) Free() {
 	}
 }
 
-func (v Value) Clone() Value {
-	if v.raw != nil {
-		cloned := v.raw.Clone()
-		if v.eng != nil {
-			v.eng.trackHandle(1)
-		}
-		return Value{raw: cloned, ctx: v.ctx, eng: v.eng, freed: &atomic.Bool{}}
-	}
-	res := v
-	if v.kind == valArrayBuffer {
-		res.buf = slices.Clone(v.buf)
-	}
-	return res
-}
-
 func (v Value) NewString(s string) Value {
-	if v.ctx != nil {
-		if v.eng != nil {
-			v.eng.trackHandle(1)
-		}
-		return Value{raw: v.ctx.NewString(s), ctx: v.ctx, eng: v.eng, freed: &atomic.Bool{}}
+	if v.ctx == nil {
+		panic("jsengine: Value.NewString requires context-bound Value")
 	}
-	return StringValue(s)
+	return v.eng.wrap(v.ctx.NewString(s), v.ctx)
 }
 
 func (v Value) NewInt32(n int32) Value {
-	if v.ctx != nil {
-		if v.eng != nil {
-			v.eng.trackHandle(1)
-		}
-		return Value{raw: v.ctx.NewInt32(n), ctx: v.ctx, eng: v.eng, freed: &atomic.Bool{}}
+	if v.ctx == nil {
+		panic("jsengine: Value.NewInt32 requires context-bound Value")
 	}
-	return Int32Value(n)
+	return v.eng.wrap(v.ctx.NewInt32(n), v.ctx)
 }
 
 func (v Value) NewArrayBuffer(b []byte) Value {
-	if v.ctx != nil {
-		if v.eng != nil {
-			v.eng.trackHandle(1)
-		}
-		return Value{raw: v.ctx.NewArrayBuffer(b), ctx: v.ctx, eng: v.eng, freed: &atomic.Bool{}}
+	if v.ctx == nil {
+		panic("jsengine: Value.NewArrayBuffer requires context-bound Value")
 	}
-	return ArrayBufferValue(b)
+	return v.eng.wrap(v.ctx.NewArrayBuffer(b), v.ctx)
 }
 
 type CodecFunc func(op string, in Value) (Value, error)
@@ -229,19 +182,16 @@ type Spec struct {
 
 	CacheDir     string
 	MemoryPages  int
-	LogSink      io.Writer
 	Stdout       io.Writer
 	Stderr       io.Writer
 	Prelude      string
-	Boot         string
 	BootSource   string
 	ImagePath    string
 	ImageBinding string
 
 	Host HostFunc
 
-	DocsCodec func(ctx context.Context, op string, in []byte) ([]byte, error)
-	RawCodec  CodecFunc
+	RawCodec CodecFunc
 
 	Shell  *Shell
 	Image  *Image
@@ -249,7 +199,7 @@ type Spec struct {
 }
 
 func (e *Engine) hasCodec() bool {
-	return e.spec.RawCodec != nil || e.spec.DocsCodec != nil
+	return e.spec.RawCodec != nil
 }
 
 type swapCtx struct {
@@ -271,45 +221,31 @@ func (s *swapCtx) Err() error                  { return s.current().Err() }
 func (s *swapCtx) Value(key any) any           { return s.current().Value(key) }
 
 type Shell struct {
-	raw  *qjs.Shell
-	spec Spec
+	raw *qjs.Shell
 }
 
-func TakePrewarmed() (*Shell, error) {
-	return NewShell(Spec{})
-}
-
-func NewShell(spec Spec) (*Shell, error) {
-	pages := spec.MemoryPages
-	if pages <= 0 {
-		pages = DefaultMemoryPages
-	}
-	opt := qjs.Option{
+func shellOption(spec Spec) qjs.Option {
+	pages := cmp.Or(spec.MemoryPages, DefaultMemoryPages)
+	return qjs.Option{
 		CacheDir:           spec.CacheDir,
 		MemoryLimitPages:   uint32(pages),
 		CloseOnContextDone: true,
 	}
-	s, err := qjs.NewShell(opt)
+}
+
+func NewShell(spec Spec) (*Shell, error) {
+	s, err := qjs.NewShell(shellOption(spec))
 	if err != nil {
 		return nil, err
 	}
-	return &Shell{raw: s, spec: spec}, nil
+	return &Shell{raw: s}, nil
 }
 
 func (s *Shell) Compatible(spec Spec) bool {
 	if s == nil || s.raw == nil {
 		return false
 	}
-	pages := spec.MemoryPages
-	if pages <= 0 {
-		pages = DefaultMemoryPages
-	}
-	opt := qjs.Option{
-		CacheDir:           spec.CacheDir,
-		MemoryLimitPages:   uint32(pages),
-		CloseOnContextDone: true,
-	}
-	return s.raw.Compatible(opt)
+	return s.raw.Compatible(shellOption(spec))
 }
 
 func (s *Shell) Close() error {
@@ -413,15 +349,12 @@ type Engine struct {
 	testHookPendingException atomic.Bool
 }
 
-func Open(spec Spec, host HostFunc) (*Engine, error) {
+func Open(spec Spec) (*Engine, error) {
 	sum := sha256.Sum256(qjsWasmBytes)
 	if hex.EncodeToString(sum[:]) != pinnedWasmSHA256 {
 		return nil, ErrWasmMismatch
 	}
 
-	if host == nil && spec.Host != nil {
-		host = spec.Host
-	}
 	pages := cmp.Or(spec.MemoryPages, DefaultMemoryPages)
 	spec.MemoryPages = pages
 	spec.TimeoutMS = cmp.Or(spec.TimeoutMS, DefaultTimeoutMS)
@@ -429,14 +362,12 @@ func Open(spec Spec, host HostFunc) (*Engine, error) {
 	spec.MaxOutputBytes = cmp.Or(spec.MaxOutputBytes, DefaultMaxOutputBytes)
 	spec.MaxHostArgBytes = cmp.Or(spec.MaxHostArgBytes, DefaultMaxHostArgBytes)
 
-	stdout := cmp.Or(spec.Stdout, spec.LogSink)
-	stderr := cmp.Or(spec.Stderr, spec.LogSink)
 	eng := &Engine{
 		spec:    spec,
-		host:    host,
+		host:    spec.Host,
 		swapCtx: newSwapCtx(),
-		out:     newLineWriter(stdout),
-		errOut:  newLineWriter(stderr),
+		out:     newLineWriter(spec.Stdout),
+		errOut:  newLineWriter(spec.Stderr),
 	}
 
 	opt := qjs.Option{
@@ -479,15 +410,6 @@ func Open(spec Spec, host HostFunc) (*Engine, error) {
 	}
 
 	rt, err := qjs.New(opt)
-	if err != nil && spec.Image != nil && spec.Image.raw != nil && opt.Shell == nil {
-		if strings.Contains(err.Error(), "image has 2 Go functions, 1 given") {
-			opt.ImageFunctions = fns2
-			rt, err = qjs.New(opt)
-		} else if strings.Contains(err.Error(), "image has 1 Go functions, 2 given") {
-			opt.ImageFunctions = fns1
-			rt, err = qjs.New(opt)
-		}
-	}
 	if err != nil {
 		return nil, fmt.Errorf("start JavaScript runtime: %w", err)
 	}
@@ -525,18 +447,6 @@ func Open(spec Spec, host HostFunc) (*Engine, error) {
 		}
 	}
 
-	if spec.Boot != "" {
-		eng.swapCtx.set(startupCtx)
-		v, err := c.Eval("/__flats_boot__.js", qjs.Code(spec.Boot), qjs.TypeModule())
-		eng.swapCtx.set(context.Background())
-		if err != nil {
-			_ = eng.Close()
-			return nil, fmt.Errorf("boot: %w", err)
-		}
-		if v != nil {
-			v.Free()
-		}
-	}
 	eng.bootActive.Store(false)
 	if eng.hostPanicked.Load() || eng.hostTainted.Load() {
 		_ = eng.Close()
@@ -552,6 +462,13 @@ func Open(spec Spec, host HostFunc) (*Engine, error) {
 	eng.state.Store(stateReady)
 	return eng, nil
 }
+func (e *Engine) wrap(raw *qjs.Value, ctx *qjs.Context) Value {
+	if e != nil {
+		e.trackHandle(1)
+	}
+	return Value{raw: raw, ctx: ctx, eng: e, freed: &atomic.Bool{}}
+}
+
 func (e *Engine) trackHandle(n int64) {
 	e.liveHandles.Add(n)
 }
@@ -663,9 +580,6 @@ func bindCallTimeout(ctx context.Context, timeoutMS int) (context.Context, conte
 	if !deadline.After(now) {
 		return nil, nil, context.DeadlineExceeded
 	}
-	if timeoutMS <= 0 {
-		timeoutMS = DefaultTimeoutMS
-	}
 	timeout := time.Duration(timeoutMS) * time.Millisecond
 	if deadline.Sub(now) <= timeout {
 		return ctx, func() {}, nil
@@ -681,11 +595,7 @@ func (e *Engine) postCallChecks(c *qjs.Context, out string) error {
 	if e.hostPanicked.Load() {
 		return e.fatal(errors.New("host function panicked"))
 	}
-	maxOutput := e.spec.MaxOutputBytes
-	if maxOutput <= 0 {
-		maxOutput = DefaultMaxOutputBytes
-	}
-	if len(out) > maxOutput {
+	if len(out) > e.spec.MaxOutputBytes {
 		return ErrTooLarge
 	}
 	if c.HasException() {
@@ -703,49 +613,16 @@ func (e *Engine) postCallChecks(c *qjs.Context, out string) error {
 	return nil
 }
 
-func (e *Engine) handleCallResult(p *qjs.Value, callErr error, ctx context.Context) (string, error) {
+func (e *Engine) settle(v *qjs.Value, callErr error, ctx context.Context) (string, error) {
 	if callErr != nil {
-		if p != nil {
-			p.Free()
+		if v != nil {
+			v.Free()
 			e.trackHandle(-1)
 		}
 		if e.hostPanicked.Load() || e.isFatal(callErr, ctx) {
 			return "", e.fatal(callErr)
 		}
 		return "", parseScriptError(callErr)
-	}
-	r := p
-	var err error
-	if p.IsPromise() {
-		r, err = p.Await()
-		if err != nil {
-			p.Free()
-			e.trackHandle(-1)
-			if e.hostPanicked.Load() || e.isFatal(err, ctx) {
-				return "", e.fatal(err)
-			}
-			return "", parseScriptError(err)
-		}
-	}
-	out := r.String()
-	if r != p {
-		r.Free()
-	}
-	p.Free()
-	e.trackHandle(-1)
-	return out, nil
-}
-
-func (e *Engine) handleEvalResult(v *qjs.Value, evalErr error, ctx context.Context) (string, error) {
-	if evalErr != nil {
-		if v != nil {
-			v.Free()
-			e.trackHandle(-1)
-		}
-		if e.hostPanicked.Load() || e.isFatal(evalErr, ctx) {
-			return "", e.fatal(evalErr)
-		}
-		return "", parseScriptError(evalErr)
 	}
 	if v == nil {
 		return "", nil
@@ -772,57 +649,93 @@ func (e *Engine) handleEvalResult(v *qjs.Value, evalErr error, ctx context.Conte
 	return out, nil
 }
 
-func (e *Engine) Call(ctx context.Context, fn string, arg string) (out string, retErr error) {
-	if fn == "gc" {
-		return "", errors.New("cannot call gc directly")
+func (e *Engine) enter(ctx context.Context) (context.Context, func(), error) {
+	var cCtx context.Context
+	var cancel context.CancelFunc
+	if ctx != nil {
+		var err error
+		cCtx, cancel, err = bindCallTimeout(ctx, e.spec.TimeoutMS)
+		if err != nil {
+			return nil, nil, err
+		}
 	}
-	cCtx, cancel, err := bindCallTimeout(ctx, e.spec.TimeoutMS)
-	if err != nil {
-		return "", err
-	}
-	defer cancel()
-
-	maxInput := e.spec.MaxInputBytes
-	if maxInput <= 0 {
-		maxInput = DefaultMaxInputBytes
-	}
-	if len(arg) > maxInput {
-		return "", ErrTooLarge
-	}
-
 	if e.inClose.Load() || !e.state.CompareAndSwap(stateReady, stateBusy) {
-		return "", e.busyOrCurrentState()
-	}
-	e.userTainted.Store(true)
-	if e.rt != nil {
-		e.rt.Taint("guest call")
+		if cancel != nil {
+			cancel()
+		}
+		return nil, nil, e.busyOrCurrentState()
 	}
 	goid := curGoroutineID()
 	e.callGoid.Store(goid)
 	e.callMu.Lock()
-	defer func() {
+	if e.inClose.Load() || e.state.Load() == stateClosed {
+		if e.state.Load() == stateBusy {
+			e.state.Store(stateClosed)
+		}
+		e.callGoid.Store(0)
+		e.callMu.Unlock()
+		if cancel != nil {
+			cancel()
+		}
+		return nil, nil, ErrClosed
+	}
+	if cCtx != nil {
+		e.swapCtx.set(cCtx)
+	}
+	e.hostPanicked.Store(false)
+	leave := func() {
+		if cCtx != nil {
+			e.swapCtx.set(context.Background())
+			e.out.Flush()
+			e.errOut.Flush()
+			cancel()
+		}
 		if e.state.Load() == stateBusy && !e.inClose.Load() {
 			e.state.Store(stateReady)
 		}
 		e.callGoid.Store(0)
 		e.callMu.Unlock()
-	}()
-	if e.inClose.Load() || e.state.Load() == stateClosed {
-		return "", ErrClosed
 	}
-	e.swapCtx.set(cCtx)
-	e.hostPanicked.Store(false)
+	return cCtx, leave, nil
+}
+
+func (e *Engine) memBound() int64 {
+	return int64(e.spec.MemoryPages) * 65536
+}
+
+func (e *Engine) imageEligibleLocked() error {
+	if e.hostTainted.Load() {
+		return fmt.Errorf("%w: host function called", ErrTainted)
+	}
+	if e.userTainted.Load() {
+		return fmt.Errorf("%w: user code executed", ErrTainted)
+	}
+	if e.rt == nil {
+		return ErrClosed
+	}
+	return e.rt.ImageEligible()
+}
+
+func (e *Engine) Call(ctx context.Context, fn string, arg string) (out string, retErr error) {
+	if fn == "gc" {
+		return "", errors.New("cannot call gc directly")
+	}
+	if len(arg) > e.spec.MaxInputBytes {
+		return "", ErrTooLarge
+	}
+	cCtx, leave, err := e.enter(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer leave()
+	e.userTainted.Store(true)
+	if e.rt != nil {
+		e.rt.Taint("guest call")
+	}
 	defer func() {
 		if r := recover(); r != nil {
-			e.state.Store(statePoisoned)
-			retErr = &Fatal{
-				Cause:   fmt.Errorf("%v", r),
-				Message: trimStack(fmt.Sprint(r)),
-			}
+			retErr = e.fatal(fmt.Errorf("%v", r))
 		}
-		e.swapCtx.set(context.Background())
-		e.out.Flush()
-		e.errOut.Flush()
 	}()
 
 	c := e.rt.Context()
@@ -843,7 +756,7 @@ func (e *Engine) Call(ctx context.Context, fn string, arg string) (out string, r
 		}
 	}
 
-	out, callErr := e.handleCallResult(p, err, cCtx)
+	out, callErr := e.settle(p, err, cCtx)
 	e.gcBytes += uint64(len(out))
 
 	if e.testHookPendingException.Load() {
@@ -860,25 +773,17 @@ func (e *Engine) Call(ctx context.Context, fn string, arg string) (out string, r
 }
 
 func (e *Engine) Eval(ctx context.Context, name, src string, module bool) (out string, retErr error) {
-	cCtx, cancel, err := bindCallTimeout(ctx, e.spec.TimeoutMS)
+	if len(src) > e.spec.MaxInputBytes {
+		return "", ErrTooLarge
+	}
+	cCtx, leave, err := e.enter(ctx)
 	if err != nil {
 		return "", err
 	}
-	defer cancel()
+	defer leave()
 
-	maxInput := e.spec.MaxInputBytes
-	if maxInput <= 0 {
-		maxInput = DefaultMaxInputBytes
-	}
-	if len(src) > maxInput {
-		return "", ErrTooLarge
-	}
-
-	if e.inClose.Load() || !e.state.CompareAndSwap(stateReady, stateBusy) {
-		return "", e.busyOrCurrentState()
-	}
 	isBuiltinBoot := name == "/__flats_boot__.js" && module && !e.bootRan.Swap(true) &&
-		((e.spec.BootSource != "" && src == e.spec.BootSource) || (e.spec.Boot != "" && src == e.spec.Boot))
+		e.spec.BootSource != "" && src == e.spec.BootSource
 	if !isBuiltinBoot {
 		e.userTainted.Store(true)
 		if e.rt != nil {
@@ -892,32 +797,10 @@ func (e *Engine) Eval(ctx context.Context, name, src string, module bool) (out s
 			e.bootActive.Store(false)
 		}
 	}()
-	goid := curGoroutineID()
-	e.callGoid.Store(goid)
-	e.callMu.Lock()
-	defer func() {
-		if e.state.Load() == stateBusy && !e.inClose.Load() {
-			e.state.Store(stateReady)
-		}
-		e.callGoid.Store(0)
-		e.callMu.Unlock()
-	}()
-	if e.inClose.Load() || e.state.Load() == stateClosed {
-		return "", ErrClosed
-	}
-	e.swapCtx.set(cCtx)
-	e.hostPanicked.Store(false)
 	defer func() {
 		if r := recover(); r != nil {
-			e.state.Store(statePoisoned)
-			retErr = &Fatal{
-				Cause:   fmt.Errorf("%v", r),
-				Message: trimStack(fmt.Sprint(r)),
-			}
+			retErr = e.fatal(fmt.Errorf("%v", r))
 		}
-		e.swapCtx.set(context.Background())
-		e.out.Flush()
-		e.errOut.Flush()
 	}()
 
 	c := e.rt.Context()
@@ -939,7 +822,7 @@ func (e *Engine) Eval(ctx context.Context, name, src string, module bool) (out s
 		}
 	}
 
-	out, evalErr := e.handleEvalResult(v, err, cCtx)
+	out, evalErr := e.settle(v, err, cCtx)
 	e.gcBytes += uint64(len(out))
 
 	if e.testHookPendingException.Load() {
@@ -968,29 +851,21 @@ func (e *Engine) Close() error {
 	if prev == stateClosed {
 		return nil
 	}
-	var closeErr error
-	func() {
-		defer func() {
-			if r := recover(); r != nil {
-				closeErr = fmt.Errorf("close panic: %v", r)
-			}
+	if e.gc != nil {
+		func() {
+			defer func() { _ = recover() }()
+			e.gc.Free()
 		}()
-		if e.gc != nil {
-			func() {
-				defer func() { _ = recover() }()
-				e.gc.Free()
-			}()
-			e.gc = nil
-		}
-		if e.rt != nil {
-			func() {
-				defer func() { _ = recover() }()
-				e.rt.Close()
-			}()
-			e.rt = nil
-		}
-	}()
-	return closeErr
+		e.gc = nil
+	}
+	if e.rt != nil {
+		func() {
+			defer func() { _ = recover() }()
+			e.rt.Close()
+		}()
+		e.rt = nil
+	}
+	return nil
 }
 
 func (e *Engine) Snapshot() (snap []byte, retErr error) {
@@ -1003,39 +878,18 @@ func (e *Engine) Snapshot() (snap []byte, retErr error) {
 	if e.spec.ImagePath == "" {
 		return nil, ErrSnapshotNotAllowed
 	}
-	if e.inClose.Load() || !e.state.CompareAndSwap(stateReady, stateBusy) {
-		return nil, e.busyOrCurrentState()
+	_, leave, err := e.enter(nil)
+	if err != nil {
+		return nil, err
 	}
-	goid := curGoroutineID()
-	e.callGoid.Store(goid)
-	e.callMu.Lock()
-	defer e.callMu.Unlock()
-	defer func() {
-		if e.state.Load() == stateBusy && !e.inClose.Load() {
-			e.state.Store(stateReady)
-		}
-		e.callGoid.Store(0)
-	}()
-	if e.inClose.Load() || e.state.Load() == stateClosed {
-		return nil, ErrClosed
-	}
+	defer leave()
 	defer func() {
 		if r := recover(); r != nil {
-			e.state.Store(statePoisoned)
-			retErr = &Fatal{
-				Cause:   fmt.Errorf("%v", r),
-				Message: trimStack(fmt.Sprint(r)),
-			}
+			retErr = e.fatal(fmt.Errorf("%v", r))
 		}
 	}()
 
-	if e.hostTainted.Load() {
-		return nil, fmt.Errorf("%w: host function called", ErrTainted)
-	}
-	if e.userTainted.Load() {
-		return nil, fmt.Errorf("%w: user code executed", ErrTainted)
-	}
-	if err := e.rt.ImageEligible(); err != nil {
+	if err := e.imageEligibleLocked(); err != nil {
 		return nil, err
 	}
 	extra := map[string]uint64{}
@@ -1060,16 +914,10 @@ func (e *Engine) ImageEligible() error {
 	if e.state.Load() == statePoisoned {
 		return ErrPoisoned
 	}
-	if e.state.Load() == stateClosed || e.rt == nil {
+	if e.state.Load() == stateClosed {
 		return ErrClosed
 	}
-	if e.hostTainted.Load() {
-		return fmt.Errorf("%w: host function called", ErrTainted)
-	}
-	if e.userTainted.Load() {
-		return fmt.Errorf("%w: user code executed", ErrTainted)
-	}
-	return e.rt.ImageEligible()
+	return e.imageEligibleLocked()
 }
 
 func (e *Engine) GCDrained() bool {
@@ -1087,7 +935,7 @@ func (e *Engine) collectCycles(c *qjs.Context) (err error) {
 	memory := e.rt.MemorySize()
 	trafficDue := e.gcBytes >= 4*1024*1024
 	limit := uint32(32)
-	capBytes := uint64(e.spec.MemoryPages) * 65536
+	capBytes := uint64(e.memBound())
 	if uint64(memory) >= capBytes-capBytes/4 {
 		limit = 1
 	}

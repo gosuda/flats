@@ -96,8 +96,8 @@ func warmDatabase(dir string) error {
 	return nil
 }
 
-// prewarmOptions are the runtime-wide options a worker's first runtime uses
-// with the default memory limit (jsVM.options).
+// prewarmSpecToSpec builds the engine spec a worker's first runtime uses
+// with the default memory limit.
 func prewarmSpecToSpec(p prewarmSpec) jsengine.Spec {
 	return jsengine.Spec{CacheDir: p.CacheDir, MemoryPages: DefaultMemoryPages}
 }
@@ -123,9 +123,9 @@ func releasePrewarmedShell() {
 	s.Close()
 }
 
-// takePrewarmedShell hands out the prewarmed shell once, if opt can use it.
+// takePrewarmedShell hands out the prewarmed shell once, if spec can use it.
 // A shell that does not fit is released: every runtime of a worker has the
-// same options.
+// same engine spec.
 func takePrewarmedShell(spec jsengine.Spec) *jsengine.Shell {
 	prewarm.mu.Lock()
 	s := prewarm.shell

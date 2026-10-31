@@ -32,7 +32,6 @@ type jsVM struct {
 	broken        bool
 	networkActive bool
 	networkCalls  int
-	hostUsed      bool
 
 	db     *sql.Conn
 	dbUsed bool
@@ -44,18 +43,7 @@ type wsSink interface {
 	close(id int64, code int, reason string) error
 }
 
-// jsError is an exception thrown by the flat's code.
-type jsError struct {
-	Name, Message, Stack string
-}
-
-func (e *jsError) Error() string {
-	s := e.Name + ": " + e.Message
-	if e.Stack != "" {
-		s += "\n" + strings.TrimRight(e.Stack, "\n")
-	}
-	return s
-}
+type jsError = jsengine.ScriptError
 
 // errVMFailed means the runtime is unusable (timeout, wasm trap, OOM).
 type errVMFailed struct {
@@ -112,16 +100,10 @@ func (vm *jsVM) engineSpec() jsengine.Spec {
 
 func (vm *jsVM) newEngine(spec jsengine.Spec) (err error) {
 	if s := takePrewarmedShell(spec); s != nil {
-		sp := spec
-		sp.Shell = s
-		if vm.eng, err = jsengine.Open(sp, sp.Host); err == nil {
-			return nil
-		}
+		spec.Shell = s
 	}
-	if vm.eng, err = jsengine.Open(spec, spec.Host); err != nil {
-		return err
-	}
-	return nil
+	vm.eng, err = jsengine.Open(spec)
+	return err
 }
 
 func (vm *jsVM) startup(f func(context.Context) error) error {
@@ -130,7 +112,7 @@ func (vm *jsVM) startup(f func(context.Context) error) error {
 	defer cancel()
 	err := f(ctx)
 	if err != nil {
-		if ctx.Err() != nil || strings.Contains(err.Error(), "context deadline exceeded") {
+		if isContextTimeout(ctx, err) {
 			return fmt.Errorf("%s did not finish loading within %s (top-level code must not block)", w.spec.Entry, w.spec.timeout())
 		}
 		if strings.Contains(err.Error(), "maximum call stack size exceeded") {
@@ -142,10 +124,6 @@ func (vm *jsVM) startup(f func(context.Context) error) error {
 }
 
 const jsBindingOrder = "gc,__flats_host,__flats_docs_codec,prelude,boot"
-
-func (vm *jsVM) load(ctx context.Context) error {
-	return vm.loadModule(ctx)
-}
 
 func (vm *jsVM) loadWithInit(ctx context.Context) error {
 	if err := vm.initRuntime(ctx); err != nil {
@@ -209,12 +187,8 @@ func (vm *jsVM) invoke(ctx context.Context, fn, arg string) (out string, err err
 
 	out, err = vm.eng.Call(ctx, fn, arg)
 	if err != nil {
-		timedOut := ctx.Err() != nil || strings.Contains(err.Error(), "context deadline exceeded")
+		timedOut := isContextTimeout(ctx, err)
 		if errors.Is(err, jsengine.ErrPoisoned) || errors.Is(err, jsengine.ErrClosed) {
-			vm.broken = true
-		}
-		var fatal *jsengine.Fatal
-		if errors.As(err, &fatal) {
 			vm.broken = true
 		}
 		if vm.broken || timedOut {
@@ -245,16 +219,6 @@ func (vm *jsVM) afterCall() {
 		cancel()
 	}
 }
-
-// WASI QuickJS reports zero malloc usable size, so automatic GC misses large
-// payloads. Collect after 4 MiB of boundary traffic, linear-memory growth, or
-// 32 calls; at >= 3/4 of the memory cap, collect every call because growth
-// eventually stops signalling guest-only garbage. MemorySize is an O(1)
-// high-water mark, not live usage; JS_ComputeMemoryUsage scans the heap.
-// Uncaught engine failures discard the VM. A guest-caught OOM clears QuickJS's
-// exception and has no persistent signal exposed by the binding, so it cannot
-// reliably trigger recovery or VM replacement (nor does cap-sized linear memory
-// prove exhaustion after GC, since linear memory never shrinks).
 
 // moduleInfo is what a module's default export provides. PublicPools is a
 // built-in docs internal (not runtime API v1): separate Public WebSocket
@@ -306,7 +270,6 @@ func outboundContext(ctx context.Context) (context.Context, func()) {
 
 // hostCall implements __flats_host(op, argsJSON) -> resultJSON.
 func (vm *jsVM) hostCall(ctx context.Context, op string, raw []byte) ([]byte, error) {
-	vm.hostUsed = true
 	res, err := vm.host(ctx, op, json.RawMessage(raw))
 	if err != nil {
 		return nil, err
@@ -705,4 +668,8 @@ func (e *jsEngine) afterReady() {
 	if e.w.spec.ImagePath != "" {
 		documentImageFor(e.w.spec.ImagePath).ready(e.w)
 	}
+}
+
+func isContextTimeout(ctx context.Context, err error) bool {
+	return ctx.Err() != nil || (err != nil && strings.Contains(err.Error(), "context deadline exceeded"))
 }
