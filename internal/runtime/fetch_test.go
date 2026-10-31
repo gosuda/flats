@@ -18,7 +18,7 @@ import (
 	"github.com/gosuda/flats/internal/bundle"
 	"github.com/gosuda/flats/internal/core"
 	"github.com/gosuda/flats/internal/egress"
-	"github.com/gosuda/flats/internal/qjs"
+	"github.com/gosuda/flats/internal/jsengine"
 )
 
 // Exercise the real embedded QuickJS prelude with a test-only host stub. This
@@ -28,33 +28,20 @@ func TestOutboundFetchPrelude(t *testing.T) {
 	t.Parallel()
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	rt, err := qjs.New(qjs.Option{Context: ctx, CloseOnContextDone: true})
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer rt.Close()
-	c := rt.Context()
 	codecVM := &jsVM{}
-	c.SetFunc("__flats_docs_codec", codecVM.docsCodec)
 	var requests []egress.Request
-	c.SetFunc("__flats_host", func(this *qjs.This) (*qjs.Value, error) {
-		args := this.Args()
-		defer func() {
-			for _, arg := range args {
-				arg.Free()
-			}
-		}()
-		if args[0].String() == "runtime.generation" {
-			return this.Context().NewString("0"), nil
+	hostFunc := func(hCtx context.Context, op string, args []byte) ([]byte, error) {
+		if op == "runtime.generation" {
+			return []byte("0"), nil
 		}
-		if args[0].String() == "env" {
-			return this.Context().NewString("{}"), nil
+		if op == "env" {
+			return []byte("{}"), nil
 		}
-		if args[0].String() != "fetch" {
+		if op != "fetch" {
 			return nil, errors.New("unexpected test operation")
 		}
 		var a []egress.Request
-		if err := json.Unmarshal([]byte(args[1].String()), &a); err != nil {
+		if err := json.Unmarshal(args, &a); err != nil {
 			return nil, err
 		}
 		requests = append(requests, a[0])
@@ -63,25 +50,30 @@ func TestOutboundFetchPrelude(t *testing.T) {
 			body = []byte{0, 1, 255, 0xc3, 0xa9}
 		}
 		b, _ := json.Marshal(egress.Response{Status: 201, Headers: map[string][]string{"x-fixture": {"first", "second"}}, Body: body, URL: a[0].URL})
-		return this.Context().NewString(string(b)), nil
-	})
-	v, err := c.Eval("prelude.js", qjs.Code(preludeJS))
+		return b, nil
+	}
+	spec := jsengine.Spec{
+		Prelude:   preludeJS,
+		RawCodec:  codecVM.docsCodec,
+		TimeoutMS: 20000,
+	}
+	eng, err := jsengine.Open(spec, hostFunc)
 	if err != nil {
 		t.Fatal(err)
 	}
-	v.Free()
-	v, err = c.Eval("fetch-test.js", qjs.Code(`(async () => {
+	defer eng.Close()
+	fetchCode := `(async () => {
   const req = new Request("https://api.example.test/json", {method: "post", headers: {Authorization: "Bearer fixture-only"}, body: "안녕🌍"});
   const response = await fetch(req);
   const data = await response.json();
   const binary = await fetch("https://api.example.test/binary", {method: "PUT", body: new Uint8Array([0, 255, 1]), redirect: "manual"});
   return JSON.stringify({message: data.message, status: response.status, ok: response.ok, url: response.url, redirected: response.redirected, header: response.headers.get("x-fixture"), bytes: Array.from(new Uint8Array(await binary.arrayBuffer())), text: await binary.text(), contentType: req.headers.get("content-type")});
- })()`))
+ })()`
+	out, err := eng.Eval(ctx, "fetch-test.js", fetchCode, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	result := v
-	defer result.Free()
+	result := out
 	var got struct {
 		Message     string
 		Status      int
@@ -93,7 +85,7 @@ func TestOutboundFetchPrelude(t *testing.T) {
 		Text        string
 		ContentType string
 	}
-	if err := json.Unmarshal([]byte(result.String()), &got); err != nil {
+	if err := json.Unmarshal([]byte(result), &got); err != nil {
 		t.Fatal(err)
 	}
 	if got.Message != "안녕🌍" || got.Status != 201 || !got.OK || got.URL != "https://api.example.test/json" || got.Redirected || got.Header != "first, second" || got.ContentType != "text/plain;charset=UTF-8" {
@@ -109,15 +101,14 @@ func TestOutboundFetchPrelude(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	v, err = c.Eval("server-example.js", qjs.Code(strings.Replace(string(example), "export default", "globalThis.example =", 1)+`
- example.fetch(new Request({method: "GET", url: "https://flat.test/api/message", headers: {}}), {API_BASE: "https://api.example.test", API_TOKEN: "example-fixture-only"}).then(async (r) => JSON.stringify({status: r.status, body: await r.json()}));`))
+	exampleCode := strings.Replace(string(example), "export default", "globalThis.example =", 1) + `
+ example.fetch(new Request({method: "GET", url: "https://flat.test/api/message", headers: {}}), {API_BASE: "https://api.example.test", API_TOKEN: "example-fixture-only"}).then(async (r) => JSON.stringify({status: r.status, body: await r.json()}));`
+	exampleResult, err := eng.Eval(ctx, "server-example.js", exampleCode, false)
 	if err != nil {
 		t.Fatal(err)
 	}
-	exampleResult := v
-	defer exampleResult.Free()
-	if exampleResult.String() != `{"status":200,"body":{"message":"안녕🌍"}}` {
-		t.Fatalf("checked-in example: %s", exampleResult.String())
+	if exampleResult != `{"status":200,"body":{"message":"안녕🌍"}}` {
+		t.Fatalf("checked-in example: %s", exampleResult)
 	}
 	if len(requests) != 3 || requests[2].URL != "https://api.example.test/message" || requests[2].Headers["authorization"][0] != "Bearer example-fixture-only" {
 		t.Fatalf("example request: %+v", requests)
@@ -477,8 +468,8 @@ func TestOutboundFetchLoopOwnershipCycleCollection(t *testing.T) {
 				}
 				// Two encoded response bodies plus request bodies exceed the traffic
 				// threshold even when linear memory has stopped growing.
-				if vm.gcBytes != 0 || vm.gcCalls != 0 {
-					t.Fatalf("fetch traffic failed to trigger collection: bytes=%d calls=%d", vm.gcBytes, vm.gcCalls)
+				if !vm.eng.GCDrained() {
+					t.Fatal("fetch traffic failed to trigger collection")
 				}
 			}
 			if fixture.calls != 2*count {

@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/gosuda/flats/internal/qjs"
+	"github.com/gosuda/flats/internal/jsengine"
 )
 
 // A pre-started worker builds, before it has a spec, everything its first
@@ -24,7 +24,7 @@ import (
 var prewarm struct {
 	mu    sync.Mutex
 	done  chan struct{} // closed when the prewarm started last has finished
-	shell *qjs.Shell
+	shell *jsengine.Shell
 }
 
 // prewarmLog receives the "warm" message and prewarm failures.
@@ -43,7 +43,7 @@ func startPrewarm(p prewarmSpec) {
 	go func() {
 		defer close(done)
 		executableIdentity() // read once, at worker start (see imageBinding)
-		s, err := qjs.NewShell(prewarmOptions(p))
+		s, err := jsengine.NewShell(prewarmSpecToSpec(p))
 		if err != nil {
 			prewarmLog.Log("error", "prewarm: "+err.Error())
 		} else {
@@ -98,8 +98,8 @@ func warmDatabase(dir string) error {
 
 // prewarmOptions are the runtime-wide options a worker's first runtime uses
 // with the default memory limit (jsVM.options).
-func prewarmOptions(p prewarmSpec) qjs.Option {
-	return qjs.Option{CacheDir: p.CacheDir, CloseOnContextDone: true, MemoryLimitPages: DefaultMemoryPages}
+func prewarmSpecToSpec(p prewarmSpec) jsengine.Spec {
+	return jsengine.Spec{CacheDir: p.CacheDir, MemoryPages: DefaultMemoryPages}
 }
 
 // waitPrewarm returns when prewarm started by startPrewarm has finished.
@@ -126,7 +126,7 @@ func releasePrewarmedShell() {
 // takePrewarmedShell hands out the prewarmed shell once, if opt can use it.
 // A shell that does not fit is released: every runtime of a worker has the
 // same options.
-func takePrewarmedShell(opt qjs.Option) *qjs.Shell {
+func takePrewarmedShell(spec jsengine.Spec) *jsengine.Shell {
 	prewarm.mu.Lock()
 	s := prewarm.shell
 	prewarm.shell = nil
@@ -134,7 +134,7 @@ func takePrewarmedShell(opt qjs.Option) *qjs.Shell {
 	if s == nil {
 		return nil
 	}
-	if !s.Compatible(opt) {
+	if !s.Compatible(spec) {
 		s.Close()
 		return nil
 	}

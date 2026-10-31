@@ -15,7 +15,7 @@ import (
 	"syscall"
 
 	"github.com/gosuda/flats/internal/buildinfo"
-	"github.com/gosuda/flats/internal/qjs"
+	"github.com/gosuda/flats/internal/jsengine"
 )
 
 // Document images (built-in docs app only; workerSpec.ImagePath).
@@ -45,7 +45,7 @@ type documentImage struct {
 	path string
 
 	mu      sync.Mutex
-	img     *qjs.Image
+	img     *jsengine.Image
 	binding string // the binding key img was built with
 	data    []byte // serialized img waiting for the worker to report ready
 	isReady bool   // the worker reported ready
@@ -109,12 +109,13 @@ func newDocumentVM(w *worker, ws wsSink) (*jsVM, error) {
 
 	// 2. Load as before, without __flats_init, and capture.
 	vm := allocJSVM(w, ws)
-	opt := vm.options()
-	opt.ImageBinding = binding
-	if err := vm.newRuntime(opt); err != nil {
+	spec := vm.engineSpec()
+	spec.ImageBinding = binding
+	spec.ImagePath = w.spec.ImagePath
+	if err := vm.newEngine(spec); err != nil {
 		return nil, err
 	}
-	if err := vm.startup(func(c *qjs.Context) error { return vm.load(c, false) }); err != nil {
+	if err := vm.startup(vm.load); err != nil {
 		vm.close()
 		return nil, err
 	}
@@ -134,27 +135,16 @@ func newDocumentVM(w *worker, ws wsSink) (*jsVM, error) {
 	return vm, nil
 }
 
-// imageGCValue names the captured native collector (jsVM.gc) in an image.
-const imageGCValue = "gc"
-
-func restoreDocumentVM(w *worker, ws wsSink, img *qjs.Image, binding string) (*jsVM, error) {
+func restoreDocumentVM(w *worker, ws wsSink, img *jsengine.Image, binding string) (*jsVM, error) {
 	vm := allocJSVM(w, ws)
-	opt := vm.options()
-	opt.ImageBinding = binding
-	if !img.Compatible(opt) {
-		return nil, qjs.ErrImageKey
-	}
-	opt.Image = img
-	opt.ImageFunctions = []qjs.Function{vm.hostCall, vm.docsCodec}
-	if err := vm.newRuntime(opt); err != nil {
+	spec := vm.engineSpec()
+	spec.Prelude = ""
+	spec.ImageBinding = binding
+	spec.ImagePath = w.spec.ImagePath
+	spec.Image = img
+	if err := vm.newEngine(spec); err != nil {
 		return nil, err
 	}
-	gc, ok := vm.rt.ImageValue(imageGCValue)
-	if !ok {
-		vm.close()
-		return nil, errors.New("image has no collector")
-	}
-	vm.gc = gc
 	if err := vm.startup(vm.initRuntime); err != nil {
 		vm.close()
 		return nil, err
@@ -164,7 +154,7 @@ func restoreDocumentVM(w *worker, ws wsSink, img *qjs.Image, binding string) (*j
 
 // load returns the image this process holds for binding, else the file's.
 // An unreadable or corrupt file is deleted.
-func (d *documentImage) load(binding string) (img *qjs.Image, fromFile bool) {
+func (d *documentImage) load(binding string) (img *jsengine.Image, fromFile bool) {
 	d.mu.Lock()
 	if d.img != nil && d.binding == binding {
 		img = d.img
@@ -178,7 +168,11 @@ func (d *documentImage) load(binding string) (img *qjs.Image, fromFile bool) {
 		return nil, false
 	}
 	if err == nil {
-		img, err = qjs.UnmarshalImage(b)
+		var decoded jsengine.Image
+		decoded, err = jsengine.UnmarshalImage(b)
+		if err == nil {
+			img = &decoded
+		}
 	}
 	if err != nil {
 		_ = os.Remove(d.path)
@@ -188,14 +182,14 @@ func (d *documentImage) load(binding string) (img *qjs.Image, fromFile bool) {
 }
 
 // keep holds an image restored from the file for later runtimes.
-func (d *documentImage) keep(img *qjs.Image, binding string) {
+func (d *documentImage) keep(img *jsengine.Image, binding string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
 	d.img, d.binding = img, binding
 }
 
 // discard forgets an image that failed to restore, deleting its file.
-func (d *documentImage) discard(img *qjs.Image, fromFile bool) {
+func (d *documentImage) discard(img *jsengine.Image, fromFile bool) {
 	if fromFile {
 		_ = os.Remove(d.path)
 		return
@@ -210,19 +204,16 @@ func (d *documentImage) discard(img *qjs.Image, fromFile bool) {
 // capture takes an image of vm, keeps it, and writes it now if the worker
 // already reported ready, else when it does.
 func (d *documentImage) capture(w *worker, vm *jsVM, binding string) error {
-	if vm.gc == nil {
-		return errors.New("no collector")
-	}
-	img, err := vm.rt.Image(map[string]uint64{imageGCValue: vm.gc.Raw()})
+	data, err := vm.eng.Snapshot()
 	if err != nil {
 		return err
 	}
-	data, err := img.MarshalBinary()
+	img, err := jsengine.UnmarshalImage(data)
 	if err != nil {
 		return err
 	}
 	d.mu.Lock()
-	d.img, d.binding = img, binding
+	d.img, d.binding = &img, binding
 	d.data = data
 	write := d.isReady
 	if write {

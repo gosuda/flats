@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gosuda/flats/internal/qjs"
+	"github.com/gosuda/flats/internal/jsengine"
 )
 
 // capturePrewarmLog points prewarm's messages at a buffer for one test.
@@ -22,7 +22,7 @@ func capturePrewarmLog(t *testing.T) func() []childMsg {
 	t.Cleanup(func() {
 		waitPrewarm()
 		prewarmLog = old
-		if s := takePrewarmedShell(prewarmOptions(prewarmSpec{})); s != nil {
+		if s := takePrewarmedShell(jsengine.Spec{}); s != nil {
 			s.Close()
 		}
 		prewarm.mu.Lock()
@@ -109,7 +109,7 @@ func TestPrewarmShellUsedByDocumentImage(t *testing.T) {
 		t.Fatal("the restored runtime did not take the shell")
 	}
 	w.firstVM(t, func(vm *jsVM) {
-		if !vm.rt.Restored() {
+		if !vm.eng.Restored() {
 			t.Fatal("not restored")
 		}
 	})
@@ -144,10 +144,9 @@ func TestPrewarmShellReleasedByWASIWorker(t *testing.T) {
 	if left != nil {
 		t.Fatal("the WASI worker still holds the prewarmed shell")
 	}
-	opt := prewarmOptions(prewarmSpec{CacheDir: cache})
-	opt.Shell = shell
-	if rt, err := qjs.New(opt); err == nil {
-		rt.Close()
+	spec := jsengine.Spec{CacheDir: cache, Shell: shell}
+	if eng, err := jsengine.Open(spec, nil); err == nil {
+		eng.Close()
 		t.Fatal("the released shell is still usable")
 	}
 }
