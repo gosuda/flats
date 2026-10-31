@@ -6,11 +6,9 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"path"
 	"runtime"
 	"slices"
 	"strings"
@@ -236,6 +234,7 @@ type Spec struct {
 	Stderr       io.Writer
 	Prelude      string
 	Boot         string
+	BootSource   string
 	ImagePath    string
 	ImageBinding string
 
@@ -878,11 +877,8 @@ func (e *Engine) Eval(ctx context.Context, name, src string, module bool) (out s
 	if e.inClose.Load() || !e.state.CompareAndSwap(stateReady, stateBusy) {
 		return "", e.busyOrCurrentState()
 	}
-	entry := "/" + path.Clean(strings.TrimPrefix(e.spec.Entry, "/"))
-	quotedEntry, _ := json.Marshal(entry)
-	expectedBoot := fmt.Sprintf("import mod from %s;\nglobalThis.__flats_setModule(mod);\n", quotedEntry)
 	isBuiltinBoot := name == "/__flats_boot__.js" && module && !e.bootRan.Swap(true) &&
-		(src == expectedBoot || (e.spec.Boot != "" && src == e.spec.Boot))
+		((e.spec.BootSource != "" && src == e.spec.BootSource) || (e.spec.Boot != "" && src == e.spec.Boot))
 	if !isBuiltinBoot {
 		e.userTainted.Store(true)
 		if e.rt != nil {

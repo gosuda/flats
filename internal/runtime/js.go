@@ -104,6 +104,7 @@ func (vm *jsVM) engineSpec() jsengine.Spec {
 		Stdout:          &lineWriter{log: w.log, level: "info"},
 		Stderr:          &lineWriter{log: w.log, level: "error"},
 		Prelude:         preludeJS,
+		BootSource:      bootSource(w.spec.Entry),
 		RawCodec:        vm.docsCodec,
 		Host:            vm.hostCall,
 	}
@@ -153,9 +154,13 @@ func (vm *jsVM) loadWithInit(ctx context.Context) error {
 	return vm.loadModule(ctx)
 }
 
+func bootSource(entry string) string {
+	e := "/" + path.Clean(strings.TrimPrefix(entry, "/"))
+	return fmt.Sprintf("import mod from %s;\nglobalThis.__flats_setModule(mod);\n", jsString(e))
+}
+
 func (vm *jsVM) loadModule(ctx context.Context) error {
-	entry := "/" + path.Clean(strings.TrimPrefix(vm.w.spec.Entry, "/"))
-	boot := fmt.Sprintf("import mod from %s;\nglobalThis.__flats_setModule(mod);\n", jsString(entry))
+	boot := bootSource(vm.w.spec.Entry)
 	_, err := vm.eng.Eval(ctx, "/__flats_boot__.js", boot, true)
 	if err != nil {
 		return errors.New(cleanLoadError(err.Error(), vm.w.spec.Entry))

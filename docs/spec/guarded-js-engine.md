@@ -23,7 +23,7 @@ Observable behavior of flats does not change.
    `RawCodec CodecFunc` on `Spec`.
 3. Spec carries the whole construction surface: `Dir`, `Entry`, `TimeoutMS`,
    `MaxInputBytes`, `MaxOutputBytes`, `MaxHostArgBytes`, `CacheDir`,
-   `MemoryPages` (0 = default), `LogSink`, `Stdout`, `Stderr`, `Prelude` and `Boot` startup
+   `MemoryPages` (0 = default), `LogSink`, `Stdout`, `Stderr`, `Prelude`, `Boot` and `BootSource` startup
    sources, `ImagePath` (empty = no image support), `ImageBinding`, `Census` and the host function.
 4. An engine runs at most one call at a time. A call that starts while
    another call runs MUST return `ErrBusy` and MUST NOT touch the runtime.

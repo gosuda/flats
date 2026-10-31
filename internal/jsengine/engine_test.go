@@ -1290,6 +1290,49 @@ func TestSnapshotRefusedAfterUserCodeOrCodec(t *testing.T) {
 			t.Fatalf("Snapshot after codec call: got %v, want ErrTainted", err)
 		}
 	})
+
+	t.Run("BootSourceTrustedWindow", func(t *testing.T) {
+		const trustedBoot = "export const ok = 1;"
+		eng, err := Open(Spec{ImagePath: "/tmp/fake-image", BootSource: trustedBoot}, nil)
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		defer eng.Close()
+
+		ctx := validContext(t)
+		_, err = eng.Eval(ctx, "/__flats_boot__.js", trustedBoot, true)
+		if err != nil {
+			t.Fatalf("Eval boot: %v", err)
+		}
+
+		snap, err := eng.Snapshot()
+		if err != nil {
+			t.Fatalf("Snapshot after trusted BootSource: %v", err)
+		}
+		if len(snap) == 0 {
+			t.Fatal("empty snapshot")
+		}
+	})
+
+	t.Run("BootSourceMismatchRefuses", func(t *testing.T) {
+		const trustedBoot = "export const ok = 1;"
+		eng, err := Open(Spec{ImagePath: "/tmp/fake-image", BootSource: trustedBoot}, nil)
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		defer eng.Close()
+
+		ctx := validContext(t)
+		_, err = eng.Eval(ctx, "/__flats_boot__.js", "export const user = 2;", true)
+		if err != nil {
+			t.Fatalf("Eval mismatch: %v", err)
+		}
+
+		_, err = eng.Snapshot()
+		if !errors.Is(err, ErrTainted) {
+			t.Fatalf("Snapshot after mismatch boot: got %v, want ErrTainted", err)
+		}
+	})
 }
 
 func TestOpenRefusesHostPanicOrTaintDuringStartup(t *testing.T) {
