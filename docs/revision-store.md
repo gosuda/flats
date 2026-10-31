@@ -427,8 +427,8 @@ counted, as for every other disk quota check.
 
 A board's current state, its sessions, undo stacks and edit groups live in
 `flats/<slug>/board/board.db`, owned by one `board.Instance` in the host
-process ([board technical design](spec/board-technical-design.md)). The host never writes
-that database: it reaches it through the instance's apply loop.
+process ([board technical design](spec/board-technical-design.md)). The host
+never writes that database: it reaches it through the instance's apply loop.
 
 **Creating a board** (`CreateBoard`, under the flat lock):
 
@@ -495,7 +495,8 @@ hold is deleted. Every rollback holds the flat lock from its hold to its
 import, so settlement never meets one in progress.
 
 **Disk quota.** The instance checks people's edits, agent writes and imports
-itself, after their writes inside the `board.db` transaction (board-TECH 5.4).
+itself, after their writes inside the `board.db` transaction
+([board technical design 5.4](spec/board-technical-design.md#54-disk-quota)).
 The host supplies `other`, the flat directory without `board.db` and its
 `-wal` and `-shm` files: a fresh measurement for agent writes and imports,
 which hold the flat lock, and a cached one, measured again after a sweep, a

@@ -18,7 +18,6 @@ package bundle
 import (
 	"archive/tar"
 	"archive/zip"
-	"bufio"
 	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
@@ -213,19 +212,6 @@ func FromArchive(r io.Reader, lim Limits) ([]File, error) {
 	return fromArchive(r, lim, tarOverhead)
 }
 
-type transportReader struct {
-	r   io.Reader
-	err error
-}
-
-func (tr *transportReader) Read(p []byte) (int, error) {
-	n, err := tr.r.Read(p)
-	if err != nil && !errors.Is(err, io.EOF) && tr.err == nil {
-		tr.err = err
-	}
-	return n, err
-}
-
 // fromArchive is FromArchive with the tar.gz expansion allowance as a
 // parameter, so tests can exercise the bound without huge archives.
 func fromArchive(r io.Reader, lim Limits, overhead int64) ([]File, error) {
@@ -235,17 +221,22 @@ func fromArchive(r io.Reader, lim Limits, overhead int64) ([]File, error) {
 	// Sniff the format from a short prefix, so tar and tar.gz are decompressed
 	// once straight into the collector and never buffered whole. Only zip
 	// needs the entire archive in memory, because zip.NewReader reads entries
-	// by offset into a single buffer.
-	transport := &transportReader{r: r}
-	br := bufio.NewReader(transport)
-	magic, err := br.Peek(4)
-	if err != nil && !errors.Is(err, io.EOF) {
-		return nil, err
+	// by offset into a single buffer. No buffered reader sits on the body: it
+	// would hold back a read error that comes with the last bytes read. The
+	// tar paths never ask the body for more than capacity.
+	body := &uploadBody{r: r}
+	var head [4]byte
+	n, _ := io.ReadFull(body, head[:])
+	if body.err != nil {
+		return nil, body.err
 	}
+	magic := head[:n]
+	br := io.MultiReader(bytes.NewReader(magic), body)
+	tarBody := io.LimitReader(br, capacity)
+	var err error
 	c := newCollector(lim)
 	switch {
 	case bytes.HasPrefix(magic, []byte("PK\x03\x04")) || bytes.HasPrefix(magic, []byte("PK\x05\x06")):
-// refused_by: statement_fold · collision: `case bytes.HasPrefix(raw, []byte("PK\x03\x04")) || bytes.HasPre…` +4 more
 		raw, rerr := io.ReadAll(io.LimitReader(br, capacity+1))
 		if rerr != nil {
 			return nil, rerr
@@ -255,12 +246,9 @@ func fromArchive(r io.Reader, lim Limits, overhead int64) ([]File, error) {
 		}
 		err = c.readZip(raw)
 	case bytes.HasPrefix(magic, []byte{0x1f, 0x8b}):
-		gz, gerr := gzip.NewReader(io.LimitReader(br, capacity))
+		gz, gerr := gzip.NewReader(tarBody)
 		if gerr != nil {
-			if transport.err != nil {
-				return nil, transport.err
-			}
-			return nil, &ValidationError{Problems: []Problem{{Message: "invalid gzip data: " + gerr.Error(), Fix: "send a valid .tar.gz, .tar or .zip archive"}}}
+			return nil, body.finish(tarBody, &ValidationError{Problems: []Problem{{Message: "invalid gzip data: " + gerr.Error(), Fix: "send a valid .tar.gz, .tar or .zip archive"}}})
 		}
 		defer gz.Close()
 		// The tar reader decompresses every byte it passes over, including
@@ -272,18 +260,51 @@ func fromArchive(r io.Reader, lim Limits, overhead int64) ([]File, error) {
 		stream := &io.LimitedReader{R: gz, N: budget + 1}
 		err = c.readTar(stream)
 		if stream.N == 0 {
-			return nil, expansionError(budget)
+			err = expansionError(budget)
 		}
+		err = body.finish(tarBody, err)
 	default:
-		err = c.readTar(io.LimitReader(br, capacity))
-	}
-	if transport.err != nil {
-		return nil, transport.err
+		err = body.finish(tarBody, c.readTar(tarBody))
 	}
 	if err != nil {
 		return nil, err
 	}
 	return c.result()
+}
+
+// uploadBody reads the upload and keeps its first read error other than
+// io.EOF. The tar and gzip readers turn such an error into an archive
+// problem; fromArchive reports it as itself instead. After an error it does
+// not read the body again.
+type uploadBody struct {
+	r   io.Reader
+	err error
+}
+
+func (b *uploadBody) Read(p []byte) (int, error) {
+	if b.err != nil {
+		return 0, b.err
+	}
+	n, err := b.r.Read(p)
+	if err != nil && err != io.EOF {
+		b.err = err
+	}
+	return n, err
+}
+
+// finish settles an archive read from rest, the capped body. The tar reader
+// stops at the end-of-archive marker or at a failure, so finish reads and
+// discards the remainder of rest: the upload succeeds only if the whole body
+// up to the limit reads cleanly. A read error wins over err, the archive
+// result.
+func (b *uploadBody) finish(rest io.Reader, err error) error {
+	if b.err == nil {
+		io.Copy(io.Discard, rest)
+	}
+	if b.err != nil {
+		return b.err
+	}
+	return err
 }
 
 func (c *collector) readTar(r io.Reader) error {
@@ -314,10 +335,7 @@ func (c *collector) readTar(r io.Reader) error {
 			continue
 		case tar.TypeReg, tar.TypeRegA:
 			if err := c.addFile(h.Name, tr, fs.FileMode(h.Mode)); err != nil {
-				if _, ok := IsValidation(err); ok || strings.HasPrefix(err.Error(), "upload has more than") {
-					return err
-				}
-				return &ValidationError{Problems: []Problem{{Message: "corrupt tar archive: " + err.Error(), Fix: "re-create the archive"}}}
+				return err
 			}
 		case tar.TypeSymlink, tar.TypeLink:
 			c.verr.add(h.Name, "links are not allowed", "copy the target file into the build instead of linking it")

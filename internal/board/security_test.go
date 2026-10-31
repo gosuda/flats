@@ -17,7 +17,7 @@ import (
 
 // TestPublicReconnectStartsFromASnapshot: a Public connection never reads
 // back through the delta log, whatever session or watermark its hello
-// names (board-TECH 7.3), and it gets no session of its own.
+// names (board-technical-design 7.3), and it gets no session of its own.
 func TestPublicReconnectStartsFromASnapshot(t *testing.T) {
 	b := newTB(t)
 	a := connect(t, b.priv, map[string]any{"editor": "alice", "name": "Alice"}, nil)
@@ -69,7 +69,7 @@ func TestPublicReconnectStartsFromASnapshot(t *testing.T) {
 
 // TestPublicRevisionRoutesAndWrites: every revision route is 404 on Public
 // (GET and POST, with the canvas headers), and the other write routes are
-// refused there with nothing changed (board-TECH 14 Security).
+// refused there with nothing changed (board-technical-design 14 Security).
 func TestPublicRevisionRoutesAndWrites(t *testing.T) {
 	ctx := context.Background()
 	b := newTB(t)
@@ -146,7 +146,7 @@ func countBlobs(f *fakeCore) int {
 // TestPublicPastOnlyAndHeldAssets: Public reaches only assets alive
 // elements reference. An asset that only a past revision holds, and an
 // upload no element references yet, are 404 there while Private reaches
-// them (board-TECH 7.2, 14 Security).
+// them (board-technical-design 7.2, 14 Security).
 func TestPublicPastOnlyAndHeldAssets(t *testing.T) {
 	ctx := context.Background()
 	b := newTB(t)
@@ -210,8 +210,8 @@ func TestPublicPastOnlyAndHeldAssets(t *testing.T) {
 
 // TestPublicReceivesNoPresenceOrAuthors: a Public socket gets no presence
 // frame (updates, joins or leaves), and no author, session or reset field
-// in any delta, a rollback's included (board-TECH 7.3). It receives the
-// add, the edit and the rollback as three consecutive public deltas whose
+// in any delta, a rollback's included (board-technical-design 7.3). It receives
+// the add, the edit and the rollback as three consecutive public deltas whose
 // changes, applied to its snapshot, give the board's public projection.
 func TestPublicReceivesNoPresenceOrAuthors(t *testing.T) {
 	ctx := context.Background()
@@ -415,7 +415,7 @@ func publicDeltaFields(d map[string]any) error {
 
 // TestOriginMismatchOnEveryRoute: the canvas socket on both routes and
 // the write routes refuse a request whose origin is not the board's own
-// (board-TECH 14 Security).
+// (board-technical-design 14 Security).
 func TestOriginMismatchOnEveryRoute(t *testing.T) {
 	b := newTB(t)
 	for name, h := range map[string]map[string]string{

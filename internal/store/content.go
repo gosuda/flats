@@ -169,8 +169,8 @@ func addContentRevisions(ctx context.Context, x executor) error {
 }
 
 // addRevisionGuestLines adds the line ranges guests wrote in each document
-// of a revision (docs-public-edit-TECH 2.8). Only documents with guest text
-// have a row; it goes with its revision.
+// of a revision (docs-public-edit-technical-design 2.8). Only documents with
+// guest text have a row; it goes with its revision.
 func addRevisionGuestLines(ctx context.Context, x executor) error {
 	_, err := x.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS revision_guest_lines (
  flat TEXT NOT NULL,

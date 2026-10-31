@@ -72,28 +72,6 @@ else
 	reported=$version release=
 fi
 
-supports_approvals_wait() {
-	if "$flats" help approvals 2>&1 | grep -q 'approvals wait' ||
-		"$flats" approvals --help 2>&1 | grep -q 'approvals wait'; then
-		return 0
-	fi
-	if help_out=$("$flats" approvals wait --help 2>&1); then
-		case "$help_out" in
-		*"-timeout"*|*"approvals wait"*) return 0 ;;
-		*"usage: flats approvals ["*) return 1 ;;
-		*) return 0 ;;
-		esac
-	fi
-	return 1
-}
-
-if [ -z "${has_approvals_wait:-}" ]; then
-	has_approvals_wait=false
-	if supports_approvals_wait; then
-		has_approvals_wait=true
-	fi
-fi
-
 wait_for() {
 	what=$1
 	shift
@@ -142,14 +120,22 @@ for key in sys.argv[1].split("."): value=value[key]
 print(value)' "$1" "$2"
 }
 
+# approval_applied checks exactly the requested approval, never a pending-list
+# candidate. It reads the host API rather than `flats approvals wait`: commit
+# images run this script with the binary of an older commit, which may not
+# have that verb. The disposable test operator is separate from the CLI client.
 approval_applied() {
 	curl -fsS --max-time 5 "$url/api/approvals/$1" >"$work/approval-result" || return 1
 	decision_status=$(json_field status "$work/approval-result") || fail "invalid approval receipt"
 	case "$decision_status" in
-	approved) return 0 ;;
-	pending|applying) return 1 ;;
-	*) fail "approval $1 ended $decision_status: $(cat "$work/approval-result")" ;;
+	approved) ;;
+	pending|applying) return 1;;
+	*) fail "approval $1 ended $decision_status: $(cat "$work/approval-result")";;
 	esac
+	cleanup_pending=$(python3 -c 'import json,sys
+print((json.load(open(sys.argv[1])).get("result_data") or {}).get("cleanup_pending") is True)' "$work/approval-result") ||
+		fail "invalid approval receipt"
+	[ "$cleanup_pending" = False ] || fail "approval $1 applied but storage cleanup is pending: $(cat "$work/approval-result")"
 }
 
 # approve_requested LABEL REQUEST approves only the ID captured by that request.
@@ -160,11 +146,7 @@ approve_requested() {
 	case "$request_id" in ''|*[!a-zA-Z0-9_-]*) fail "invalid approval ID for $1";; esac
 	echo "OPERATOR INTERVENTION (disposable container): approve $request_id for $1" >&2
 	console -X POST "$url/console/api/approvals/$request_id/approve" >/dev/null || fail "approving $request_id for $1 failed"
-	if [ "${has_approvals_wait:-true}" = true ]; then
-		"$flats" --json approvals wait "$request_id" >"$work/approval-result" || fail "waiting for approval $request_id failed"
-	else
-		wait_for "approval $request_id" approval_applied "$request_id"
-	fi
+	wait_for "approval $request_id" approval_applied "$request_id"
 }
 
 # deploy_approved FLAT saves its Draft, freezes that exact receipt for an

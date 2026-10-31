@@ -162,9 +162,9 @@ func sameElements(t *testing.T, what string, got, want map[string]string) {
 }
 
 // TestPublicEditRecoveryAfterHostileGuest is the Recovery criterion of the
-// spec (board-public-edit-TECH 10) with the real board under core: a guest
-// on the Public route deletes every element; History still lists the safe
-// point and the revision from just before the session, and the operator
+// spec (board-public-edit-technical-design 10) with the real board under core:
+// a guest on the Public route deletes every element; History still lists the
+// safe point and the revision from just before the session, and the operator
 // restores the board to each of them from History.
 func TestPublicEditRecoveryAfterHostileGuest(t *testing.T) {
 	ctx := context.Background()

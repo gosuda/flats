@@ -113,7 +113,7 @@ func TestBoardForegroundImportEndsRetryBackoff(t *testing.T) {
 // TestBoardPutBlobReuseAgainstSweep: an upload that reuses an old,
 // unreferenced blob and the sweep's removal are ordered by the lease, so an
 // upload that reports the blob as already stored never loses it
-// (board-TECH 5.5).
+// (board-technical-design 5.5).
 func TestBoardPutBlobReuseAgainstSweep(t *testing.T) {
 	ctx := context.Background()
 	s, _ := newTestService(t)

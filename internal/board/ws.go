@@ -1243,7 +1243,7 @@ type helloMsg struct {
 	// ViewerToken is a viewer's reconnect token (spec rule 9).
 	ViewerToken string `json:"viewer_token"`
 	// Nick is the page's collaborator name; guests see a member under it
-	// (docs-public-edit-TECH 5.1).
+	// (docs-public-edit-technical-design 5.1).
 	Nick string `json:"nick"`
 }
 

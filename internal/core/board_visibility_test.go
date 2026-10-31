@@ -35,7 +35,7 @@ func (c *originConn) Write(p []byte) (int, error) {
 }
 
 // Withdrawing Public access closes the open Public canvas sockets of a
-// board at once (board rule 53, board-TECH 7.1).
+// board at once (board rule 53, board-technical-design 7.1).
 func TestBoardPrivateSwitchClosesPublicSockets(t *testing.T) {
 	ctx := context.Background()
 	e := newEnv(t)
