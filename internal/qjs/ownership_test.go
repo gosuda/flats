@@ -33,7 +33,10 @@ func TestBindingOwnership(t *testing.T) {
 			}
 		}
 		b.Free()
-		obj := c.ParseJSON(`{"x":"` + text + `"}`)
+		obj, err := c.ParseJSON(`{"x":"` + text + `"}`)
+		if err != nil {
+			t.Fatal("JSON parse", err)
+		}
 		encoded, err := obj.JSONStringify()
 		if err != nil || encoded != `{"x":"`+text+`"}` {
 			t.Fatal("JSON", err)
@@ -131,7 +134,10 @@ func TestCapturedIntrinsicsAndPropertyErrors(t *testing.T) {
 	if _, err := safeEval(rt, `JSON.stringify = () => "wrong"; Reflect.ownKeys = () => []; Reflect.getOwnPropertyDescriptor = () => undefined;`); err != nil {
 		t.Fatal(err)
 	}
-	object := c.ParseJSON(`{"a":1}`)
+	object, err := c.ParseJSON(`{"a":1}`)
+	if err != nil {
+		t.Fatal(err)
+	}
 	text, err := object.JSONStringify()
 	if err != nil || text != `{"a":1}` {
 		t.Fatalf("captured stringify: %q, %v", text, err)

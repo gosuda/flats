@@ -190,18 +190,24 @@ func (c *Context) SetAsyncFunc(name string, fn AsyncFunction) {
 }
 
 // ParseJSON parses given JSON string and returns an object value.
-func (c *Context) ParseJSON(v string) *Value {
-	requireCString("json", v)
+func (c *Context) ParseJSON(v string) (*Value, error) {
+	if err := c.checkOpen(); err != nil {
+		return nil, fmt.Errorf("parse JSON: %w", err)
+	}
+
+	if err := cStringError("json", v); err != nil {
+		return nil, err
+	}
 
 	cStr := c.NewStringHandle(v)
 	defer cStr.handle.Free()
 
 	result := c.Call("QJS_ParseJSON", c.Raw(), cStr.Raw())
 	if c.HasException() {
-		panic(fmt.Errorf("parse JSON: %w", c.Exception()))
+		return nil, fmt.Errorf("parse JSON: %w", c.Exception())
 	}
 
-	return result
+	return result, nil
 }
 
 // NewValue creates a new Value wrapper around the given handle.

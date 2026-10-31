@@ -1,6 +1,7 @@
 package qjs
 
 import (
+	"errors"
 	"math"
 	"reflect"
 	"strings"
@@ -431,6 +432,23 @@ func TestGoMapToJsRejectsKeyCollisions(t *testing.T) {
 	defer b.Free()
 	if b.String() != "c" {
 		t.Fatalf("key b -> %q", b.String())
+	}
+}
+func TestGoMapToJsRejectsNULKey(t *testing.T) {
+	rt := conversionRuntime(t)
+	c := rt.Context()
+
+	for _, m := range []any{
+		map[string]int{"hello\x00world": 1},
+		map[any]int{"a\x00b": 2},
+	} {
+		v, err := ToJsValue(c, m)
+		if v != nil {
+			v.Free()
+		}
+		if err == nil || !errors.Is(err, ErrStringContainsNUL) {
+			t.Fatalf("ToJsValue with NUL key: got (%v, %v), want error wrapping ErrStringContainsNUL", v, err)
+		}
 	}
 }
 

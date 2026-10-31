@@ -522,7 +522,12 @@ func (p *Pool) use(rt *Runtime) (*Runtime, error) {
 // Put returns the runtime back to the pool for reuse.
 // If the pool is full, the runtime is closed to prevent resource leaks.
 func (p *Pool) Put(rt *Runtime) {
-	if rt == nil || rt.module == nil || rt.module.IsClosed() {
+	if rt == nil || rt.module == nil {
+		return
+	}
+	if rt.module.IsClosed() {
+		defer func() { _ = recover() }()
+		rt.Close()
 		return
 	}
 

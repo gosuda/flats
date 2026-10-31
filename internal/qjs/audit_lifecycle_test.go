@@ -392,7 +392,9 @@ func TestNULStringHandling(t *testing.T) {
 		t.Fatalf("Eval with NUL in code = %v, want ErrStringContainsNUL", err)
 	}
 
-	lifecycleRequirePanic(t, ErrStringContainsNUL, func() { c.ParseJSON("{\"a\":\"x\x00y\"}") })
+	if _, err := c.ParseJSON("{\"a\":\"x\x00y\"}"); !errors.Is(err, ErrStringContainsNUL) {
+		t.Fatalf("ParseJSON with NUL = %v, want ErrStringContainsNUL", err)
+	}
 	lifecycleRequirePanic(t, ErrStringContainsNUL, func() { c.NewAtom("a\x00b") })
 	obj := c.NewObject()
 	defer obj.Free()
@@ -547,6 +549,39 @@ func TestPoolRefusesClosedRuntimes(t *testing.T) {
 		t.Fatalf("pool returned a closed runtime: %q, %v", got, err)
 	}
 }
+func TestPoolClosesCancelledRuntimeOnPut(t *testing.T) {
+	pool := NewPool(1, Option{})
+	rt, err := pool.Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	native := rt.wrt
+	host := native.Module("env")
+	if host.IsClosed() {
+		t.Fatal("host module should be open initially")
+	}
+
+	if err := rt.module.Close(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+
+	pool.Put(rt)
+
+	if !host.IsClosed() {
+		t.Fatal("native wazero module remained open after Put of cancelled runtime")
+	}
+
+	pool.Put(rt)
+
+	reused, err := pool.Get()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reused.Close()
+	if got, err := safeEval(reused, `1+1`); got != "2" || err != nil {
+		t.Fatalf("pool returned broken runtime: %q, %v", got, err)
+	}
+}
 
 // Images are CRC-checked and then semantically validated; a crafted header
 // must be refused before it reaches restore.
@@ -668,8 +703,7 @@ func TestParseJSONFailureDoesNotPoison(t *testing.T) {
 	defer rt.Close()
 	c := rt.Context()
 
-	err := lifecycleRequirePanic(t, nil, func() { c.ParseJSON("{") })
-	if !strings.Contains(err.Error(), "SyntaxError") {
+	if _, err := c.ParseJSON("{"); err == nil || !strings.Contains(err.Error(), "SyntaxError") {
 		t.Fatalf("ParseJSON error = %v, want a SyntaxError", err)
 	}
 
@@ -677,7 +711,10 @@ func TestParseJSONFailureDoesNotPoison(t *testing.T) {
 		t.Fatal("ParseJSON left a pending exception")
 	}
 
-	object := c.ParseJSON(`{"a":1}`)
+	object, err := c.ParseJSON(`{"a":1}`)
+	if err != nil {
+		t.Fatal(err)
+	}
 	defer object.Free()
 	names, err := object.GetOwnPropertyNames()
 	if err != nil || len(names) != 1 || names[0] != "a" {
@@ -687,5 +724,25 @@ func TestParseJSONFailureDoesNotPoison(t *testing.T) {
 	recovered, err := safeEval(rt, `1+1`)
 	if err != nil || recovered != "2" {
 		t.Fatalf("runtime poisoned: %q, %v", recovered, err)
+	}
+}
+
+func TestParseJSONReturnsErrorNotPanic(t *testing.T) {
+	rt := lifecycleRuntime(t, Option{})
+	defer rt.Close()
+	c := rt.Context()
+
+	for _, bad := range []string{"{", `{"a":`, `invalid`} {
+		v, err := c.ParseJSON(bad)
+		if v != nil {
+			v.Free()
+		}
+		if err == nil {
+			t.Fatalf("ParseJSON(%q) succeeded, want error", bad)
+		}
+	}
+
+	if _, err := c.ParseJSON("{\"a\x00b\": 1}"); !errors.Is(err, ErrStringContainsNUL) {
+		t.Fatalf("ParseJSON with NUL in string = %v, want ErrStringContainsNUL", err)
 	}
 }

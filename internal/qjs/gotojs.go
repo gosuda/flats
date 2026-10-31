@@ -9,7 +9,13 @@ import (
 )
 
 // ToJsValue converts any Go value to a QuickJS value.
-func ToJsValue(c *Context, v any) (*Value, error) {
+func ToJsValue(c *Context, v any) (_ *Value, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			err = fmt.Errorf("[ToJSValue] %w", AnyToError(r))
+		}
+	}()
+
 	jsVal, err := NewTracker[uintptr]().toJsValue(c, v)
 	if err != nil {
 		return nil, fmt.Errorf("[ToJSValue] %w", err)
@@ -347,12 +353,18 @@ func (tracker *Tracker[T]) convertReflectValue(c *Context, v any) (*Value, error
 // withJSObject creates a JS object and ensures it's freed on error.
 func withJSObject(c *Context, fn func(*Value) error) (*Value, error) {
 	obj := c.NewObject()
-	if err := fn(obj); err != nil {
-		obj.Free()
+	ok := false
+	defer func() {
+		if !ok {
+			obj.Free()
+		}
+	}()
 
+	if err := fn(obj); err != nil {
 		return nil, err
 	}
 
+	ok = true
 	return obj, nil
 }
 
@@ -465,7 +477,6 @@ func (tracker *Tracker[T]) processRegularFields(
 		if !field.IsExported() || field.Anonymous {
 			continue
 		}
-
 		fieldName, skip := tracker.getFieldName(field)
 		if skip {
 			continue
@@ -509,7 +520,6 @@ func (tracker *Tracker[T]) addStructMethodsToObject(
 	for i := range rtype.NumMethod() {
 		method := rtype.Method(i)
 		methodValue := rval.Method(i)
-
 		jsMethod, err := FuncToJS(c, methodValue.Interface())
 		if err != nil {
 			return newGoToJsErr(

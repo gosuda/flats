@@ -371,6 +371,9 @@ func (v *Value) InvokeJS(fname string, args ...*Value) (*Value, error) {
 		return v.NewUndefined(), ErrCallFuncOnNonObject
 	}
 
+	if err := cStringError("method name", fname); err != nil {
+		return v.NewUndefined(), err
+	}
 	fn := v.GetPropertyStr(fname)
 	defer fn.Free()
 
