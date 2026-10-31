@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -232,6 +233,8 @@ func (l *logs) waitFor(t *testing.T, sub string) {
 type flat struct {
 	inst    core.Instance
 	srv     *httptest.Server
+	client  *http.Client
+	dial    func(context.Context) (net.Conn, error)
 	logs    *logs
 	dataDir string
 	root    string
@@ -298,7 +301,8 @@ func (f *flat) do(t *testing.T, method, path, body string, hdr ...string) result
 	for i := 0; i+1 < len(hdr); i += 2 {
 		req.Header.Set(hdr[i], hdr[i+1])
 	}
-	resp, err := http.DefaultClient.Do(req)
+	client := cmp.Or(f.client, http.DefaultClient)
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("%s %s: %v", method, path, err)
 	}
