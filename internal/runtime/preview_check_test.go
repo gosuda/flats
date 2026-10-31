@@ -150,4 +150,3 @@ function setupDOM(opts = {}) {
 		}
 	}
 }
-
