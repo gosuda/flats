@@ -1,14 +1,10 @@
 package mcpx
 
 import (
-	"context"
-	"encoding/json"
 	"strings"
 
 	runtimeref "github.com/gosuda/flats/docs"
-	"github.com/gosuda/flats/internal/clientstate"
 	"github.com/gosuda/flats/internal/core"
-	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 func publicNetworkLabel(id string) string {
@@ -110,48 +106,6 @@ type publicInstanceInfo struct {
 	Read    string `json:"read"`
 }
 
-type checkResultPublicInstance struct {
-	clientstate.CheckResult
-	PublicInstance publicInstanceInfo `json:"public_instance"`
-}
-
-type checkResultBoth struct {
-	clientstate.CheckResult
-	Autopilot      autopilotInfo      `json:"autopilot"`
-	PublicInstance publicInstanceInfo `json:"public_instance"`
-}
-
 func publicInstanceInfoOf(st *runtimeref.PublicInstanceState) publicInstanceInfo {
 	return publicInstanceInfo{Enabled: true, Network: st.Network, Read: "guide topic.public-instance"}
-}
-
-func registerPublicClient(s *mcp.Server, tool *mcp.Tool, svc *core.Service, autopilot bool) {
-	if autopilot {
-		mcp.AddTool(s, tool, func(ctx context.Context, _ *mcp.CallToolRequest, in clientstate.CheckInput) (*mcp.CallToolResult, checkResultBoth, error) {
-			res, err := clientstate.Check(clientManifest(ctx, svc), in)
-			if err != nil {
-				return nil, checkResultBoth{}, err
-			}
-			st := stateOf(ctx)
-			out := checkResultBoth{CheckResult: res, Autopilot: autopilotInfoOf(st.Autopilot), PublicInstance: publicInstanceInfoOf(st.Public)}
-			content, err := json.Marshal(out)
-			if err != nil {
-				return nil, out, err
-			}
-			return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(content)}}}, out, nil
-		})
-		return
-	}
-	mcp.AddTool(s, tool, func(ctx context.Context, _ *mcp.CallToolRequest, in clientstate.CheckInput) (*mcp.CallToolResult, checkResultPublicInstance, error) {
-		res, err := clientstate.Check(clientManifest(ctx, svc), in)
-		if err != nil {
-			return nil, checkResultPublicInstance{}, err
-		}
-		out := checkResultPublicInstance{CheckResult: res, PublicInstance: publicInstanceInfoOf(stateOf(ctx).Public)}
-		content, err := json.Marshal(out)
-		if err != nil {
-			return nil, out, err
-		}
-		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(content)}}}, out, nil
-	})
 }

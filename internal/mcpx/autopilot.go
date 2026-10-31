@@ -12,7 +12,6 @@ import (
 
 	runtimeref "github.com/gosuda/flats/docs"
 	"github.com/gosuda/flats/internal/api"
-	"github.com/gosuda/flats/internal/clientstate"
 	"github.com/gosuda/flats/internal/core"
 	"github.com/gosuda/flats/internal/store"
 )
@@ -208,13 +207,6 @@ func agentsMayDecide(a store.Approval, ap core.Autopilot) bool {
 	}
 	need, err := core.AutopilotNeeds(a.Action, a.Params)
 	return err == nil && need&^ap.Allowed == 0
-}
-
-// checkResultAutopilot is the check_client result while Autopilot is on:
-// today's result plus an additive autopilot member.
-type checkResultAutopilot struct {
-	clientstate.CheckResult
-	Autopilot autopilotInfo `json:"autopilot"`
 }
 
 type autopilotInfo struct {

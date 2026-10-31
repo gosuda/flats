@@ -312,7 +312,7 @@ func TestAutopilotGuideStatePairing(t *testing.T) {
 			if i%2 == 1 {
 				st = b
 			}
-			out := guide([]string{"topic.autopilot"}, 1000, st)
+			out := guide([]string{"topic.autopilot"}, 1000, st, nil)
 			if out.GuideRevision != runtimeref.AutopilotGuideRevision(1000, *st) || !strings.Contains(out.Items[0].Markdown, st.Guide) {
 				t.Errorf("request %d mixed states", i)
 			}
@@ -516,7 +516,7 @@ func TestAutopilotCheckClient(t *testing.T) {
 	if compat != want {
 		t.Fatalf("existing fields changed:\n%+v\n%+v", compat, want)
 	}
-	var on checkResultAutopilot
+	var on checkResult
 	call(t, e.local, "check_client", map[string]any{"guide_revision": onRev}, &on)
 	if on.GuideStatus != "current" || !on.Autopilot.Enabled || !slices.Equal(on.Autopilot.Allowed, []string{"deploy"}) || on.Autopilot.Read != "guide topic.autopilot" {
 		t.Fatalf("on result: %+v", on)

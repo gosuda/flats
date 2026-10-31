@@ -158,7 +158,7 @@ func TestAgentTextsAvoidRetiredPhrases(t *testing.T) {
 		texts["tool "+tool.Name] = tool.Description + string(schema) + string(out)
 	}
 	for _, id := range guideItems() {
-		md, _ := guidePage(id, 20<<20, nil)
+		md, _ := guidePage(id, 20<<20, nil, nil)
 		texts[id] = md
 	}
 	texts["runtime reference"] = runtimeref.Markdown

@@ -71,13 +71,9 @@ func guideItems() []string {
 }
 
 // guide resolves items. A bare topic name ("server.db") means its topic;
-// duplicates are read once. st is the request's Autopilot state, nil while
-// Autopilot is off.
-func guide(items []string, uploadLimit int64, st *runtimeref.AutopilotState, public ...*runtimeref.PublicInstanceState) GuideOut {
-	var pi *runtimeref.PublicInstanceState
-	if len(public) > 0 {
-		pi = public[0]
-	}
+// duplicates are read once. st and pi are the request's mode states, nil
+// while their respective modes are off.
+func guide(items []string, uploadLimit int64, st *runtimeref.AutopilotState, pi *runtimeref.PublicInstanceState) GuideOut {
 	if len(items) == 0 {
 		items = []string{"topic.index"}
 	}
@@ -126,9 +122,8 @@ func guide(items []string, uploadLimit int64, st *runtimeref.AutopilotState, pub
 	return out
 }
 
-func guidePage(id string, uploadLimit int64, st *runtimeref.AutopilotState, public ...*runtimeref.PublicInstanceState) (string, bool) {
-	if len(public) > 0 && public[0] != nil {
-		pi := public[0]
+func guidePage(id string, uploadLimit int64, st *runtimeref.AutopilotState, pi *runtimeref.PublicInstanceState) (string, bool) {
+	if pi != nil {
 		if cat, ok := strings.CutPrefix(id, "refusal."); ok {
 			if md, ok := runtimeref.PublicInstanceRefusal(cat); ok {
 				return md, true
@@ -140,7 +135,7 @@ func guidePage(id string, uploadLimit int64, st *runtimeref.AutopilotState, publ
 		if id == "topic.instructions" {
 			return "## Server instructions\n\nThe MCP server sends this text at initialization.\n\n" + runtimeref.ServerInstructions(uploadLimit, st != nil, true) + "\n", true
 		}
-		md, ok := guidePage(id, uploadLimit, st)
+		md, ok := guidePage(id, uploadLimit, st, nil)
 		if ok {
 			md = runtimeref.PublicInstanceTopicOverlay(strings.TrimPrefix(id, "topic."), md)
 		}
