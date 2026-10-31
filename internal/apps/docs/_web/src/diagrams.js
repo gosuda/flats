@@ -53,8 +53,9 @@ export function destroyDiagram(el) {
 
 // Once the page may show text anyone could have written (a guest wrote in
 // the document, or the flat is open to anyone for editing), diagrams draw
-// only when the reader asks, within size caps (docs-public-edit-TECH
-// 3.10). The page never switches back before a reload.
+// only when the reader asks, within size caps
+// (docs-public-edit-technical-design 3.10). The page never switches back
+// before a reload.
 let onRequest = false;
 export function drawOnRequest() {
   if (onRequest) return;
