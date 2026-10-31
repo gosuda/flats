@@ -25,14 +25,71 @@ func failure(code, format string, args ...any) error {
 	return &Error{code, fmt.Errorf(format, args...)}
 }
 
-// Code returns the public error classification.
-func Code(err error) string {
-	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
-		return "cancelled"
+var codePrecedence = map[string]int{
+	"cancelled":          1,
+	"locked":             2,
+	"package_managed":    3,
+	"invalid_target":     4,
+	"service_binary":     5,
+	"file_conflict":      6,
+	"candidate_mismatch": 7,
+	"checksum":           8,
+	"assets_unavailable": 9,
+	"transport":          10,
+	"server_changed":     11,
+	"filesystem":         100,
+}
+
+func codeRank(code string) int {
+	if r, ok := codePrecedence[code]; ok {
+		return r
 	}
-	var e *Error
-	if errors.As(err, &e) {
-		return e.Code
+	return 50
+}
+
+func walkErrors(err error, fn func(error)) {
+	if err == nil {
+		return
+	}
+	fn(err)
+	switch u := err.(type) {
+	case interface{ Unwrap() []error }:
+		for _, e := range u.Unwrap() {
+			walkErrors(e, fn)
+		}
+	case interface{ Unwrap() error }:
+		walkErrors(u.Unwrap(), fn)
+	}
+}
+
+// Code returns the public error classification following precedence:
+// cancelled, locked, package_managed, invalid_target, service_binary,
+// file_conflict, candidate_mismatch, checksum, assets_unavailable,
+// transport, server_changed, custom codes, filesystem.
+func Code(err error) string {
+	if err == nil {
+		return ""
+	}
+	best := ""
+	bestRank := 1000
+	walkErrors(err, func(e error) {
+		if errors.Is(e, context.Canceled) || errors.Is(e, context.DeadlineExceeded) {
+			rank := codeRank("cancelled")
+			if rank < bestRank || (rank == bestRank && (best == "" || "cancelled" < best)) {
+				best = "cancelled"
+				bestRank = rank
+			}
+		}
+		if appErr, ok := errors.AsType[*Error](e); ok && appErr.Code != "" {
+			rank := codeRank(appErr.Code)
+			if rank < bestRank || (rank == bestRank && (best == "" || appErr.Code < best)) {
+				best = appErr.Code
+				bestRank = rank
+			}
+		}
+	})
+	if best != "" {
+		return best
 	}
 	return "filesystem"
 }

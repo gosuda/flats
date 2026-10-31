@@ -303,3 +303,55 @@ func TestUpdateExecutesCandidateProbe(t *testing.T) {
 		t.Fatalf("%+v %v", fresh, e)
 	}
 }
+
+type failAfterWriter struct {
+	allowed int
+	written int
+	err     error
+}
+
+func (w *failAfterWriter) Write(p []byte) (int, error) {
+	if w.written >= w.allowed {
+		return 0, w.err
+	}
+	remain := w.allowed - w.written
+	if len(p) <= remain {
+		w.written += len(p)
+		return len(p), nil
+	}
+	w.written += remain
+	return remain, w.err
+}
+
+func TestExtractToFailures(t *testing.T) {
+	headers := []*tar.Header{
+		{Name: "flats", Mode: 0755, Size: 100, Typeflag: tar.TypeReg},
+	}
+	cleanArchive := archiveFixture(t, headers)
+	archiveWithGarbage := append(bytes.Clone(cleanArchive), []byte("trailing garbage")...)
+
+	var buf bytes.Buffer
+	err := extractTo(&buf, archiveWithGarbage)
+	if err == nil {
+		t.Fatal("expected error on trailing garbage, got nil")
+	}
+	if got := Code(err); got != "assets_unavailable" {
+		t.Fatalf("expected assets_unavailable for trailing garbage, got %q", got)
+	}
+
+	writeErr := errors.New("simulated disk full")
+	fw := &failAfterWriter{allowed: 10, err: writeErr}
+	err = extractTo(fw, archiveWithGarbage)
+	if err == nil {
+		t.Fatal("expected error on write failure, got nil")
+	}
+	if !errors.Is(err, writeErr) {
+		t.Fatalf("expected write error %v in %v", writeErr, err)
+	}
+	if got := Code(err); got != "filesystem" {
+		t.Fatalf("expected filesystem code for write failure, got %q", got)
+	}
+	if appErr, ok := errors.AsType[*Error](err); !ok || appErr.Code != "filesystem" {
+		t.Fatalf("expected *Error with filesystem code, got %v", err)
+	}
+}
