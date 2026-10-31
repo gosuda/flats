@@ -236,11 +236,13 @@ type Manager struct {
 	proxy   ProxyNet
 	zmu     sync.RWMutex // read-held across a zrok open; DetachZrok holds it to write
 	xmu     sync.RWMutex // read-held across a proxy open; DetachProxy holds it to write
-	// openMu serializes opens against slug retirement: ServeExposure reads it
-	// from serve through route registration, StopSlug holds it for its whole
-	// run so an open either registers before StopSlug's route snapshot (and
-	// is stopped by it) or starts after StopSlug returned.
-	openMu        sync.RWMutex
+	// gates serialize each slug's opens against its retirement:
+	// ServeExposure holds its slug's gate shared from serve through route
+	// registration, StopSlug holds it alone for its whole run, so an open
+	// either registers before StopSlug's route snapshot (and is stopped by
+	// it) or starts after StopSlug returned. Other slugs are not held up.
+	gateMu        sync.Mutex
+	gates         map[string]*slugGate
 	proxyTemplate func() string
 	tailscaleDir  string
 	zrokDir       string
@@ -507,10 +509,13 @@ func (m *Manager) Reload() error {
 // cloudflare-quick the same way.
 // A provider that fails is not replaced by another one.
 func (m *Manager) ServeExposure(ctx context.Context, req ExposureRequest) (res ExposureResult, err error) {
-	m.openMu.RLock()
-	defer m.openMu.RUnlock()
-	// Registered after RUnlock so it runs before it: observe must write
-	// state while the read lock still excludes a concurrent StopSlug.
+	leave, err := m.enterSlug(ctx, req.Slug, false)
+	if err != nil {
+		return ExposureResult{}, err
+	}
+	defer leave()
+	// Registered after leave so it runs before it: observe must write state
+	// while the gate still excludes a concurrent StopSlug of this slug.
 	defer m.observe(req, &res)
 	if err := ctx.Err(); err != nil {
 		return ExposureResult{}, err
@@ -1396,12 +1401,16 @@ func (m *Manager) StopSlug(ctx context.Context, slug string) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
-	// Hold the retirement against opens for the whole run: an open that has
-	// not yet registered either completes before the route snapshot below
-	// (and is stopped by this retirement) or waits to register after this
-	// returns as a fresh open. No route can register between the two.
-	m.openMu.Lock()
-	defer m.openMu.Unlock()
+	// Hold the retirement against this slug's opens for the whole run: an
+	// open that has not yet registered either completes before the route
+	// snapshot below (and is stopped by this retirement) or waits to
+	// register after this returns as a fresh open. No route can register
+	// between the two.
+	leave, err := m.enterSlug(ctx, slug, true)
+	if err != nil {
+		return err
+	}
+	defer leave()
 	m.mu.Lock()
 	routes := make([]route, 0)
 	for _, r := range m.routes {
