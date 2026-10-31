@@ -7,8 +7,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/gosuda/flats/internal/qjs"
 )
@@ -86,7 +88,7 @@ func (w *lineWriter) Flush() {
 
 func (e *Engine) hostCall(this *qjs.This) (*qjs.Value, error) {
 	e.hostTainted.Store(true)
-	if e.rt != nil {
+	if !e.bootActive.Load() && e.rt != nil {
 		e.rt.Taint("host operation")
 	}
 	args := this.Args()
@@ -124,7 +126,6 @@ func (e *Engine) hostCall(this *qjs.This) (*qjs.Value, error) {
 		defer func() {
 			if r := recover(); r != nil {
 				e.hostPanicked.Store(true)
-				e.hostPanicVal.Store(&r)
 				panic(r)
 			}
 		}()
@@ -145,6 +146,12 @@ func (e *Engine) hostCall(this *qjs.This) (*qjs.Value, error) {
 }
 
 func (e *Engine) codecCall(this *qjs.This) (*qjs.Value, error) {
+	if !e.bootActive.Load() {
+		e.hostTainted.Store(true)
+		if e.rt != nil {
+			e.rt.Taint("codec operation")
+		}
+	}
 	args := this.Args()
 	defer func() {
 		for _, a := range args {
@@ -166,7 +173,16 @@ func (e *Engine) codecCall(this *qjs.This) (*qjs.Value, error) {
 	}
 
 	if e.spec.RawCodec != nil {
-		inVal := Value{raw: args[1], ctx: this.Context()}
+		var inVal Value
+		if args[1].IsByteArray() {
+			inVal = Value{kind: valArrayBuffer, buf: slices.Clone(args[1].ToByteArray()), ctx: this.Context(), eng: e}
+		} else if args[1].IsString() {
+			inVal = Value{kind: valString, str: args[1].String(), ctx: this.Context(), eng: e}
+		} else {
+			e.trackHandle(1)
+			inVal = Value{raw: args[1].Clone(), ctx: this.Context(), eng: e, freed: &atomic.Bool{}}
+		}
+		defer inVal.Free()
 		if inVal.IsByteArray() {
 			if inVal.ByteLen() > memBound {
 				return nil, ErrTooLarge
@@ -182,6 +198,7 @@ func (e *Engine) codecCall(this *qjs.This) (*qjs.Value, error) {
 
 		outVal, err := e.spec.RawCodec(op, inVal)
 		if err != nil {
+			outVal.Free()
 			return nil, err
 		}
 		return e.toQjsValue(this.Context(), outVal, args[1])
@@ -217,22 +234,23 @@ func (e *Engine) toQjsValue(c *qjs.Context, v Value, inArg *qjs.Value) (*qjs.Val
 	if v.raw != nil {
 		if v.raw.IsByteArray() {
 			if v.raw.ByteLen() > memBound {
-				if v.raw != inArg {
-					v.raw.Free()
-				}
+				v.Free()
 				return nil, ErrTooLarge
 			}
 			e.gcBytes += uint64(v.raw.ByteLen())
 		} else if v.raw.IsString() {
 			if int64(len(v.raw.String())) > memBound {
-				if v.raw != inArg {
-					v.raw.Free()
-				}
+				v.Free()
 				return nil, ErrTooLarge
 			}
 			e.gcBytes += uint64(len(v.raw.String()))
 		} else {
 			e.gcBytes += 4
+		}
+		if v.freed == nil || v.freed.CompareAndSwap(false, true) {
+			if v.eng != nil {
+				v.eng.trackHandle(-1)
+			}
 		}
 		if inArg != nil && v.raw == inArg {
 			return v.raw.Clone(), nil

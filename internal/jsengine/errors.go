@@ -27,12 +27,69 @@ type ScriptError struct {
 func (e *ScriptError) Error() string {
 	s := e.Message
 	if e.Name != "" && !strings.HasPrefix(s, e.Name+":") {
-		s = e.Name + ": " + s
+		if s == "" {
+			s = e.Name
+		} else {
+			s = e.Name + ": " + s
+		}
 	}
 	if e.Stack != "" {
 		s += "\n" + strings.TrimRight(e.Stack, "\n")
 	}
 	return s
+}
+
+func isIdentifier(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	for i, r := range s {
+		if i == 0 {
+			if r != '_' && r != '$' && (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') {
+				return false
+			}
+		} else {
+			if r != '_' && r != '$' && (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+func parseScriptError(err error) *ScriptError {
+	if err == nil {
+		return nil
+	}
+	if existing, ok := errors.AsType[*ScriptError](err); ok {
+		return existing
+	}
+	s := err.Error()
+	var stack string
+	if cause, stackPart, found := strings.Cut(s, "\n    at "); found {
+		s = cause
+		stack = "    at " + stackPart
+	}
+	var name, message string
+	line1, rest, hasNL := strings.Cut(s, "\n")
+	if candidateName, msg1, hasColon := strings.Cut(line1, ": "); hasColon && isIdentifier(candidateName) {
+		name = candidateName
+		if hasNL {
+			message = msg1 + "\n" + rest
+		} else {
+			message = msg1
+		}
+	} else if !hasNL && isIdentifier(s) && strings.HasSuffix(s, "Error") {
+		name = s
+		message = ""
+	} else {
+		message = s
+	}
+	return &ScriptError{
+		Name:    name,
+		Message: message,
+		Stack:   stack,
+	}
 }
 
 type Fatal struct {

@@ -720,7 +720,7 @@ func TestCaptureAndRestoreWithCodec(t *testing.T) {
 
 func TestGCDrained(t *testing.T) {
 	ctx := validContext(t)
-	eng, err := Open(Spec{Prelude: "globalThis.gc = () => {};"}, nil)
+	eng, err := Open(Spec{Prelude: "globalThis.step = () => {};"}, nil)
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -731,7 +731,7 @@ func TestGCDrained(t *testing.T) {
 	}
 
 	for range 32 {
-		_, err = eng.Call(ctx, "gc", "")
+		_, err = eng.Call(ctx, "step", "")
 		if err != nil {
 			t.Fatalf("Call: %v", err)
 		}
@@ -1183,5 +1183,318 @@ func TestDeadlineClamping(t *testing.T) {
 	}
 	if elapsed > 2*time.Second {
 		t.Fatalf("short timeout took %v, want <= 2s", elapsed)
+	}
+}
+
+func TestGuestExceptionSubstringDoesNotPoison(t *testing.T) {
+	cases := []string{
+		"throw new Error('unreachable')",
+		"throw new Error('out of memory')",
+		"throw new Error('InternalError')",
+		"throw new Error('stack overflow')",
+		"throw new Error('context canceled')",
+		"throw new Error('module is closed')",
+	}
+
+	for _, tc := range cases {
+		t.Run(tc, func(t *testing.T) {
+			eng, err := Open(Spec{}, nil)
+			if err != nil {
+				t.Fatalf("Open: %v", err)
+			}
+			defer eng.Close()
+
+			ctx := validContext(t)
+			_, err = eng.Eval(ctx, "sub.js", tc, false)
+			if err == nil {
+				t.Fatal("expected error, got nil")
+			}
+			if errors.Is(err, ErrPoisoned) {
+				t.Fatalf("guest exception poisoned engine: %v", err)
+			}
+			se, ok := errors.AsType[*ScriptError](err)
+			if !ok {
+				t.Fatalf("expected *ScriptError, got %T: %v", err, err)
+			}
+			if se.Name != "Error" {
+				t.Fatalf("se.Name = %q, want Error", se.Name)
+			}
+
+			out, err := eng.Eval(ctx, "recover.js", "'ok'", false)
+			if err != nil || out != "ok" {
+				t.Fatalf("Eval after script error: %q, %v", out, err)
+			}
+		})
+	}
+
+	t.Run("RealInternalErrorPoisons", func(t *testing.T) {
+		eng, err := Open(Spec{}, nil)
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		defer eng.Close()
+
+		ctx := validContext(t)
+		_, err = eng.Eval(ctx, "internal.js", "throw new InternalError('real fatal')", false)
+		if !errors.Is(err, ErrPoisoned) {
+			t.Fatalf("InternalError must poison engine: got %v, want ErrPoisoned", err)
+		}
+		if _, ok := errors.AsType[*Fatal](err); !ok {
+			t.Fatalf("expected *Fatal, got %T", err)
+		}
+	})
+}
+
+func TestSnapshotRefusedAfterUserCodeOrCodec(t *testing.T) {
+	t.Run("UserCodeRefusesSnapshot", func(t *testing.T) {
+		eng, err := Open(Spec{ImagePath: "/tmp/fake-image"}, nil)
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		defer eng.Close()
+
+		ctx := validContext(t)
+		_, err = eng.Eval(ctx, "user.js", `globalThis.userSecret=function(){return "user code"}`, false)
+		if err != nil {
+			t.Fatalf("Eval: %v", err)
+		}
+
+		_, err = eng.Snapshot()
+		if !errors.Is(err, ErrTainted) {
+			t.Fatalf("Snapshot after user code: got %v, want ErrTainted", err)
+		}
+	})
+
+	t.Run("CodecRefusesSnapshot", func(t *testing.T) {
+		spec := Spec{
+			ImagePath: "/tmp/fake-image",
+			Prelude:   "globalThis.runCodec = () => __flats_docs_codec('test', 'data');",
+			RawCodec: func(op string, in Value) (Value, error) {
+				return in.NewString("ok"), nil
+			},
+		}
+		eng, err := Open(spec, nil)
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		defer eng.Close()
+
+		ctx := validContext(t)
+		_, err = eng.Call(ctx, "runCodec", "")
+		if err != nil {
+			t.Fatalf("Call: %v", err)
+		}
+
+		_, err = eng.Snapshot()
+		if !errors.Is(err, ErrTainted) {
+			t.Fatalf("Snapshot after codec call: got %v, want ErrTainted", err)
+		}
+	})
+}
+
+func TestOpenRefusesHostPanicOrTaintDuringStartup(t *testing.T) {
+	t.Run("HostPanicDuringPrelude", func(t *testing.T) {
+		host := func(ctx context.Context, op string, args []byte) ([]byte, error) {
+			panic("host exploded")
+		}
+		spec := Spec{
+			Prelude: "try { __flats_host('test', 'arg'); } catch(e) {}",
+		}
+		eng, err := Open(spec, host)
+		if err == nil {
+			eng.Close()
+			t.Fatal("Open must refuse if host panicked during prelude")
+		}
+		if !errors.Is(err, ErrTainted) {
+			t.Fatalf("Open error: got %v, want ErrTainted", err)
+		}
+	})
+
+	t.Run("HostTaintDuringPrelude", func(t *testing.T) {
+		host := func(ctx context.Context, op string, args []byte) ([]byte, error) {
+			return []byte("ok"), nil
+		}
+		spec := Spec{
+			Prelude: "try { __flats_host('test', 'arg'); } catch(e) {}",
+		}
+		eng, err := Open(spec, host)
+		if err == nil {
+			eng.Close()
+			t.Fatal("Open must refuse if host called during prelude")
+		}
+		if !errors.Is(err, ErrTainted) {
+			t.Fatalf("Open error: got %v, want ErrTainted", err)
+		}
+	})
+}
+
+func TestExpiredContextRejectedBeforeEntry(t *testing.T) {
+	eng, err := Open(Spec{}, nil)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer eng.Close()
+
+	expiredCtx, cancel := context.WithDeadline(context.Background(), time.Now().Add(-time.Second))
+	defer cancel()
+
+	_, err = eng.Call(expiredCtx, "test", "")
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Call with expired ctx: got %v, want context.DeadlineExceeded", err)
+	}
+
+	_, err = eng.Eval(expiredCtx, "t.js", "1 + 1", false)
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Eval with expired ctx: got %v, want context.DeadlineExceeded", err)
+	}
+
+	validCtx := validContext(t)
+	out, err := eng.Eval(validCtx, "t.js", "20 + 22", false)
+	if err != nil || out != "42" {
+		t.Fatalf("Eval after expired ctx rejection: %q, %v", out, err)
+	}
+}
+
+func TestCodecHandleLeakTripsLedger(t *testing.T) {
+	spec := Spec{
+		Prelude: "globalThis.leakCodec = () => __flats_docs_codec('leak', 'data');",
+		RawCodec: func(op string, in Value) (Value, error) {
+			_ = in.NewString("leaked string handle")
+			return in.NewString("ok"), nil
+		},
+	}
+	eng, err := Open(spec, nil)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer eng.Close()
+
+	ctx := validContext(t)
+	_, err = eng.Call(ctx, "leakCodec", "")
+	if !errors.Is(err, ErrPoisoned) {
+		t.Fatalf("Call with leaking codec: got %v, want ErrPoisoned", err)
+	}
+	f, ok := errors.AsType[*Fatal](err)
+	if !ok {
+		t.Fatalf("expected *Fatal, got %T: %v", err, err)
+	}
+	if !strings.Contains(f.Error(), "live handle leak") {
+		t.Fatalf("Fatal message: got %q, want 'live handle leak'", f.Error())
+	}
+}
+
+func TestRawCodecValueOwnershipNoUAF(t *testing.T) {
+	var saved Value
+	spec := Spec{
+		Prelude: "globalThis.saveCodec = () => __flats_docs_codec('save', 'hello world');",
+		RawCodec: func(op string, in Value) (Value, error) {
+			saved = in
+			return in.NewString("ok"), nil
+		},
+	}
+	eng, err := Open(spec, nil)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer eng.Close()
+
+	ctx := validContext(t)
+	out, err := eng.Call(ctx, "saveCodec", "")
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if out != "ok" {
+		t.Fatalf("got %q, want 'ok'", out)
+	}
+
+	if saved.String() != "hello world" {
+		t.Fatalf("saved.String() = %q, want 'hello world'", saved.String())
+	}
+	if saved.IsByteArray() {
+		t.Fatal("expected saved to not be byte array")
+	}
+	if !saved.IsString() {
+		t.Fatal("expected saved to be string")
+	}
+}
+
+func TestCallGCForbidden(t *testing.T) {
+	eng, err := Open(Spec{}, nil)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer eng.Close()
+
+	ctx := validContext(t)
+	_, err = eng.Call(ctx, "gc", "")
+	if err == nil {
+		t.Fatal("Call('gc') must be refused")
+	}
+
+	out, err := eng.Eval(ctx, "check.js", "typeof gc", false)
+	if err != nil || out != "undefined" {
+		t.Fatalf("typeof gc = %q, %v; want 'undefined'", out, err)
+	}
+
+	out, err = eng.Eval(ctx, "check2.js", "typeof globalThis.gc", false)
+	if err != nil || out != "undefined" {
+		t.Fatalf("typeof globalThis.gc = %q, %v; want 'undefined'", out, err)
+	}
+}
+
+func TestScriptErrorStructuredFields(t *testing.T) {
+	eng, err := Open(Spec{}, nil)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer eng.Close()
+
+	ctx := validContext(t)
+	_, err = eng.Eval(ctx, "type.js", "throw new TypeError('invalid type argument')", false)
+	if err == nil {
+		t.Fatal("expected error, got nil")
+	}
+	se, ok := errors.AsType[*ScriptError](err)
+	if !ok {
+		t.Fatalf("expected *ScriptError, got %T: %v", err, err)
+	}
+	if se.Name != "TypeError" {
+		t.Fatalf("se.Name = %q, want 'TypeError'", se.Name)
+	}
+	if se.Message != "invalid type argument" {
+		t.Fatalf("se.Message = %q, want 'invalid type argument'", se.Message)
+	}
+	if se.Stack == "" || !strings.Contains(se.Stack, "type.js") {
+		t.Fatalf("se.Stack = %q, want non-empty stack with 'type.js'", se.Stack)
+	}
+	if !strings.HasPrefix(se.Error(), "TypeError: invalid type argument") {
+		t.Fatalf("se.Error() = %q, want prefix 'TypeError: invalid type argument'", se.Error())
+	}
+}
+
+func TestCollectCyclesFailureSurfacesError(t *testing.T) {
+	eng, err := Open(Spec{Prelude: "globalThis.step = () => {};"}, nil)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer eng.Close()
+
+	if eng.gc != nil {
+		eng.gc.Free()
+	}
+
+	ctx := validContext(t)
+	var lastErr error
+	for range 32 {
+		_, lastErr = eng.Call(ctx, "step", "")
+		if lastErr != nil {
+			break
+		}
+	}
+	if lastErr == nil {
+		t.Fatal("expected collectCycles failure to surface as error")
+	}
+	if !errors.Is(lastErr, ErrPoisoned) {
+		t.Fatalf("expected ErrPoisoned, got %v", lastErr)
 	}
 }

@@ -6,9 +6,11 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"path"
 	"runtime"
 	"slices"
 	"strings"
@@ -49,8 +51,10 @@ const (
 )
 
 type Value struct {
-	raw *qjs.Value
-	ctx *qjs.Context
+	raw   *qjs.Value
+	ctx   *qjs.Context
+	eng   *Engine
+	freed *atomic.Bool
 
 	kind valKind
 	str  string
@@ -70,7 +74,14 @@ func ArrayBufferValue(b []byte) Value {
 	return Value{kind: valArrayBuffer, buf: b}
 }
 
+func (v Value) isFreed() bool {
+	return v.freed != nil && v.freed.Load()
+}
+
 func (v Value) IsByteArray() bool {
+	if v.isFreed() {
+		return false
+	}
 	if v.raw != nil {
 		return v.raw.IsByteArray()
 	}
@@ -78,6 +89,9 @@ func (v Value) IsByteArray() bool {
 }
 
 func (v Value) ByteLen() int64 {
+	if v.isFreed() {
+		return 0
+	}
 	if v.raw != nil {
 		return v.raw.ByteLen()
 	}
@@ -88,6 +102,9 @@ func (v Value) ByteLen() int64 {
 }
 
 func (v Value) ToByteArray() []byte {
+	if v.isFreed() {
+		return nil
+	}
 	if v.raw != nil {
 		return v.raw.ToByteArray()
 	}
@@ -98,6 +115,9 @@ func (v Value) ToByteArray() []byte {
 }
 
 func (v Value) String() string {
+	if v.isFreed() {
+		return ""
+	}
 	if v.raw != nil {
 		return v.raw.String()
 	}
@@ -108,6 +128,9 @@ func (v Value) String() string {
 }
 
 func (v Value) Int32() int32 {
+	if v.isFreed() {
+		return 0
+	}
 	if v.raw != nil {
 		return v.raw.Int32()
 	}
@@ -118,29 +141,64 @@ func (v Value) Int32() int32 {
 }
 
 func (v Value) IsString() bool {
+	if v.isFreed() {
+		return false
+	}
 	if v.raw != nil {
 		return v.raw.IsString()
 	}
 	return v.kind == valString
 }
+func (v Value) Free() {
+	if v.raw != nil && (v.freed == nil || v.freed.CompareAndSwap(false, true)) {
+		v.raw.Free()
+		if v.eng != nil {
+			v.eng.trackHandle(-1)
+		}
+	}
+}
+
+func (v Value) Clone() Value {
+	if v.raw != nil {
+		cloned := v.raw.Clone()
+		if v.eng != nil {
+			v.eng.trackHandle(1)
+		}
+		return Value{raw: cloned, ctx: v.ctx, eng: v.eng, freed: &atomic.Bool{}}
+	}
+	res := v
+	if v.kind == valArrayBuffer {
+		res.buf = slices.Clone(v.buf)
+	}
+	return res
+}
 
 func (v Value) NewString(s string) Value {
 	if v.ctx != nil {
-		return Value{raw: v.ctx.NewString(s), ctx: v.ctx}
+		if v.eng != nil {
+			v.eng.trackHandle(1)
+		}
+		return Value{raw: v.ctx.NewString(s), ctx: v.ctx, eng: v.eng, freed: &atomic.Bool{}}
 	}
 	return StringValue(s)
 }
 
 func (v Value) NewInt32(n int32) Value {
 	if v.ctx != nil {
-		return Value{raw: v.ctx.NewInt32(n), ctx: v.ctx}
+		if v.eng != nil {
+			v.eng.trackHandle(1)
+		}
+		return Value{raw: v.ctx.NewInt32(n), ctx: v.ctx, eng: v.eng, freed: &atomic.Bool{}}
 	}
 	return Int32Value(n)
 }
 
 func (v Value) NewArrayBuffer(b []byte) Value {
 	if v.ctx != nil {
-		return Value{raw: v.ctx.NewArrayBuffer(b), ctx: v.ctx}
+		if v.eng != nil {
+			v.eng.trackHandle(1)
+		}
+		return Value{raw: v.ctx.NewArrayBuffer(b), ctx: v.ctx, eng: v.eng, freed: &atomic.Bool{}}
 	}
 	return ArrayBufferValue(b)
 }
@@ -343,13 +401,14 @@ type Engine struct {
 
 	liveHandles  atomic.Int64
 	hostPanicked atomic.Bool
-	hostPanicVal atomic.Pointer[any]
 	hostTainted  atomic.Bool
+	userTainted  atomic.Bool
+	bootRan      atomic.Bool
+	bootActive   atomic.Bool
 	gcDrained    atomic.Bool
-
-	callMu   sync.Mutex
-	callGoid atomic.Int64
-	inClose  atomic.Bool
+	callMu       sync.Mutex
+	callGoid     atomic.Int64
+	inClose      atomic.Bool
 
 	testHookLeakHandle       atomic.Bool
 	testHookPendingException atomic.Bool
@@ -446,10 +505,13 @@ func Open(spec Spec, host HostFunc) (*Engine, error) {
 		}
 	} else {
 		eng.gc = c.Global().GetPropertyStr("gc")
+		c.Global().SetPropertyStr("gc", c.NewUndefined())
 	}
 	startupTimeout := time.Duration(spec.TimeoutMS) * time.Millisecond
 	startupCtx, cancel := context.WithTimeout(context.Background(), startupTimeout)
 	defer cancel()
+
+	eng.bootActive.Store(true)
 
 	if spec.Prelude != "" {
 		eng.swapCtx.set(startupCtx)
@@ -476,6 +538,11 @@ func Open(spec Spec, host HostFunc) (*Engine, error) {
 			v.Free()
 		}
 	}
+	eng.bootActive.Store(false)
+	if eng.hostPanicked.Load() || eng.hostTainted.Load() {
+		_ = eng.Close()
+		return nil, fmt.Errorf("%w: host function invoked during startup", ErrTainted)
+	}
 
 	if !rt.StackIntact() {
 		_ = eng.Close()
@@ -486,18 +553,6 @@ func Open(spec Spec, host HostFunc) (*Engine, error) {
 	eng.state.Store(stateReady)
 	return eng, nil
 }
-
-func (e *Engine) Adopt(shell *Shell) error {
-	if shell == nil || shell.raw == nil {
-		return errors.New("nil shell")
-	}
-	if !shell.Compatible(e.spec) {
-		return errors.New("shell not compatible with engine spec")
-	}
-	e.spec.Shell = shell
-	return nil
-}
-
 func (e *Engine) trackHandle(n int64) {
 	e.liveHandles.Add(n)
 }
@@ -514,20 +569,26 @@ func (e *Engine) isFatal(err error, ctx context.Context) bool {
 	if err == nil {
 		return false
 	}
+	if _, ok := errors.AsType[*Fatal](err); ok {
+		return true
+	}
 	if ctx != nil && ctx.Err() != nil {
 		return true
 	}
-	msg := err.Error()
-	return strings.Contains(msg, "InternalError") ||
-		strings.Contains(msg, "out of memory") ||
-		strings.Contains(msg, "context deadline exceeded") ||
-		strings.Contains(msg, "context canceled") ||
-		strings.Contains(msg, "wasm trap") ||
-		strings.Contains(msg, "unreachable") ||
-		strings.Contains(msg, "stack overflow") ||
-		strings.Contains(msg, "module is closed") ||
-		strings.Contains(msg, "runtime is closed") ||
-		(e.rt != nil && !e.rt.StackIntact())
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		return true
+	}
+	if errors.Is(err, qjs.ErrRuntimeClosed) || errors.Is(err, qjs.ErrOutOfMemory) {
+		return true
+	}
+	if e.rt != nil && !e.rt.StackIntact() {
+		return true
+	}
+	se := parseScriptError(err)
+	if se != nil && se.Name == "InternalError" {
+		return true
+	}
+	return false
 }
 
 func (e *Engine) fatal(cause error) error {
@@ -596,11 +657,17 @@ func bindCallTimeout(ctx context.Context, timeoutMS int) (context.Context, conte
 	if !ok {
 		return nil, nil, ErrNoDeadline
 	}
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+	now := time.Now()
+	if !deadline.After(now) {
+		return nil, nil, context.DeadlineExceeded
+	}
 	if timeoutMS <= 0 {
 		timeoutMS = DefaultTimeoutMS
 	}
 	timeout := time.Duration(timeoutMS) * time.Millisecond
-	now := time.Now()
 	if deadline.Sub(now) <= timeout {
 		return ctx, func() {}, nil
 	}
@@ -631,7 +698,9 @@ func (e *Engine) postCallChecks(c *qjs.Context, out string) error {
 	if e.liveHandles.Load() != 0 {
 		return e.fatal(fmt.Errorf("live handle leak: %d handles active", e.liveHandles.Load()))
 	}
-	e.collectCycles(c)
+	if err := e.collectCycles(c); err != nil {
+		return err
+	}
 	return nil
 }
 
@@ -644,7 +713,7 @@ func (e *Engine) handleCallResult(p *qjs.Value, callErr error, ctx context.Conte
 		if e.hostPanicked.Load() || e.isFatal(callErr, ctx) {
 			return "", e.fatal(callErr)
 		}
-		return "", &ScriptError{Message: trimStack(callErr.Error())}
+		return "", parseScriptError(callErr)
 	}
 	r := p
 	var err error
@@ -656,7 +725,7 @@ func (e *Engine) handleCallResult(p *qjs.Value, callErr error, ctx context.Conte
 			if e.hostPanicked.Load() || e.isFatal(err, ctx) {
 				return "", e.fatal(err)
 			}
-			return "", &ScriptError{Message: trimStack(err.Error())}
+			return "", parseScriptError(err)
 		}
 	}
 	out := r.String()
@@ -677,7 +746,7 @@ func (e *Engine) handleEvalResult(v *qjs.Value, evalErr error, ctx context.Conte
 		if e.hostPanicked.Load() || e.isFatal(evalErr, ctx) {
 			return "", e.fatal(evalErr)
 		}
-		return "", &ScriptError{Message: trimStack(evalErr.Error())}
+		return "", parseScriptError(evalErr)
 	}
 	if v == nil {
 		return "", nil
@@ -692,7 +761,7 @@ func (e *Engine) handleEvalResult(v *qjs.Value, evalErr error, ctx context.Conte
 			if e.hostPanicked.Load() || e.isFatal(err, ctx) {
 				return "", e.fatal(err)
 			}
-			return "", &ScriptError{Message: trimStack(err.Error())}
+			return "", parseScriptError(err)
 		}
 	}
 	out := r.String()
@@ -705,6 +774,9 @@ func (e *Engine) handleEvalResult(v *qjs.Value, evalErr error, ctx context.Conte
 }
 
 func (e *Engine) Call(ctx context.Context, fn string, arg string) (out string, retErr error) {
+	if fn == "gc" {
+		return "", errors.New("cannot call gc directly")
+	}
 	cCtx, cancel, err := bindCallTimeout(ctx, e.spec.TimeoutMS)
 	if err != nil {
 		return "", err
@@ -721,6 +793,10 @@ func (e *Engine) Call(ctx context.Context, fn string, arg string) (out string, r
 
 	if e.inClose.Load() || !e.state.CompareAndSwap(stateReady, stateBusy) {
 		return "", e.busyOrCurrentState()
+	}
+	e.userTainted.Store(true)
+	if e.rt != nil {
+		e.rt.Taint("guest call")
 	}
 	goid := curGoroutineID()
 	e.callGoid.Store(goid)
@@ -802,6 +878,24 @@ func (e *Engine) Eval(ctx context.Context, name, src string, module bool) (out s
 	if e.inClose.Load() || !e.state.CompareAndSwap(stateReady, stateBusy) {
 		return "", e.busyOrCurrentState()
 	}
+	entry := "/" + path.Clean(strings.TrimPrefix(e.spec.Entry, "/"))
+	quotedEntry, _ := json.Marshal(entry)
+	expectedBoot := fmt.Sprintf("import mod from %s;\nglobalThis.__flats_setModule(mod);\n", quotedEntry)
+	isBuiltinBoot := name == "/__flats_boot__.js" && module && !e.bootRan.Swap(true) &&
+		(src == expectedBoot || (e.spec.Boot != "" && src == e.spec.Boot))
+	if !isBuiltinBoot {
+		e.userTainted.Store(true)
+		if e.rt != nil {
+			e.rt.Taint("user code evaluated")
+		}
+	} else {
+		e.bootActive.Store(true)
+	}
+	defer func() {
+		if isBuiltinBoot {
+			e.bootActive.Store(false)
+		}
+	}()
 	goid := curGoroutineID()
 	e.callGoid.Store(goid)
 	e.callMu.Lock()
@@ -942,6 +1036,9 @@ func (e *Engine) Snapshot() (snap []byte, retErr error) {
 	if e.hostTainted.Load() {
 		return nil, fmt.Errorf("%w: host function called", ErrTainted)
 	}
+	if e.userTainted.Load() {
+		return nil, fmt.Errorf("%w: user code executed", ErrTainted)
+	}
 	if err := e.rt.ImageEligible(); err != nil {
 		return nil, err
 	}
@@ -973,6 +1070,9 @@ func (e *Engine) ImageEligible() error {
 	if e.hostTainted.Load() {
 		return fmt.Errorf("%w: host function called", ErrTainted)
 	}
+	if e.userTainted.Load() {
+		return fmt.Errorf("%w: user code executed", ErrTainted)
+	}
 	return e.rt.ImageEligible()
 }
 
@@ -980,12 +1080,12 @@ func (e *Engine) GCDrained() bool {
 	return e.gcDrained.Load()
 }
 
-func (e *Engine) collectCycles(c *qjs.Context) {
+func (e *Engine) collectCycles(c *qjs.Context) (err error) {
 	if e.state.Load() != stateBusy && e.state.Load() != stateReady {
-		return
+		return nil
 	}
 	if e.gc == nil || e.rt == nil {
-		return
+		return nil
 	}
 	e.gcCalls++
 	memory := e.rt.MemorySize()
@@ -997,20 +1097,21 @@ func (e *Engine) collectCycles(c *qjs.Context) {
 	}
 	if !trafficDue && memory <= e.gcMemory && e.gcCalls < limit {
 		e.gcDrained.Store(false)
-		return
+		return nil
 	}
 	e.gcBytes, e.gcCalls, e.gcMemory = 0, 0, memory
 	e.gcDrained.Store(true)
 	defer func() {
 		if r := recover(); r != nil {
-			e.state.Store(statePoisoned)
+			err = e.fatal(fmt.Errorf("gc panic: %v", r))
 		}
 	}()
-	v, err := c.Invoke(e.gc, c.Global())
+	v, invokeErr := c.Invoke(e.gc, c.Global())
 	if v != nil {
 		v.Free()
 	}
-	if err != nil {
-		e.state.Store(statePoisoned)
+	if invokeErr != nil {
+		return e.fatal(fmt.Errorf("gc failure: %w", invokeErr))
 	}
+	return nil
 }
