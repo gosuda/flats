@@ -127,7 +127,7 @@ func TestDocumentTools(t *testing.T) {
 			if text, failed := call(t, client, "create_flat", map[string]any{"slug": "new-" + name, "type": "docs"}, nil); !failed {
 				t.Fatalf("existing slug: %s", text)
 			}
-			if text, failed := call(t, client, "create_flat", map[string]any{"slug": "bad-type-" + name, "type": "wiki"}, nil); !failed || !strings.Contains(text, `"category":"invalid"`) {
+			if text, failed := call(t, client, "create_flat", map[string]any{"slug": "bad-type-" + name, "type": "wiki"}, nil); !failed || !strings.Contains(text, "enum: wiki") {
 				t.Fatalf("bad type: %s", text)
 			}
 			for _, path := range []string{"../x.md", "x.txt", "_docs/a.md"} {

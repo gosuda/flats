@@ -8,8 +8,8 @@ is also `guide {"items":["topic.docs"]}`, and the page part
 A flat's **type** says what an agent authored; the **kind** says how Flats runs
 it. Agents upload content of a type; a type adapter in the host turns that
 content into something Flats can serve. Websites and pages share the
-lifecycle of Drafts, versions, approvals and previews; documents, designs and
-boards run at once and keep revisions (below). Visibility and exposure work the same for every type.
+lifecycle of Drafts, versions, approvals and previews; documents, designs,
+boards and notebooks run at once and keep revisions (below). Visibility and exposure work the same for every type.
 
 | Type | Agent authors | Host runs it as | Live data |
 |---|---|---|---|
@@ -18,6 +18,7 @@ boards run at once and keep revisions (below). Visibility and exposure work the 
 | `page` | one static HTML document with charts or visualizations, plus its assets | static file server (kind `static`) | none |
 | `design` | a canvas of HTML artboards (`canvas.json`, `.html` files and assets) | the built-in design canvas inside the host | the current canvas files, which people edit live |
 | `board` | whiteboard elements (stickies, shapes, connectors, text, pen strokes, images and frames) | the built-in board canvas inside the host | the live board state |
+| `notebook` | a tree of pages of blocks and inline databases (properties, options, rows and views) | the built-in notebook editor inside the host | the live notebook state |
 
 A flat keeps its type: a save of another type is refused. Slides and other
 types are candidates for later adapters; they are not implemented. Websites are described in `flats://docs/runtime-api/v1`.

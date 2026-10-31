@@ -596,6 +596,13 @@ func (ws *Conn) Close(code int, reason string) {
 	})
 }
 
+// Abort closes the transport immediately, discarding queued messages. Unlike
+// Close it also interrupts a graceful close already in progress.
+func (ws *Conn) Abort() {
+	ws.c.Close()
+	ws.Close(1006, "")
+}
+
 // CloseStatus returns the code and reason this side closed with; code 0
 // means Close has not been called.
 func (ws *Conn) CloseStatus() (code int, reason string) {

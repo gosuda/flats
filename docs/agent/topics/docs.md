@@ -9,6 +9,8 @@ A document has **no Draft, versions, previews or publish**: those are for
 websites. Creating or saving a document runs it at once, Private, with no
 approval, and its Private URL serves it as soon as the host is ready. Its
 history is kept as **revisions** instead (below).
+For pages of notes with tables people sort and filter, such as a wiki with a
+task tracker, use a notebook instead (`topic.notebook`).
 Visibility still works as for websites: making it Public (or Private again)
 and deleting it wait for the operator's approval (`topic.approvals`). On
 documents, `list_versions`, `get_draft`, `create_version`, `deploy`, `open_preview`

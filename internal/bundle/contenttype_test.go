@@ -21,6 +21,8 @@ func TestContentTypeManifest(t *testing.T) {
 		{"explicit entry", `{"type":"docs","entry":"b.md"}`, []string{"a.md", "b.md"}, "docs", "b.md", ""},
 		{"inferred", ``, []string{"index.md", "image.png"}, "docs", "index.md", ""},
 		{"inferred nested", `{}`, []string{"notes/a.md"}, "docs", "notes/a.md", ""},
+		{"notebook filename does not infer notebook", `{}`, []string{"notebook.md"}, "docs", "notebook.md", ""},
+		{"notebook name does not infer notebook", `{"name":"notebook"}`, []string{"index.html"}, "flat", "index.html", ""},
 		{"website remains", `{}`, []string{"index.html", "index.md"}, "flat", "index.html", ""},
 		{"custom static alias remains", `{"entry":"./notes.md"}`, []string{"notes.md"}, "flat", "./notes.md", ""},
 		{"custom static remains", `{"entry":"notes.md"}`, []string{"notes.md"}, "flat", "notes.md", ""},
@@ -60,6 +62,17 @@ func TestContentTypeManifest(t *testing.T) {
 		{"board shell", `{"type":"board","name":"Plan"}`, nil, "board", "", ""},
 		{"board with files", `{"type":"board"}`, []string{"index.html"}, "", "", "a board keeps its content in its revision history"},
 		{"board with kind", `{"type":"board","kind":"static"}`, nil, "", "", "kind is not allowed for a board"},
+		{"notebook shell", `{"type":"notebook","name":"Plan"}`, nil, "notebook", "", ""},
+		{"notebook unnamed shell", `{"type":"notebook"}`, nil, "notebook", "", ""},
+		{"notebook with files", `{"type":"notebook"}`, []string{"index.html"}, "", "", "a notebook keeps its content in its revision history"},
+		{"notebook markdown", `{"type":"notebook"}`, []string{"index.md"}, "", "", "a notebook keeps its content in its revision history"},
+		{"notebook with kind", `{"type":"notebook","kind":"static"}`, nil, "", "", "kind is not allowed for a notebook"},
+		{"notebook with entry", `{"type":"notebook","entry":""}`, nil, "", "", "entry is not allowed for a notebook"},
+		{"notebook with health", `{"type":"notebook","health":"/"}`, nil, "", "", "health is not allowed for a notebook"},
+		{"notebook with spa", `{"type":"notebook","spa":false}`, nil, "", "", "spa is not allowed for a notebook"},
+		{"notebook with not found", `{"type":"notebook","not_found":""}`, nil, "", "", "not_found is not allowed for a notebook"},
+		{"notebook with screenshot", `{"type":"notebook","screenshot":""}`, nil, "", "", "screenshot is not allowed for a notebook"},
+		{"notebook with unknown field", `{"type":"notebook","content":{}}`, nil, "", "", "content is not allowed for a notebook"},
 		{"design shell", `{"type":"design"}`, nil, "design", "", ""},
 	}
 	for _, tt := range tests {
@@ -81,6 +94,12 @@ func TestContentTypeManifest(t *testing.T) {
 					if p.Fix == "" {
 						t.Fatalf("no fix: %+v", p)
 					}
+					if strings.Contains(tt.manifest, `"type":"notebook"`) && (strings.Contains(p.Message, "is not allowed for a notebook") || strings.Contains(p.Message, "not in a bundle")) && !strings.Contains(p.Fix, "update_notebook") {
+						t.Fatalf("missing notebook write guidance: %+v", p)
+					}
+					if tt.name == "unknown type" && !strings.Contains(p.Fix, `"notebook"`) {
+						t.Fatalf("missing notebook type hint: %+v", p)
+					}
 				}
 				return
 			}
@@ -92,6 +111,15 @@ func TestContentTypeManifest(t *testing.T) {
 			}
 			if tt.typ == "page" && (m.Kind != "static" || m.Health != "/" || m.SPA || m.NotFound != "") {
 				t.Fatalf("page defaults: %+v", m)
+			}
+			if tt.typ == "notebook" && (m.Kind != "static" || m.Health != "/" || m.SPA || m.NotFound != "" || m.Screenshot != "") {
+				t.Fatalf("notebook shell defaults: %+v", m)
+			}
+			if tt.name == "notebook shell" && m.Name != "Plan" {
+				t.Fatalf("notebook name: %+v", m)
+			}
+			if tt.typ == "notebook" && len(Lint(files)) != 0 {
+				t.Fatal("notebook shell must not receive website lint warnings")
 			}
 		})
 	}

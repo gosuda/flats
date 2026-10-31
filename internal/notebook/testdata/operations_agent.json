@@ -1,0 +1,437 @@
+[
+  {
+    "op": "create_page",
+    "ref": "new-page",
+    "parent": null,
+    "before": null,
+    "title": "New page"
+  },
+  {
+    "op": "set_page_title",
+    "page": {
+      "id": "p_aaaaaaaaaaaaaaaaaaaaaaaaae",
+      "inc": "42"
+    },
+    "title": "Renamed"
+  },
+  {
+    "op": "move_page",
+    "page": {
+      "id": "p_aaaaaaaaaaaaaaaaaaaaaaaaae",
+      "inc": "42"
+    },
+    "parent": null,
+    "before": null
+  },
+  {
+    "op": "delete_page",
+    "page": {
+      "id": "p_aaaaaaaaaaaaaaaaaaaaaaaaae",
+      "inc": "42"
+    }
+  },
+  {
+    "op": "duplicate_page",
+    "page": {
+      "id": "p_aaaaaaaaaaaaaaaaaaaaaaaaae",
+      "inc": "42"
+    }
+  },
+  {
+    "op": "create_block",
+    "ref": "new-block",
+    "place": {
+      "page": {
+        "id": "p_aaaaaaaaaaaaaaaaaaaaaaaaae",
+        "inc": "42"
+      },
+      "parent": null,
+      "before": null
+    },
+    "content": {
+      "kind": "paragraph",
+      "text": [
+        {
+          "text": "Draft 한글",
+          "marks": [
+            "bold"
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "op": "set_block",
+    "block": {
+      "id": "b_aaaaaaaaaaaaaaaaaaaaaaaaae",
+      "inc": "42"
+    },
+    "content": {
+      "kind": "paragraph",
+      "text": [
+        {
+          "text": "Draft 한글",
+          "marks": [
+            "bold"
+          ]
+        }
+      ]
+    },
+    "base_v": "41"
+  },
+  {
+    "op": "turn_blocks",
+    "blocks": [
+      {
+        "id": "b_aaaaaaaaaaaaaaaaaaaaaaaaae",
+        "inc": "42"
+      }
+    ],
+    "kind": "todo"
+  },
+  {
+    "op": "move_blocks",
+    "blocks": [
+      {
+        "id": "b_aaaaaaaaaaaaaaaaaaaaaaaaae",
+        "inc": "42"
+      }
+    ],
+    "place": {
+      "page": {
+        "id": "p_aaaaaaaaaaaaaaaaaaaaaaaaae",
+        "inc": "42"
+      },
+      "parent": null,
+      "before": {
+        "id": "b_aaaaaaaaaaaaaaaaaaaaaaaaai",
+        "inc": "42"
+      }
+    }
+  },
+  {
+    "op": "delete_blocks",
+    "blocks": [
+      {
+        "id": "b_aaaaaaaaaaaaaaaaaaaaaaaaae",
+        "inc": "42"
+      }
+    ]
+  },
+  {
+    "op": "duplicate_blocks",
+    "blocks": [
+      {
+        "id": "b_aaaaaaaaaaaaaaaaaaaaaaaaae",
+        "inc": "42"
+      }
+    ],
+    "after": {
+      "id": "b_aaaaaaaaaaaaaaaaaaaaaaaaai",
+      "inc": "42"
+    }
+  },
+  {
+    "op": "create_database",
+    "ref": "new-db",
+    "block_ref": "new-db-block",
+    "place": {
+      "page": {
+        "id": "p_aaaaaaaaaaaaaaaaaaaaaaaaae",
+        "inc": "42"
+      },
+      "parent": null,
+      "before": null
+    },
+    "title": "Tasks",
+    "title_property_name": "Task"
+  },
+  {
+    "op": "set_database_title",
+    "database": {
+      "id": "d_aaaaaaaaaaaaaaaaaaaaaaaaae",
+      "inc": "42"
+    },
+    "title": "Tasks"
+  },
+  {
+    "op": "create_property",
+    "ref": "new-property",
+    "database": {
+      "id": "d_aaaaaaaaaaaaaaaaaaaaaaaaae",
+      "inc": "42"
+    },
+    "definition": {
+      "name": "Priority",
+      "type": "number",
+      "format": "plain"
+    }
+  },
+  {
+    "op": "set_property",
+    "property": {
+      "id": "pr_aaaaaaaaaaaaaaaaaaaaaaaaae",
+      "inc": "42"
+    },
+    "definition": {
+      "name": "Status",
+      "type": "select"
+    },
+    "confirmed_preview": "opaque-preview"
+  },
+  {
+    "op": "delete_property",
+    "property": {
+      "id": "pr_aaaaaaaaaaaaaaaaaaaaaaaaae",
+      "inc": "42"
+    }
+  },
+  {
+    "op": "set_property_order",
+    "database": {
+      "id": "d_aaaaaaaaaaaaaaaaaaaaaaaaae",
+      "inc": "42"
+    },
+    "properties": [
+      {
+        "id": "pr_aaaaaaaaaaaaaaaaaaaaaaaaae",
+        "inc": "42"
+      }
+    ]
+  },
+  {
+    "op": "create_option",
+    "ref": "new-option",
+    "property": {
+      "id": "pr_aaaaaaaaaaaaaaaaaaaaaaaaae",
+      "inc": "42"
+    },
+    "name": "Todo",
+    "color": "blue"
+  },
+  {
+    "op": "set_option",
+    "option": {
+      "id": "o_aaaaaaaaaaaaaaaaaaaaaaaaae",
+      "inc": "42"
+    },
+    "name": "Done",
+    "color": "green"
+  },
+  {
+    "op": "delete_option",
+    "option": {
+      "id": "o_aaaaaaaaaaaaaaaaaaaaaaaaae",
+      "inc": "42"
+    }
+  },
+  {
+    "op": "set_option_order",
+    "property": {
+      "id": "pr_aaaaaaaaaaaaaaaaaaaaaaaaae",
+      "inc": "42"
+    },
+    "options": [
+      {
+        "id": "o_aaaaaaaaaaaaaaaaaaaaaaaaae",
+        "inc": "42"
+      }
+    ]
+  },
+  {
+    "op": "create_row",
+    "ref": "new-row",
+    "database": {
+      "id": "d_aaaaaaaaaaaaaaaaaaaaaaaaae",
+      "inc": "42"
+    },
+    "cells": [
+      {
+        "property": {
+          "id": "pr_aaaaaaaaaaaaaaaaaaaaaaaaae",
+          "inc": "42"
+        },
+        "value": {
+          "id": "o_aaaaaaaaaaaaaaaaaaaaaaaaae",
+          "inc": "42"
+        }
+      }
+    ],
+    "before": null,
+    "view": {
+      "id": "v_aaaaaaaaaaaaaaaaaaaaaaaaae",
+      "inc": "42"
+    }
+  },
+  {
+    "op": "set_cell",
+    "row": {
+      "id": "r_aaaaaaaaaaaaaaaaaaaaaaaaae",
+      "inc": "42"
+    },
+    "cell": {
+      "property": {
+        "id": "pr_aaaaaaaaaaaaaaaaaaaaaaaaae",
+        "inc": "42"
+      },
+      "value": [
+        {
+          "id": "o_aaaaaaaaaaaaaaaaaaaaaaaaae",
+          "inc": "42"
+        }
+      ]
+    }
+  },
+  {
+    "op": "move_rows",
+    "rows": [
+      {
+        "id": "r_aaaaaaaaaaaaaaaaaaaaaaaaae",
+        "inc": "42"
+      }
+    ],
+    "before": null
+  },
+  {
+    "op": "delete_rows",
+    "rows": [
+      {
+        "id": "r_aaaaaaaaaaaaaaaaaaaaaaaaae",
+        "inc": "42"
+      }
+    ]
+  },
+  {
+    "op": "create_view",
+    "ref": "new-view",
+    "database": {
+      "id": "d_aaaaaaaaaaaaaaaaaaaaaaaaae",
+      "inc": "42"
+    },
+    "definition": {
+      "name": "Table",
+      "display": {
+        "layout": "table",
+        "visible": [
+          {
+            "id": "pr_aaaaaaaaaaaaaaaaaaaaaaaaae",
+            "inc": "42"
+          }
+        ],
+        "widths": [
+          {
+            "property": {
+              "id": "pr_aaaaaaaaaaaaaaaaaaaaaaaaae",
+              "inc": "42"
+            },
+            "px": 240
+          }
+        ]
+      },
+      "sort": [
+        {
+          "property": {
+            "id": "pr_aaaaaaaaaaaaaaaaaaaaaaaaae",
+            "inc": "42"
+          },
+          "direction": "asc"
+        }
+      ],
+      "filter": [
+        {
+          "property": {
+            "id": "pr_aaaaaaaaaaaaaaaaaaaaaaaaae",
+            "inc": "42"
+          },
+          "op": "contains",
+          "value": "draft"
+        }
+      ]
+    }
+  },
+  {
+    "op": "set_view",
+    "view": {
+      "id": "v_aaaaaaaaaaaaaaaaaaaaaaaaae",
+      "inc": "42"
+    },
+    "definition": {
+      "name": "Table",
+      "display": {
+        "layout": "table",
+        "visible": [
+          {
+            "id": "pr_aaaaaaaaaaaaaaaaaaaaaaaaae",
+            "inc": "42"
+          }
+        ],
+        "widths": [
+          {
+            "property": {
+              "id": "pr_aaaaaaaaaaaaaaaaaaaaaaaaae",
+              "inc": "42"
+            },
+            "px": 240
+          }
+        ]
+      },
+      "sort": [
+        {
+          "property": {
+            "id": "pr_aaaaaaaaaaaaaaaaaaaaaaaaae",
+            "inc": "42"
+          },
+          "direction": "asc"
+        }
+      ],
+      "filter": [
+        {
+          "property": {
+            "id": "pr_aaaaaaaaaaaaaaaaaaaaaaaaae",
+            "inc": "42"
+          },
+          "op": "contains",
+          "value": "draft"
+        }
+      ]
+    }
+  },
+  {
+    "op": "delete_view",
+    "view": {
+      "id": "v_aaaaaaaaaaaaaaaaaaaaaaaaae",
+      "inc": "42"
+    }
+  },
+  {
+    "op": "set_view_order",
+    "database": {
+      "id": "d_aaaaaaaaaaaaaaaaaaaaaaaaae",
+      "inc": "42"
+    },
+    "views": [
+      {
+        "id": "v_aaaaaaaaaaaaaaaaaaaaaaaaae",
+        "inc": "42"
+      }
+    ]
+  },
+  {
+    "op": "markdown_to_blocks",
+    "place": {
+      "page": {
+        "id": "p_aaaaaaaaaaaaaaaaaaaaaaaaae",
+        "inc": "42"
+      },
+      "parent": null,
+      "before": null
+    },
+    "markdown": "# Draft\n",
+    "asset_refs": [
+      {
+        "path": "image.png",
+        "asset": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    ]
+  }
+]

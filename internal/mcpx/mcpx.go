@@ -5,6 +5,7 @@ package mcpx
 
 import (
 	"context"
+	"math"
 	"net"
 	"net/http"
 	"strings"
@@ -16,6 +17,7 @@ import (
 	runtimeref "github.com/gosuda/flats/docs"
 	"github.com/gosuda/flats/internal/api"
 	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/notebook"
 )
 
 // Options configures the MCP handler.
@@ -122,7 +124,15 @@ func (c *serverCache) server(autopilot bool) (*mcp.Server, int64) {
 // maxBody bounds a JSON-RPC request: inline files arrive base64 (4/3 of
 // their size) or as escaped JSON strings, plus envelope overhead.
 func maxBody(uploadLimit int64) int64 {
-	return uploadLimit + uploadLimit/2 + 1<<20
+	limit := uploadLimit + uploadLimit/2 + 1<<20
+	notebookLimit, err := notebook.MaxUpdateBodyBytes(uploadLimit)
+	if err != nil || notebookLimit > math.MaxInt64-(1<<20) {
+		return math.MaxInt64
+	}
+	if notebookLimit+(1<<20) > limit {
+		return notebookLimit + (1 << 20)
+	}
+	return limit
 }
 
 type loopbackKey struct{}

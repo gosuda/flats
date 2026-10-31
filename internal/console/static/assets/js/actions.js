@@ -344,9 +344,9 @@ export async function setVisibility(flat, vis, access) {
 }
 
 // canGoPublic checks what a Private flat needs before it can be Public.
-// Documents, designs and boards run without published versions
-// (live_version is 0 for designs and boards), so only versioned types need
-// a live version first.
+// Documents, designs, boards and notebooks run without published versions
+// (live_version is 0 for designs, boards and notebooks), so only versioned
+// types need a live version first.
 async function canGoPublic(flat) {
   if (!isLive(flat) && !flat.live_version) {
     await infoDialog('Publish first', `${label(flat)} has no live version yet. Save a version and publish it, then make it public.`);

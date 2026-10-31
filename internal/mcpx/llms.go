@@ -120,7 +120,7 @@ func llmsIndex(origin, version string) string {
 	endpoint := origin + "/mcp"
 	return fmt.Sprintf(`# Flats
 
-> Flats hosts collaborative Markdown documents, websites and small server apps ("flats") on the operator's own machine. Agents save Private Draft content and request publication through MCP or the flats CLI; every version creation, deployment, rollback, deletion and visibility change waits for explicit operator approval.
+> Flats hosts collaborative Markdown documents, notebooks, whiteboards, design canvases, websites and small server apps ("flats") on the operator's own machine. Agents save Private Drafts of websites and apps; creating versions, deploying and version rollback need operator approval. Collaborative edits and revision operations apply immediately; visibility and deletion still follow approval policy.
 
 This file is served by the Flats host at %s (version %s). Give the operator each approval_url exactly as returned, poll the approval, and report a version as live only after get_flat shows it current with a ready endpoint and you have fetched the page. Approval and provider decisions use the CSRF-protected console; it has no separate authentication, so only trusted local agents should run on the host.
 
@@ -131,14 +131,14 @@ Connect over MCP (Streamable HTTP) at %s:
 - Cursor (.cursor/mcp.json): `+"`"+`{"mcpServers":{"flats":{"url":"%s"}}}`+"`"+`
 - On the Flats host, `+"`flats mcp-config`"+` prints the same setup for the local management port.
 
-Over MCP, call the read-only guide tool with topic.index first; it routes each task to short topics. The agent guide below holds the same topics in one document.
+Over MCP, call the read-only guide tool with topic.index first; it routes each task to short topics. For notebooks, read topic.notebook and use get_notebook and update_notebook; edits apply immediately without publishing. Visibility and deletion still follow approval policy. The agent guide below holds the same topics in one document.
 
 ## Docs
 
 - [Agent guide](%s%s): the MCP instructions and tools as this host reports them, the core CLI commands, and every guide topic and refusal page.
 - [Runtime API v1](%s%s): complete server-flat contract (env.DB SQLite, env.FILES, handler and Response helpers, encoding, limits, ordinary environment variables, secrets, approvals). Also MCP resource %s and tool get_runtime_reference.
 
-- [Content types](%s%s): docs Markdown manifests, save_document, get_document, update_document and live activation; HTML page rules and save_page; also flats://docs/content-types/v1 and get_content_types.
+- [Content types](%s%s): docs Markdown manifests, save_document, get_document, update_document and live activation; notebooks, get_notebook, update_notebook and revision history; HTML page rules and save_page; also flats://docs/content-types/v1 and get_content_types.
 
 ## Optional
 
@@ -191,6 +191,8 @@ On the Flats host, the flats CLI talks to the same server. Commands that request
 - ` + "`flats save-draft <slug> <dir> --expected-revision N`" + `: save a Private Draft from a build directory.
 - ` + "`flats deploy --flat <slug> --version N`" + `: request approval to deploy a previously created version. Does not upload or create versions.
 - ` + "`flats create-version <slug> --revision N --hash HASH`" + `: request approval to create a version from a frozen Draft.
+- ` + "`flats notebook get <slug> --page <id> --format markdown`" + `: read a notebook page, following every continuation. Use ` + "`--revision N`" + ` for retained content.
+- ` + "`flats notebook apply <slug> <ops.json> --op-id <id>`" + `: apply one atomic notebook update immediately; reuse the same body and op id after a timeout. No Draft or publish step.
 - ` + "`flats approvals --json`" + `, ` + "`flats approvals wait <id>`" + `, ` + "`flats info <slug>`" + `, ` + "`flats logs <slug>`" + `: follow approvals, wait for a decision, endpoints and events.
 - ` + "`flats help`" + ` lists every command.
 

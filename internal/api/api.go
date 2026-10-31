@@ -18,6 +18,7 @@ import (
 	"github.com/gosuda/flats/internal/bundle"
 	"github.com/gosuda/flats/internal/contenttype"
 	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/notebook"
 	"github.com/gosuda/flats/internal/slug"
 	"github.com/gosuda/flats/internal/store"
 )
@@ -182,6 +183,8 @@ func (s *Server) Handler() http.Handler {
 			h("GET /flats/{slug}/board", s.getBoard)
 			h("POST /flats/{slug}/board", s.updateBoard)
 			h("POST /flats/{slug}/board/import", s.importBoard)
+			h("GET /flats/{slug}/notebook", s.getNotebook)
+			h("POST /flats/{slug}/notebook", s.updateNotebook)
 		}
 	}
 	return mux
@@ -233,6 +236,12 @@ type DecisionError struct {
 func errorBody(err error) ErrorBody {
 	body := ErrorBody{Error: err.Error()}
 	body.Category = core.ErrorCategory(err)
+	var notebookError *notebook.WriteError
+	if errors.As(err, &notebookError) {
+		body.Category = notebookError.Code
+	} else if errors.Is(err, core.ErrNotNotebook) {
+		body.Category = "not_notebook"
+	}
 
 	if v, ok := bundle.IsValidation(err); ok {
 		for _, p := range v.Problems {
@@ -267,6 +276,9 @@ func writeErr(w http.ResponseWriter, code int, err error) {
 // statusOf maps errors to HTTP codes: typed errors first, then a small
 // fallback for messages of errors that are not typed yet.
 func statusOf(err error) int {
+	if code := notebookStatus(err); code != 0 {
+		return code
+	}
 	var de *core.DeployError
 	switch {
 	case errors.Is(err, store.ErrNotFound):

@@ -505,12 +505,12 @@ func parseManifest(files []File, historical bool) (Manifest, error) {
 	}
 	if m.Type == "" {
 		if _, explicit := fields["type"]; explicit && !bad["type"] {
-			verr.add(ManifestName, "type must be flat, docs, page, design or board", `use "flat", "docs", "page", "design" or "board", or omit type`)
+			verr.add(ManifestName, "type must be flat, docs, page, design, board or notebook", `use "flat", "docs", "page", "design", "board" or "notebook", or omit type`)
 		}
 		m.Type = contenttype.Flat
 	}
-	if m.Type != contenttype.Flat && m.Type != contenttype.Docs && m.Type != contenttype.Page && m.Type != contenttype.Design && m.Type != contenttype.Board {
-		verr.add(ManifestName, fmt.Sprintf("unknown type %q", m.Type), `use "flat", "docs", "page", "design" or "board"`)
+	if m.Type != contenttype.Flat && m.Type != contenttype.Docs && m.Type != contenttype.Page && m.Type != contenttype.Design && m.Type != contenttype.Board && m.Type != contenttype.Notebook {
+		verr.add(ManifestName, fmt.Sprintf("unknown type %q", m.Type), `use "flat", "docs", "page", "design", "board" or "notebook"`)
 	}
 	switch m.Type {
 	case contenttype.Docs:
@@ -521,6 +521,8 @@ func parseManifest(files []File, historical bool) (Manifest, error) {
 		return parseShell(files, fields, m, &verr, "design", "write design files with save_design")
 	case contenttype.Board:
 		return parseShell(files, fields, m, &verr, "board", "write board elements with update_board")
+	case contenttype.Notebook:
+		return parseShell(files, fields, m, &verr, "notebook", "write notebook pages, blocks and rows with update_notebook")
 	}
 	if (bad["*"] || bad["kind"]) && m.Kind == "" && !index["index.html"] {
 		// Guess the kind so the entry checks below stay useful.
@@ -942,10 +944,9 @@ func parsePage(files []File, index map[string]bool, fields map[string]json.RawMe
 	return m, nil
 }
 
-// parseShell validates the shell bundle of a design or a board (noun): only
-// flats.json with type and name. Their content lives in the revision store
-// (a board's current state in its board.db); core writes this shell itself
-// and refuses their manifests on every public bundle path.
+// parseShell validates internal Revision-model shells: only flats.json with
+// type and name. Core writes these shells and refuses their manifests on
+// every public bundle path; content is written through the type's editor.
 func parseShell(files []File, fields map[string]json.RawMessage, m Manifest, verr *ValidationError, noun, fix string) (Manifest, error) {
 	for k := range fields {
 		if k != "type" && k != "name" {

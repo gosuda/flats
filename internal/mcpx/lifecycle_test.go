@@ -33,12 +33,19 @@ func publishedFixture(t *testing.T, e *env) {
 }
 
 func TestEveryMCPToolPreservesPendingApproval(t *testing.T) {
+	testMCPToolsPreservePendingApproval(t, false)
+}
+
+func testMCPToolsPreservePendingApproval(t *testing.T, onlyNotebook bool) {
 	inventory := newEnv(t)
 	listed, err := inventory.local.ListTools(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, tool := range listed.Tools {
+		if onlyNotebook && !strings.Contains(tool.Name, "notebook") {
+			continue
+		}
 		t.Run(tool.Name, func(t *testing.T) {
 			e := newEnvRuntime(t)
 			publishedFixture(t, e)
@@ -70,6 +77,7 @@ func TestEveryMCPToolPreservesPendingApproval(t *testing.T) {
 				"save_page":   {"slug": "separate-page", "html": "<title>Page</title>", "deploy": true},
 				"save_design": {"slug": "separate-design", "message": "census"},
 				"get_design":  {"slug": "census"}, "list_revisions": {"slug": "census"}, "get_revision": {"slug": "census", "revision": 1},
+				"get_notebook": {"slug": "census"}, "update_notebook": {"slug": "census", "op_id": "census-write", "ops": []any{}},
 				"get_board": {"slug": "census"}, "get_board_share": {"slug": "census"},
 				"update_board": {"slug": "census", "op_id": "census-write", "ops": []any{}},
 				"import_board": {"slug": "census", "op_id": "census-import", "archive": "UEsFBgAAAAAAAAAAAAAAAAAAAAAAAA==", "mode": "add"},
@@ -92,7 +100,7 @@ func TestEveryMCPToolPreservesPendingApproval(t *testing.T) {
 			// refusal must still leave the pending approval untouched.
 			docTool := tool.Name == "get_document" || tool.Name == "update_document" ||
 				tool.Name == "get_design" || tool.Name == "list_revisions" || tool.Name == "get_revision" ||
-				tool.Name == "pin_revision" || tool.Name == "rollback_revision" || strings.Contains(tool.Name, "board")
+				tool.Name == "pin_revision" || tool.Name == "rollback_revision" || strings.Contains(tool.Name, "board") || strings.Contains(tool.Name, "notebook")
 			if failed && !docTool {
 				t.Fatalf("valid census operation failed: %s", text)
 			}
@@ -105,6 +113,9 @@ func TestEveryMCPToolPreservesPendingApproval(t *testing.T) {
 			}
 			if strings.Contains(tool.Name, "board") {
 				want = `"category":"not_board"`
+			}
+			if strings.Contains(tool.Name, "notebook") {
+				want = `"category":"not_notebook"`
 			}
 			if docTool && (!failed || !strings.Contains(text, want)) {
 				t.Fatal("website must reject document reads and edits with a typed error", text)

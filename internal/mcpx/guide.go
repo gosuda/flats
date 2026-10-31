@@ -35,7 +35,7 @@ type GuideOut struct {
 }
 
 const guideDescription = "Read Flats guidance on demand. topic.index routes by task; other items: topic.client-update, topic.static, topic.server, " +
-	"topic.server.types, topic.server.files, topic.server.db, topic.server.fetch, topic.server.limits, topic.docs, topic.manifest, " +
+	"topic.server.types, topic.server.files, topic.server.db, topic.server.fetch, topic.server.limits, topic.docs, topic.notebook, topic.manifest, " +
 	"topic.env-secrets, topic.approvals, topic.rollback-data, topic.preview-verify, topic.preview-check, topic.instructions, and " +
 	"refusal.<category> for a refused call. Pass several items at once. No side effects."
 

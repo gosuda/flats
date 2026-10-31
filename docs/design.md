@@ -129,9 +129,10 @@ in the [lifecycle core contract](lifecycle-core-contract.md).
 ```
 
 * `type`: `flat` (website, the default), `page` (one static HTML page),
-  `docs` (Markdown documents), `design` (canvas of HTML artboards) or `board`
-  (whiteboard); only core writes a design or board manifest, see
-  [Designs](#designs) and [Boards](#boards). A bundle without `type`,
+  `docs` (Markdown documents), `design` (canvas of HTML artboards), `board`
+  (whiteboard) or `notebook` (tree of pages with blocks and inline
+  databases); only core writes a design, board or notebook manifest, see
+  [Designs](#designs), [Boards](#boards) and [Notebooks](#notebooks). A bundle without `type`,
   `kind`, `index.html` or a server entry that holds a Markdown entry is a
   `docs` bundle.
 * `kind`: `static` (default) or `server`.
@@ -167,11 +168,12 @@ time and again when the approval applies, against the live (else latest
 saved) version, so content of another type that an earlier release stored
 can never go live.
 
-**Revision-model refusals.** Documents, designs and boards refuse Deploy, Rollback,
-CreateVersion, DeleteVersion, version quota overrides, previews,
-ListVersions and GetDraft (`invalid`, with a message naming the type's own
-tools). Revision tools refuse websites and pages (`no_revisions`), and board
-tools refuse every other type (`not_board`).
+**Revision-model refusals.** Documents, designs, boards and notebooks refuse
+Deploy, Rollback, CreateVersion, DeleteVersion, version quota overrides,
+previews, ListVersions and GetDraft (`invalid`, with a message naming the
+type's own tools). Revision tools refuse websites and pages (`no_revisions`),
+board tools refuse every other type (`not_board`), and notebook tools refuse
+every other type (`not_notebook`).
 
 ### Pages
 
@@ -368,6 +370,46 @@ no build step, no third-party code), one same-origin WebSocket
   cancels the route epoch, which closes every open Public socket. Rename and
   delete stop the instance and tell open canvases why (`renamed`,
   `deleted`); host shutdown stops it silently.
+
+### Notebooks
+
+A notebook is a tree of pages whose blocks (paragraphs, headings, lists,
+to-dos, toggles, quotes, callouts, code, dividers, images, page links and
+inline databases) people and agents edit live
+([product spec](spec/notebook.md), [technical design](spec/notebook-technical-design.md)).
+Like a board it runs in the host process behind a shell `flats.json` that core
+writes once at creation. It needs no worker and works with the server runtime
+disabled. `internal/notebook` runs one `notebook.Instance` per notebook: a
+single writer queue that changes `flats/<slug>/notebook/notebook.db`, the
+notebook's only source of current state (content, receipts, undo and the
+outbox), the editor embedded from `internal/notebook/web` (plain JavaScript,
+no build step), one same-origin WebSocket (`/_notebook/ws`) and HTTP routes
+under `/_notebook/` ([Surfaces](surfaces.md)).
+
+- **Editing.** Every write replaces one whole value group, such as a block's
+  content, one cell or a view's definition, so edits to different groups all
+  apply and the later write to the same group wins. Agent calls
+  (`update_notebook`) apply whole or not at all, with guards on the notebook
+  state or on single items. Edits are durable before they are acknowledged.
+- **History.** The writer records revision boundaries in an outbox in the
+  same `notebook.db` transaction as the edit. Core imports the outbox into the
+  [revision store](revision-store.md#notebooks) under the flat lock: it
+  validates the entries, writes new files to the shared blobs, commits the
+  revisions and their changed-page summaries in one `flats.db` transaction,
+  and only then acknowledges the import to the notebook. A crash between
+  these steps replays without a second revision.
+- **Core's part.** Core orders storage-journal admission, the flat lock and
+  the notebook writer in that order, and gives the instance a backend: limits,
+  the flat directory measurement for the disk quota, blob storage in
+  `flats/<slug>/revisions/blobs`, history, pins and rollbacks. Rename,
+  deletion and stop refuse new work and close sockets before moving or
+  removing storage.
+- **Access.** The notebook trusts only the `X-Flats-Access` core sets, and
+  writes need the Private value. A Public route gets a read-only projection of
+  the current content: no sessions, presence, History or images that only a
+  revision still references. Public guest editing never applies to notebooks.
+  Withdrawing Public access cancels the route epoch, which closes every open
+  Public socket and stops its reads.
 
 ## Exposure
 
@@ -845,9 +887,10 @@ documents, the CPU time and peak memory of the workers serving the live route.
 Previews are not usage. A request counts on the day its status is sent. A
 `5xx` is an error; a request whose visitor left before the response was sent
 counts as `closed`, not as an error. WebSocket connections and event streams
-count with their status but are left out of response times. Websites, pages
-and designs run inside the host process, so their CPU and memory are reported
-as not measured separately, never as zero.
+count with their status but are left out of response times. Websites, pages,
+designs, boards and notebooks run inside the host process, so their CPU and
+memory are reported as not measured separately (`not_separate`), never as
+zero.
 
 Counting happens in memory on the request path; the 30-second host sweep
 writes every flat's day counts to `usagedays` in `flats.db` in one
@@ -908,7 +951,8 @@ types, provider IDs and fixed enums (plus the build strings of
 agents, tailnet or NetBird identities, URLs or domain names. Per-flat series
 carry `flat` (the slug) and `type` and are included by default. Explicit
 `metrics.per_flat: false` omits them. This includes traffic, workers,
-preview/check CPU and storage; host-wide board metrics remain available.
+preview/check CPU and storage; host-wide board and notebook metrics remain
+available.
 
 | Metric | Type | Extra labels |
 | --- | --- | --- |
@@ -934,6 +978,9 @@ preview/check CPU and storage; host-wide board metrics remain available.
 | `flats_board_batches_total` | counter (host) | `result` (`applied`, `rejected`, `retry`) |
 | `flats_board_connections` | gauge (host) | |
 | `flats_board_import_seconds` | histogram (host) | |
+| `flats_notebook_batches_total` | counter (host) | `result` (`applied`, `rejected`, `retry`) |
+| `flats_notebook_connections` | gauge (host) | |
+| `flats_notebook_import_seconds` | histogram (host) | |
 
 `running` in `flats_flats` keeps its console meaning: a live document is
 running even while its worker sleeps. `flats_worker_state` is the diagnostic
@@ -948,7 +995,9 @@ counted by `1xx` … `5xx` only.
 `flats_board_batches_total` counts people's edit batches on every board:
 acknowledged, refused for good, or refused as transient for the canvas to
 resend. `flats_board_import_seconds` times the outbox imports that recorded
-revisions, with buckets from 5 ms to 10 s.
+revisions, with buckets from 5 ms to 10 s. The `flats_notebook_*` metrics
+count the same things for notebooks, with the same buckets, and carry no page
+ids or names.
 
 Worker CPU is user plus system time from the worker itself and, after it
 exits, from its process state, so it includes workers that later stopped,

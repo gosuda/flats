@@ -1,0 +1,17 @@
+[
+  {
+    "code": "quote_flattened",
+    "line": 3,
+    "message": "Nested quote content becomes sibling blocks."
+  },
+  {
+    "code": "quote_flattened",
+    "line": 5,
+    "message": "Nested quote content becomes sibling blocks."
+  },
+  {
+    "code": "quote_flattened",
+    "line": 7,
+    "message": "Nested quote content becomes sibling blocks."
+  }
+]

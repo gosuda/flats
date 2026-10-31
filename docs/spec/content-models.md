@@ -12,7 +12,7 @@ them.
 | | Version model | Revision model |
 |---|---|---|
 | For | content an agent prepares and an operator releases | content people and agents edit live |
-| Types | websites (`flat`, static or server), pages (`page`) | documents (`docs`), designs (`design`) |
+| Types | websites (`flat`, static or server), pages (`page`) | documents (`docs`), designs (`design`), boards (`board`), notebooks (`notebook`) |
 | Working copy | a Private Draft | the live content itself |
 | History unit | a numbered version (v1, v2, v3, ...) | a revision of the whole flat per edit unit |
 | Needs operator approval | creating or deleting a version, every deployment, rollback | no content change; visibility changes and deleting the flat do |
@@ -86,8 +86,8 @@ Applies to websites (the `flat` type, static and server) and pages.
 
 ## Revision model
 
-Applies to documents (`docs`), designs (`design`) and any later type that
-people and agents edit live.
+Applies to documents (`docs`), designs (`design`), boards (`board`),
+notebooks (`notebook`) and any later type that people and agents edit live.
 
 1. **No Draft, versions or publish.** The content is always live, and the
    console has no version or deployment management for these types. Deleting
@@ -215,6 +215,8 @@ These rules apply to the version, revision and pin quotas alike.
 | page (`page`) | Version | as for websites |
 | document (`docs`) | Revision | implemented |
 | design | Revision | implemented |
+| board | Revision | implemented |
+| notebook | Revision | partly implemented ([notebook.md](notebook.md)) |
 
 A flat keeps its first save's type, so its model never changes.
 
