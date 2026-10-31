@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"os"
 	"slices"
 	"strings"
 	"sync"
@@ -754,5 +756,432 @@ func TestCensus(t *testing.T) {
 	}
 	if census.OutputBytes.Load() == 0 {
 		t.Fatal("expected OutputBytes to be > 0")
+	}
+}
+
+func TestSnapshotExclusion(t *testing.T) {
+	started := make(chan struct{})
+	unblock := make(chan struct{})
+	host := func(ctx context.Context, op string, args []byte) ([]byte, error) {
+		close(started)
+		<-unblock
+		return []byte("ok"), nil
+	}
+	eng, err := Open(Spec{ImagePath: "/tmp/fake-snap", Host: host}, host)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer eng.Close()
+
+	ctx := validContext(t)
+	callDone := make(chan error, 1)
+	go func() {
+		_, err := eng.Eval(ctx, "run.js", `__flats_host("block", "")`, false)
+		callDone <- err
+	}()
+
+	<-started
+	_, snapErr := eng.Snapshot()
+	close(unblock)
+	<-callDone
+
+	if !errors.Is(snapErr, ErrBusy) {
+		t.Fatalf("Snapshot during Call: got %v, want ErrBusy", snapErr)
+	}
+
+	_, _ = eng.Eval(ctx, "recurse.js", `function r() { return r(); } r();`, false)
+	_, snapAfterPoison := eng.Snapshot()
+	if !errors.Is(snapAfterPoison, ErrPoisoned) {
+		t.Fatalf("Snapshot on poisoned engine: got %v, want ErrPoisoned", snapAfterPoison)
+	}
+
+	_ = eng.Close()
+	_, snapAfterClose := eng.Snapshot()
+	if !errors.Is(snapAfterClose, ErrClosed) {
+		t.Fatalf("Snapshot on closed engine: got %v, want ErrClosed", snapAfterClose)
+	}
+}
+
+func TestCloseWaitsForInFlightCall(t *testing.T) {
+	started := make(chan struct{})
+	unblock := make(chan struct{})
+	host := func(ctx context.Context, op string, args []byte) ([]byte, error) {
+		close(started)
+		<-unblock
+		return []byte("ok"), nil
+	}
+	eng, err := Open(Spec{Host: host}, host)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	ctx := validContext(t)
+	evalDone := make(chan error, 1)
+	go func() {
+		_, err := eng.Eval(ctx, "run.js", `__flats_host("block", "")`, false)
+		evalDone <- err
+	}()
+
+	<-started
+	closeDone := make(chan error, 1)
+	go func() {
+		closeDone <- eng.Close()
+	}()
+
+	select {
+	case err := <-closeDone:
+		t.Fatalf("Close returned before in-flight call finished: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(unblock)
+
+	if err := <-evalDone; err != nil {
+		t.Fatalf("Eval: %v", err)
+	}
+	if err := <-closeDone; err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+
+	if err := eng.Close(); err != nil {
+		t.Fatalf("subsequent Close: %v", err)
+	}
+	_, err = eng.Eval(ctx, "t.js", "1", false)
+	if !errors.Is(err, ErrClosed) {
+		t.Fatalf("Eval after Close: got %v, want ErrClosed", err)
+	}
+}
+
+func TestCloseFromHostRefusesBusy(t *testing.T) {
+	var closeErr error
+	var eng *Engine
+	host := func(ctx context.Context, op string, args []byte) ([]byte, error) {
+		closeErr = eng.Close()
+		return []byte("ok"), nil
+	}
+	var err error
+	eng, err = Open(Spec{Host: host}, host)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer eng.Close()
+
+	ctx := validContext(t)
+	_, err = eng.Eval(ctx, "run.js", `__flats_host("close", "")`, false)
+	if err != nil {
+		t.Fatalf("Eval: %v", err)
+	}
+	if !errors.Is(closeErr, ErrBusy) {
+		t.Fatalf("Close from host: got %v, want ErrBusy", closeErr)
+	}
+}
+
+func TestPostCallChecksOnErrorPath(t *testing.T) {
+	eng, err := Open(Spec{}, nil)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer eng.Close()
+
+	ctx := validContext(t)
+	eng.setTestHookPendingException(true)
+
+	_, err = eng.Eval(ctx, "t.js", `throw new Error("guest error")`, false)
+	if !errors.Is(err, ErrPoisoned) {
+		t.Fatalf("error path with pending exception: got %v, want ErrPoisoned", err)
+	}
+	if _, ok := errors.AsType[*Fatal](err); !ok {
+		t.Fatalf("error path with pending exception: got %T, want *Fatal", err)
+	}
+
+	_, errAfter := eng.Eval(ctx, "t.js", "1", false)
+	if !errors.Is(errAfter, ErrPoisoned) {
+		t.Fatalf("call after poison: got %v, want ErrPoisoned", errAfter)
+	}
+
+	eng2, err := Open(Spec{}, nil)
+	if err != nil {
+		t.Fatalf("Open eng2: %v", err)
+	}
+	defer eng2.Close()
+
+	eng2.setTestHookLeakHandle(true)
+	_, err = eng2.Eval(ctx, "t.js", `throw new Error("guest error")`, false)
+	if !errors.Is(err, ErrPoisoned) {
+		t.Fatalf("error path with handle leak: got %v, want ErrPoisoned", err)
+	}
+	if _, ok := errors.AsType[*Fatal](err); !ok {
+		t.Fatalf("error path with handle leak: got %T, want *Fatal", err)
+	}
+}
+
+func TestCountImageFuncs(t *testing.T) {
+	eng, err := Open(Spec{ImagePath: "/tmp/fake-image"}, nil)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer eng.Close()
+
+	snap, err := eng.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	img, err := UnmarshalImage(snap)
+	if err != nil {
+		t.Fatalf("UnmarshalImage: %v", err)
+	}
+	if img.numFuncs != 1 {
+		t.Fatalf("numFuncs: got %d, want 1", img.numFuncs)
+	}
+}
+
+func TestHostResultOverLimit(t *testing.T) {
+	maxHost := 64
+	host := func(ctx context.Context, op string, args []byte) ([]byte, error) {
+		return bytes.Repeat([]byte("a"), maxHost+1), nil
+	}
+	eng, err := Open(Spec{MaxHostArgBytes: maxHost, Host: host}, host)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer eng.Close()
+
+	ctx := validContext(t)
+	_, err = eng.Eval(ctx, "t.js", `__flats_host("op", "x")`, false)
+	if err == nil {
+		t.Fatal("expected error for host result over limit")
+	}
+	if errors.Is(err, ErrPoisoned) {
+		t.Fatalf("host result over limit poisoned engine: %v", err)
+	}
+	if _, ok := errors.AsType[*ScriptError](err); !ok {
+		t.Fatalf("got %T, want *ScriptError", err)
+	}
+
+	out, errAfter := eng.Eval(ctx, "t.js", "1 + 1", false)
+	if errAfter != nil || out != "2" {
+		t.Fatalf("engine not reusable after host limit: %v", errAfter)
+	}
+}
+
+func TestImageEligiblePoisoned(t *testing.T) {
+	eng, err := Open(Spec{}, nil)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer eng.Close()
+
+	ctx := validContext(t)
+	_, _ = eng.Eval(ctx, "recurse.js", `function r() { return r(); } r();`, false)
+	err = eng.ImageEligible()
+	if !errors.Is(err, ErrPoisoned) {
+		t.Fatalf("ImageEligible on poisoned engine: got %v, want ErrPoisoned", err)
+	}
+}
+
+func TestCallMissingFuncNoHandleLeak(t *testing.T) {
+	eng, err := Open(Spec{}, nil)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer eng.Close()
+
+	ctx := validContext(t)
+	_, err = eng.Call(ctx, "nonexistent", "arg")
+	if err == nil {
+		t.Fatal("expected error calling missing func")
+	}
+	if eng.liveHandles.Load() != 0 {
+		t.Fatalf("live handles after missing func call: got %d, want 0", eng.liveHandles.Load())
+	}
+}
+
+func TestCompatibleWithDir(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(dir+"/data.txt", []byte("hello"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	spec := Spec{
+		ImagePath: "/tmp/fake-dir-image",
+		Dir:       dir,
+	}
+	eng, err := Open(spec, nil)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer eng.Close()
+
+	snap, err := eng.Snapshot()
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	img, err := UnmarshalImage(snap)
+	if err != nil {
+		t.Fatalf("UnmarshalImage: %v", err)
+	}
+
+	if !img.Compatible(spec) {
+		t.Fatal("img.Compatible(spec) returned false with matching Dir")
+	}
+
+	noDirSpec := spec
+	noDirSpec.Dir = ""
+	if img.Compatible(noDirSpec) {
+		t.Fatal("img.Compatible(noDirSpec) returned true with empty Dir")
+	}
+}
+
+func TestDeadlineClosedModuleFatal(t *testing.T) {
+	eng, err := Open(Spec{TimeoutMS: 50}, nil)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer eng.Close()
+
+	ctx, cancel := context.WithTimeout(t.Context(), 500*time.Millisecond)
+	defer cancel()
+
+	_, err = eng.Eval(ctx, "loop.js", `while (true) {}`, false)
+	if !errors.Is(err, ErrPoisoned) {
+		t.Fatalf("deadline exceeded: got %v, want ErrPoisoned", err)
+	}
+	if _, ok := errors.AsType[*Fatal](err); !ok {
+		t.Fatalf("got %T, want *Fatal", err)
+	}
+
+	ctx2 := validContext(t)
+	_, errAfter := eng.Eval(ctx2, "t.js", "1", false)
+	if !errors.Is(errAfter, ErrPoisoned) {
+		t.Fatalf("call after poison: got %v, want ErrPoisoned", errAfter)
+	}
+}
+
+func TestOutOfMemoryFatal(t *testing.T) {
+	eng, err := Open(Spec{MemoryPages: 256}, nil)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	ctx := validContext(t)
+	_, err = eng.Eval(ctx, "oom.js", `
+		let arr = [];
+		while (true) {
+			arr.push(new Uint8Array(1024 * 1024));
+		}
+	`, false)
+	if !errors.Is(err, ErrPoisoned) {
+		t.Fatalf("oom: got %v, want ErrPoisoned", err)
+	}
+	if _, ok := errors.AsType[*Fatal](err); !ok {
+		t.Fatalf("got %T, want *Fatal", err)
+	}
+
+	_, errAfter := eng.Eval(ctx, "t.js", "1", false)
+	if !errors.Is(errAfter, ErrPoisoned) {
+		t.Fatalf("call after poison: got %v, want ErrPoisoned", errAfter)
+	}
+}
+
+func TestMaxHostArgBytesBoundaries(t *testing.T) {
+	const limit = 64
+	var lastLen int
+	host := func(ctx context.Context, op string, args []byte) ([]byte, error) {
+		lastLen = len(args)
+		switch op {
+		case "echo":
+			return args, nil
+		case "ret":
+			return bytes.Repeat([]byte("b"), len(args)), nil
+		}
+		return []byte("ok"), nil
+	}
+	eng, err := Open(Spec{MaxHostArgBytes: limit, Host: host}, host)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer eng.Close()
+
+	ctx := validContext(t)
+
+	for _, n := range []int{limit - 1, limit} {
+		arg := strings.Repeat("x", n)
+		out, err := eng.Eval(ctx, "t.js", fmt.Sprintf(`__flats_host("echo", %q)`, arg), false)
+		if err != nil || out != arg {
+			t.Fatalf("arg len %d failed: %v", n, err)
+		}
+		if lastLen != n {
+			t.Fatalf("host received len %d, want %d", lastLen, n)
+		}
+	}
+
+	argOver := strings.Repeat("x", limit+1)
+	_, err = eng.Eval(ctx, "t.js", fmt.Sprintf(`__flats_host("echo", %q)`, argOver), false)
+	if err == nil {
+		t.Fatalf("arg len %d succeeded, want ErrTooLarge", limit+1)
+	}
+	if errors.Is(err, ErrPoisoned) {
+		t.Fatalf("arg limit poisoned engine: %v", err)
+	}
+
+	for _, n := range []int{limit - 1, limit} {
+		arg := strings.Repeat("y", n)
+		out, err := eng.Eval(ctx, "t.js", fmt.Sprintf(`__flats_host("ret", %q)`, arg), false)
+		if err != nil || len(out) != n {
+			t.Fatalf("ret len %d failed: %v", n, err)
+		}
+	}
+
+	argRetOver := strings.Repeat("y", limit+1)
+	_, err = eng.Eval(ctx, "t.js", fmt.Sprintf(`__flats_host("ret", %q)`, argRetOver), false)
+	if err == nil {
+		t.Fatalf("ret len %d succeeded, want ErrTooLarge", limit+1)
+	}
+	if errors.Is(err, ErrPoisoned) {
+		t.Fatalf("ret limit poisoned engine: %v", err)
+	}
+
+	out, errAfter := eng.Eval(ctx, "t.js", "1 + 1", false)
+	if errAfter != nil || out != "2" {
+		t.Fatalf("engine not reusable: %v", errAfter)
+	}
+}
+
+func TestDeadlineClamping(t *testing.T) {
+	eng, err := Open(Spec{TimeoutMS: 100}, nil)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer eng.Close()
+
+	longCtx, longCancel := context.WithTimeout(t.Context(), 10*time.Minute)
+	defer longCancel()
+
+	start := time.Now()
+	_, err = eng.Eval(longCtx, "loop.js", `while (true) {}`, false)
+	elapsed := time.Since(start)
+	if !errors.Is(err, ErrPoisoned) {
+		t.Fatalf("long context loop: got %v, want ErrPoisoned", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("clamped timeout took %v, want <= 2s", elapsed)
+	}
+
+	eng2, err := Open(Spec{TimeoutMS: 10000}, nil)
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer eng2.Close()
+
+	shortCtx, shortCancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer shortCancel()
+
+	start = time.Now()
+	_, err = eng2.Eval(shortCtx, "loop.js", `while (true) {}`, false)
+	elapsed = time.Since(start)
+	if !errors.Is(err, ErrPoisoned) {
+		t.Fatalf("short context loop: got %v, want ErrPoisoned", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("short timeout took %v, want <= 2s", elapsed)
 	}
 }

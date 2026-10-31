@@ -9,8 +9,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"runtime"
 	"slices"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unsafe"
@@ -276,15 +278,15 @@ type Image struct {
 }
 
 func countImageFuncs(b []byte) int {
-	if len(b) < 100 {
+	if len(b) < 104 {
 		return 0
 	}
-	nk := int(binary.LittleEndian.Uint32(b[96:100]))
-	if 100+nk > len(b) {
+	nk := int(binary.LittleEndian.Uint32(b[100:104]))
+	if nk < 0 || 104+nk > len(b) {
 		return 0
 	}
 	n := 0
-	for _, k := range b[100 : 100+nk] {
+	for _, k := range b[104 : 104+nk] {
 		if k == 'f' {
 			n++
 		}
@@ -309,6 +311,7 @@ func (img Image) Compatible(spec Spec) bool {
 		pages = DefaultMemoryPages
 	}
 	opt := qjs.Option{
+		ReadOnlyDir:        spec.Dir,
 		CacheDir:           spec.CacheDir,
 		MemoryLimitPages:   uint32(pages),
 		MemoryLimit:        pages * 65536 * 3 / 4,
@@ -343,6 +346,10 @@ type Engine struct {
 	hostPanicVal atomic.Pointer[any]
 	hostTainted  atomic.Bool
 	gcDrained    atomic.Bool
+
+	callMu   sync.Mutex
+	callGoid atomic.Int64
+	inClose  atomic.Bool
 
 	testHookLeakHandle       atomic.Bool
 	testHookPendingException atomic.Bool
@@ -538,7 +545,33 @@ func (e *Engine) fatal(cause error) error {
 	}
 }
 
+func curGoroutineID() int64 {
+	var buf [64]byte
+	n := runtime.Stack(buf[:], false)
+	s := string(buf[:n])
+	const prefix = "goroutine "
+	if !strings.HasPrefix(s, prefix) {
+		return 0
+	}
+	s = s[len(prefix):]
+	i := strings.IndexByte(s, ' ')
+	if i < 0 {
+		return 0
+	}
+	var id int64
+	for _, c := range s[:i] {
+		if c < '0' || c > '9' {
+			return 0
+		}
+		id = id*10 + int64(c-'0')
+	}
+	return id
+}
+
 func (e *Engine) busyOrCurrentState() error {
+	if e.inClose.Load() {
+		return ErrClosed
+	}
 	switch e.state.Load() {
 	case stateBusy:
 		return ErrBusy
@@ -604,6 +637,10 @@ func (e *Engine) postCallChecks(c *qjs.Context, out string) error {
 
 func (e *Engine) handleCallResult(p *qjs.Value, callErr error, ctx context.Context) (string, error) {
 	if callErr != nil {
+		if p != nil {
+			p.Free()
+			e.trackHandle(-1)
+		}
 		if e.hostPanicked.Load() || e.isFatal(callErr, ctx) {
 			return "", e.fatal(callErr)
 		}
@@ -633,6 +670,10 @@ func (e *Engine) handleCallResult(p *qjs.Value, callErr error, ctx context.Conte
 
 func (e *Engine) handleEvalResult(v *qjs.Value, evalErr error, ctx context.Context) (string, error) {
 	if evalErr != nil {
+		if v != nil {
+			v.Free()
+			e.trackHandle(-1)
+		}
 		if e.hostPanicked.Load() || e.isFatal(evalErr, ctx) {
 			return "", e.fatal(evalErr)
 		}
@@ -678,15 +719,22 @@ func (e *Engine) Call(ctx context.Context, fn string, arg string) (out string, r
 		return "", ErrTooLarge
 	}
 
-	if !e.state.CompareAndSwap(stateReady, stateBusy) {
+	if e.inClose.Load() || !e.state.CompareAndSwap(stateReady, stateBusy) {
 		return "", e.busyOrCurrentState()
 	}
+	goid := curGoroutineID()
+	e.callGoid.Store(goid)
+	e.callMu.Lock()
 	defer func() {
-		if e.state.Load() == stateBusy {
+		if e.state.Load() == stateBusy && !e.inClose.Load() {
 			e.state.Store(stateReady)
 		}
+		e.callGoid.Store(0)
+		e.callMu.Unlock()
 	}()
-
+	if e.inClose.Load() || e.state.Load() == stateClosed {
+		return "", ErrClosed
+	}
 	e.swapCtx.set(cCtx)
 	e.hostPanicked.Store(false)
 	defer func() {
@@ -711,23 +759,27 @@ func (e *Engine) Call(ctx context.Context, fn string, arg string) (out string, r
 	a.Free()
 	e.trackHandle(-1)
 
-	if err == nil {
-		e.trackHandle(1)
+	if p != nil {
+		if err != nil {
+			p.Free()
+			p = nil
+		} else {
+			e.trackHandle(1)
+		}
 	}
 
-	out, err = e.handleCallResult(p, err, cCtx)
-	if err != nil {
-		return "", err
-	}
-
+	out, callErr := e.handleCallResult(p, err, cCtx)
 	e.gcBytes += uint64(len(out))
 
 	if e.testHookPendingException.Load() {
 		c.Throw(c.NewError(errors.New("leaked pending exception")))
 	}
 
-	if err := e.postCallChecks(c, out); err != nil {
-		return "", err
+	if checkErr := e.postCallChecks(c, out); checkErr != nil {
+		return "", checkErr
+	}
+	if callErr != nil {
+		return "", callErr
 	}
 	return out, nil
 }
@@ -747,15 +799,22 @@ func (e *Engine) Eval(ctx context.Context, name, src string, module bool) (out s
 		return "", ErrTooLarge
 	}
 
-	if !e.state.CompareAndSwap(stateReady, stateBusy) {
+	if e.inClose.Load() || !e.state.CompareAndSwap(stateReady, stateBusy) {
 		return "", e.busyOrCurrentState()
 	}
+	goid := curGoroutineID()
+	e.callGoid.Store(goid)
+	e.callMu.Lock()
 	defer func() {
-		if e.state.Load() == stateBusy {
+		if e.state.Load() == stateBusy && !e.inClose.Load() {
 			e.state.Store(stateReady)
 		}
+		e.callGoid.Store(0)
+		e.callMu.Unlock()
 	}()
-
+	if e.inClose.Load() || e.state.Load() == stateClosed {
+		return "", ErrClosed
+	}
 	e.swapCtx.set(cCtx)
 	e.hostPanicked.Store(false)
 	defer func() {
@@ -781,28 +840,40 @@ func (e *Engine) Eval(ctx context.Context, name, src string, module bool) (out s
 		v, err = c.Eval(name, qjs.Code(src), qjs.TypeGlobal(), qjs.FlagAsync())
 	}
 
-	if err == nil && v != nil {
-		e.trackHandle(1)
+	if v != nil {
+		if err != nil {
+			v.Free()
+			v = nil
+		} else {
+			e.trackHandle(1)
+		}
 	}
 
-	out, err = e.handleEvalResult(v, err, cCtx)
-	if err != nil {
-		return "", err
-	}
-
+	out, evalErr := e.handleEvalResult(v, err, cCtx)
 	e.gcBytes += uint64(len(out))
 
 	if e.testHookPendingException.Load() {
 		c.Throw(c.NewError(errors.New("leaked pending exception")))
 	}
 
-	if err := e.postCallChecks(c, out); err != nil {
-		return "", err
+	if checkErr := e.postCallChecks(c, out); checkErr != nil {
+		return "", checkErr
+	}
+	if evalErr != nil {
+		return "", evalErr
 	}
 	return out, nil
 }
 
 func (e *Engine) Close() error {
+	goid := curGoroutineID()
+	if goid != 0 && e.callGoid.Load() == goid {
+		return ErrBusy
+	}
+	e.inClose.Store(true)
+	e.callMu.Lock()
+	defer e.callMu.Unlock()
+
 	prev := e.state.Swap(stateClosed)
 	if prev == stateClosed {
 		return nil
@@ -832,19 +903,42 @@ func (e *Engine) Close() error {
 	return closeErr
 }
 
-func (e *Engine) Snapshot() ([]byte, error) {
-	if e.spec.ImagePath == "" {
-		return nil, ErrSnapshotNotAllowed
-	}
+func (e *Engine) Snapshot() (snap []byte, retErr error) {
 	if e.state.Load() == statePoisoned {
 		return nil, ErrPoisoned
 	}
-	if e.state.Load() == stateClosed {
+	if e.state.Load() == stateClosed || e.rt == nil {
 		return nil, ErrClosed
 	}
-	if e.rt == nil {
+	if e.spec.ImagePath == "" {
+		return nil, ErrSnapshotNotAllowed
+	}
+	if e.inClose.Load() || !e.state.CompareAndSwap(stateReady, stateBusy) {
+		return nil, e.busyOrCurrentState()
+	}
+	goid := curGoroutineID()
+	e.callGoid.Store(goid)
+	e.callMu.Lock()
+	defer e.callMu.Unlock()
+	defer func() {
+		if e.state.Load() == stateBusy && !e.inClose.Load() {
+			e.state.Store(stateReady)
+		}
+		e.callGoid.Store(0)
+	}()
+	if e.inClose.Load() || e.state.Load() == stateClosed {
 		return nil, ErrClosed
 	}
+	defer func() {
+		if r := recover(); r != nil {
+			e.state.Store(statePoisoned)
+			retErr = &Fatal{
+				Cause:   fmt.Errorf("%v", r),
+				Message: trimStack(fmt.Sprint(r)),
+			}
+		}
+	}()
+
 	if e.hostTainted.Load() {
 		return nil, fmt.Errorf("%w: host function called", ErrTainted)
 	}
@@ -867,7 +961,13 @@ func (e *Engine) Restored() bool {
 }
 
 func (e *Engine) ImageEligible() error {
-	if e == nil || e.rt == nil {
+	if e == nil {
+		return ErrClosed
+	}
+	if e.state.Load() == statePoisoned {
+		return ErrPoisoned
+	}
+	if e.state.Load() == stateClosed || e.rt == nil {
 		return ErrClosed
 	}
 	if e.hostTainted.Load() {

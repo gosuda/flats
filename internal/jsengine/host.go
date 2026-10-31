@@ -135,6 +135,10 @@ func (e *Engine) hostCall(this *qjs.This) (*qjs.Value, error) {
 		return nil, err
 	}
 
+	if len(res) > maxHost {
+		return nil, ErrTooLarge
+	}
+
 	e.gcBytes += uint64(len(res))
 	c := this.Context()
 	return c.NewString(string(res)), nil
@@ -154,23 +158,23 @@ func (e *Engine) codecCall(this *qjs.This) (*qjs.Value, error) {
 		return nil, errors.New("invalid docs codec arguments")
 	}
 
-	maxHost := cmp.Or(e.spec.MaxHostArgBytes, DefaultMaxHostArgBytes)
+	maxCodec := cmp.Or(e.spec.MaxOutputBytes, DefaultMaxOutputBytes)
 
 	op := args[0].String()
-	if len(op) > maxHost {
+	if len(op) > maxCodec {
 		return nil, ErrTooLarge
 	}
 
 	if e.spec.RawCodec != nil {
 		inVal := Value{raw: args[1], ctx: this.Context()}
 		if inVal.IsByteArray() {
-			if inVal.ByteLen() > int64(maxHost) {
+			if inVal.ByteLen() > int64(maxCodec) {
 				return nil, ErrTooLarge
 			}
 			e.gcBytes += uint64(inVal.ByteLen())
 		} else {
 			s := inVal.String()
-			if len(s) > maxHost {
+			if len(s) > maxCodec {
 				return nil, ErrTooLarge
 			}
 			e.gcBytes += uint64(len(s))
@@ -190,13 +194,16 @@ func (e *Engine) codecCall(this *qjs.This) (*qjs.Value, error) {
 		} else {
 			in = []byte(args[1].String())
 		}
-		if len(in) > maxHost {
+		if len(in) > maxCodec {
 			return nil, ErrTooLarge
 		}
 		e.gcBytes += uint64(len(in))
 		res, err := e.spec.DocsCodec(e.swapCtx.current(), op, in)
 		if err != nil {
 			return nil, err
+		}
+		if len(res) > maxCodec {
+			return nil, ErrTooLarge
 		}
 		e.gcBytes += uint64(len(res))
 		return this.Context().NewArrayBuffer(res), nil
@@ -206,10 +213,17 @@ func (e *Engine) codecCall(this *qjs.This) (*qjs.Value, error) {
 }
 
 func (e *Engine) toQjsValue(c *qjs.Context, v Value, inArg *qjs.Value) (*qjs.Value, error) {
+	maxOutput := cmp.Or(e.spec.MaxOutputBytes, DefaultMaxOutputBytes)
 	if v.raw != nil {
 		if v.raw.IsByteArray() {
+			if v.raw.ByteLen() > int64(maxOutput) {
+				return nil, ErrTooLarge
+			}
 			e.gcBytes += uint64(v.raw.ByteLen())
 		} else if v.raw.IsString() {
+			if len(v.raw.String()) > maxOutput {
+				return nil, ErrTooLarge
+			}
 			e.gcBytes += uint64(len(v.raw.String()))
 		} else {
 			e.gcBytes += 4
@@ -221,11 +235,17 @@ func (e *Engine) toQjsValue(c *qjs.Context, v Value, inArg *qjs.Value) (*qjs.Val
 	}
 	switch v.kind {
 	case valString:
+		if len(v.str) > maxOutput {
+			return nil, ErrTooLarge
+		}
 		return c.NewString(v.str), nil
 	case valInt32:
 		e.gcBytes += 4
 		return c.NewInt32(v.i32), nil
 	case valArrayBuffer:
+		if len(v.buf) > maxOutput {
+			return nil, ErrTooLarge
+		}
 		e.gcBytes += uint64(len(v.buf))
 		return c.NewArrayBuffer(v.buf), nil
 	default:
