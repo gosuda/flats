@@ -2,6 +2,7 @@ package qjs
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"math"
@@ -324,7 +325,7 @@ func (ac *JsArrayToGoConverter[T]) Convert() (T, error) {
 	}
 
 	if ac.tracker.Track(ac.input.Raw()) {
-		return zero, fmt.Errorf("cannot convert JS array to Go: circular reference")
+		return zero, errors.New("cannot convert JS array to Go: circular reference")
 	}
 
 	defer ac.tracker.UnTrack(ac.input.Raw())
@@ -343,6 +344,9 @@ func (ac *JsArrayToGoConverter[T]) Convert() (T, error) {
 		return ac.convertViaJSON(jsArray)
 	}
 }
+func arrayElementError(index int64, err error) error {
+	return fmt.Errorf("cannot convert JS array/set element at index %d to Go: %w", int(index), err)
+}
 
 func (ac *JsArrayToGoConverter[T]) convertToInterface(jsArray *Array, jsLen int64) (T, error) {
 	result := make([]any, 0, jsLen)
@@ -355,9 +359,7 @@ func (ac *JsArrayToGoConverter[T]) convertToInterface(jsArray *Array, jsLen int6
 		jsElem.Free()
 
 		if convErr != nil {
-			return ac.sample, fmt.Errorf(
-				"cannot convert JS array/set element at index %d to Go: %w", int(i), convErr,
-			)
+			return ac.sample, arrayElementError(i, convErr)
 		}
 
 		result = append(result, goElem)
@@ -380,9 +382,7 @@ func (ac *JsArrayToGoConverter[T]) convertToSlice(jsArray *Array, jsLen int64) (
 		jsElem.Free()
 
 		if convErr != nil {
-			return ac.sample, fmt.Errorf(
-				"cannot convert JS array/set element at index %d to Go: %w", int(i), convErr,
-			)
+			return ac.sample, arrayElementError(i, convErr)
 		}
 
 		elemValue := ac.convertElementValue(goElem, elemType)
@@ -411,9 +411,7 @@ func (ac *JsArrayToGoConverter[T]) convertToArray(jsArray *Array, jsLen int64) (
 		jsElem.Free()
 
 		if convErr != nil {
-			return ac.sample, fmt.Errorf(
-				"cannot convert JS array/set element at index %d to Go: %w", int(i), convErr,
-			)
+			return ac.sample, arrayElementError(i, convErr)
 		}
 
 		elemValue := ac.convertElementValue(goElem, elemType)

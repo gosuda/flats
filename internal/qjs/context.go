@@ -63,7 +63,7 @@ func (c *Context) CallUnPack(name string, args ...uint64) (uint32, uint32) {
 
 // FreeHandle releases memory associated with the given handle pointer.
 func (c *Context) FreeHandle(ptr uint64) {
-	if c == nil || c.runtime == nil {
+	if c == nil {
 		return
 	}
 
@@ -72,7 +72,7 @@ func (c *Context) FreeHandle(ptr uint64) {
 
 // FreeJsValue releases memory associated with the JavaScript value.
 func (c *Context) FreeJsValue(val uint64) {
-	if c == nil || c.runtime == nil {
+	if c == nil {
 		return
 	}
 

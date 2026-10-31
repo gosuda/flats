@@ -443,11 +443,7 @@ func (v *Value) Exception() error {
 	stack := v.GetPropertyStr("stack")
 	defer stack.Free()
 
-	if v.context.HasException() {
-		v.context.clearException()
-
-		return errors.New(cause)
-	}
+	v.context.clearException()
 
 	if !stack.IsString() {
 		return errors.New(cause)
@@ -468,11 +464,7 @@ func (v *Value) exceptionText() string {
 	if v.IsSymbol() {
 		description := v.GetPropertyStr("description")
 		defer description.Free()
-		if v.context.HasException() {
-			v.context.clearException()
-
-			return "Symbol()"
-		}
+		v.context.clearException()
 
 		if description.IsString() {
 			return "Symbol(" + description.String() + ")"
@@ -483,9 +475,7 @@ func (v *Value) exceptionText() string {
 
 	text := v.Call("QJS_ToCString", v.Ctx(), v.Raw())
 	if text.Raw() == 0 {
-		if v.context.HasException() {
-			v.context.clearException()
-		}
+		v.context.clearException()
 
 		if v.IsObject() {
 			return "unprintable object"
@@ -705,7 +695,6 @@ func (v *Value) JSONStringify() (_ string, err error) {
 		}
 	}()
 
-	// The upstream packed helper frees its string before returning it.
 	result, err := v.context.invokeIntrinsic("stringify", v)
 	if err != nil {
 		return "", err

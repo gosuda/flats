@@ -184,9 +184,9 @@ an atomically swapped per-request context instead (internal/runtime does).
     closed runtime and Pool.Get replaces one.
 28. runtime.go, context.go, options.go: Malloc rejects sizes above the
     wasm32 address space and reports ErrOutOfMemory when malloc returns 0
-    for a non-empty request. NewBytesHandle returns a zero handle for empty
-    input. Negative MemoryLimit/MaxStackSize/MaxExecutionTime/GCThreshold
-    are refused at New.
+    for a non-empty request; Malloc(0) returns a non-zero address and
+    NewBytesHandle returns a non-zero handle for empty input. Negative
+    MemoryLimit/MaxStackSize/MaxExecutionTime/GCThreshold are refused at New.
 29. mem.go, handle.go: zero-length Read/ReadString accept a null address;
     Read validates addr+size against memory and the 32-bit limit before
     wazero; ReadString reports ErrIndexOutOfRange for an address at or past
@@ -201,8 +201,9 @@ an atomically swapped per-request context instead (internal/runtime does).
     without panicking and clears a failed conversion instead of recursively
     formatting the secondary exception. SetProperty/SetPropertyStr/
     SetPropertyIndex check the C result and panic with the cleared
-    exception instead of leaving the context poisoned. ParseJSON panics
-    with the parse error after clearing it, so the context stays clean.
+    exception instead of leaving the context poisoned. ParseJSON returns
+    an error after clearing the exception instead of panicking, so the
+    context stays clean.
     Type derives NaN/Infinity from the number value.
 32. image.go: Option.ReadOnlyDir is a confined mount: OpenFile/Stat resolve
     the host path and refuse anything that resolves outside the directory

@@ -52,11 +52,6 @@ func combineErrors(errs ...error) error {
 
 	return errors.New(errStr)
 }
-
-func newMaxLengthExceededErr(request uint, maxLen int64, index int) error {
-	return fmt.Errorf("length %d exceeds max %d at index %d", request, maxLen, index)
-}
-
 func newOverflowErr(value any, targetType string) error {
 	return fmt.Errorf("value %v overflows %s", value, targetType)
 }

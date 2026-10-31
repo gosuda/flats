@@ -256,7 +256,7 @@ func jsSetToGoWithContext[T any](
 	}
 
 	if tracker.Track(input.Raw()) {
-		return v, fmt.Errorf("cannot convert JS Set to Go: circular reference")
+		return v, errors.New("cannot convert JS Set to Go: circular reference")
 	}
 
 	defer tracker.UnTrack(input.Raw())
@@ -772,11 +772,6 @@ func handleJsFunctionResult(
 	}
 
 	if jsResult.IsUndefined() || jsResult.IsNull() {
-		results[0] = reflect.Zero(fnType.Out(0))
-		if numOut == 2 {
-			results[1] = reflect.Zero(fnType.Out(1))
-		}
-
 		return results
 	}
 
@@ -801,9 +796,6 @@ func handleJsFunctionResult(
 	}
 
 	results[0] = goResultValue.Convert(targetType)
-	if numOut == 2 {
-		results[1] = reflect.Zero(fnType.Out(1))
-	}
 
 	return results
 }

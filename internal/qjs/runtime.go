@@ -400,10 +400,6 @@ func (r *Runtime) FreeJsValue(val uint64) {
 
 // NewBytesHandle creates a handle for byte data in WebAssembly memory.
 func (r *Runtime) NewBytesHandle(b []byte) *Handle {
-	if uint64(len(b)) > math.MaxUint32 {
-		panic(fmt.Errorf("failed to allocate %d bytes: exceeds the wasm32 address space", len(b)))
-	}
-
 	ptr := r.Malloc(uint64(len(b)))
 	r.mem.MustWrite(uint32(ptr), b)
 
@@ -512,7 +508,7 @@ func (p *Pool) Get() (*Runtime, error) {
 }
 
 func (p *Pool) use(rt *Runtime) (*Runtime, error) {
-	if rt == nil || rt.module == nil || rt.module.IsClosed() {
+	if rt.module == nil || rt.module.IsClosed() {
 		return p.createNewRuntime()
 	}
 

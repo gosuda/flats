@@ -696,7 +696,7 @@ func TestConcurrentRuntimeUseSerialized(t *testing.T) {
 }
 
 // Invalid JSON used to return the exception sentinel and leave the error
-// pending, so the next unrelated call failed. It now panics with the syntax
+// pending, so the next unrelated call failed. It now returns the syntax
 // error and clears it.
 func TestParseJSONFailureDoesNotPoison(t *testing.T) {
 	rt := lifecycleRuntime(t, Option{})
@@ -733,10 +733,7 @@ func TestParseJSONReturnsErrorNotPanic(t *testing.T) {
 	c := rt.Context()
 
 	for _, bad := range []string{"{", `{"a":`, `invalid`} {
-		v, err := c.ParseJSON(bad)
-		if v != nil {
-			v.Free()
-		}
+		_, err := c.ParseJSON(bad)
 		if err == nil {
 			t.Fatalf("ParseJSON(%q) succeeded, want error", bad)
 		}

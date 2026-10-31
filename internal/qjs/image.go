@@ -561,12 +561,12 @@ func readOnlyMount(dir string, census *Census) (wazero.FSConfig, error) {
 		return nil, fmt.Errorf("mount %s: %w", dir, err)
 	}
 
-	var fsys experimentalsys.FS = &sysfs.ReadFS{FS: confined}
+	var inner experimentalsys.FS = confined
 	if census != nil {
-		fsys = &sysfs.ReadFS{FS: censusFS{FS: confined, census: census}}
+		inner = censusFS{FS: confined, census: census}
 	}
 
-	return wazero.NewFSConfig().(sysfs.FSConfig).WithSysFSMount(fsys, "/"), nil
+	return wazero.NewFSConfig().(sysfs.FSConfig).WithSysFSMount(&sysfs.ReadFS{FS: inner}, "/"), nil
 }
 
 type confinedFS struct {

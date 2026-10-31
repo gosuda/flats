@@ -63,12 +63,6 @@ func (m *Mem) Read(addr uint32, size uint64) ([]byte, error) {
 	if err != nil {
 		return nil, err
 	}
-
-	end := uint64(addr) + size
-	if end > uint64(m.Size()) || end > math.MaxUint32 {
-		return nil, ErrIndexOutOfRange
-	}
-
 	buf, ok := m.mem.Read(addr, uint32(size))
 	if !ok {
 		return nil, ErrIndexOutOfRange

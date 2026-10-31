@@ -317,7 +317,7 @@ func (tracker *Tracker[T]) convertReflectValue(c *Context, v any) (*Value, error
 			return c.NewNull(), nil
 		}
 
-		if err := ct.trackPtr(tracker, T(uintptr(rval.UnsafePointer()))); err != nil {
+		if err := ct.trackPtr(tracker, T(rval.Pointer())); err != nil {
 			return nil, newGoToJsErr(GetGoTypeName(rtype), err)
 		}
 
