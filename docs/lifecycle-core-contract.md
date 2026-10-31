@@ -44,7 +44,11 @@ including the document rollback flow.
 A flat is Published once one of its versions has been live, and that status
 persists through connection failures. Visibility is independently
 `private|public`; legacy listed/unlisted inputs canonicalize to `public`.
-Unpublished flats cannot become Public.
+An approval cannot make an Unpublished flat Public. The creation exception is
+[public instance mode](design.md#public-instance-mode), which creates websites
+and pages Public and Unpublished with `live_version` 0. They have no public
+URL and report `connection_state: "unavailable"` until their first approved
+deployment.
 
 Previews (`OpenPreview`; number 0 targets the Draft) are Private only: Local,
 plus Tailscale when the flat holds that grant. Server previews use isolated
@@ -53,7 +57,9 @@ Current and approval-pinned Draft revisions, and open Draft-preview targets,
 survive Draft revision pruning. Valid persisted previews resume after restart;
 expired previews are closed, and unavailable historical targets get an error
 event rather than being rebound to another version. Successful activation
-closes open previews.
+closes open previews. While public instance mode is on, private links answer
+403, preview views report no URL and `OpenPreview` is refused with a conflict.
+Existing previews remain subject to expiry.
 
 ## Callable service surface
 
@@ -113,19 +119,30 @@ Flat views add `publication`, `draft`, permitted provider IDs,
 `connection_state` and `endpoints`. Endpoint DTOs carry JSON `provider`, `url`,
 `state`, `detail`, `configured`, `permitted`, `ready`, `audience`, and `host`.
 URL existence is not readiness or proof of Public. The manager supplies fresh
-concrete status through the observer contract below.
+concrete status through the observer contract below. While public instance
+mode is on, flat views set `private_links_off: true`, clear private URL, state
+and detail and omit private endpoints. The flag is absent while off. Public
+connection state never falls back to a private route, and a Private flat
+reports `unavailable`.
 
 ## Operator authority and frozen approvals
 
 ### Default grants and decisions
 
-A new flat inherits the host's default provider grants in the transaction that
-creates it, with a `provider` event per grant: the private default
+With public instance mode off, a new flat inherits the host's default
+provider grants in the transaction that creates it, with a `provider` event
+per grant: the private default
 (`network.default_private`, or Tailscale when that is unset and
 `network.private_backend` is `tailscale`) and the public default
 (`network.default_public`), each only when the host permits it. A public grant
 is only a permission; the flat stays Private until an approved visibility
-change. Flats are created by agents (MCP, CLI or API), never from the console.
+change. While public instance mode is on, `newFlatPolicy` reads the mode and
+one network-settings snapshot under the mode mutex. The same creation
+transaction stores a Public flat with view-only access, only the default
+public grant besides implicit Local, and an event naming the mode and
+network. Missing or disabled public defaults refuse creation with a conflict
+and no write. Later visibility changes keep their approvals. Flats are
+created by agents (MCP, CLI or API), never from the console.
 
 `Decide` and per-flat provider-grant mutations are console operations:
 transports expose them only on console routes, and provider grants also
@@ -249,6 +266,7 @@ with its `user_version`, so a failed step leaves no trace:
 | 19 | public access level |
 | 20 | document guest lines |
 | 21 | Autopilot settings and their change log ([Autopilot settings](configuration.md#autopilot-settings)) |
+| 22 | Public instance settings; changes reuse the Experiments change log ([Public instance settings](configuration.md#public-instance-settings)) |
 
 A database newer than the binary is refused untouched.
 
@@ -322,7 +340,9 @@ filter out all public providers; Public requests preserve Private routes. Only
 permitted public providers with a registered current endpoint in starting, or
 ready/key-expiring with its readiness bit, allow a Public policy commit.
 Starting remains Connecting and not ready; backend readiness advances
-independently. Missing current runtime returns `not_deployed`. Failed setup
+independently. Missing current runtime returns `not_deployed` for a Public
+flat with a positive live version. A Public flat with `live_version` 0 has
+nothing to expose yet and opens no public route. Failed setup
 is closed and its route handler cannot serve public bytes while policy is
 Private. Unconfirmed public stops cannot commit Private. The manager owns
 persisted host gates and backend readiness; per-flat permissions alone are
@@ -393,4 +413,7 @@ order:
 
 Within each line the order shown is the precedence. Unknown execution
 failures remain `apply_failed` in persisted receipts. `core.ErrorCategories`
-lists every value; each has a refusal page in the agent guide.
+lists the base categories; each has a refusal page in the agent guide.
+Autopilot servers also list their decision refusals, and public instance
+servers list the preview refusal for that mode. Those categories and pages
+are absent while the corresponding mode is off.

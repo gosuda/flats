@@ -62,8 +62,12 @@ Applies to websites (the `flat` type, static and server) and pages.
    is applied. The live version cannot be deleted.
 7. **Published means deployed at least once.** A flat with no successful
    deployment is Unpublished, even if it holds versions, and an Unpublished
-   flat cannot become Public. Otherwise visibility (`private`/`public`) stays
-   independent, and every change in either direction needs approval.
+   flat cannot become Public through an approval. While
+   [public instance mode](public-instance.md) is on, a website or page is
+   created Public and Unpublished, without a visibility approval. It has no
+   public link until its first approved deployment. Visibility
+   (`private`/`public`) stays independent, and every later change in either
+   direction still needs approval.
 8. **The console manages versions.** Operators list versions, approve their
    creation, and deploy or roll back there.
 9. **Deleting a version needs the operator.** The operator deletes a version

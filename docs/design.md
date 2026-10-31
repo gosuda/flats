@@ -375,7 +375,7 @@ Each flat and each preview is its own host and origin (`<slug>` and
 `<slug>-<8 random>`), so cookies and storage never mix. Under one parent
 domain, such as the reverse proxy's, sibling flats share a registrable domain
 and can set each other's cookies unless that domain is on the Public Suffix
-List. Local always serves the Private route on loopback. Tailscale, NetBird
+List. Local always registers the Private route on loopback. Tailscale, NetBird
 and the Private reverse proxy (`proxy`) add Private routes only for flats that
 hold their grant. A Public flat is also served by its permitted public
 providers (Tailscale Funnel, Portal, zrok, a Cloudflare quick tunnel, NetBird
@@ -391,6 +391,8 @@ and a rename redirect keeps a visitor on the network they arrived on
 ([Providers](networking.md#providers)). The
 operator guide is [Private and public access](networking.md); the provider
 manager's contract is [Network provider lifecycle](network-provider-lifecycle.md).
+While [public instance mode](#public-instance-mode) is on, every private link
+answers 403, including Local and previews; the routes stay registered.
 
 Implementation notes that the provider docs do not repeat:
 
@@ -762,6 +764,98 @@ never to, and the host log records every change. Agent names are untrusted
 text: bounded, quoted in events, inserted as text in the console and never
 written to the host log. The operation guide reaches agents fenced in
 `topic.autopilot`; Flats does not log or enforce it.
+
+### Public instance mode
+
+[Public instance mode](spec/public-instance.md) is the second experiment,
+after Autopilot. It is off by default and changed only in the console. While
+on, every new flat starts Public with view-only access on
+`network.default_public`, without a visibility approval, and every private
+link is disabled. Autopilot is independent. Every approval other than
+creation keeps its rules, including later visibility changes and public
+editing. Turning either experiment on does not turn the other on.
+
+**Settings and ordering.** The `public_instance` row is the source of truth
+([storage](configuration.md#public-instance-settings)). Core keeps the last
+committed `PublicInstance` in an atomic pointer. Only startup and
+`SetPublicInstance` write it, under one mode mutex. Startup loads it before
+restoring routes and aborts if the read fails. Later status reads and the
+Experiments log sync never replace this cache, so a stale or failed read
+cannot turn the mode off.
+
+`SetPublicInstance` holds the mutex through a `BEGIN IMMEDIATE` transaction
+and cache update. Turning on requires a default public network that the host
+permits, and `confirmed_network` must equal that network's current ID. A
+missing, disabled or changed network is `conflict` and changes nothing.
+Usable here means configured and permitted, not that its routes are ready.
+Turning off needs no network. A call matching the stored state writes and
+logs nothing. A cancelled request does not stop a started change.
+
+The setter commits the row and its change line together, stores the committed
+row in the cache and, when turning on, rotates the private request epoch and
+cancels the previous one. It then releases the mutex and syncs the host log
+through the existing Autopilot sync. The shared `autopilot_changes` table is
+the Experiments change log; these lines start with `public instance:` and
+record who changed the mode and when. Log failure delays the line, not the
+mode change. The sync's marking, retention and at-least-once delivery are the
+same as for Autopilot.
+
+**Creation.** All creation paths reach `createFlatLocked`. Under the mode
+mutex, `newFlatPolicy` reads the mode and one network-settings snapshot and
+chooses visibility, access, grants and events together. While on it grants
+only the default public provider, in addition to implicit Local, and never
+the private default. The flat, grants and events commit together. The
+creation event names public instance mode and the network. If that default
+is missing or no longer permitted, creation is refused as `conflict` before
+anything is created. There is no Private or provider fallback. A creation
+already in progress may finish under the policy it read.
+
+Documents, designs and boards start at creation. An exposure failure does not
+undo the saved content or Public state and does not make creation fail. The
+flat's endpoint and `connection_state` report the public provider's state or
+error, and its event log records the exposure failure. Granting the provider
+again, restarting or changing its key can recover it. Websites and pages
+start Public and Unpublished with `live_version` 0, no public URL and
+`connection_state: "unavailable"`. They still need approved version creation
+and deployment. Exposure and public rename redirects wait for live content;
+restart keeps the Public and Unpublished states. A missing runtime with a
+positive live version still reports `not_deployed`.
+
+**Private-link gate.** `linkGate` wraps the site, preview and rename-redirect
+handlers. It reads the provider ID from the request context; legacy unmarked
+routes use the constructor's public/private flag. Public requests pass
+through. A private request reads the epoch before the mode. While on it
+answers 403 with `Cache-Control: no-store` and the page "Private links are
+turned off on this host." This runs before a preview records a visit, so a
+refused visit does not extend its life.
+
+While off, the gate binds the request context to the epoch. Turning on
+cancels it, closing board WebSockets and design event streams. For WebSocket
+upgrades only, a response-writer wrapper also closes a hijacked connection
+when the epoch ends, since runtime document WebSockets do not follow the
+request context. Ordinary writers keep their flushing, streaming and deadline
+behavior. Plain responses already being written may finish; later private
+requests receive 403. Tailscale's port-80 listener still redirects to the
+same host over HTTPS before the gate; that redirect serves no content and
+the HTTPS route answers 403.
+
+No routes, grants, previews or redirects are deleted by the mode. Preview
+expiry still runs. Turning off lets the retained private routes serve again
+without changing any flat's visibility. Internal health checks, snapshots,
+agent edits and revision operations call handlers directly and bypass the
+link gate. Console addresses, MCP and approval links are not flat links and
+do not change.
+
+**Results and console.** Core's `view` clears private URL, state and detail,
+filters private endpoints and sets `private_links_off` only while on. A
+Public flat's connection state uses public endpoints only; a Private flat's
+is `unavailable`. `previewView` clears preview URLs. `OpenPreview` refuses
+calls with a conflict that wraps `ErrPublicInstanceOn`. Old event entries
+keep their text, even when it names a now-disabled private link. The console
+hides private open, preview and history actions, and explains that a Private
+flat has no working link. Making it Private still needs approval and remains
+possible to take it off the internet. MCP's request-specific texts and public
+link results are described in [Public instance texts](surfaces.md#public-instance-texts).
 
 ## Server flats (handler ABI)
 

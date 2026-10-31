@@ -1,10 +1,13 @@
 # Public instance mode
 
-Status: planned; see [Current state](#current-state).
+Status: implemented. The architecture is in
+[Public instance mode](../design.md#public-instance-mode), its routes, MCP
+texts and console in [Surfaces](../surfaces.md#experiments-routes), and its
+storage in [Public instance settings](../configuration.md#public-instance-settings).
 
 ## Summary
 
-Today every new flat starts Private. Its first address is a Private URL on
+By default every new flat starts Private. Its first address is a Private URL on
 Local, the tailnet, NetBird or the operator's reverse proxy, and it reaches the
 internet only after the operator approves a change to Public. That fits a host
 that one person runs for themselves. It does not fit a host that exists to
@@ -229,18 +232,6 @@ The mode does not change them.
   console's Networks help say that a new flat is always created Private. They
   gain the exception for this mode.
 
-## Current state
-
-Nothing of this spec is implemented. Today:
-
-- every creation path writes a Private flat and grants the default private
-  and public networks;
-- private links serve whenever their routes are registered; Local always
-  is;
-- Public is reached only through an approved `set_visibility`, which
-  requires live content;
-- `private_url`, private endpoints and previews are always reported.
-
 ## Completion criteria
 
 - With the mode off, the existing tests of creation, exposure, MCP texts and
@@ -275,6 +266,4 @@ Nothing of this spec is implemented. Today:
 
 ## Open questions
 
-- None. The scope questions put to the requester were not answered in time;
-  this spec chose the literal reading of the request (every private link,
-  Local included, is disabled) and kept every approval other than creation.
+None.
