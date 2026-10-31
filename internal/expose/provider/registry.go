@@ -147,7 +147,10 @@ func (m *Manager) finishOpen(req ExposureRequest, id ID, host, url string, st co
 // collectOpen appends one open's endpoint and error to a Serve result: a
 // failed open still contributes its endpoint.
 func collectOpen(eps []ExposureEndpoint, errs []error, ep ExposureEndpoint, err error) ([]ExposureEndpoint, []error) {
-	return append(eps, ep), append(errs, err)
+	if err != nil {
+		errs = append(errs, err)
+	}
+	return append(eps, ep), errs
 }
 
 // stopRoutedPublic stops a public listener whose route record is tracked:

@@ -3,11 +3,13 @@ package provider
 import (
 	"context"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/gosuda/flats/internal/core"
 	"github.com/gosuda/flats/internal/expose/local"
 )
 
@@ -127,5 +129,99 @@ func TestStopSlugBlocksConcurrentOpen(t *testing.T) {
 	// The fresh open is a legitimate post-retirement route.
 	if tracked, err := m.HasProviderRoute(ctx, "notes", Funnel); err != nil || !tracked {
 		t.Fatalf("post-retirement open left no route: tracked=%v err=%v", tracked, err)
+	}
+}
+
+type nonReadyPortal struct {
+	fakePortal
+}
+
+func (p *nonReadyPortal) Serve(ctx context.Context, slug string, h http.Handler, hidden bool) (string, error) {
+	return "https://portal.example.com", nil
+}
+
+func (p *nonReadyPortal) Status() core.NetStatus {
+	return core.NetStatus{
+		Kind:    "portal",
+		Enabled: true,
+		Hosts: []core.HostInfo{{
+			Host:   "notes",
+			URL:    "https://portal.example.com",
+			State:  stateUnavailable,
+			Detail: "portal not ready",
+		}},
+	}
+}
+
+func TestPublicRouteNonReadyReturnsError(t *testing.T) {
+	dir := t.TempDir()
+	f := File{Version: 1, Permitted: []ID{Portal}}
+	f.Migration.GrantsFromState = []ID{}
+	if err := Save(dir, f); err != nil {
+		t.Fatal(err)
+	}
+	ln, err := local.Listen("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	m, err := New(dir, Options{Local: ln, Tailscale: &fakeTail{}, Portal: &nonReadyPortal{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx := t.Context()
+	req := ExposureRequest{
+		Slug: "notes", Host: "notes", Visibility: "public", Audience: AudienceCurrent,
+		Handler: text("notes"), Permitted: []ID{Portal},
+	}
+	res, err := m.ServeExposure(ctx, req)
+	if err == nil {
+		t.Fatalf("ServeExposure succeeded unexpectedly: res=%+v", res)
+	}
+	if !strings.Contains(err.Error(), "no public route opened") {
+		t.Fatalf("ServeExposure error = %v, want error naming that no public route opened", err)
+	}
+}
+
+func TestStopSlugDoesNotBlockUnrelatedServe(t *testing.T) {
+	tail := &gatedTail{stopEntered: make(chan struct{}), releaseStop: make(chan struct{})}
+	m := gatedRetirementManager(t, tail)
+	ctx := t.Context()
+	release := sync.OnceFunc(func() { close(tail.releaseStop) })
+	defer release()
+	reqA := ExposureRequest{
+		Slug: "slug-a", Host: "slug-a", Visibility: "public", Audience: AudienceCurrent,
+		Handler: text("slug-a"), Permitted: []ID{Funnel},
+	}
+	if _, err := m.ServeExposure(ctx, reqA); err != nil {
+		t.Fatal(err)
+	}
+
+	stopErr := make(chan error, 1)
+	go func() { stopErr <- m.StopSlug(ctx, "slug-a") }()
+	<-tail.stopEntered
+
+	reqB := ExposureRequest{
+		Slug: "slug-b", Host: "slug-b", Visibility: "public", Audience: AudienceCurrent,
+		Handler: text("slug-b"), Permitted: []ID{Funnel},
+	}
+	openDone := make(chan error, 1)
+	go func() {
+		_, err := m.ServeExposure(ctx, reqB)
+		openDone <- err
+	}()
+
+	select {
+	case err := <-openDone:
+		if err != nil {
+			t.Fatalf("ServeExposure for slug-b failed: %v", err)
+		}
+	case <-time.After(200 * time.Millisecond):
+		t.Fatal("ServeExposure for slug-b stalled while slug-a was being retired")
+	}
+
+	release()
+	if err := <-stopErr; err != nil {
+		t.Fatalf("StopSlug failed: %v", err)
 	}
 }

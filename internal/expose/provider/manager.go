@@ -236,11 +236,8 @@ type Manager struct {
 	proxy   ProxyNet
 	zmu     sync.RWMutex // read-held across a zrok open; DetachZrok holds it to write
 	xmu     sync.RWMutex // read-held across a proxy open; DetachProxy holds it to write
-	// openMu serializes opens against slug retirement: ServeExposure reads it
-	// from serve through route registration, StopSlug holds it for its whole
-	// run so an open either registers before StopSlug's route snapshot (and
-	// is stopped by it) or starts after StopSlug returned.
-	openMu        sync.RWMutex
+	slugMu        sync.Mutex
+	slugLocks     map[string]*slugLock
 	proxyTemplate func() string
 	tailscaleDir  string
 	zrokDir       string
@@ -332,6 +329,7 @@ func New(dir string, opts Options) (*Manager, error) {
 		routes:         map[string]*route{},
 		states:         map[string][]observedEndpoint{},
 		pendingTailnet: map[string]map[string]struct{}{},
+		slugLocks:      map[string]*slugLock{},
 	}, nil
 }
 
@@ -341,6 +339,59 @@ func (m *Manager) zrokNet() ZrokNet       { return loadBackend(&m.bmu, &m.zrok) 
 func (m *Manager) quickNet() QuickNet     { return loadBackend(&m.bmu, &m.cfquick) }
 func (m *Manager) netbirdNet() NetbirdNet { return loadBackend(&m.bmu, &m.netbird) }
 func (m *Manager) proxyNet() ProxyNet     { return loadBackend(&m.bmu, &m.proxy) }
+
+type slugLock struct {
+	mu  sync.RWMutex
+	ref int
+}
+
+func (m *Manager) rlockSlug(slug string) func() {
+	m.slugMu.Lock()
+	if m.slugLocks == nil {
+		m.slugLocks = map[string]*slugLock{}
+	}
+	l := m.slugLocks[slug]
+	if l == nil {
+		l = &slugLock{}
+		m.slugLocks[slug] = l
+	}
+	l.ref++
+	m.slugMu.Unlock()
+	l.mu.RLock()
+	return func() {
+		l.mu.RUnlock()
+		m.slugMu.Lock()
+		l.ref--
+		if l.ref == 0 {
+			delete(m.slugLocks, slug)
+		}
+		m.slugMu.Unlock()
+	}
+}
+
+func (m *Manager) lockSlug(slug string) func() {
+	m.slugMu.Lock()
+	if m.slugLocks == nil {
+		m.slugLocks = map[string]*slugLock{}
+	}
+	l := m.slugLocks[slug]
+	if l == nil {
+		l = &slugLock{}
+		m.slugLocks[slug] = l
+	}
+	l.ref++
+	m.slugMu.Unlock()
+	l.mu.Lock()
+	return func() {
+		l.mu.Unlock()
+		m.slugMu.Lock()
+		l.ref--
+		if l.ref == 0 {
+			delete(m.slugLocks, slug)
+		}
+		m.slugMu.Unlock()
+	}
+}
 
 // AttachProxy configures the reverse proxy backend, for a proxy provider the
 // operator turns on while the host runs. It does not grant the provider and
@@ -507,17 +558,15 @@ func (m *Manager) Reload() error {
 // cloudflare-quick the same way.
 // A provider that fails is not replaced by another one.
 func (m *Manager) ServeExposure(ctx context.Context, req ExposureRequest) (res ExposureResult, err error) {
-	m.openMu.RLock()
-	defer m.openMu.RUnlock()
-	// Registered after RUnlock so it runs before it: observe must write
-	// state while the read lock still excludes a concurrent StopSlug.
-	defer m.observe(req, &res)
 	if err := ctx.Err(); err != nil {
 		return ExposureResult{}, err
 	}
 	if req.Slug == "" || req.Handler == nil {
 		return ExposureResult{}, errors.New("provider: slug and handler are required")
 	}
+	unlock := m.rlockSlug(req.Slug)
+	defer unlock()
+	defer m.observe(req, &res)
 	switch req.Visibility {
 	case "private", "public":
 	default:
@@ -1400,8 +1449,8 @@ func (m *Manager) StopSlug(ctx context.Context, slug string) error {
 	// not yet registered either completes before the route snapshot below
 	// (and is stopped by this retirement) or waits to register after this
 	// returns as a fresh open. No route can register between the two.
-	m.openMu.Lock()
-	defer m.openMu.Unlock()
+	unlock := m.lockSlug(slug)
+	defer unlock()
 	m.mu.Lock()
 	routes := make([]route, 0)
 	for _, r := range m.routes {
