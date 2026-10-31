@@ -41,6 +41,7 @@ list.
 | [Delete from the flat list](console-row-delete.md) | implemented | A Delete item in each flat's "…" menu that turns into a slide control in place; dragging its handle to the end deletes the flat |
 | [Flats behind a reverse proxy](reverse-proxy-sites.md) | implemented | `proxy` and `proxy-public` providers that serve flats through an operator's reverse proxy, address selection by host default, and rename redirects on the arrival network |
 | [Autopilot](autopilot.md) | implemented | An opt-in mode in the new Settings › Experiments tab where agents approve or reject pending approvals for the operations the operator allows, with an operation guide for agents |
+| [Public instance mode](public-instance.md) | planned | An opt-in Experiments mode in which every new flat is created Public on the default public network and no private address is handed out or served |
 
 ## Where the technical designs live
 
