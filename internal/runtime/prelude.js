@@ -466,9 +466,17 @@
     return out;
   };
 
+  const undescribed = () => ({ name: "Error", message: "uncaught: a value that cannot be described", stack: "" });
   const errInfo = (e) => {
-    if (e instanceof Error) return { name: e.name, message: String(e.message), stack: String(e.stack || "") };
-    return { name: "Error", message: "uncaught: " + fmt(e), stack: "" };
+    let info;
+    try {
+      info = e instanceof Error
+        ? { name: e.name, message: String(e.message), stack: String(e.stack || "") }
+        : { name: "Error", message: "uncaught: " + fmt(e), stack: "" };
+    } catch (_) {
+      info = undescribed();
+    }
+    return info;
   };
 
   // --- env ---

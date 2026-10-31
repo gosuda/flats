@@ -33,6 +33,9 @@ type dataStore struct {
 
 	wal string // path of the write-ahead log, set by openDB
 
+	mu     sync.Mutex
+	closed bool
+
 	filesWriteMu sync.Mutex // serializes quota checks, mutations and accounting
 	filesMu      sync.Mutex
 	files        *os.Root
@@ -44,6 +47,8 @@ type dataStore struct {
 	maxFilesObjects int64
 }
 
+var errStoreClosed = errors.New("data store is closed")
+
 func newDataStore(dir string) *dataStore {
 	d := &dataStore{dir: dir}
 	d.invalidateUsage()
@@ -51,12 +56,18 @@ func newDataStore(dir string) *dataStore {
 }
 
 func (d *dataStore) Close() {
-	if d.db != nil {
-		d.db.Close()
+	d.mu.Lock()
+	d.closed = true
+	db := d.db
+	d.db = nil
+	d.mu.Unlock()
+	if db != nil {
+		db.Close()
 	}
 	d.filesMu.Lock()
 	if d.files != nil {
 		d.files.Close()
+		d.files = nil
 	}
 	d.filesMu.Unlock()
 }
@@ -79,12 +90,12 @@ const sqliteHeapLimit = 256 << 20
 func (d *dataStore) openDB() (*sql.DB, error) {
 	d.dbOnce.Do(func() {
 		if err := os.MkdirAll(d.dir, 0o700); err != nil {
-			d.dbErr = err
+			d.setDBError(err)
 			return
 		}
 		p := filepath.Join(d.dir, "db.sqlite")
 		if strings.ContainsAny(p, "?#") {
-			d.dbErr = fmt.Errorf("data directory %q contains ? or #", d.dir)
+			d.setDBError(fmt.Errorf("data directory %q contains ? or #", d.dir))
 			return
 		}
 		// _defensive: SQLITE_DBCONFIG_DEFENSIVE (no writable_schema, no
@@ -93,11 +104,30 @@ func (d *dataStore) openDB() (*sql.DB, error) {
 		// instead of temp files outside the data directory.
 		// journal_size_limit shrinks a write-ahead log that a large
 		// transaction grew once it has been checkpointed and restarted.
-		d.db, d.dbErr = sql.Open("sqlite", p+"?_defensive=1&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"+
+		db, err := sql.Open("sqlite", p+"?_defensive=1&_pragma=busy_timeout(5000)&_pragma=journal_mode(WAL)&_pragma=foreign_keys(1)"+
 			"&_pragma=trusted_schema(0)&_pragma=temp_store(2)"+fmt.Sprintf("&_pragma=hard_heap_limit(%d)&_pragma=journal_size_limit(%d)", sqliteHeapLimit, walSizeLimit))
-		d.wal = p + "-wal"
+		d.mu.Lock()
+		if d.closed {
+			d.mu.Unlock()
+			db.Close()
+			d.setDBError(errStoreClosed)
+			return
+		}
+		d.db, d.dbErr, d.wal = db, err, p+"-wal"
+		d.mu.Unlock()
 	})
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.closed {
+		return nil, errStoreClosed
+	}
 	return d.db, d.dbErr
+}
+
+func (d *dataStore) setDBError(err error) {
+	d.mu.Lock()
+	d.dbErr = err
+	d.mu.Unlock()
 }
 
 // walSizeLimit is the size SQLite truncates a restarted write-ahead log to.
@@ -500,6 +530,12 @@ const tmpPrefix = ".flats-tmp-"
 func (d *dataStore) filesRoot(create bool) (*os.Root, error) {
 	d.filesMu.Lock()
 	defer d.filesMu.Unlock()
+	d.mu.Lock()
+	closed := d.closed
+	d.mu.Unlock()
+	if closed {
+		return nil, errStoreClosed
+	}
 	if d.files != nil {
 		return d.files, nil
 	}

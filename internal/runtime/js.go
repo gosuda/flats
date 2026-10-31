@@ -848,8 +848,8 @@ func (vm *jsVM) docsCodec(this *qjs.This) (*qjs.Value, error) {
 		if err := json.Unmarshal([]byte(raw), &list); err != nil {
 			return nil, err
 		}
-		if len(list) > 1<<20 {
-			return nil, errors.New("docs codec digest limit")
+		if limit := vm.stringByteLimit() / (sha256.Size * 2); len(list) > limit {
+			return nil, fmt.Errorf("docs codec digest result is larger than this runtime can hold: at most %d digests", limit)
 		}
 		out := make([]byte, 0, len(list)*sha256.Size*2)
 		for _, s := range list {
@@ -860,6 +860,12 @@ func (vm *jsVM) docsCodec(this *qjs.This) (*qjs.Value, error) {
 	default:
 		return nil, errors.New("unknown docs codec")
 	}
+}
+
+// stringByteLimit leaves room in the runtime's linear memory for the live
+// heap, the call's input and the stack beside one result string.
+func (vm *jsVM) stringByteLimit() int {
+	return int(vm.w.spec.pages()) * 65536 * 3 / 8
 }
 
 // afterReady runs once the worker has reported ready: it writes a document

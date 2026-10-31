@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -183,15 +184,28 @@ func (h *wsHub) close(id int64, code int, reason string) error {
 	c := h.conns[id]
 	h.mu.Unlock()
 	if c != nil {
-		if code < 1000 || code > 4999 {
-			code = 1000
-		}
-		if len(reason) > 123 {
-			reason = reason[:123]
-		}
-		c.Close(code, reason)
+		c.Close(closeCode(code), closeReason(reason))
 	}
 	return nil
+}
+
+// closeCode keeps a close frame's status in the set RFC 6455 lets an endpoint
+// send: 1004, 1005, 1006 and 1015 are reserved and never belong in a frame.
+func closeCode(code int) int {
+	if code < 1000 || code > 4999 || code == 1004 || code == 1005 || code == 1006 || code == 1015 {
+		return 1000
+	}
+	return code
+}
+
+// closeReason bounds a close frame's reason to 123 bytes of valid UTF-8, the
+// remaining space in a 125-byte control frame after the status code.
+func closeReason(reason string) string {
+	reason = strings.ToValidUTF8(reason, "")
+	if len(reason) > 123 {
+		reason = strings.ToValidUTF8(reason[:123], "")
+	}
+	return reason
 }
 
 // loop takes Private events first: a Public event is taken only while the
