@@ -101,9 +101,11 @@ The mode does not change them.
    link receives from then on is answered according to the new state, and
    every creation that starts from then on follows it. A creation that was
    already running when the mode changed may finish under the state it
-   read. Turning the mode on also ends every private-link request and
-   connection that is still open, including live editing connections of
-   documents and boards.
+   read. Turning the mode on also closes every long-lived private-link
+   connection that is still open: live editing connections of documents
+   and boards, and design event streams. An ordinary response that was
+   already being written when the mode changed may finish; no later request
+   gets content.
 
 ### New flats
 
