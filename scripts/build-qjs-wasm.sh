@@ -1,16 +1,16 @@
-#!/bin/sh
-# Rebuild internal/qjs/qjs.wasm from the pinned quickjs-ng commit.
+#!/usr/bin/env bash
+# Rebuild internal/qjs/qjs.wasm from the pinned quickjs-ng commit and toolchain.
 #
 #   scripts/build-qjs-wasm.sh [work-dir]
 #
-# The glue in internal/qjs/qjswasm/ is compiled against quickjs-ng
-# d01ca4491fb24ccfeccb4c7394e28a3b21fd5986 with the Homebrew WASI toolchain
-# (llvm, wasi-libc, wasi-runtimes) and optimized with wasm-opt -O3. The result
-# is not byte-identical to upstream's wasi-sdk 20 build, so behavior, not
-# bytes, is pinned by `go test ./internal/qjs`. Set QJS_QUICKJS_REPO to clone
-# from a mirror; a pre-populated <work-dir>/qjswasm/quickjs at the pinned
-# commit builds offline.
-set -eu
+# The glue in internal/qjs/qjswasm/ is compiled against quickjs-ng at the pinned
+# commit with the Homebrew WASI toolchain (llvm@23, wasi-libc, wasi-runtimes)
+# and optimized with wasm-opt -O3. With the declared toolchain versions, the
+# build reproduces the committed qjs.wasm SHA-256 byte-for-byte. Set
+# QJS_QUICKJS_REPO to clone from a mirror; a pre-populated
+# <work-dir>/qjswasm/quickjs at the pinned commit builds offline.
+set -euo pipefail
+trap 'rm -f "${out:-}.tmp"' EXIT INT TERM
 
 root=$(cd "$(dirname "$0")/.." && pwd)
 work=${1:-${TMPDIR:-/tmp}/flats-qjs-wasm}
@@ -19,15 +19,37 @@ repo=${QJS_QUICKJS_REPO:-https://github.com/quickjs-ng/quickjs.git}
 glue=$work/qjswasm
 quickjs=$glue/quickjs
 build=$quickjs/build
-out=$root/internal/qjs/qjs.wasm
+out=${QJS_WASM_OUT:-$root/internal/qjs/qjs.wasm}
+
+pinned_wasm_sha256="79284a9282ad8471573a4d52401362e27d149f1d70b4175cb5affc960a8dc9a9"
+llvm_formula="llvm@23"
+lld_formula="lld@23"
+pinned_clang_major="23"
+pinned_lld_major="23"
+pinned_clang_version="Homebrew clang version 23.1.4"
+pinned_wasm_ld_version="Homebrew LLD 23.1.4"
+pinned_cmake_version="cmake version 4.4.5"
+pinned_ninja_version="1.13.2"
+pinned_wasm_opt_version="wasm-opt version 120"
 
 die() {
 	echo "build-qjs-wasm: $*" >&2
 	exit 1
 }
 
+calc_sha256() {
+	if command -v sha256sum >/dev/null 2>&1; then
+		sha256sum "$1" | awk '{print $1}'
+	elif command -v shasum >/dev/null 2>&1; then
+		shasum -a 256 "$1" | awk '{print $1}'
+	else
+		die "neither sha256sum nor shasum is available"
+	fi
+}
+
 brew_prefix() {
-	if p=$(brew --prefix "$1" 2>/dev/null); then
+	local p
+	if p=$(brew --prefix "$1" 2>/dev/null) && [ -d "$p" ]; then
 		printf '%s\n' "$p"
 		return 0
 	fi
@@ -40,20 +62,81 @@ brew_prefix() {
 	return 1
 }
 
-llvm=$(brew_prefix llvm) || die "Homebrew llvm is missing: brew install llvm"
+if ! llvm=$(brew_prefix "$llvm_formula"); then
+	if p=$(brew_prefix llvm); then
+		v=$("$p/bin/clang" --version 2>/dev/null | head -n 1 || true)
+		case "$v" in
+		*" $pinned_clang_major."*) llvm="$p" ;;
+		*) die "installed Homebrew llvm ($p, $v) differs from $llvm_formula: brew install $llvm_formula" ;;
+		esac
+	else
+		die "Homebrew $llvm_formula is missing: brew install $llvm_formula"
+	fi
+fi
+
+if ! lld=$(brew_prefix "$lld_formula"); then
+	if p=$(brew_prefix lld); then
+		v=$("$p/bin/wasm-ld" --version 2>/dev/null | head -n 1 || true)
+		case "$v" in
+		*" $pinned_lld_major."*) lld="$p" ;;
+		*) die "installed Homebrew lld ($p, $v) differs from $lld_formula: brew install $lld_formula" ;;
+		esac
+	else
+		die "Homebrew $lld_formula is missing: brew install $lld_formula"
+	fi
+fi
+
 wasilibc=$(brew_prefix wasi-libc) || die "wasi-libc is missing: brew install wasi-libc"
 wasiruntimes=$(brew_prefix wasi-runtimes) || die "wasi-runtimes is missing: brew install wasi-runtimes"
 for tool in cmake ninja wasm-opt git; do
 	command -v "$tool" >/dev/null 2>&1 || die "$tool is missing: brew install cmake ninja binaryen git"
 done
 
+export PATH="$lld/bin:$llvm/bin:$PATH"
 clang=$llvm/bin/clang
+wasm_ld=$lld/bin/wasm-ld
+if [ ! -x "$wasm_ld" ]; then
+	wasm_ld=$(command -v wasm-ld 2>/dev/null || true)
+fi
+[ -n "$wasm_ld" ] && [ -x "$wasm_ld" ] || die "wasm-ld is missing: brew install $lld_formula"
+
 sysroot=$wasilibc/share/wasi-sysroot
 runtimes=$wasiruntimes/share/wasi-runtimes
-for path in "$clang" "$llvm/bin/llvm-ar" "$llvm/bin/llvm-ranlib" "$sysroot" \
+for path in "$clang" "$wasm_ld" "$llvm/bin/llvm-ar" "$llvm/bin/llvm-ranlib" "$sysroot" \
 	"$runtimes/lib/wasm32-unknown-wasip1"; do
 	[ -e "$path" ] || die "missing toolchain path $path"
 done
+
+have_clang_version=$("$clang" --version | head -n 1)
+have_wasm_ld_version=$("$wasm_ld" --version | head -n 1)
+have_cmake_version=$(cmake --version | head -n 1)
+have_ninja_version=$(ninja --version | head -n 1)
+have_wasm_opt_version=$(wasm-opt --version | head -n 1)
+
+echo "toolchain versions:"
+echo "  clang:    $have_clang_version"
+echo "  wasm-ld:  $have_wasm_ld_version"
+echo "  cmake:    $have_cmake_version"
+echo "  ninja:    $have_ninja_version"
+echo "  wasm-opt: $have_wasm_opt_version"
+
+toolchain_matches=1
+if [ "$have_clang_version" != "$pinned_clang_version" ] || \
+   [ "$have_wasm_ld_version" != "$pinned_wasm_ld_version" ] || \
+   [ "$have_cmake_version" != "$pinned_cmake_version" ] || \
+   [ "$have_ninja_version" != "$pinned_ninja_version" ] || \
+   [ "$have_wasm_opt_version" != "$pinned_wasm_opt_version" ]; then
+	toolchain_matches=0
+fi
+
+if [ "$toolchain_matches" -eq 0 ]; then
+	echo "toolchain differences from pins:" >&2
+	[ "$have_clang_version" = "$pinned_clang_version" ] || echo "  clang: want '$pinned_clang_version', have '$have_clang_version'" >&2
+	[ "$have_wasm_ld_version" = "$pinned_wasm_ld_version" ] || echo "  wasm-ld: want '$pinned_wasm_ld_version', have '$have_wasm_ld_version'" >&2
+	[ "$have_cmake_version" = "$pinned_cmake_version" ] || echo "  cmake: want '$pinned_cmake_version', have '$have_cmake_version'" >&2
+	[ "$have_ninja_version" = "$pinned_ninja_version" ] || echo "  ninja: want '$pinned_ninja_version', have '$have_ninja_version'" >&2
+	[ "$have_wasm_opt_version" = "$pinned_wasm_opt_version" ] || echo "  wasm-opt: want '$pinned_wasm_opt_version', have '$have_wasm_opt_version'" >&2
+fi
 
 if [ ! -d "$quickjs/.git" ]; then
 	mkdir -p "$quickjs"
@@ -91,9 +174,18 @@ ninja -C "$build" qjswasm
 wasm-opt -O3 "$build/qjswasm" -o "$out.tmp"
 mv "$out.tmp" "$out"
 echo "wrote $out"
-if command -v sha256sum >/dev/null 2>&1; then
-	sha256sum "$out"
+have_sha256=$(calc_sha256 "$out")
+echo "sha256: $have_sha256  $out"
+
+if [ "$have_sha256" = "$pinned_wasm_sha256" ]; then
+	echo "wasm sha256 matches pinned value: $pinned_wasm_sha256"
+elif [ -n "${QJS_BUMP_TOOLCHAIN:-}" ]; then
+	echo "toolchain bump mode: produced wasm sha256 $have_sha256 (pinned: $pinned_wasm_sha256)"
+	echo "Update pinned toolchain versions and pinned_wasm_sha256 in scripts/build-qjs-wasm.sh if intentional."
+elif [ "$toolchain_matches" -eq 1 ]; then
+	die "rebuild drifted: expected sha256 $pinned_wasm_sha256, got $have_sha256 with identical pinned toolchain"
 else
-	shasum -a 256 "$out"
+	echo "notice: wasm sha256 differs ($pinned_wasm_sha256 -> $have_sha256) under modified toolchain." >&2
+	echo "A documented toolchain bump legitimately changes the hash. Update pinned_wasm_sha256 in scripts/build-qjs-wasm.sh if intentional." >&2
 fi
 echo "verify with: go test ./internal/qjs"
