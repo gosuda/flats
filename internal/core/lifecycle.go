@@ -1285,7 +1285,7 @@ func (s *Service) stopPublicRoutes(ctx context.Context, slugName string) error {
 func (s *Service) ensureLifecycle(ctx context.Context, f store.Flat, ln LifecycleNet) error {
 	lf := s.state(f.Slug)
 	if lf.cur.Load() == nil {
-		if f.Visibility.Public() {
+		if f.Visibility.Public() && f.LiveVersion > 0 {
 			return fmt.Errorf("%w: no current runtime is serving", ErrNotDeployed)
 		}
 		return nil
