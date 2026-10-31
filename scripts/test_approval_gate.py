@@ -10,7 +10,7 @@ import unittest
 
 
 class GateApprovalTests(unittest.TestCase):
-    def run_gate(self, *, disposable, outcome="approved", cleanup=False):
+    def run_gate(self, *, disposable, outcome="approved", cleanup=False, timeout="2", prelude=""):
         calls = []
         decisions = set()
 
@@ -48,12 +48,15 @@ if args[1]=='save-draft':
  print(json.dumps({'draft':{'revision':7,'hash':'saved-hash'}}))
  sys.exit(0)
 if args[1]=='approvals':
- # Emulates `flats approvals wait`: poll the approval until it is decided,
- # print the receipt only for a clean approval, fail on everything else.
+ # Emulates `flats approvals wait`, so a helper that waits through it shows
+ # the verb's behavior: it refuses --timeout 0 and its timeout message has no
+ # approval link.
  assert args[2]=='wait',args
  identity=args[3]
- assert args[4:]==['--timeout','2'],args
- deadline=time.time()+2
+ assert args[4]=='--timeout',args
+ if int(args[5])<=0:
+  sys.stderr.write('flats approvals: --timeout must be a positive number of seconds\\n');sys.exit(2)
+ deadline=time.time()+int(args[5])
  while True:
   receipt=json.load(urllib.request.urlopen(os.environ['FLATS_URL']+'/api/approvals/'+identity))
   state=receipt['status']
@@ -67,7 +70,7 @@ if args[1]=='approvals':
   if state not in ('pending','applying'):
    sys.stderr.write('Unknown approval state: '+json.dumps(receipt)+'\\n');sys.exit(1)
   if time.time()>=deadline:
-   sys.stderr.write('Timed out waiting for operator decision for '+identity+'\\n');sys.exit(1)
+   sys.stderr.write('Timed out waiting for operator decision for '+identity+'; the request remains pending\\n');sys.exit(1)
   time.sleep(0.05)
 if args[1]=='create-version':
  assert args[2:]==['gate','--revision','7','--hash','saved-hash'],args
@@ -87,9 +90,9 @@ sys.exit(3)
                 env = {**os.environ, "F": str(cli),
                        "FLATS_URL": f"http://127.0.0.1:{server.server_port}",
                        "FLATS_GATE_DISPOSABLE_OPERATOR": str(int(disposable)),
-                       "FLATS_GATE_APPROVAL_TIMEOUT": "2"}
+                       "FLATS_GATE_APPROVAL_TIMEOUT": timeout, "CLOCK": str(Path(directory) / "clock")}
                 result = subprocess.run(
-                    ["bash", "-euc", 'source "$1"; gate_save_and_deploy gate build', "gate", str(helper)],
+                    ["bash", "-euc", prelude + 'source "$1"; gate_save_and_deploy gate build', "gate", str(helper)],
                     env=env, capture_output=True, text=True, timeout=10)
             finally:
                 server.shutdown()
@@ -124,6 +127,32 @@ sys.exit(3)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("Do not repeat deletion", result.stderr)
         self.assertEqual(calls, [("GET", "/api/approvals/apr-create")])
+
+    def test_zero_timeout_accepts_a_decided_approval(self):
+        result, calls = self.run_gate(disposable=False, timeout="0")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls, [("GET", "/api/approvals/apr-create"), ("GET", "/api/approvals/apr-deploy")])
+
+    def test_zero_timeout_checks_once_when_the_second_changes(self):
+        # The clock reads 100 when the helper computes its deadline and 101
+        # afterwards; the helper must still check the approval once.
+        clock = 'date(){ if [ -e "$CLOCK" ]; then echo 101; else : >"$CLOCK"; echo 100; fi; }; '
+        result, calls = self.run_gate(disposable=False, timeout="0", prelude=clock)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls, [("GET", "/api/approvals/apr-create"), ("GET", "/api/approvals/apr-deploy")])
+
+    def test_timeout_repeats_the_approval_link(self):
+        result, calls = self.run_gate(disposable=False, outcome="pending", timeout="0")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Timed out waiting for operator decision for apr-create; "
+                      "request remains pending at http://console.test/approvals/apr-create", result.stderr)
+        self.assertEqual(calls, [("GET", "/api/approvals/apr-create")])
+
+    def test_nonnumeric_timeout_is_refused_before_polling(self):
+        result, calls = self.run_gate(disposable=False, timeout="1s")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Approval timeout must be seconds", result.stderr)
+        self.assertEqual(calls, [])
 
 
 class SecretLogTests(unittest.TestCase):
