@@ -1,12 +1,13 @@
 # Revision store
 
-Documents (`docs`), designs (`design`) and boards (`board`) follow the
-Revision model of [content-models.md](spec/content-models.md): no Draft or
-user versions, every edit unit becomes a whole-flat revision, with revision
-and pin quotas and rollback. This page describes the store that holds those
-revisions for all three types. It is owned by `internal/core` (`design.go`,
-`docsrev.go`, `board.go`) with tables in `internal/store/content.go` and
-`internal/store/board.go`.
+Documents (`docs`), designs (`design`), boards (`board`) and notebooks
+(`notebook`) follow the Revision model of
+[content-models.md](spec/content-models.md): no Draft or user versions, every
+edit unit becomes a whole-flat revision, with revision and pin quotas and
+rollback. This page describes the store that holds those revisions for all
+four types. It is owned by `internal/core` (`design.go`, `docsrev.go`,
+`board.go`, `notebook*.go`) with tables in `internal/store/content.go`,
+`internal/store/board.go` and `internal/store/notebook.go`.
 
 - A **design** writes the store directly: its current files ("head") and its
   open edit groups live here, and every write commits a revision here.
@@ -18,8 +19,11 @@ revisions for all three types. It is owned by `internal/core` (`design.go`,
 - A **board** keeps its current state in its own `board.db`, which the board
   instance in the host process owns. Like a document, it records each
   revision boundary in an outbox and the host imports it ([Boards](#boards)).
+- A **notebook** keeps its current state in its own `notebook.db`, owned by
+  the notebook instance in the host process, and is imported from an outbox
+  the same way ([Notebooks](#notebooks)).
 
-All three types also keep internal backing versions under `versions/<n>` (a
+All four types also keep internal backing versions under `versions/<n>` (a
 design's one-file shell, each docs bundle that ran) so the running instance
 has a version to serve. They are not user versions: version tools refuse
 these types, and pruning removes their files (the row stays, marked pruned)
@@ -30,21 +34,24 @@ preview or a pending activation or rollback approval names.
 
 Migration 11 adds the first five tables; migration 12 adds the document
 columns and `content_sources` and `content_holds`; migration 18 adds the two
-board tables; migration 20 adds `revision_guest_lines`. Every table references `flats(slug)` (or
+board tables; migration 20 adds `revision_guest_lines`; migration 22 adds
+the two notebook tables. Every table references `flats(slug)` (or
 `revisions`) with `ON DELETE CASCADE ON UPDATE CASCADE`, so rename and delete
 carry the whole history and nothing in memory needs moving.
 
 | Table | Holds |
 | --- | --- |
-| `content_state` | One row per Revision-model flat: `type` (`design`, `docs` or `board`), `phase` (`init` or `ready`), `seq` (bumped on every head change), `gen` (flat-wide file generation counter, never reused), `revision_quota` and `pin_quota` (per-flat overrides, NULL = host default), and the document and board import cursor `import_store`, `import_seq`. |
-| `content_head` | A design's current files: `path`, `hash`, `size`, `gen`. For a board, the file list of the last imported revision. |
+| `content_state` | One row per Revision-model flat: `type` (`design`, `docs`, `board` or `notebook`), `phase` (`init` or `ready`), `seq` (bumped on every head change), `gen` (flat-wide file generation counter, never reused), `revision_quota` and `pin_quota` (per-flat overrides, NULL = host default), and the document, board and notebook import cursor `import_store`, `import_seq`. |
+| `content_head` | A design's current files: `path`, `hash`, `size`, `gen`. For a board or notebook, the file list of the last imported revision. |
 | `content_groups` | A design's open edit groups, one per editor: `label`, `started_at`, `last_at`. |
 | `revisions` | `(flat, number)` with `created_at`, `kind`, `authors` (JSON), `message`, `rollback_of`, `pinned`, `changes` (JSON `{added, changed, removed}` against the previous revision), `files`, `size` and, for documents, `source`. |
 | `revision_files` | The files of a revision. For a document only its Markdown documents; its other files are named by `revisions.source`. |
 | `content_sources` | `(flat, source, path, hash, size)`: the non-document files of each docs bundle the host started, keyed by its content hash. A bundle without such files has one row with an empty path. |
-| `content_holds` | `(flat, op, number)`: the target revision of each document or board rollback in progress. |
+| `content_holds` | `(flat, op, number)`: the target revision of each document, board or notebook rollback in progress. |
 | `board_imports` | `(flat, store, outbox_seq, op_id, revision)`: the revision each imported board outbox entry became, so a repeated operation id finds its revision. |
 | `board_rev_stats` | `(flat, number, added, changed, removed)`: the elements a board revision added, changed and removed. |
+| `notebook_imports` | `(flat, store, outbox_seq, op_id, revision)`: the revision each imported notebook outbox entry became. |
+| `notebook_rev_pages` | `(flat, revision, page, change, title_before, title_after)`: the pages a notebook revision added, removed or changed, with their titles before and after. |
 | `revision_guest_lines` | `(flat, number, path, ranges)`: for each document of a revision that holds text anonymous guests wrote, the 1-based inclusive line ranges of that text as JSON `[[start, end], ...]`, merged and sorted. Documents without guest text have no row. |
 
 `content_state.type` is the durable type marker of a Revision-model flat. A
@@ -73,8 +80,8 @@ File bytes are content-addressed by SHA-256 under the flat's directory:
 ```text
 flats/<slug>/design/blobs/<hh>/<sha256>      design blobs, mode 0444
 flats/<slug>/design/tmp/                     design staging
-flats/<slug>/revisions/blobs/<hh>/<sha256>   document and board blobs, mode 0444
-flats/<slug>/revisions/tmp/                  document and board staging
+flats/<slug>/revisions/blobs/<hh>/<sha256>   document, board and notebook blobs, mode 0444
+flats/<slug>/revisions/tmp/                  document, board and notebook staging
 ```
 
 Because they live under the flat directory, rename, delete, backups and the
@@ -170,14 +177,14 @@ one. Retention runs:
 
 - in the transaction of every committed design write, group closing and
   rollback, and after every document import that added revisions; in the
-  transaction of every board import that added revisions;
+  transaction of every board or notebook import that added revisions;
 - after an unpin;
 - after a per-flat override changes, for that flat;
-- after `system.revision_quota` changes, for every document, design and
-  board, each under its flat lock, before the settings call returns (a board
-  imports its outbox first);
-- at startup: designs right away, boards after an import, documents after
-  their first import.
+- after `system.revision_quota` changes, for every document, design, board
+  and notebook, each under its flat lock, before the settings call returns (a
+  board or notebook imports its outbox first);
+- at startup: designs right away, boards and notebooks after an import,
+  documents after their first import.
 
 Pinning while the pin count has reached the pin quota is refused with
 `conflict`; Flats never unpins by itself. A lowered pin quota keeps every pin.
@@ -196,7 +203,7 @@ expands its source. Lists are newest first, at most 100 per page, with `next`.
 
 A document's history read, pin, quota read or quota change first imports its
 outbox (at most every 2 seconds per flat), so it sees recent revisions. A
-board's does the same on every call.
+board's or notebook's does the same on every call.
 
 ## Documents
 
@@ -295,7 +302,7 @@ worker receipt until its entry is imported, so that answer is definitive.
 ## Blob sweep
 
 Blobs are never deleted inline. A sweep runs every 10 minutes for every
-document, design and board, and for one flat after a retention pass deleted
+document, design, board and notebook, and for one flat after a retention pass deleted
 revisions. For each flat it:
 
 1. takes the flat lock, refusing (skipping the flat) while a rename or delete
@@ -313,11 +320,15 @@ revisions. For each flat it:
    references, every asset row (referenced, kept for deletion undo or
    protected after upload) and every snapshot an unimported entry holds, in
    the board's apply loop;
+   for a notebook: likewise imports its outbox and skips the flat when the
+   notebook is not running or the import failed, then reads every asset
+   hash and every snapshot an unimported entry holds from `notebook.db`;
 3. runs `PRAGMA wal_checkpoint(FULL)` and skips the flat unless the
    checkpoint completed, so the committed metadata that dropped a reference
    is durable before a blob it referenced is deleted;
 4. deletes every blob that is not referenced by `content_head`,
-   `revision_files`, `content_sources` or a board's `board.db`, not leased,
+   `revision_files`, `content_sources`, a board's `board.db` or a notebook's
+   `notebook.db`, not leased,
    and older than 10 minutes, so a blob stored for a transaction still in
    flight is never taken. A board upload that reuses an existing blob
    refreshes its modification time, so a sweep that read the references
@@ -502,3 +513,69 @@ The host supplies `other`, the flat directory without `board.db` and its
 which hold the flat lock, and a cached one, measured again after a sweep, a
 quota change or a retention pass, for people's edits. A refusal is
 `board_capacity` for agents and `disk_quota` on the canvas.
+
+## Notebooks
+
+A notebook's current state, its receipts, undo stacks, edit groups and outbox
+live in `flats/<slug>/notebook/notebook.db`, owned by one `notebook.Instance`
+in the host process ([notebook technical design](spec/notebook-technical-design.md)). The
+host never writes that database: it reaches it through the instance's writer.
+
+**Creating a notebook** (`CreateNotebook`, under the flat lock) follows the
+board's steps: write `content_state` (type `notebook`, phase `init`), save and
+make live a Draft holding only `flats.json` `{"type":"notebook","name":...}`,
+whose instance creates one empty top-level page and the `created` entry,
+import it as revision 1 and set phase `ready`. At startup every notebook row
+still in `init` finishes these steps. `update_notebook` on a missing slug or
+an untyped flat creates the notebook only if the call applies; a refused call
+leaves no flat, shell or database behind.
+
+**Revision files.** A notebook revision holds page headers
+(`pages/<page>/page.json`), page-local block buckets
+(`pages/<page>/blocks/<hh>.json`), each inline database's schema and row
+buckets, the live images (`assets/<sha256>.<ext>`) and `notebook.json`. A text
+edit changes one block bucket, and unchanged files reuse their hashes. Runtime
+data (incarnations, versions, receipts, undo) never enters these files.
+
+**Importing** (`importNotebookLocked`, under the flat lock). The cursor is
+`content_state.import_store` (the notebook.db store id) and `import_seq`:
+
+1. When the oldest outbox entry is at or before the cursor, a stop came
+   between the `flats.db` commit and the acknowledgement: acknowledge through
+   the cursor again.
+2. Read entries after the cursor, check each file path, the `notebook.json`
+   header and every new hash, and store new snapshots as blobs, checking each
+   file's size and hash against its blob.
+3. One transaction inserts each entry as the next revision, its
+   `notebook_imports` row and its page summary in `notebook_rev_pages`
+   (added, removed and changed pages, computed from the changed file paths,
+   with titles before and after), deletes the hold of a rollback entry, sets
+   `content_head`, advances the cursor and runs retention.
+4. Acknowledge: only then does the instance release the entries' snapshots
+   and update its quota measurement.
+5. Settle holds, as for boards.
+
+A crash between any two steps replays without a second revision or missing
+content. The host imports when an agent write or rollback returns, before
+history reads, pins, quota changes, retention and the sweep, and every 5
+seconds for a notebook whose outbox reported new entries. A failed background
+import retries with a growing delay, from 5 seconds up to 5 minutes, and a
+successful import clears it. `list_revisions` and the History panel report
+the changed pages (`pages`) instead of board element counts.
+
+**Rollback to R** imports, holds R in `content_holds`, reads R's files from
+their blobs and sets the whole notebook to them in one writer transaction,
+which records a forced `rollback` entry. It adds no blob and is never refused
+for disk quota or content limits. The result is the new revision, or a
+`warning` without a revision when it is recorded but not imported yet.
+
+**Disk quota.** The instance checks every edit, people's and agents', inside
+its write transaction against the per-flat disk quota. The usage counts
+`notebook.db`, its WAL, the rest of the flat directory (revision blobs
+included) and reservations for revision files not imported yet. Agent writes
+take a fresh measurement under the flat lock; people's edits use one at most
+60 seconds old, and a missing measurement refuses with `unavailable`, never
+as zero usage. Retention, the sweep, quota settings and a config reload
+measure again. While the notebook is over quota every edit is refused, even
+one that shrinks it; a rollback is still applied. A refusal is
+`notebook_capacity` with reason `disk_quota`.

@@ -28,6 +28,8 @@
   --type-design-bg: #251a38;
   --type-board: #5eead4;
   --type-board-bg: #10302b;
+  --type-notebook: #f9a8d4;
+  --type-notebook-bg: #3a1a2c;
   --radius: 12px;
   --font: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
   --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
@@ -62,6 +64,8 @@
     --type-design-bg: #f0e9ff;
     --type-board: #0f766e;
     --type-board-bg: #e0f5f2;
+    --type-notebook: #be185d;
+    --type-notebook-bg: #fce7f3;
   }
 }
 
@@ -315,6 +319,7 @@ a.menu-item { text-decoration: none; color: inherit; display: block; }
 .type-page { background: var(--type-page-bg); color: var(--type-page); }
 .type-design { background: var(--type-design-bg); color: var(--type-design); }
 .type-board { background: var(--type-board-bg); color: var(--type-board); }
+.type-notebook { background: var(--type-notebook-bg); color: var(--type-notebook); }
 .type-icon-large { width: 56px; height: 56px; border-radius: 14px; }
 .type-icon-large .icon { width: 28px; height: 28px; }
 /* Hover label: shows at once, unlike a native title tooltip. */
@@ -342,6 +347,8 @@ a.menu-item { text-decoration: none; color: inherit; display: block; }
 .preview-design .icon { opacity: 0.45; }
 .preview-board { background: var(--type-board-bg); color: var(--type-board); }
 .preview-board .icon { opacity: 0.45; }
+.preview-notebook { background: var(--type-notebook-bg); color: var(--type-notebook); }
+.preview-notebook .icon { opacity: 0.45; }
 .preview img { width: 100%; height: 100%; object-fit: cover; display: block; }
 
 .vis { display: inline-flex; align-items: center; gap: 6px; }

@@ -26,9 +26,11 @@ list.
 | [Development workflow](dev-workflow.md) | implemented | Instruction-based design, implementation and testing stages with cross-model adversarial review, and a review evidence helper |
 | [Config reload on SIGHUP](config-reload.md) | implemented | SIGHUP reloads config.json on a running host: live-applied keys take effect, restart-required keys wait for the next start |
 | [Idle document workers](docs-worker-idle.md) | implemented | Automatic idle sleep and demand-driven recovery of built-in document workers |
-| [Content data models](content-models.md) | implemented | The Version model (websites, pages) and the Revision model (documents, designs) |
+| [Content data models](content-models.md) | implemented | The Version model (websites, pages) and the Revision model (documents, designs, boards, notebooks) |
 | [Design content type](design-type.md) | implemented | `type: "design"`: a canvas of HTML artboards people and agents edit live, with revisions |
 | [Board content type](board.md) | partly implemented | `type: "board"`: an infinite-canvas whiteboard of native elements people and agents edit together live, with revisions |
+| [Notebook content type](notebook.md) | partly implemented | `type: "notebook"`: a tree of pages with editable blocks and inline databases, live collaboration, structured agent operations, and revisions |
+| [Notebook technical design](notebook-technical-design.md) | partly implemented | N1 notebook architecture, item and concurrency model, storage, protocol, browser editor, agent interface, and validation plan |
 | [Anonymous public editing for boards](board-public-edit.md) | partly implemented | A Public board level where anyone with the link can edit after typing a name, viewers named automatically, and the Share and Permissions controls |
 | [Anonymous public editing for documents](docs-public-edit.md) | partly implemented | The board's "anyone can edit" Public level for documents: guest names, viewers, the guest projection, limits, guest revisions and the shared console controls |
 | [Page content type](page-type.md) | implemented | `type: "page"`: one static HTML document with assets, on the website lifecycle |
@@ -49,7 +51,7 @@ docs:
 
 | Feature | Architecture docs |
 | --- | --- |
-| Revision store shared by documents and designs: storage, import, quotas, pins, retention, rollback | [revision-store.md](../revision-store.md) |
+| Revision store shared by documents, designs, boards and notebooks: storage, import, quotas, pins, retention, rollback | [revision-store.md](../revision-store.md) |
 | Document revisions in the docs worker: capture, activation, intents, host operations, the History panel | [internal/docs-app.md](../internal/docs-app.md#document-revisions) |
 | Design and page types: type handling, bundles, serving, editing model | [design.md](../design.md) |
 | Routes, MCP tools, CLI commands and console screens of every type | [surfaces.md](../surfaces.md) |

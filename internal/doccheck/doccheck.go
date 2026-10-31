@@ -110,6 +110,10 @@ func Check(root string, files []string) (*Report, error) {
 		for d := path.Dir(f); d != "."; d = path.Dir(d) {
 			dirs[d] = true
 		}
+		// This corpus contains deliberately unresolved notebook links, not docs.
+		if strings.HasPrefix(f, "internal/notebook/testdata/markdown/") {
+			continue
+		}
 		if isMarkdown(f) && !skillDirs[topDir(f)] {
 			mdFiles = append(mdFiles, f)
 		}

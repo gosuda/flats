@@ -58,6 +58,7 @@ var migrations = []migration{
 	{19, "public access level", addPublicAccess},
 	{20, "document guest lines", addRevisionGuestLines},
 	{21, "autopilot", addAutopilot},
+	{22, "notebook revision imports and pages", addNotebookRevisions},
 }
 
 func latestVersion() int { return migrations[len(migrations)-1].version }

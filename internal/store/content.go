@@ -81,7 +81,8 @@ type Revision struct {
 	Held bool `json:"held,omitempty"`
 	// Elements counts a board revision's element changes; a board reports
 	// them instead of its bucket paths in Changes.
-	Elements *ElementCounts `json:"elements,omitempty"`
+	Elements      *ElementCounts       `json:"elements,omitempty"`
+	NotebookPages []NotebookPageChange `json:"pages,omitempty"`
 	// SafePoint marks the safe point of a board or document while anyone
 	// can edit it: it cannot be unpinned then. Readers fill it in.
 	SafePoint bool `json:"safe_point,omitempty"`

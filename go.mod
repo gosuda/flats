@@ -5,6 +5,7 @@ go 1.27.1
 require (
 	github.com/go-openapi/runtime v0.29.0
 	github.com/go-openapi/strfmt v0.24.0
+	github.com/google/jsonschema-go v0.4.3
 	github.com/gosuda/portal-tunnel/v2 v2.6.3
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/oesni/libtunnel v0.0.0-20261011195643-61501adfbebe
@@ -92,7 +93,6 @@ require (
 	github.com/google/btree v1.1.3 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/gopacket v1.1.19 // indirect
-	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/mux v1.8.1 // indirect
 	github.com/gorilla/securecookie v1.1.2 // indirect

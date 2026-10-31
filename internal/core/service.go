@@ -148,12 +148,15 @@ type Service struct {
 	docsCatchUps sync.Map
 	// docsRollbacks holds the ids of document rollbacks in progress, whose
 	// holds are not settled yet.
-	docsRollbacks sync.Map
-	outbox        boardOutbox
-	boardStats    boardStats
-	settings      *SettingsSource
-	eventCount    sync.Map // slug -> *atomic.Int64, events since the last prune
-	logLimits     sync.Map // slug -> *logLimit
+	docsRollbacks   sync.Map
+	outbox          boardOutbox
+	boardStats      boardStats
+	notebookPending sync.Map
+	notebookRetry   sync.Map
+	notebookStats   notebookImportStats
+	settings        *SettingsSource
+	eventCount      sync.Map // slug -> *atomic.Int64, events since the last prune
+	logLimits       sync.Map // slug -> *logLimit
 	// snapshot holds the host-wide figures of the last Sweep for Metrics.
 	snapshot atomic.Pointer[hostSnapshot]
 	disk     diskSamples
@@ -495,6 +498,9 @@ func (s *Service) buildWithEnvironment(ctx context.Context, slugName string, v s
 	}
 	if contenttype.FromManifest(v.Manifest) == contenttype.Board {
 		return s.buildBoard(slugName, v, m.Name, dataDir, snapshot)
+	}
+	if contenttype.FromManifest(v.Manifest) == contenttype.Notebook {
+		return s.buildNotebook(slugName, v, m.Name, dataDir, snapshot)
 	}
 	dir := s.contentDir(slugName, v)
 	switch v.Kind {
@@ -968,9 +974,10 @@ func (s *Service) view(ctx context.Context, f store.Flat) FlatView {
 	} else if v.Draft != nil {
 		v.Type = contenttype.FromManifest(v.Draft.Manifest)
 	}
-	if v.Type == contenttype.Design || v.Type == contenttype.Board {
-		// A design or board runs from an internal shell version published
-		// at creation; it has no versions, Draft or publishing to report.
+	switch v.Type {
+	case contenttype.Design, contenttype.Board, contenttype.Notebook:
+		// These types run from an internal shell version published
+		// at creation; they have no versions, Draft or publishing to report.
 		v.LiveVersion, v.Live, v.Versions, v.VersionCount = 0, nil, 0, 0
 		v.NextVersion, v.LatestVersion, v.LatestDeployed = 0, 0, false
 		v.Draft, v.Publication, v.EffectiveVersionQuota = nil, "", 0
@@ -1176,6 +1183,8 @@ func (s *Service) saveVersionLocked(ctx context.Context, slugName string, files 
 		return store.Version{}, ErrDesignUnversioned
 	case contenttype.Board:
 		return store.Version{}, ErrBoardUnversioned
+	case contenttype.Notebook:
+		return store.Version{}, ErrNotebookUnversioned
 	}
 	docs := m.Type == contenttype.Docs
 	if f, err := s.st.GetFlat(ctx, slugName); errors.Is(err, store.ErrNotFound) {
@@ -1243,11 +1252,20 @@ func (s *Service) ListVersions(ctx context.Context, slugName string) ([]store.Ve
 
 // GetVersion returns one version.
 func (s *Service) GetVersion(ctx context.Context, slugName string, n int) (store.Version, error) {
+	f, err := s.st.GetFlat(ctx, slugName)
+	if err != nil {
+		return store.Version{}, err
+	}
+	if typ, err := s.flatType(ctx, f); err != nil {
+		return store.Version{}, err
+	} else if typ == contenttype.Notebook {
+		return store.Version{}, ErrNotebookUnversioned
+	}
 	v, err := s.st.GetVersion(ctx, slugName, n)
 	if err != nil {
 		return v, err
 	}
-	if f, err := s.st.GetFlat(ctx, slugName); err == nil && f.LiveVersion == n {
+	if f.LiveVersion == n {
 		v.Deployed = true
 	} else if deployed, err := s.st.DeployedVersions(ctx, slugName); err == nil {
 		v.Deployed = deployed[n]
@@ -1259,6 +1277,9 @@ func (s *Service) GetVersion(ctx context.Context, slugName string, n int) (store
 func (s *Service) VersionFile(slugName string, n int, rel string) (string, error) {
 	if err := slug.Validate(slugName); err != nil {
 		return "", invalid(err)
+	}
+	if err := s.refuseNotebookVersion(context.Background(), slugName); err != nil {
+		return "", err
 	}
 	dir := s.versionDir(slugName, n)
 	p := filepath.Join(dir, filepath.FromSlash(rel))
@@ -1597,9 +1618,10 @@ func (s *Service) activate(ctx context.Context, f store.Flat, d *deployed, h Hea
 		s.Event(ctx, slugName, "error", "exposure", err.Error(), nil)
 	}
 	_ = s.dropPreviews(ctx, slugName)
-	if t := contenttype.FromManifest(d.version.Manifest); kind == "save" && (t == contenttype.Design || t == contenttype.Board) {
-		// The design or board shell goes live once, at creation; that is
-		// logged as a design or board event.
+	t := contenttype.FromManifest(d.version.Manifest)
+	shell := t == contenttype.Design || t == contenttype.Board || t == contenttype.Notebook
+	if kind == "save" && shell {
+		// The shell goes live once, at creation; the content type logs it.
 	} else if kind == "save" {
 		message := fmt.Sprintf("document saved and running via %s", via)
 		if preparationErr != nil {
@@ -1880,7 +1902,7 @@ func joinNotes(note string, err error) string {
 
 // Deployments returns the deploy history.
 func (s *Service) Deployments(ctx context.Context, slugName string) ([]store.Deployment, error) {
-	if _, err := s.st.GetFlat(ctx, slugName); err != nil {
+	if err := s.refuseNotebookVersion(ctx, slugName); err != nil {
 		return nil, err
 	}
 	ds, err := s.st.ListDeployments(ctx, slugName, 100)
@@ -2316,7 +2338,7 @@ func (s *Service) OpenPreview(ctx context.Context, slugName string, n int) (Prev
 
 // ListPreviews returns open previews of a flat.
 func (s *Service) ListPreviews(ctx context.Context, slugName string) ([]PreviewView, error) {
-	if _, err := s.st.GetFlat(ctx, slugName); err != nil {
+	if err := s.refuseNotebookVersion(ctx, slugName); err != nil {
 		return nil, err
 	}
 	ps, err := s.st.ListPreviews(ctx, slugName)

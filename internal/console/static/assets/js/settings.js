@@ -18,7 +18,7 @@ const FIELDS = [
   { key: 'upload_max_bytes', group: 'storage', label: 'Upload size', unit: 'MB', factor: 1 << 20, bytes: true, help: 'Total uncompressed size of one saved version.' },
   { key: 'disk_quota_bytes', group: 'storage', label: 'Disk per flat', perFlat: true, unit: 'GB', factor: 1 << 30, bytes: true, help: 'A change that would exceed it is refused; nothing is deleted. 0 means no quota.' },
   { key: 'version_quota', group: 'history', label: 'Versions', perFlat: true, unit: 'versions', factor: 1, step: 1, whole: true, help: 'For websites and pages. Never deleted automatically; a full quota refuses new versions. Lowering it keeps existing versions. 0 is unlimited.' },
-  { key: 'revision_quota', group: 'history', label: 'Revisions', perFlat: true, unit: 'revisions', factor: 1, step: 1, whole: true, help: 'Unpinned revisions each document, design or board keeps. Older ones are deleted at once when lowered. 0 keeps all.' },
+  { key: 'revision_quota', group: 'history', label: 'Revisions', perFlat: true, unit: 'revisions', factor: 1, step: 1, whole: true, help: 'Unpinned revisions each document, design, board or notebook keeps. Older ones are deleted at once when lowered. 0 keeps all.' },
   { key: 'pin_quota', group: 'history', label: 'Pinned revisions', perFlat: true, unit: 'pins', factor: 1, step: 1, whole: true, help: 'Pinned revisions are never deleted automatically. A full quota refuses new pins. 0 is unlimited.' },
   { key: 'events_keep', group: 'history', label: 'Log events', unit: 'events', factor: 1, step: 1, min: 1, whole: true, help: 'Kept per flat. Older events are deleted.' },
   { key: 'rate_limit_rps', group: 'traffic', label: 'Rate limit', unit: 'req/s', factor: 1, step: 1, min: 1, help: 'Requests per second per flat. Bursts up to twice this are allowed.' },
@@ -29,7 +29,7 @@ const FIELDS = [
 
 const LIMIT_GROUPS = [
   ['storage', 'Storage', ''],
-  ['history', 'History', 'Versions for websites and pages; revisions for documents, designs and boards.'],
+  ['history', 'History', 'Versions for websites and pages; revisions for documents, designs, boards and notebooks.'],
   ['traffic', 'Traffic and addresses', ''],
 ];
 
@@ -798,7 +798,7 @@ const isProxy = (id) => PROXY_KINDS.includes(id);
 const PROXY_STALE = 'Every pending approval becomes stale and has to be requested again, including version deployments and visibility changes: an approval shows the addresses it was granted for.';
 
 // PROXY_PRIVATE_ACCESS is the warning for the Private kind.
-const PROXY_PRIVATE_ACCESS = 'Whoever your proxy lets through has Private access: they can open Drafts through previews and edit documents, designs and boards, as on this device. Flats does not check who they are. Your proxy’s authentication or network restrictions are the only access control.';
+const PROXY_PRIVATE_ACCESS = 'Whoever your proxy lets through has Private access: they can open Drafts through previews and edit documents, designs, boards and notebooks, as on this device. Flats does not check who they are. Your proxy’s authentication or network restrictions are the only access control.';
 
 // proxySection holds the reverse proxy settings, the same on the pages of
 // both kinds: the address template, the listener address and the kind. The
@@ -1702,7 +1702,7 @@ export function impactPanel(impact, onConfirm, onCancel) {
     }),
     impact.revision_quota ? h('div', null, h('p', null,
       h('strong', { text: `Revisions: ${impact.revision_quota.current === '0' ? 'all' : impact.revision_quota.current} → ${impact.revision_quota.candidate} revisions.` }), ' ',
-      'Every document, design and board that uses this default deletes its older unpinned revisions beyond the new limit at once. Pinned revisions and flats with their own limit are kept. The number deleted cannot be shown in advance.')) : null,
+      'Every document, design, board and notebook that uses this default deletes its older unpinned revisions beyond the new limit at once. Pinned revisions and flats with their own limit are kept. The number deleted cannot be shown in advance.')) : null,
     h('div', { class: 'actions' }, cancel, confirm));
   queueMicrotask(() => heading.focus());
   return panel;

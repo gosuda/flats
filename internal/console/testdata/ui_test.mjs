@@ -574,6 +574,70 @@ assert.equal(all(boardSettings, (e) => e.getAttribute('id') === 'revisions').len
 assert.ok(boardSettings.textContent.includes('People and agents manage revisions on the board itself'));
 assert.equal(calls.some((c) => /\/flats\/sketch\/(env|secrets|network)$/.test(c.key)), false, 'a board loads no server settings');
 stopBoardSettings();
+// A notebook is a Revision-model flat with its own label and icon (not the
+// board's), an open link, Overview, revision quotas and no versions,
+// previews, Database or server settings. Its pages request none of them.
+const wiki = { ...notes, type: 'notebook', slug: 'wiki', name: 'Wiki', private_url: 'https://wiki.tail.ts.net' };
+routes['GET /console/api/flats/wiki'] = wiki;
+routes['GET /console/api/flats/wiki/revision-quota'] = { revision_quota: 50, pin_quota: null, default_revision_quota: 100, default_pin_quota: 20, pins: 2 };
+const wikiCallsFrom = calls.length;
+routes['GET /console/api/flats'] = { flats: [wiki] };
+const notebookList = new Element('main');
+const stopNotebookList = list.mount(notebookList, [], ctx);
+await tick();
+const notebookRow = all(notebookList, (e) => e.tagName === 'LI' && e.className === 'flat')[0];
+assert.deepEqual(typeLabel(notebookRow), [['img', 'Notebook', 'Notebook', '0']]);
+const notebookIcon = all(notebookRow, (e) => e.className.startsWith('type-icon'))[0];
+assert.ok(notebookIcon.className.includes('type-notebook'), notebookIcon.className);
+const notebookGlyph = all(notebookIcon, (e) => e.tagName === 'PATH')[0]?.getAttribute('d');
+assert.ok(notebookGlyph && notebookGlyph !== 'M3 4h18v16H3zM6 7h5v5H6zM13 16l5-5M15 11h3v3', 'a notebook has its own glyph');
+assert.ok(notebookRow.textContent.includes('Running') && !notebookRow.textContent.includes('Live v'), 'a notebook row shows no version: ' + notebookRow.textContent);
+assert.equal(startsWith(notebookRow, 'Save as').length + startsWith(notebookRow, 'Publish').length, 0);
+assert.equal(all(notebookRow, (e) => (e.getAttribute('class') || '').includes('open-private')).length, 1, 'a running notebook links to itself');
+assert.equal(byText(notebookRow, 'Overview').length, 1);
+for (const label of ['Deployments', 'Database']) assert.equal(byText(notebookRow, label).length, 0, `a notebook row offers ${label}`);
+stopNotebookList();
+routes['GET /console/api/flats'] = { flats: [{ ...wiki, running: false }] };
+const stoppedList = new Element('main');
+const stopStoppedList = list.mount(stoppedList, [], ctx);
+await tick();
+assert.ok(all(stoppedList, (e) => e.tagName === 'LI' && e.className === 'flat')[0].textContent.includes('Not running'));
+stopStoppedList();
+routes['GET /console/api/flats'] = listedFlats;
+const notebookMain = new Element('main');
+const stopNotebook = flat.mount(notebookMain, ['wiki'], ctx);
+await tick();
+assert.deepEqual(typeLabel(notebookMain), [['img', 'Notebook', 'Notebook', '0']]);
+assert.deepEqual(tabLinks(notebookMain).map((a) => a.textContent), ['Overview', 'Analytics', 'Settings']);
+for (const id of ['versions', 'previews']) {
+  assert.equal(all(notebookMain, (e) => e.getAttribute('id') === id).length, 0, `notebook page shows ${id}`);
+}
+for (const id of ['status', 'logs']) {
+  assert.equal(all(notebookMain, (e) => e.tagName === 'SECTION' && e.getAttribute('id') === id).length, 1, `notebook page lacks ${id}`);
+}
+assert.equal(all(notebookMain, (e) => e.tagName === 'DT' && e.textContent === 'Notebook').length, 1, 'notebook status names the type');
+assert.ok(notebookMain.textContent.includes('Running') && !notebookMain.textContent.includes('Not published'));
+for (const prefix of ['Save as', 'Publish', 'Roll back', 'Redeploy']) {
+  assert.equal(startsWith(notebookMain, prefix).length, 0, `notebook page offers ${prefix}`);
+}
+stopNotebook();
+const notebookSettings = new Element('main');
+const stopNotebookSettings = flat.mountSettings(notebookSettings, ['wiki'], ctx);
+await tick();
+for (const id of ['env', 'secrets', 'network', 'version-history']) {
+  assert.equal(all(notebookSettings, (e) => e.getAttribute('id') === id).length, 0, `notebook settings show ${id}`);
+}
+assert.equal(all(notebookSettings, (e) => e.getAttribute('id') === 'revisions').length, 1, 'notebook settings lack revision quotas');
+assert.equal(all(notebookSettings, (e) => e.getAttribute('id') === 'rev-quota')[0].value, '50');
+assert.ok(notebookSettings.textContent.includes('People and agents manage revisions on the notebook itself'));
+assert.ok(notebookSettings.textContent.includes('2 in use'));
+assert.ok(notebookSettings.textContent.includes('Who can view your site'), 'a notebook has no guest-edit wording');
+assert.equal(all(notebookSettings, (e) => e.getAttribute('id') === 'delete').length, 1);
+stopNotebookSettings();
+const wikiCalls = calls.slice(wikiCallsFrom).map((c) => c.key).filter((k) => k.includes('/flats/wiki'));
+assert.ok(wikiCalls.includes('GET /console/api/flats/wiki/revision-quota'), wikiCalls.join(', '));
+assert.deepEqual(wikiCalls.filter((k) => /\/flats\/wiki\/(versions|previews|deployments|version-quota|env|secrets|network|snapshots|database|public-edit)/.test(k)), [],
+  'a notebook requests no versions, previews, database, server or guest-edit settings');
 // The Settings tab holds every setting once, and still offers the redeploy
 // that applies environment changes.
 const management = new Element('main');
@@ -761,7 +825,7 @@ await tick();
 quietShare.close();
 // Designs and boards run without published versions (live_version 0), so
 // widening them reaches the confirm; a versioned flat still publishes first.
-for (const type of ['design', 'board']) {
+for (const type of ['design', 'board', 'notebook']) {
   const live = { ...quiet, type, slug: 'live-' + type, name: 'Live ' + type, running: true, live_version: 0, versions: 0, draft: null, providers: ['portal'] };
   const widened = versionActions.setVisibility(live, 'public');
   await tick();
@@ -2285,7 +2349,7 @@ localShare.close();
 globalThis.location = shareLocation;
 assert.ok(shareRoute({ ...shareFixture, private_url: '', private_state: '' }).message.includes('No link'));
 assert.ok(shareRoute({ ...shareFixture, live_version: 0 }).message.includes('not been published'));
-for (const type of ['docs', 'design', 'board']) {
+for (const type of ['docs', 'design', 'board', 'notebook']) {
   const message = shareRoute({ ...shareFixture, type, running: false }).message;
   assert.ok(message.includes('not running') && !message.includes('publish'));
 }
@@ -2344,6 +2408,9 @@ assert.equal(observedChanges, 1, 'parent refreshes after an observed change');
   assert.equal(dom.accessOf({ type: 'board', visibility: 'public' }), 'view', 'a Public board without a level is view only');
   assert.equal(dom.accessOf({ type: 'flat', visibility: 'public' }), 'public');
   assert.equal(dom.accessOf({ type: 'board', visibility: 'public', public_access: 'edit' }), 'edit');
+  // A notebook has no public edit level: it is plain Public.
+  assert.equal(dom.publicEditOf({ type: 'notebook' }), null);
+  assert.equal(dom.accessOf({ type: 'notebook', visibility: 'public' }), 'public');
 }
 const retro = { ...notes, type: 'board', slug: 'retro', name: 'Retro', visibility: 'public', public_access: 'view', running: true, live_version: 0,
   providers: ['portal'], private_url: 'https://retro.tail.ts.net', public_url: 'https://retro.portal.example', public_notice: PUBLIC,
@@ -2363,6 +2430,19 @@ const retroEdit = { ...retro, public_access: 'edit', public_presence: { guests: 
 }
 const visCalls = () => calls.filter((c) => c.key === 'POST /console/api/flats/retro/visibility').map((c) => JSON.parse(c.body));
 const openDialogs = () => all(document.body, (e) => e.tagName === 'DIALOG' && e.open);
+{
+  // A Public notebook offers only Private and Public: guests never edit it.
+  const atlas = { ...retro, type: 'notebook', slug: 'atlas', name: 'Atlas', public_access: undefined, public_presence: undefined };
+  const before = calls.length;
+  shareDialog(atlas);
+  const dlg = openDialogs().pop();
+  assert.deepEqual(radios(dlg).map((r) => r.value), ['private', 'public']);
+  assert.equal(radios(dlg).find((r) => r.checked).value, 'public');
+  assert.ok(!dlg.textContent.includes('anyone can edit') && dlg.textContent.includes('Can open'));
+  assert.equal(byText(dlg, 'Stop guest editing')[0].parentNode.hidden, true);
+  assert.equal(calls.slice(before).some((c) => c.key.includes('/public-edit')), false, 'a notebook has no guest-edit preflight');
+  dlg.close();
+}
 {
   // A board at view only: three choices, viewer count, no Stop guest editing.
   routes['GET /console/api/flats/retro'] = retro;

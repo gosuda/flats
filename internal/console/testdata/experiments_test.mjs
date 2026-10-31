@@ -85,6 +85,9 @@ const DISPLAY = [
   ['Data and deletion', ['rollback_restore_data', 'delete_flat']],
 ];
 const DISPLAY_IDS = DISPLAY.flatMap(([, ids]) => ids);
+// Guest editing exists only for boards and documents, never notebooks.
+const publicEditing = OPERATIONS.find((o) => o.id === 'public_editing');
+assert.ok(publicEditing.desc.includes('board or document') && !publicEditing.desc.includes('notebook'));
 
 // --- Experiments, off ---
 reset({ allowed: ['deploy', 'make_public'] });

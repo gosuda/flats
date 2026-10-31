@@ -204,6 +204,9 @@ type problem struct {
 type errorBody struct {
 	Category string    `json:"category,omitempty"`
 	Error    string    `json:"error"`
+	Reason   string    `json:"reason,omitempty"`
+	Retry    *bool     `json:"retry,omitempty"`
+	Detail   string    `json:"detail,omitempty"`
 	Problems []problem `json:"problems,omitempty"`
 	Health   *health   `json:"health,omitempty"`
 }

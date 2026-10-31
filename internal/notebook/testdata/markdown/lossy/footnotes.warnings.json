@@ -1,0 +1,12 @@
+[
+  {
+    "code": "footnote",
+    "line": 1,
+    "message": "Footnotes remain literal paragraph text."
+  },
+  {
+    "code": "footnote",
+    "line": 3,
+    "message": "Footnotes remain literal paragraph text."
+  }
+]

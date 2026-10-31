@@ -8,8 +8,9 @@ and write it as structured data.
 Choose a board to spread out, group and connect ideas: brainstorms, sorted
 feedback, flowcharts, retrospectives and plans that people will rearrange by
 hand. Choose a design (`topic.canvas`) for pixel-exact screens, prototypes
-and posters, a document (`topic.docs`) for prose, and a page (`topic.page`)
-for one finished HTML document with charts.
+and posters, a document (`topic.docs`) for prose, a notebook
+(`topic.notebook`) for pages of notes and tracker tables, and a page
+(`topic.page`) for one finished HTML document with charts.
 
 A board runs at once and has no Draft, versions, previews, publish or
 approval. A new board is Private. Making it Public, Private again, or

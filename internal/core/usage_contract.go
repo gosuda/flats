@@ -85,6 +85,8 @@ type MetricsSnapshot struct {
 	RoleCPU []RoleCPU
 	// Board holds the host-wide board counters.
 	Board BoardMetrics
+	// Notebook holds the host-wide notebook counters.
+	Notebook NotebookMetrics
 }
 
 // FlatCount is the number of flats with one type, visibility and logical

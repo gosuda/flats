@@ -23,8 +23,12 @@ go mod tidy                         # CI requires no go.mod/go.sum diff
 go vet ./...
 make docs-check                     # Markdown links and anchors, uncached
 go test ./...                       # as eight shards: scripts/ci-test.sh <shard>
-scripts/ci-race.sh core             # go test -race, in four lanes
+scripts/ci-race.sh core             # go test -race, in eight lanes
 scripts/ci-race.sh services
+scripts/ci-race.sh notebook
+scripts/ci-race.sh notebook-large-reader
+scripts/ci-race.sh notebook-large-markdown
+scripts/ci-race.sh notebook-large-source
 scripts/ci-race.sh board-1
 scripts/ci-race.sh board-2
 (cd internal/apps/docs/_web && npm ci && npm test)
@@ -53,14 +57,44 @@ CGO-free somewhere: darwin/arm64 by the `install-macos` job, darwin/amd64 by
 the `netbird` job on Linux, and linux/amd64 and linux/arm64 by the
 `container` job.
 
-`scripts/ci-race.sh` runs the race tests in four parallel lanes: the core
+`scripts/ci-race.sh` runs the race tests in eight parallel lanes: the core
 service; the API, app, MCP, store, Portal and WebSocket packages with the
-runtime's FILES, WASI and WebSocket limit tests and the board engine; and the
-board server in two lanes, split by test name like the runtime and docs
-shards. The board engine starts no goroutines, so its seeded
-simulations run with a few seeds per CPU under `-race` (`BOARD_SEEDS`) and
-with their full seed counts in the board shard. `internal/board/benchdata`
-only generates fixed reference data and is not run with `-race`.
+runtime's FILES, WASI and WebSocket limit tests and the board engine; the
+notebook package with its default model seed count; the notebook's large
+memory fixtures in three lanes; and the board server in two lanes, split by
+test name like the runtime and docs shards. The three `notebook-large` lanes
+set `NOTEBOOK_LARGE_MEMORY_TESTS=1` and run only their memory tests, including
+the 8 and 32 MiB cases: `notebook-large-reader` runs
+`TestReaderRetainedMemoryAndContinuations`,
+`TestReaderSelectionPreparationMemory`, `TestReaderCollectionQueryMemory`
+and `TestReaderHistoricalSourceMemory`; `notebook-large-markdown` runs
+`TestMarkdownRetainedMemory`; and `notebook-large-source` runs the host's
+`TestNotebookSourceHistoryMemory`. Each lane is one `go test -race -count=1
+-timeout=25m` command in its own 30-minute job; the other race lanes retain
+their 20-minute limit. The default Markdown retained-memory
+test covers all six payload kinds at 1 MiB and keeps the option-schema cases
+at 1.5 and 16 MiB as well. Its default-only `bounded_growth` subtest permits
+at most 1 MiB more sampled heap at 16 MiB than at 1 MiB, in addition to the
+unchanged 4 MiB ceiling for each read. This rejects retaining every option id
+even when the absolute ceiling alone would pass. Run the full
+`option_schema` parent to include both measurements and their comparison;
+individual size subtests still run independently. The
+`notebook-large-markdown` lane keeps 1, 1.5, 8 and 32 MiB for every kind.
+The many-option Markdown fixture keeps all 5,000 options
+and 100 rows in the default run, batching schema-only continuations rather
+than requesting each option separately. The board
+engine starts no goroutines, so its seeded simulations run with a few seeds
+per CPU under `-race` (`BOARD_SEEDS`) and with their full seed counts in the
+board shard. `internal/board/benchdata` only generates fixed reference data
+and is not run with `-race`. The notebook package's 200-seed reference model
+run (`-notebook-model-seeds=200`) is a separate stress run, not a CI lane.
+
+The board and notebook browser clients are plain JavaScript without a build
+step. Their `node --test` suites (`internal/board/web/testdata` and
+`internal/notebook/web/testdata`) run from `TestWebClient` in each Go
+package, so the board and `other` shards cover them; the test fails rather
+than skips when `CI` is set and `node` is missing. The docs npm job tests only
+the docs editor bundle.
 
 Slow `internal/core` lifecycle and recovery tests run in parallel in every run,
 including the core race lane and the `other` shard. Their fixtures own

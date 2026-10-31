@@ -50,13 +50,42 @@ class ShardListTests(unittest.TestCase):
         self.assertEqual(sorted(s.strip() for s in lanes.split(",")),
                          sorted(case_labels(SCRIPTS / "ci-race.sh")))
 
+    def test_large_reader_lane_includes_directly_flagged_tests(self):
+        script = (SCRIPTS / "ci-race.sh").read_text()
+        patterns = re.findall(r"^\s*large_(?:reader|markdown)='(.+)'$", script, re.M)
+        self.assertEqual(len(patterns), 2)
+        flagged = set()
+        for path in (ROOT / "internal/notebook").glob("*_test.go"):
+            functions = re.split(r"(?m)^func (\w+)\([^\n]*\) [^{]*\{", path.read_text())
+            for name, body in zip(functions[1::2], functions[2::2]):
+                if name.startswith("Test") and 'os.Getenv("NOTEBOOK_LARGE_MEMORY_TESTS")' in body:
+                    flagged.add(name)
+        self.assertIn("TestMarkdownRetainedMemory", flagged)
+        for name in flagged:
+            with self.subTest(test=name):
+                self.assertEqual(sum(re.fullmatch(p, name) is not None for p in patterns), 1)
+
+    def test_large_reader_race_lane_has_its_own_timeout(self):
+        ci = (ROOT / ".github/workflows/ci.yml").read_text()
+        race = ci.split("\n  race:\n", 1)[1].split("\n  install-macos:\n", 1)[0]
+        self.assertEqual(re.findall(r"^    timeout-minutes: (.+)$", race, re.M),
+                         ["${{ startsWith(matrix.lane, 'notebook-large') && 30 || 20 }}"])
+
+    def test_large_lanes_run_one_command_each(self):
+        script = (SCRIPTS / "ci-race.sh").read_text()
+        for lane in ("notebook-large-reader", "notebook-large-markdown", "notebook-large-source"):
+            with self.subTest(lane=lane):
+                body = script.split(f"\n{lane})\n", 1)[1].split("\n\t;;", 1)[0]
+                self.assertEqual(len(re.findall(r"^\trun ", body, re.M)), 1)
+                self.assertIn("-timeout=25m", body)
+
 
 class ShardPackageTests(unittest.TestCase):
     """Run ci-test.sh with a stub go command on fixture source layouts."""
 
     CURRENT = ["cmd/flats", "internal/apps/docs", "internal/board", "internal/board/engine",
                "internal/board/benchdata/cmd/benchdata", "internal/boardx", "internal/core",
-               "internal/runtime", "internal/runtimex"]
+               "internal/notebook", "internal/runtime", "internal/runtimex"]
 
     def run_shard(self, shard, module="github.com/gosuda/flats", packages=None):
         packages = self.CURRENT if packages is None else packages
@@ -93,7 +122,52 @@ esac
         code, args, _ = self.run_shard("board")
         self.assertEqual((code, args), (0, ["./internal/board/..."]))
         self.assertEqual(self.other_packages("github.com/gosuda/flats", self.CURRENT),
-                         ["cmd/flats", "internal/boardx", "internal/core", "internal/runtimex"])
+                         ["cmd/flats", "internal/boardx", "internal/core", "internal/notebook", "internal/runtimex"])
+
+    def test_notebook_runs_in_exactly_one_shard(self):
+        hits = {}
+        for shard in case_labels(SCRIPTS / "ci-test.sh"):
+            code, args, stderr = self.run_shard(shard)
+            self.assertEqual(code, 0, stderr)
+            hits[shard] = [a for a in args if "internal/notebook" in a]
+        self.assertEqual({s: h for s, h in hits.items() if h},
+                         {"other": ["github.com/gosuda/flats/internal/notebook"]})
+
+    def test_notebook_race_lane_runs_the_whole_package(self):
+        with tempfile.TemporaryDirectory() as directory:
+            stub = Path(directory) / "go"
+            stub.write_text('#!/bin/sh\necho "$@"\n')
+            stub.chmod(0o755)
+            env = {**os.environ, "PATH": f"{directory}:{os.environ['PATH']}"}
+            result = subprocess.run(["sh", str(SCRIPTS / "ci-race.sh"), "notebook"],
+                                    env=env, capture_output=True, text=True)
+        self.assertEqual((result.returncode, result.stdout.split()),
+                         (0, ["test", "-race", "./internal/notebook/..."]))
+
+    def test_notebook_large_lanes_enable_only_memory_tests(self):
+        want = {
+            "notebook-large-reader": [
+                "^(TestReaderRetainedMemoryAndContinuations|TestReaderSelectionPreparationMemory|"
+                "TestReaderCollectionQueryMemory|TestReaderHistoricalSourceMemory)$",
+                "./internal/notebook"],
+            "notebook-large-markdown": ["^TestMarkdownRetainedMemory$", "./internal/notebook"],
+            "notebook-large-source": ["^TestNotebookSourceHistoryMemory$", "./internal/core"],
+        }
+        for lane, (selector, package) in want.items():
+            with self.subTest(lane=lane), tempfile.TemporaryDirectory() as directory:
+                stub = Path(directory) / "go"
+                stub.write_text('#!/bin/sh\nprintf "%s\\n" "$NOTEBOOK_LARGE_MEMORY_TESTS" "$@"\n')
+                stub.chmod(0o755)
+                env = {**os.environ, "PATH": f"{directory}:{os.environ['PATH']}",
+                       "NOTEBOOK_LARGE_MEMORY_TESTS": "0"}
+                result = subprocess.run(
+                    ["sh", str(SCRIPTS / "ci-race.sh"), lane, "-v"],
+                    env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(result.stdout.splitlines(), [
+                    "1", "test", "-race", "-v", "-count=1", "-timeout=25m", "-run",
+                    selector, package,
+                ])
 
     def test_layout_without_board(self):
         packages = [p for p in self.CURRENT if not p.startswith("internal/board/") and p != "internal/board"]
@@ -101,12 +175,12 @@ esac
         self.assertEqual((code, args), (0, []))
         self.assertIn("nothing to run", stderr)
         self.assertEqual(self.other_packages("github.com/gosuda/flats", packages),
-                         ["cmd/flats", "internal/boardx", "internal/core", "internal/runtimex"])
+                         ["cmd/flats", "internal/boardx", "internal/core", "internal/notebook", "internal/runtimex"])
 
     def test_older_module_path(self):
         module = "example.org/old/flats"
         self.assertEqual(self.other_packages(module, self.CURRENT),
-                         ["cmd/flats", "internal/boardx", "internal/core", "internal/runtimex"])
+                         ["cmd/flats", "internal/boardx", "internal/core", "internal/notebook", "internal/runtimex"])
 
     def test_missing_runtime_and_docs_run_nothing(self):
         packages = ["cmd/flats", "internal/core"]
