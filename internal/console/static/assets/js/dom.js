@@ -230,10 +230,11 @@ export function linkTargets(f) {
   const isPublic = visibilityOf(f.visibility) === 'public';
   for (const e of f.endpoints || []) {
     if (e.audience !== 'current' || !e.url || !e.permitted || (e.host && e.host !== f.slug) || e.state === 'stopped') continue;
-    if (!PUBLIC_NETWORKS.includes(e.provider)) add(out.private, e.provider, e.url);
-    else if (isPublic) add(out.public, e.provider, e.url);
+    if (!PUBLIC_NETWORKS.includes(e.provider)) {
+      if (!f.private_links_off) add(out.private, e.provider, e.url);
+    } else if (isPublic) add(out.public, e.provider, e.url);
   }
-  if (!out.private.length) add(out.private, '', f.private_url, 'private URL');
+  if (!f.private_links_off && !out.private.length) add(out.private, '', f.private_url, 'private URL');
   if (isPublic && !out.public.length) add(out.public, '', f.public_url, 'public URL');
   return out;
 }

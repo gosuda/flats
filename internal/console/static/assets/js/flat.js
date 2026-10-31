@@ -104,7 +104,7 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
         if (serverParts()) { loadEnv(); loadSecrets(); loadNetwork(); }
         loadHostProviders();
       } else {
-        if (!isDocs()) await Promise.all([loadVersions(), loadPreviews()]);
+        if (!isDocs()) await Promise.all([loadVersions(), flat.private_links_off ? null : loadPreviews()]);
         logs.poll();
       }
     }
@@ -133,7 +133,7 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
       const detail = proxyDetail(flat, url);
       return detail ? h('div', { class: 'muted small', text: detail }) : null;
     };
-    add('Private URL', serving
+    if (!flat.private_links_off) add('Private URL', serving
       ? h('div', null, extLink(shownPrivate),
           pending ? h('div', { class: 'muted small' },
             h('span', { class: 'badge badge-' + privateState, text: privateState }), ' ',
@@ -154,9 +154,12 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
     }
 
     fill(headSlot, siteHeader(flat, 'deployments'),
+      flat.private_links_off ? h('p', { class: 'muted', text: 'Private links are turned off on this host (public instance mode).' }) : null,
+      flat.private_links_off && visibilityOf(flat.visibility) === 'private'
+        ? h('p', { class: 'muted', text: 'This flat has no working link until it is made Public or public instance mode is turned off.' }) : null,
       section('Status', 'status', urls),
       isDocs() ? null : section('Versions', 'versions', versionsSlot),
-      isDocs() ? null : section('Open previews', 'previews', previewsSlot),
+      isDocs() || flat.private_links_off ? null : section('Open previews', 'previews', previewsSlot),
       section('Logs', 'logs', logs.el));
   }
 
@@ -225,7 +228,7 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
       const edit = accessOf(flat) === 'edit';
       if (pre && pre.safe_point) {
         const pinned = pre.safe_point_pinned === true;
-        const open = flat.private_url ? extLink(privateURL(flat), 'Open History', 'btn btn-small') : null;
+        const open = privateURL(flat) ? extLink(privateURL(flat), 'Open History', 'btn btn-small') : null;
         rows.push(h('div', { class: 'setting-row' },
           h('div', null, h('span', { class: 'setting-title', text: 'Safe point' }), h('div', { class: 'muted small', text: edit ? 'Kept while guests can edit' : 'From the last time guests could edit' })),
           h('div', { class: 'setting-sharing' },
@@ -404,9 +407,11 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
     const rows = vs.map((v) => {
       const actions = h('div', { class: 'cell-actions' });
       if (!v.pruned) {
-        const prev = h('button', { type: 'button', class: 'btn btn-small', text: 'Preview', 'aria-label': `Preview version ${v.number}` });
-        prev.addEventListener('click', () => busy(prev, async () => { if (await previewVersion(flat, v.number)) loadPreviews(); }));
-        actions.appendChild(prev);
+        if (!flat.private_links_off) {
+          const prev = h('button', { type: 'button', class: 'btn btn-small', text: 'Preview', 'aria-label': `Preview version ${v.number}` });
+          prev.addEventListener('click', () => busy(prev, async () => { if (await previewVersion(flat, v.number)) loadPreviews(); }));
+          actions.appendChild(prev);
+        }
         if (v.number === live) {
           // A page has no environment to apply.
           if (serverParts()) actions.appendChild(redeployButton());
@@ -484,7 +489,7 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
         d.git_dirty ? h('span', { class: 'badge badge-warn', text: 'dirty', title: 'Uncommitted changes when saved' }) : null),
       h('td', { class: 'msg' }, d.message || h('span', { class: 'muted', text: '—' })),
       h('td', null, bytes(d.size), h('div', { class: 'muted small', text: `${plural(d.files, 'file')} · ${d.kind}` })),
-      h('td', null, h('div', { class: 'cell-actions' }, prev, pub)));
+      h('td', null, h('div', { class: 'cell-actions' }, flat.private_links_off ? null : prev, pub)));
   }
 
   // redeployButton restarts the live version, e.g. after environment settings changed.

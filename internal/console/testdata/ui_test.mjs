@@ -51,7 +51,10 @@ class Element extends Node {
   removeAttribute(k) { delete this.attributes[k]; }
   addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); }
   removeEventListener() {}
-  dispatch(type) { for (const fn of this.listeners[type] || []) fn({ type, preventDefault() {}, target: this }); }
+  dispatch(type) {
+    const event = { type, preventDefault() {}, target: this };
+    for (const fn of this.listeners[type] || []) fn(event);
+  }
   append(...cs) { for (const c of cs) this.appendChild(typeof c === 'string' ? new Text(c) : c); }
   prepend(c) { this.appendChild(c); this.childNodes.unshift(this.childNodes.pop()); }
   replaceWith(n) {
@@ -2967,6 +2970,152 @@ const minutesEdit = { ...minutes, public_access: 'edit', public_presence: { gues
   routes['GET /console/api/providers'] = PROVIDERS;
   document.getElementById = savedGet;
   globalThis.location = savedLocation;
+}
+
+// Public instance mode hides private links even if an older response left
+// private addresses in the object. Without the flag, the same links remain.
+{
+  const { linkTargets } = await import('./dom.js');
+  const { setVisibility, previewVersion } = await import('./actions.js');
+  const warning = 'The public address goes offline. While public instance mode is on, the flat will have no working link.';
+  const noLink = 'This flat has no working link until it is made Public or public instance mode is turned off.';
+  const offNote = 'Private links are turned off on this host (public instance mode).';
+  const base = { ...blog, private_url: 'http://blog.localhost:7879/', private_state: 'ready', running: true,
+    endpoints: [ep('local', 'http://blog.localhost:7879/'),
+      { ...ep('tailscale', 'https://blog.tail.ts.net/'), ready: true },
+      { ...ep('portal', blog.public_url), ready: true }] };
+  const savedRoutes = { ...routes };
+  const savedLocation = globalThis.location;
+  const savedNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  const copied = [];
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { clipboard: { writeText: async (text) => copied.push(text) } } });
+  const stops = [];
+  try {
+    for (const origin of ['http://127.0.0.1:7878', 'https://console.example.com']) {
+      globalThis.location = { origin, hostname: new URL(origin).hostname };
+      for (const flag of [true, undefined]) {
+        const f = { ...base, ...(flag ? { private_links_off: true } : {}) };
+        const targets = linkTargets(f);
+        assert.equal(targets.private.length, flag ? 0 : 2);
+        assert.deepEqual(targets.public.map((t) => t.url), [blog.public_url]);
+        assert.equal(ui.privateURL(f), flag ? '' : origin.startsWith('http:') ? base.private_url : 'https://blog.tail.ts.net/');
+        const fallback = linkTargets({ ...f, endpoints: null });
+        assert.deepEqual(fallback.private.map((t) => t.url), flag ? [] : [base.private_url]);
+        assert.deepEqual(fallback.public.map((t) => t.url), [blog.public_url]);
+        assert.equal(ui.openTargets(f).local === null, !!flag || origin.startsWith('http:'));
+        assert.equal(ui.openMenuItems(f).some((i) => i.label.startsWith('Open privately')), !flag);
+        const header = siteHeader(f, 'deployments');
+        assert.equal(all(header, (e) => e.className === 'site-address muted').length, flag ? 1 : 2);
+        if (flag) assert.ok(!header.textContent.includes('localhost') && !header.textContent.includes('server only'));
+        const onlyLocal = { ...f, visibility: 'private', endpoints: [f.endpoints[0]] };
+        assert.equal(ui.openLinks(onlyLocal) === null, !!flag);
+        assert.equal(siteHeader(onlyLocal, 'deployments').textContent.includes('server only'), !flag && !origin.startsWith('http:'));
+
+        routes['GET /console/api/flats/blog'] = f;
+        routes['GET /console/api/flats/blog/previews'] = { previews: [{ host: 'preview-blog', url: 'https://preview-blog.tail.ts.net', version: 1 }] };
+        const main = new Element('main');
+        const beforePreviews = calls.filter((c) => c.key === 'GET /console/api/flats/blog/previews').length;
+        const stop = flat.mount(main, ['blog'], ctx);
+        stops.push(stop);
+        await tick();
+        assert.equal(main.textContent.includes('Private URL'), !flag);
+        assert.equal(main.textContent.includes(offNote), !!flag);
+        assert.equal(byText(main, 'Preview').length, flag ? 0 : 3, 'draft and both saved versions');
+        assert.equal(!!byId(main, 'previews'), !flag);
+        assert.equal(calls.filter((c) => c.key === 'GET /console/api/flats/blog/previews').length - beforePreviews, flag ? 0 : 1);
+        assert.equal(byText(main, 'Save as v3').length, 1, 'saving is still available');
+        if (flag) {
+          assert.ok(!main.textContent.includes('localhost') && !main.textContent.includes('server only'));
+          assert.ok(!all(main, (e) => e.tagName === 'A').some((e) => /localhost|tail\.ts\.net/.test(e.getAttribute('href'))));
+        }
+        stop();
+        stops.pop();
+
+        for (const vis of ['public', 'private']) {
+          const state = { ...f, visibility: vis };
+          assert.equal(shareRoute(state).usable, !flag || vis === 'public');
+          assert.equal(shareRoute(state).url, flag && vis === 'private' ? '' : vis === 'public' ? blog.public_url : 'https://blog.tail.ts.net/');
+          shareDialog(state);
+          const dlg = all(document.body, (e) => e.tagName === 'DIALOG').pop();
+          const people = all(dlg, (e) => e.className === 'share-person' && e.textContent.includes('People on your networks'))[0];
+          assert.equal(people.textContent.includes('Private links are turned off'), !!flag);
+          assert.equal(people.textContent.includes('Can open'), !flag);
+          const visit = all(dlg, (e) => e.tagName === 'A' && e.textContent === 'Visit')[0];
+          const copy = all(dlg, (e) => e.tagName === 'BUTTON' && e.textContent.includes('Copy link'))[0];
+          assert.equal(!!visit, !flag || vis === 'public');
+          assert.equal(copy.disabled, !!flag && vis === 'private');
+          if (flag && vis === 'public') {
+            assert.equal(visit.getAttribute('href'), new URL(blog.public_url).href);
+            copy.dispatch('click');
+            await tick();
+            assert.equal(copied.at(-1), blog.public_url);
+          }
+          if (flag && vis === 'private') assert.ok(dlg.textContent.includes(noLink));
+          dlg.close();
+        }
+      }
+    }
+
+    for (const flag of [true, undefined]) {
+      const f = { ...base, ...(flag ? { private_links_off: true } : {}) };
+      shareDialog({ ...f, type: 'docs', public_access: 'view' });
+      const docShare = all(document.body, (e) => e.tagName === 'DIALOG').pop();
+      const docPeople = all(docShare, (e) => e.className === 'share-person' && e.textContent.includes('People on your networks'))[0];
+      assert.equal(docPeople.textContent.includes('Can edit'), !flag);
+      assert.equal(docPeople.textContent.includes('Private links are turned off'), !!flag);
+      docShare.close();
+      const pendingChange = setVisibility(f, 'private');
+      const dlg = all(document.body, (e) => e.tagName === 'DIALOG').pop();
+      assert.equal(dlg.textContent.includes(warning), !!flag);
+      assert.equal(dlg.textContent.includes('The private address keeps working.'), !flag);
+      dlg.close('cancel');
+      assert.equal(await pendingChange, null);
+      if (flag) {
+        const before = calls.length;
+        assert.equal(await previewVersion(f, 0), false);
+        assert.equal(calls.length, before, 'no preview request while private links are off');
+      }
+
+      routes['GET /console/api/flats/blog'] = f;
+      routes['GET /console/api/approvals/public-instance-private'] = { id: 'public-instance-private', flat: 'blog',
+        action: 'set_visibility', params: { from: 'public', visibility: 'private' }, status: 'pending', via: 'mcp' };
+      const approvalMain = new Element('main');
+      approvalsPage.mount(approvalMain, ['public-instance-private'], ctx);
+      await tick();
+      assert.equal(approvalMain.textContent.includes(warning), !!flag);
+      byText(approvalMain, 'Approve…')[0].dispatch('click');
+      const confirm = all(document.body, (e) => e.tagName === 'DIALOG').pop();
+      assert.equal(confirm.textContent.includes(warning), !!flag);
+      confirm.close('cancel');
+      await tick();
+
+      routes['GET /console/api/flats/blog'] = { ...f, type: 'docs', visibility: 'private', public_url: '', public_access: '' };
+      const privateMain = new Element('main');
+      const stopPrivate = flat.mount(privateMain, ['blog'], ctx);
+      stops.push(stopPrivate);
+      await tick();
+      assert.equal(privateMain.textContent.includes(noLink), !!flag);
+      stopPrivate();
+      stops.pop();
+
+      routes['GET /console/api/flats/blog/public-edit'] = { safe_point: 2, safe_point_pinned: true };
+      const settingsMain = new Element('main');
+      const stopSettings = flat.mountSettings(settingsMain, ['blog'], ctx);
+      stops.push(stopSettings);
+      await tick();
+      assert.equal(all(settingsMain, (e) => e.tagName === 'A' && e.textContent === 'Open History').length, flag ? 0 : 1);
+      stopSettings();
+      stops.pop();
+    }
+  } finally {
+    for (const stop of stops) stop();
+    for (const dlg of all(document.body, (e) => e.tagName === 'DIALOG')) dlg.close('cancel');
+    for (const key of Object.keys(routes)) delete routes[key];
+    Object.assign(routes, savedRoutes);
+    globalThis.location = savedLocation;
+    if (savedNavigator) Object.defineProperty(globalThis, 'navigator', savedNavigator);
+    else delete globalThis.navigator;
+  }
 }
 
 console.log('ok');
