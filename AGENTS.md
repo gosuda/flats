@@ -11,7 +11,10 @@ Agents without skill discovery must read these same linked instructions directly
 JavaScript: every `.js` and `.mjs` file declares `'use strict';` in its
 directive prologue, after any shebang or leading comment. New files carry it
 from the start; `.mjs` is strict implicitly, and the declaration is still
-required so the rule stays uniform and grep-checkable.
+required so the rule stays uniform and grep-checkable. A script that agents
+run through browser tools as one expression (`docs/agent/scripts/`) declares
+it as the first statement of its outer function instead, so the file stays a
+single expression.
 
 Memory: allocate on hot paths only when ownership escapes. Reuse
 short-lived buffers through `sync.Pool`, stream with `io.Copy` or
