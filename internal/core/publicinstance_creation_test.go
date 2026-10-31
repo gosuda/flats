@@ -178,7 +178,7 @@ func TestPublicInstanceCreationPaths(t *testing.T) {
 					if mode.on && (!network.serves("created", ProviderPortal) || f.ConnectionState != "ready" || f.PublicURL == "") {
 						t.Errorf("public creation has no ready route: %+v", f)
 					}
-				} else if mode.on && (f.LiveVersion != 0 || f.Publication != "unpublished" || f.PublicURL != "" || f.ConnectionState != "unavailable" || network.serves("created", ProviderPortal)) {
+				} else if mode.on && !strings.HasPrefix(path.name, "Save") && (f.LiveVersion != 0 || f.Publication != "unpublished" || f.PublicURL != "" || f.ConnectionState != "unavailable" || network.serves("created", ProviderPortal)) {
 					t.Errorf("never-deployed flat is not Public + Unpublished: %+v", f)
 				}
 			})
@@ -312,7 +312,16 @@ func TestPublicInstanceCreationUnpublishedRestartRenameDeploy(t *testing.T) {
 						s.cfg.Lifecycle = nil
 						s.cfg.Public = &memPublic{memNet{hosts: map[string]http.Handler{}}}
 					}
+					if _, err := s.CreateFlat(t.Context(), "before", "", ViaMCP); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := s.SetPublicInstance(t.Context(), false, "", "test"); err != nil {
+						t.Fatal(err)
+					}
 					if _, err := s.SaveDraft(t.Context(), "before", files, SaveMeta{}, 0, ViaMCP); err != nil {
+						t.Fatal(err)
+					}
+					if _, err := s.SetPublicInstance(t.Context(), true, "portal", "test"); err != nil {
 						t.Fatal(err)
 					}
 					piCreationAssertUnpublished(t, s, "before")
@@ -331,6 +340,9 @@ func TestPublicInstanceCreationUnpublishedRestartRenameDeploy(t *testing.T) {
 					t.Fatal(err)
 				}
 				piCreationAssertUnpublished(t, s, "after")
+				if marked, err := s.st.GetFlat(t.Context(), "after"); err != nil || !marked.CreatedPublicInstance {
+					t.Fatalf("restart/rename lost mark: %+v %v", marked, err)
+				}
 				if backend == "lifecycle" && (network.serves("before", ProviderPortal) || network.serves("after", ProviderPortal)) {
 					t.Fatal("rename opened a public route before first deployment")
 				}

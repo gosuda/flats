@@ -108,7 +108,7 @@ mounted under both prefixes; **console** routes exist only under
 | GET | `/flats/{slug}` | both | Flat view |
 | GET | `/flats/{slug}/document` | both | `?doc=`: live Markdown of a docs flat, or its saved content when not running |
 | GET | `/flats/{slug}/draft` | both | Current Private Draft metadata, or 404 |
-| POST, PUT | `/flats/{slug}/draft` | both | Complete archive (tar, tar.gz, zip); query `expected_revision`, `git_sha`, `git_dirty`, `message`. 201 `{draft}`; never a version or approval. Documents are refused here |
+| POST, PUT | `/flats/{slug}/draft` | both | Complete archive (tar, tar.gz, zip); query `expected_revision`, `git_sha`, `git_dirty`, `message`. 201 `{draft}` normally; public instance publication on save also returns the published version, deployment and flat. No approval is created by a save. Documents are refused here |
 | POST | `/flats/{slug}/document` | both | Complete docs archive; replaces the whole live bundle without approval. 201 `{flat}` |
 | GET | `/flats/{slug}/board` | api | `get_board` read of a board: `?revision=&frame=&rect=x,y,w,h&ids=a,b&format=full\|outline&cursor=&limit=`; answers `{seq, revision, pending, meta, elements, next?}` |
 | POST | `/flats/{slug}/board` | api | An `update_board` body `{op_id, ops, layout?, assets?, if_seq?, message?, replace?}` (assets' `content` in base64; the body at most `upload_max_bytes × 4/3` plus 16 MiB, so one call carries images of about one upload limit in total; send more over several calls or in a data file through the import route); applies at once without approval and creates a missing board. Answers `{revision, seq, ids, layout, results, assets?, created?, warning?}` |
@@ -186,7 +186,9 @@ permissions and the Portal listing take effect immediately.
   `portal_hidden` (the listing Flats asks the relays for, not what they show).
   Visibility outputs are `private` or `public`; legacy listed/unlisted inputs
   are stored as public. URLs are never authorization or proof of publication.
-  While public instance mode is on, the view adds `private_links_off: true`,
+  A flat created by public instance mode carries
+  `created_public_instance: true` for its lifetime, omitted otherwise. While public instance mode is
+  on, the view adds `private_links_off: true`,
   returns an empty `private_url`, clears `private_state` and `private_detail`
   and lists only public endpoints. The flag is absent while off. A Private
   flat reports `connection_state: "unavailable"`; a Public flat reports only
@@ -467,7 +469,11 @@ it changes the server instructions and the descriptions of `create_flat`,
 `save_design`, `update_board`, `import_board`, `open_preview` and
 `set_visibility`. These texts say that new flats start Public with view-only
 access on the default public network and that private links and previews are
-disabled. Shared input-field descriptions keep their off text.
+disabled. Saving a Public website or page created by the mode publishes the
+next numbered version without approval. Flats created before the mode keep
+approved version creation and deployment, as do marked flats saved while
+Private or while the mode is off. A `create_flat` page starter is not
+published. Shared input-field descriptions keep their off text.
 
 `guide` adds `topic.public-instance`, whose network ID and label are rendered
 per request, and a refusal page for `open_preview` while the mode is on.
@@ -484,7 +490,14 @@ revision for the remaining Autopilot state.
 reports both that member and `autopilot`. Address-bearing tool results use
 the public URL with `public_notice`, or say that the public link is not open
 yet and name the connection state and detail. Exposure failure does not make
-a successful creation a tool error. `open_preview` is refused with a conflict
+a successful creation a tool error. A published save reports its version
+number and public link with `public_notice`, or the not-open state, instead
+of instructions to request version/deploy approvals. Publication failure is
+a failed save: API uses the cause's error status, MCP returns a tool error
+and CLI exits non-zero. Each reports the saved Draft revision and cause;
+the live version and previous version list are unchanged. Mode-off and
+ineligible-flat save texts keep their original wording. `open_preview` is
+refused with a conflict
 explaining that previews are private links and public instance mode is on.
 Making a flat Private still uses its approval and can leave it with no
 working link.
@@ -493,7 +506,9 @@ The runtime reference, content types reference and `llms.txt` documents stay
 fixed. `topic.public-instance` states that its rules take precedence over
 them. While the mode is off, none of its instruction, tool, result or guide
 text changes apply. With both modes on, both sets of texts apply and every
-approval other than creation remains necessary.
+approval other than initial Public creation and publication on save remains
+necessary. Publishing on save is independent of Autopilot switches; explicit
+version creation and deployment still request approvals.
 
 ### Board tools
 
@@ -647,9 +662,9 @@ they run once saved.
   Public instance has one On/Off row. Turn on is disabled with a reason and
   a link to Networks while no usable default public network exists. Its
   confirmation names that network, explains immediate public access for new
-  documents, designs and boards and approved deployment for websites and
-  pages, warns that private links, previews, browser design editing and
-  browser history stop working, and counts existing Private flats that will
+  documents, designs and boards and publication without approval on each save
+  of a new website or page, warns that private links, previews, browser design
+  editing and browser history stop working, and counts existing Private flats that will
   have no working link. It sends `confirmed_network`; Turn off acts at once
   without a dialog. While on with an unusable default, the section warns
   that creation is refused.

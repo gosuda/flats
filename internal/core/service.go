@@ -37,11 +37,12 @@ import (
 type Via string
 
 const (
-	ViaMCP     Via = "mcp"
-	ViaCLI     Via = "cli"
-	ViaAPI     Via = "api"
-	ViaConsole Via = "console" // a human operator in the web console
-	ViaSystem  Via = "system"
+	ViaMCP            Via = "mcp"
+	ViaCLI            Via = "cli"
+	ViaAPI            Via = "api"
+	ViaConsole        Via = "console" // a human operator in the web console
+	ViaSystem         Via = "system"
+	ViaPublicInstance Via = "public instance mode"
 )
 
 // Errors returned to callers.
@@ -1065,7 +1066,7 @@ func (s *Service) createFlatLocked(ctx context.Context, slugName, name string, v
 	if err != nil {
 		return FlatView{}, err
 	}
-	f := store.Flat{Slug: slugName, Name: name, Visibility: policy.visibility, PublicAccess: policy.access, CreatedAt: now, UpdatedAt: now}
+	f := store.Flat{Slug: slugName, Name: name, Visibility: policy.visibility, PublicAccess: policy.access, CreatedPublicInstance: policy.createdPublicInstance, CreatedAt: now, UpdatedAt: now}
 	if err := s.st.CreateFlatRecorded(ctx, f, policy.providers, policy.events); err != nil {
 		if errors.Is(err, store.ErrExists) {
 			return FlatView{}, withKind(ErrConflict, err)
@@ -1121,10 +1122,13 @@ type SaveMeta struct {
 	// historical writes a bundle rebuilt from a document revision, which
 	// may exceed the upload-only Markdown total (bundle.WriteHistorical).
 	historical bool
+	// starter suppresses publication of the page placeholder created by create_flat.
+	starter bool
 }
 
 // SaveVersion validates files and stores them as the flat's draft.
-// It never allocates a published version and never changes what is live.
+// Public websites and pages created by public instance mode also publish the save
+// while the mode is on.
 // The flat is created when it does not exist yet.
 func (s *Service) SaveVersion(ctx context.Context, slugName string, files []bundle.File, meta SaveMeta, via Via) (store.Version, error) {
 	if err := slug.Validate(slugName); err != nil {
@@ -1183,8 +1187,14 @@ func (s *Service) saveVersionLocked(ctx context.Context, slugName string, files 
 		}
 	}
 	v, err := s.saveDraftLocked(ctx, slugName, files, meta, via)
-	if err != nil || !docs {
+	if err != nil {
 		return v, err
+	}
+	if !docs {
+		if meta.starter {
+			return v, nil
+		}
+		return s.publishPublicInstanceSaveLocked(ctx, slugName, v)
 	}
 	// A document has no publish step: its save runs at once, Private
 	// unless the operator already approved Public. Its revision is recorded
@@ -1494,12 +1504,16 @@ func (s *Service) Deploy(ctx context.Context, slugName string, n int, via Via) (
 // starts it on the live data and makes it live. The check does not run
 // against live data. The caller holds s.lock(f.Slug).
 func (s *Service) deployLocked(ctx context.Context, f store.Flat, n int, kind string, via Via, approvalID string) (DeployResult, error) {
-	start := time.Now()
-	slugName := f.Slug
-	v, err := s.st.GetVersion(ctx, slugName, n)
+	v, err := s.st.GetVersion(ctx, f.Slug, n)
 	if err != nil {
 		return DeployResult{}, err
 	}
+	return s.deployVersionLocked(ctx, f, v, kind, via, approvalID)
+}
+
+func (s *Service) deployVersionLocked(ctx context.Context, f store.Flat, v store.Version, kind string, via Via, approvalID string) (DeployResult, error) {
+	start := time.Now()
+	slugName, n := f.Slug, v.Number
 	lifecyclePhase(ctx, "before_health", slugName, approvalID)
 	env, err := s.captureEnvironment(ctx, slugName, v)
 	if err != nil {
@@ -1530,8 +1544,12 @@ func (s *Service) deployLocked(ctx context.Context, f store.Flat, n int, kind st
 func (s *Service) activate(ctx context.Context, f store.Flat, d *deployed, h HealthResult, kind string, via Via, approvalID string, start time.Time) (DeployResult, error) {
 	slugName, n, prev := f.Slug, d.version.Number, f.LiveVersion
 	var commitErr error
-	if kind == "publish" || kind == "save" {
-		commitErr = s.st.CommitPublished(ctx, d.version, prev, approvalID, s.now())
+	if kind == "publish" || kind == "save" || kind == "public-instance" {
+		deploymentKind := "publish"
+		if kind == "public-instance" {
+			deploymentKind = kind
+		}
+		commitErr = s.st.CommitPublished(ctx, d.version, prev, deploymentKind, approvalID, s.now())
 	} else {
 		commitErr = s.st.SetLive(ctx, slugName, n, prev, kind, approvalID, s.now())
 	}

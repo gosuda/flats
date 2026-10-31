@@ -72,6 +72,8 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
   // once saved.
   const isDocs = () => flat && isLive(flat);
   const serverParts = () => flat && hasServer(flat);
+  const publishesOnSave = () => flat.private_links_off && flat.created_public_instance && visibilityOf(flat.visibility) === 'public' && !isDocs();
+  const activationWhen = () => publishesOnSave() ? 'the next published save, approved activation or Flats host restart' : 'the next approved activation or Flats host restart';
 
   const page = h('section', { class: 'page site-page' },
     h('a', { class: 'back', href: '/', 'data-nav': true }, icon('back'), 'All flats'),
@@ -158,6 +160,8 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
       flat.private_links_off && visibilityOf(flat.visibility) === 'private'
         ? h('p', { class: 'muted', text: 'This flat has no working link until it is made Public or public instance mode is turned off.' }) : null,
       section('Status', 'status', urls),
+      publishesOnSave()
+        ? h('p', { class: 'muted', text: 'Each save publishes the next version without an approval while public instance mode is on and visibility stays Public.' }) : null,
       isDocs() ? null : section('Versions', 'versions', versionsSlot),
       isDocs() || flat.private_links_off ? null : section('Open previews', 'previews', previewsSlot),
       section('Logs', 'logs', logs.el));
@@ -590,7 +594,7 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
       busy(save, async () => {
         try {
           await api.putEnv(slug, name.value, value.value);
-          toast(`Variable ${name.value} saved. It applies on the next approved activation or Flats host restart.`, 'success');
+          toast(`Variable ${name.value} saved. It applies on ${activationWhen()}.`, 'success');
           loadEnv(); logs.poll();
         } catch (err) { toast(err.message, 'error'); }
       });
@@ -612,13 +616,13 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
       del.addEventListener('click', () => busy(del, async () => {
         const ok = await confirmDialog({
           title: `Delete variable ${v.name}?`,
-          body: 'The running version keeps its current environment until the next approved activation or Flats host restart.',
+          body: `The running version keeps its current environment until ${activationWhen()}.`,
           confirmLabel: 'Delete', danger: true,
         });
         if (!ok) return;
         try {
           await api.deleteEnv(slug, v.name);
-          toast(`Variable ${v.name} deleted. It applies on the next approved activation or Flats host restart.`, 'success');
+          toast(`Variable ${v.name} deleted. It applies on ${activationWhen()}.`, 'success');
           loadEnv();
         } catch (err) { toast(err.message, 'error'); }
       }));
@@ -630,8 +634,8 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
     })) : h('p', { class: 'muted', text: 'No ordinary environment variables.' });
     const apply = flat.live_version
       ? h('div', { class: 'inline-form' },
-        h('span', { class: 'muted', text: `Changes apply on the next approved activation or Flats host restart: redeploy the live version ${flat.live_version} to use them now.` }), redeployButton())
-      : h('p', { class: 'muted', text: 'Changes apply when a deployment is approved.' });
+        h('span', { class: 'muted', text: `Changes apply on ${activationWhen()}: redeploy the live version ${flat.live_version} to use them now.` }), redeployButton())
+      : h('p', { class: 'muted', text: publishesOnSave() ? 'Changes apply on the next published save.' : 'Changes apply when a deployment is approved.' });
     fill(envSlot, add,
       h('p', { class: 'muted', text: 'Values are stored as plain text and readable by authorized agents. Use Secrets for credentials. Server-side JavaScript reads env.NAME; WASI reads environment variables. Static files and browser bundles receive no injected values.' }),
       items, form, apply,
@@ -712,9 +716,9 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
       : h('p', { class: 'muted', text: 'No secrets.' });
     const apply = flat.live_version
       ? h('div', { class: 'inline-form' },
-        h('span', { class: 'muted', text: `Changes apply on the next approved activation or Flats host restart: redeploy the live version ${flat.live_version} to use them now.` }),
+        h('span', { class: 'muted', text: `Changes apply on ${activationWhen()}: redeploy the live version ${flat.live_version} to use them now.` }),
         redeployButton())
-      : h('p', { class: 'muted', text: 'Secrets apply when a deployment is approved.' });
+      : h('p', { class: 'muted', text: publishesOnSave() ? 'Secrets apply on the next published save.' : 'Secrets apply when a deployment is approved.' });
     const addSecret = h('button', { type: 'button', class: 'btn btn-small', text: 'Add secret', 'aria-expanded': 'false', 'aria-controls': 'secret-form' });
     form.hidden = true;
     addSecret.addEventListener('click', () => {

@@ -35,17 +35,28 @@ them.
 
 Applies to websites (the `flat` type, static and server) and pages.
 
+[Public instance mode](public-instance.md#new-flats) is the exception to rules
+1, 2, 3, 5 and 10 below. While it is on, each save of a Public website or
+page created by the mode saves its Draft, creates the next numbered version
+and deploys it without approval. The first such save counts as publication.
+A failed publication keeps the saved Draft and previous live version, leaves
+no new version and reports the cause and saved revision. Earlier flats,
+marked flats made Private and saves while the mode is off keep the usual
+steps. Explicit version creation and deployment still request approvals.
+
 1. **Draft changes need no approval.** Saving the Draft changes only the
    Private Draft and never the live content. Draft previews stay Private.
 2. **Creating a version is its own step and needs explicit approval.** The
    request names the Draft state it freezes (revision and content hash). If the
    Draft changes before the decision, the request fails as stale and nothing is
-   created. On approval the Draft is stored as the next number.
+   created. On approval the Draft is stored as the next number. Publication
+   on save in public instance mode is the exception described above.
 3. **Deployment is a separate step and needs explicit approval, including the
    first deployment.** The order is always: create a version, then, when
    wanted, deploy that version. No request creates and deploys in one step,
    and creating a version never deploys it. A version can therefore exist
-   without ever being deployed.
+   without ever being deployed. Public instance publication on save combines
+   both steps without approvals, as described above.
 4. **Deploy and roll back by version.** Rollback is a deployment of an earlier
    version and needs approval. A server flat's data is a separate axis: data
    restore keeps its own explicit request and approval, as today. A data
@@ -65,7 +76,7 @@ Applies to websites (the `flat` type, static and server) and pages.
    flat cannot become Public through an approval. While
    [public instance mode](public-instance.md) is on, a website or page is
    created Public and Unpublished, without a visibility approval. It has no
-   public link until its first approved deployment. Visibility
+   public link until its first published save or approved deployment. Visibility
    (`private`/`public`) stays independent, and every later change in either
    direction still needs approval.
 8. **The console manages versions.** Operators list versions, approve their

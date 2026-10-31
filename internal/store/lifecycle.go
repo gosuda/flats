@@ -394,7 +394,7 @@ func (s *Store) PermittedProviders(ctx context.Context, flat string) ([]string, 
 }
 
 // CommitPublished atomically inserts a successful publication and its live history.
-func (s *Store) CommitPublished(ctx context.Context, v Version, previous int, approval string, now time.Time) error {
+func (s *Store) CommitPublished(ctx context.Context, v Version, previous int, kind, approval string, now time.Time) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -411,8 +411,13 @@ func (s *Store) CommitPublished(ctx context.Context, v Version, previous int, ap
 	if n != 1 {
 		return errors.New("live version changed concurrently")
 	}
-	if _, err = tx.ExecContext(ctx, `INSERT INTO deployments(flat,version,previous,kind,at,approval_id) VALUES(?,?,?,'publish',?,?)`, v.Flat, v.Number, previous, unix(now), approval); err != nil {
+	if _, err = tx.ExecContext(ctx, `INSERT INTO deployments(flat,version,previous,kind,at,approval_id) VALUES(?,?,?,?,?,?)`, v.Flat, v.Number, previous, kind, unix(now), approval); err != nil {
 		return err
+	}
+	if kind == "public-instance" {
+		if _, err := tx.ExecContext(ctx, `UPDATE drafts SET dirty=0,base_version=?,updated_at=? WHERE flat=? AND revision=? AND hash=?`, v.Number, unix(now), v.Flat, v.Revision, v.Hash); err != nil {
+			return err
+		}
 	}
 	return tx.Commit()
 }

@@ -11,14 +11,14 @@ the trust model in [design.md](design.md#approvals), the transports in
 
 Each save of a website or page statically validates the bundle and stores one
 immutable Draft revision under `flats/<slug>/draft-revs/<revision>`. `drafts`
-points at the current revision; saves do not allocate a version number or run
-server code. `SaveMeta.CheckRevision` and `ExpectedRevision` reject competing
-stale saves. Draft saves preserve Current, visibility, permissions and live
+points at the current revision. Apart from public instance publication on
+save below, saves do not allocate a version number or run server code.
+`SaveMeta.CheckRevision` and `ExpectedRevision` reject competing stale saves. Draft saves preserve Current, visibility, permissions and live
 data. A save whose bytes match the latest saved version is clean; creating a
 version from identical bytes is rejected with `ErrUnchangedContent`.
 
-For the Version-model types (websites and pages), creating a version and
-making it live are separate approved steps. Only an approved version creation
+For Version-model types (websites and pages), creating a version and making
+it live are separate approved steps, except for publication on save below. Only an approved version creation
 (`CreateVersion`, approval action `create_version`) creates `vN`, under
 `flats/<slug>/versions/<N>`: the version row and the Draft's new base commit
 in one transaction (`store.CommitVersion`), without changing the live pointer,
@@ -31,6 +31,19 @@ can leave live DB/FILES already written (see
 [Data and result DTOs](#data-and-result-dtos)). Saved versions can be
 activated or rolled back without a new number. A rollback keeps live data
 unless it was requested with `restore_data`.
+
+Public instance mode is the exception to separate version creation and
+deployment. Creation records a lifetime `created_public_instance` mark.
+While the mode is on and a marked website or page is Public, a save first
+stores its Draft revision, then creates and deploys the next numbered
+version from exactly that revision. The decision and publication hold the
+flat lock. The approved-deployment path supplies the same health check,
+data snapshot failure behavior, runtime start and events; deployment records
+public instance mode without an approval ID. Version and disk quotas apply.
+A publication failure keeps the saved Draft and previous live version,
+leaves no new version, and returns a typed error with the cause and saved
+Draft revision. Older flats, Private flats and mode-off saves retain the
+usual steps. A page starter Draft from `create_flat` is not published.
 
 Revision-model saves take another path. A changed document save, a document
 revision rollback that needs a new bundle, and a design's shell when the
@@ -47,8 +60,8 @@ persists through connection failures. Visibility is independently
 An approval cannot make an Unpublished flat Public. The creation exception is
 [public instance mode](design.md#public-instance-mode), which creates websites
 and pages Public and Unpublished with `live_version` 0. They have no public
-URL and report `connection_state: "unavailable"` until their first approved
-deployment.
+URL and report `connection_state: "unavailable"` until their first published
+save or approved deployment.
 
 Previews (`OpenPreview`; number 0 targets the Draft) are Private only: Local,
 plus Tailscale when the flat holds that grant. Server previews use isolated
@@ -267,6 +280,7 @@ with its `user_version`, so a failed step leaves no trace:
 | 20 | document guest lines |
 | 21 | Autopilot settings and their change log ([Autopilot settings](configuration.md#autopilot-settings)) |
 | 22 | Public instance settings; changes reuse the Experiments change log ([Public instance settings](configuration.md#public-instance-settings)) |
+| 23 | Lifetime `flats.created_public_instance` mark for publication on save; existing flats default to 0 |
 
 A database newer than the binary is refused untouched.
 

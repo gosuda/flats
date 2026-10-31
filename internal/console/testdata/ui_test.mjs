@@ -2972,6 +2972,49 @@ const minutesEdit = { ...minutes, public_access: 'edit', public_presence: { gues
   globalThis.location = savedLocation;
 }
 
+{
+  const savedFlat = routes['GET /console/api/flats/blog'];
+  const notice = 'Each save publishes the next version without an approval while public instance mode is on and visibility stays Public.';
+  try {
+    for (const type of ['flat', 'page', 'docs', 'design', 'board']) {
+      for (const marked of [true, undefined]) {
+        for (const on of [true, undefined]) {
+          for (const visibility of ['public', 'private']) {
+            routes['GET /console/api/flats/blog'] = { ...blog, type, visibility,
+              created_public_instance: marked, private_links_off: on };
+            const main = new Element('main');
+            const stop = flat.mount(main, ['blog'], ctx);
+            try {
+              await tick();
+              assert.equal(main.textContent.includes(notice), !!marked && !!on && visibility === 'public' && ['flat', 'page'].includes(type),
+                `${type}: marked=${marked}, mode=${on}, visibility=${visibility}`);
+            } finally { stop(); }
+          }
+        }
+      }
+    }
+    for (const live of [0, 2]) {
+      for (const on of [true, undefined]) {
+        routes['GET /console/api/flats/blog'] = { ...blog, created_public_instance: true, private_links_off: on,
+          live_version: live, live: live ? blog.live : null };
+        const main = new Element('main');
+        const stop = flat.mountSettings(main, ['blog'], ctx);
+        try {
+          await tick();
+          const env = byId(main, 'env').textContent;
+          const secrets = byId(main, 'secrets').textContent;
+          assert.equal(env.includes('next published save'), !!on);
+          assert.equal(secrets.includes('next published save'), !!on);
+          if (!on && !live) {
+            assert.ok(env.includes('Changes apply when a deployment is approved.'));
+            assert.ok(secrets.includes('Secrets apply when a deployment is approved.'));
+          }
+        } finally { stop(); }
+      }
+    }
+  } finally { routes['GET /console/api/flats/blog'] = savedFlat; }
+}
+
 // Public instance mode hides private links even if an older response left
 // private addresses in the object. Without the flag, the same links remain.
 {

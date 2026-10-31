@@ -54,7 +54,7 @@ func TestPublicInstanceInstructionReplacements(t *testing.T) {
 								t.Errorf("replacement not applied: %q", r.old)
 							}
 						}
-						for _, want := range []string{"Public (view only)", "default public network", "topic.public-instance", "Private links and previews are disabled"} {
+						for _, want := range []string{"Public (view only)", "default public network", "topic.public-instance", "Private links and previews are disabled", "publishes Public flats created by this mode; older flats keep approvals"} {
 							if !strings.Contains(md, want) {
 								t.Errorf("missing %q", want)
 							}
@@ -146,6 +146,26 @@ func TestPublicInstanceTopicOverlay(t *testing.T) {
 	}
 }
 
+func TestPublicInstancePublicationGuidance(t *testing.T) {
+	for _, autopilot := range []bool{false, true} {
+		for _, name := range []string{"index", "page", "static", "design", "preview-verify", "preview-check"} {
+			md, _ := Topic(name)
+			if autopilot {
+				md, _ = AutopilotTopicOverlay(name)
+			}
+			md = PublicInstanceTopicOverlay(name, md)
+			if !strings.Contains(md, "created by this mode") || !strings.Contains(strings.ToLower(md), "older") {
+				t.Errorf("%s (Autopilot %t) does not distinguish publication on save from older flats", name, autopilot)
+			}
+			for _, stale := range []string{"Saving never creates a version", "It has no `version` or `deploy` object", "pages stay Unpublished until approved"} {
+				if strings.Contains(md, stale) {
+					t.Errorf("%s retains %q", name, stale)
+				}
+			}
+		}
+	}
+}
+
 func TestPublicInstancePage(t *testing.T) {
 	st := PublicInstanceState{Network: "proxy-public", Label: "Reverse proxy (Public)"}
 	md := PublicInstancePage(st)
@@ -157,6 +177,8 @@ func TestPublicInstancePage(t *testing.T) {
 		"create_version", "deploy", "Private links", "open_preview", "HTTP 403", "Make Private",
 		"creation is refused", "creates nothing", "not open yet", "public_notice", "Autopilot is independent",
 		"Browser editing", "revision", "NOT access control",
+		"Each save", "next numbered version", "without approval", "Older flats",
+		"starter Draft", "not published", "keeps Draft", "without a new version",
 	} {
 		if !strings.Contains(md, want) {
 			t.Errorf("page lacks %q", want)

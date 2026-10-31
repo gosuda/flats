@@ -138,10 +138,11 @@ func (s *Service) SetPublicInstance(ctx context.Context, on bool, confirmedNetwo
 type defaultGrant struct{ provider, why string }
 
 type newFlatPolicy struct {
-	visibility store.Visibility
-	access     string
-	providers  []string
-	events     []store.Event
+	createdPublicInstance bool
+	visibility            store.Visibility
+	access                string
+	providers             []string
+	events                []store.Event
 }
 
 func (s *Service) newFlatPolicy(now time.Time, via Via) (newFlatPolicy, error) {
@@ -158,6 +159,7 @@ func (s *Service) newFlatPolicy(now time.Time, via Via) (newFlatPolicy, error) {
 			return p, fmt.Errorf("%w: %s", ErrConflict, reason)
 		}
 		p.visibility, p.access = store.Public, store.AccessView
+		p.createdPublicInstance = true
 		message = fmt.Sprintf("flat created Public by public instance mode on %s via %s", id, via)
 		grants = []defaultGrant{{id, "network.default_public is " + id}}
 	} else {

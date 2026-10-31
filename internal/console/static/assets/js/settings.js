@@ -1928,7 +1928,7 @@ function drawPublicInstance(box, page, view, reload) {
       const ok = await confirmDialog({
         title: 'Turn on Public instance?',
         body: [
-          h('p', { text: `Every new flat, including flats agents create, will be Public on ${network}. Anyone on the internet can open it: documents, designs and boards at once; websites and pages once a version is created and deployed through their approvals.` }),
+          h('p', { text: `Every new flat, including flats agents create, will be Public on ${network}. Anyone on the internet can open it. Documents, designs and boards run at once. Each save of a new website or page is published without an approval.` }),
           h('p', { text: 'Private links stop working, on the Flats machine too, including Draft and version previews. People can no longer preview a Draft, edit a design or open the history of a document, design or board in a browser. Agents keep these through MCP.' }),
           h('p', { class: 'alert alert-warn', text: `${plural(count, 'flat')} ${count === 1 ? 'is' : 'are'} Private now. ${count === 1 ? 'It will have' : 'They will have'} no working link until ${count === 1 ? 'it is' : 'they are'} made Public or the mode is turned off.` }),
         ],

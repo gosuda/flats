@@ -19,6 +19,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/gosuda/flats/internal/contenttype"
+	"github.com/gosuda/flats/internal/core"
 )
 
 // --- deploy ---
@@ -109,8 +110,9 @@ func (a *app) upload(src, slug, message string, expected int, document bool) err
 		return err
 	}
 	var out struct {
-		Draft *draftView `json:"draft"`
-		Flat  *flatView  `json:"flat"`
+		Draft   *draftView `json:"draft"`
+		Flat    *flatView  `json:"flat"`
+		Version int        `json:"version"`
 	}
 
 	_ = json.Unmarshal(resp.Body, &out)
@@ -153,13 +155,40 @@ func (a *app) upload(src, slug, message string, expected int, document bool) err
 		}
 		return nil
 	}
-	if d := out.Draft; d != nil {
+	if out.Version > 0 {
+		fmt.Fprintf(w, "Saved %s and published as version %d.\n", slug, out.Version)
+		if f := out.Flat; f != nil {
+			if f.PublicURL != "" {
+				fmt.Fprintf(w, "  public: %s\n", f.PublicURL)
+			}
+			state := f.ConnectionState
+			if state == "" {
+				state = "unavailable"
+			}
+			if f.PublicURL == "" || (state != "ready" && state != "key-expiring") {
+				detail := ""
+				for _, ep := range f.Endpoints {
+					if core.PublicProvider(core.ProviderID(ep.Provider)) && ep.State == state {
+						detail = ep.Detail
+						break
+					}
+				}
+				if detail != "" {
+					state += ": " + detail
+				}
+				fmt.Fprintf(w, "  the public link is not open yet (%s)\n", state)
+			}
+			fmt.Fprintf(w, "  note: %s\n", publicNotice(*f))
+		} else {
+			fmt.Fprintln(w, "  the public link is not open yet (unavailable)")
+		}
+	} else if d := out.Draft; d != nil {
 		fmt.Fprintf(w, "Saved Private Draft revision %d of %s: %d files, %s%s (type %s)\n", d.Revision, slug, d.Files, humanBytes(d.Size), gitLabel(d.GitSHA, d.GitDirty), displayType(d.Type))
 	}
 	if info.IsDir() && ps.Skipped > 0 {
 		fmt.Fprintf(w, "  skipped %d entries (.git, node_modules, .DS_Store, ...)\n", ps.Skipped)
 	}
-	if d := out.Draft; d != nil {
+	if d := out.Draft; d != nil && out.Version == 0 {
 		fmt.Fprintf(w, "Current version is unchanged. Request approval for this saved content with `flats create-version %s --revision %d --hash %s`, or preview with `flats preview %s`.\n", slug, d.Revision, d.Hash, slug)
 	}
 

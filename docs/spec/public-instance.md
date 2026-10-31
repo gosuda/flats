@@ -1,6 +1,6 @@
 # Public instance mode
 
-Status: partly implemented; see [Current state](#current-state). The
+Status: implemented. The
 architecture of the implemented part is in
 [Public instance mode](../design.md#public-instance-mode), its routes, MCP
 texts and console in [Surfaces](../surfaces.md#experiments-routes), and its
@@ -295,14 +295,6 @@ The mode does not change them.
   [configuration](../configuration.md) page, guide `topic.approvals` and the
   console's Networks help say that a new flat is always created Private. They
   gain the exception for this mode.
-
-## Current state
-
-Implemented: the Experiments switch, Public creation, the private-link gate,
-hidden private links, the MCP texts and the console, as written in rules 1
-to 12, 13b and 14 to 28. Not implemented yet: publishing websites and pages
-on save (rules 3, 13, 13a, 13c, 13d and 13e) and the matching texts and
-console wording.
 
 ## Completion criteria
 

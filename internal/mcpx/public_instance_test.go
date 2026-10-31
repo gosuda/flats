@@ -65,7 +65,7 @@ func TestPublicInstanceServers(t *testing.T) {
 				if !reflect.DeepEqual(tool.InputSchema, before.InputSchema) {
 					t.Errorf("%s input schema changed", tool.Name)
 				}
-				if tool.Name != "check_client" && !reflect.DeepEqual(tool.OutputSchema, before.OutputSchema) {
+				if tool.Name != "check_client" && !slices.Contains([]string{"save_draft", "save_draft_from_dir", "save_page", "save_document"}, tool.Name) && !reflect.DeepEqual(tool.OutputSchema, before.OutputSchema) {
 					t.Errorf("%s output schema changed", tool.Name)
 				}
 			}

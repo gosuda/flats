@@ -81,6 +81,10 @@ first save, so its model never changes.
 
 **Version model** (websites and pages):
 
+The usual approval steps below have one exception: [public instance
+mode](#public-instance-mode) publishes each save of a Public website or page
+created by the mode while it is on.
+
 * **Draft.** Every save validates the bundle and stores an immutable Draft
   revision; the Draft is always Private and never touches live content.
 * **Version.** Only an approved `create_version` freezes the Draft as `vN`: the
@@ -771,9 +775,12 @@ written to the host log. The operation guide reaches agents fenced in
 after Autopilot. It is off by default and changed only in the console. While
 on, every new flat starts Public with view-only access on
 `network.default_public`, without a visibility approval, and every private
-link is disabled. Autopilot is independent. Every approval other than
-creation keeps its rules, including later visibility changes and public
-editing. Turning either experiment on does not turn the other on.
+link is disabled. Saving a Public website or page created by the mode also
+publishes it without approval. Older flats keep approved version creation
+and deployment. Autopilot is independent; publishing on save needs none of
+its operation switches. Other approvals keep their rules, including later
+visibility changes, public editing, rollback, data restore and deletion.
+Turning either experiment on does not turn the other on.
 
 **Settings and ordering.** The `public_instance` row is the source of truth
 ([storage](configuration.md#public-instance-settings)). Core keeps the last
@@ -804,8 +811,8 @@ same as for Autopilot.
 mutex, `newFlatPolicy` reads the mode and one network-settings snapshot and
 chooses visibility, access, grants and events together. While on it grants
 only the default public provider, in addition to implicit Local, and never
-the private default. The flat, grants and events commit together. The
-creation event names public instance mode and the network. If that default
+the private default. The flat, its lifetime `created_public_instance` mark,
+grants and events commit together. The creation event names public instance mode and the network. If that default
 is missing or no longer permitted, creation is refused as `conflict` before
 anything is created. There is no Private or provider fallback. A creation
 already in progress may finish under the policy it read.
@@ -816,10 +823,33 @@ flat's endpoint and `connection_state` report the public provider's state or
 error, and its event log records the exposure failure. Granting the provider
 again, restarting or changing its key can recover it. Websites and pages
 start Public and Unpublished with `live_version` 0, no public URL and
-`connection_state: "unavailable"`. They still need approved version creation
-and deployment. Exposure and public rename redirects wait for live content;
-restart keeps the Public and Unpublished states. A missing runtime with a
+`connection_state: "unavailable"` until their first published save. The page
+starter Draft from `create_flat` is not published. Exposure and public rename
+redirects wait for live content; restart keeps the Public and Unpublished states. A missing runtime with a
 positive live version still reports `not_deployed`.
+
+**Publication on save.** Under the flat lock, a website or page save stores
+its Draft and checks its creation mark, current Public visibility and the mode.
+If all hold, it publishes exactly that revision as the next numbered
+version through the approved-deployment path. Health checks, server data
+snapshots, start and deployment events follow the same rules, including a
+snapshot failure stopping deployment. The deployment records public instance
+mode, with no approval ID. Saves of one flat publish in saved order; an
+applied Make Private prevents later saves from publishing. A save already
+publishing when Turn off returns may finish, but a save started afterward
+only changes the Draft.
+
+Bundle validation, upload limits, expected revision and Draft disk quota
+checks still run before saving. A publication failure keeps that Draft
+revision, the previous live version and the previous version list. Its typed
+error names the cause and says the Draft was saved but not published. The
+version quota and disk quota apply before publication, and a failed server
+start retains today's warning that live data may have changed. Public route
+readiness is separate: a successful deployment with a failed public route
+still succeeds and reports that its link is not open yet. Explicit version
+creation and deployment still use approvals. The mark survives rename and
+restart; while the mode is off or the flat is Private, saves only change the
+Draft.
 
 **Private-link gate.** `linkGate` wraps the site, preview and rename-redirect
 handlers. It reads the provider ID from the request context; legacy unmarked

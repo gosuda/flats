@@ -30,14 +30,16 @@ func publicNetworkLabel(id string) string {
 	}
 }
 
-const publicCreationNote = " Public instance mode is on: new flats are created Public, view only, on the default public network without visibility approval. Existing flats keep their visibility. Websites and pages still need approved create_version and deploy before their public link opens. Private links are disabled; read guide topic.public-instance."
+const publicCreationNote = " Public instance mode is on: new flats are created Public, view only, on the default public network without visibility approval. Existing flats keep their visibility. Each save of a Public website or page created by this mode publishes the next version without approval. Flats created before the mode keep approved create_version and deploy. The create_flat page starter is not published. Private links are disabled; read guide topic.public-instance."
 
 var publicToolReplacements = []struct{ tool, old, new string }{
 	{"create_flat", "empty private website flat", "empty Public website flat"},
 	{"create_flat", "a Private document", "a Public document"},
 	{"save_draft", "a Private Draft revision", "a Draft revision (private previews disabled)"},
+	{"save_draft", "Saving never creates a version or deployment; call create_version separately to request approval.", "Saving publishes Public flats created by this mode; older flats keep version and deployment approvals."},
 	{"save_draft_from_dir", "a Private Draft", "a Draft (private previews disabled)"},
 	{"save_page", "as a Private Draft", "as a Draft (private previews disabled)"},
+	{"save_page", "Saving never creates a version or deployment; call create_version separately to request approval.", "Saving publishes Public pages created by this mode; older pages keep version and deployment approvals."},
 	{"save_document", "Private unless the operator already made it Public", "Public on creation; existing flats keep their visibility"},
 	{"save_design", "Private unless the operator made it Public", "Public on creation; existing flats keep their visibility"},
 }
