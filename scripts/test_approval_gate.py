@@ -205,10 +205,11 @@ class ListenerOwnerTests(unittest.TestCase):
 
 
 class ContainerApprovalTests(unittest.TestCase):
-    def test_container_cli_uses_exact_create_then_deploy_and_live_docs(self):
+    def run_helpers(self, *, cleanup=False):
         # Execute the checked-in container helpers with fake executables only;
         # loading their definitions must not execute docker or start a host.
         source = Path(__file__).with_name("container-smoke.sh").read_text()
+        wait_for = "wait_for() {" + source.split("\nwait_for() {", 1)[1].split("\n}\n", 1)[0] + "\n}\n"
         helpers = source.split("# console sends", 1)[1].split("# smoke MODE", 1)[0]
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -227,10 +228,10 @@ elif args==['--json','save-document','document',os.environ['work']+'/document']:
  print(json.dumps({'flat':{'type':'docs','running':True}}));sys.exit(0)
 elif args==['approvals','--status','pending','--json']:
  print(json.dumps({'approvals':[]}));sys.exit(0)
-elif args[:3]==['--json','approvals','wait']:
- # Emulates `flats approvals wait` deciding instantly on this fake server.
- assert args[3] in ('apr-created-seven','apr-deploy-eleven'),args
- print(json.dumps({'status':'approved','result_data':{'version':11}}));sys.exit(0)
+elif args[1:3]==['approvals','wait']:
+ # Commit images run the current script with older binaries, which refuse
+ # this verb.
+ sys.stderr.write('flats approvals: unexpected argument "wait"\\n');sys.exit(2)
 else: raise AssertionError(args)
 print(json.dumps({'status':'pending_approval','approval':{'id':identity}}));sys.exit(3)
 """)
@@ -239,35 +240,57 @@ print(json.dumps({'status':'pending_approval','approval':{'id':identity}}));sys.
 import json,os,sys
 args=sys.argv[1:];url=args[-1]
 method=args[args.index('-X')+1] if '-X' in args else 'GET'
-assert method=='POST',args
 with open(os.environ['CALL_LOG'],'a') as stream: stream.write(json.dumps(['http',method,url])+'\\n')
 identities=('apr-created-seven','apr-deploy-eleven')
-assert any(url.endswith('/console/api/approvals/'+identity+'/approve') for identity in identities),args
-for header in ('X-Flats-Console: 1','Origin: http://127.0.0.1:9999','Sec-Fetch-Site: same-origin'): assert header in args,args
-print('{}')
+if method=='POST':
+ assert any(url.endswith('/console/api/approvals/'+identity+'/approve') for identity in identities),args
+ for header in ('X-Flats-Console: 1','Origin: http://127.0.0.1:9999','Sec-Fetch-Site: same-origin'): assert header in args,args
+ print('{}');sys.exit(0)
+identity=url.rsplit('/',1)[-1]
+assert url=='http://127.0.0.1:9999/api/approvals/'+identity and identity in identities,args
+# The first poll of each approval finds it still applying.
+seen=os.path.join(os.environ['work'],'polled-'+identity)
+if not os.path.exists(seen):
+ open(seen,'w').close()
+ print(json.dumps({'status':'applying'}));sys.exit(0)
+print(json.dumps({'status':'approved','result_data':{'version':11,'cleanup_pending':os.environ['CLEANUP']=='1'}}))
 """)
             executable.chmod(0o700)
             curl.chmod(0o700)
             definition = root / "helpers.sh"
-            definition.write_text("# console sends" + helpers)
+            definition.write_text(wait_for + "# console sends" + helpers)
             log = root / "calls.jsonl"
             env = {**os.environ, "flats": str(executable), "work": directory,
                    "url": "http://127.0.0.1:9999", "CALL_LOG": str(log),
+                   "CLEANUP": str(int(cleanup)),
                    "PATH": str(root) + os.pathsep + os.environ["PATH"]}
             result = subprocess.run(
                 ["sh", "-euc", 'fail(){ echo "$*" >&2; exit 1; }; . "$1"; deploy_approved hello; deploy_document document',
                  "container-test", str(definition)],
-                env=env, capture_output=True, text=True, timeout=10)
-            self.assertEqual(result.returncode, 0, result.stderr)
+                env=env, capture_output=True, text=True, timeout=20)
             calls = [json.loads(line) for line in log.read_text().splitlines()]
-            self.assertEqual([item[2] for item in calls if item[:2] == ["http", "POST"]], [
-                "http://127.0.0.1:9999/console/api/approvals/apr-created-seven/approve",
-                "http://127.0.0.1:9999/console/api/approvals/apr-deploy-eleven/approve"])
-            self.assertEqual([item[1] for item in calls if item[0] == "cli" and item[1][1:3] == ["approvals", "wait"]], [
-                ["--json", "approvals", "wait", "apr-created-seven"],
-                ["--json", "approvals", "wait", "apr-deploy-eleven"]])
-            self.assertEqual([item[1][1] for item in calls if item[0] == "cli" and item[1][0] == "--json"],
-                             ["save-draft", "create-version", "approvals", "deploy", "approvals", "save-document"])
+        return result, calls
+
+    def test_container_cli_uses_exact_create_then_deploy_and_live_docs(self):
+        result, calls = self.run_helpers()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([item[2] for item in calls if item[:2] == ["http", "POST"]], [
+            "http://127.0.0.1:9999/console/api/approvals/apr-created-seven/approve",
+            "http://127.0.0.1:9999/console/api/approvals/apr-deploy-eleven/approve"])
+        self.assertEqual([item[2] for item in calls if item[:2] == ["http", "GET"]], [
+            "http://127.0.0.1:9999/api/approvals/apr-created-seven",
+            "http://127.0.0.1:9999/api/approvals/apr-created-seven",
+            "http://127.0.0.1:9999/api/approvals/apr-deploy-eleven",
+            "http://127.0.0.1:9999/api/approvals/apr-deploy-eleven"])
+        self.assertEqual([item[1][1] for item in calls if item[0] == "cli" and item[1][0] == "--json"],
+                         ["save-draft", "create-version", "deploy", "save-document"])
+
+    def test_cleanup_pending_is_not_reported_applied(self):
+        result, calls = self.run_helpers(cleanup=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("storage cleanup is pending", result.stderr)
+        self.assertEqual([item[1][1] for item in calls if item[0] == "cli" and item[1][0] == "--json"],
+                         ["save-draft", "create-version"])
 
 
 if __name__ == "__main__":
