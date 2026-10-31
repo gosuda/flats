@@ -150,25 +150,67 @@ func extractTo(w io.Writer, raw []byte) error {
 
 // stageStream fills the stage file through fill, so the candidate executable
 // is written once from the archive stream and never buffered whole. It mirrors
-// the create/chmod/sync/close sequence of stage in files.go.
+// the create/chmod/sync/close sequence of stage in files.go. fill runs even
+// when the stage file cannot be created or written, and its error comes first
+// and alone: a bad archive is reported before any problem with the stage file.
 func stageStream(path string, mode os.FileMode, fill func(w io.Writer) error) (string, error) {
 	name := stageName(path)
-	if e := os.Remove(name); e != nil && !errors.Is(e, os.ErrNotExist) {
-		return "", e
-	}
-	f, e := os.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
+	f, e := openStage(name, mode)
 	if e != nil {
+		if fe := fill(io.Discard); fe != nil {
+			return "", fe
+		}
 		return "", e
 	}
 	pe := f.Chmod(mode)
-	we := fill(f)
+	w := &stageWriter{w: f}
+	if fe := fill(w); fe != nil {
+		f.Close()
+		os.Remove(name)
+		return "", fe
+	}
 	se := f.Sync()
 	ce := f.Close()
-	if e = errors.Join(pe, we, se, ce); e != nil {
+	if e = errors.Join(pe, w.err, se, ce); e != nil {
 		os.Remove(name)
 		return "", e
 	}
 	return name, nil
+}
+
+// stageFile is the part of *os.File that stageStream uses.
+type stageFile interface {
+	io.Writer
+	Chmod(os.FileMode) error
+	Sync() error
+	Close() error
+}
+
+// openStage removes a stale stage file and creates a new one. Tests replace it
+// to make the file's operations fail.
+var openStage = func(name string, mode os.FileMode) (stageFile, error) {
+	if e := os.Remove(name); e != nil && !errors.Is(e, os.ErrNotExist) {
+		return nil, e
+	}
+	f, e := os.OpenFile(name, os.O_CREATE|os.O_EXCL|os.O_WRONLY, mode)
+	if e != nil {
+		return nil, e
+	}
+	return f, nil
+}
+
+// stageWriter keeps the first write error and reports every write as done,
+// so extraction reads the rest of the archive and reports its problems first.
+type stageWriter struct {
+	w   io.Writer
+	err error
+}
+
+func (s *stageWriter) Write(p []byte) (int, error) {
+	if s.err == nil {
+		_, s.err = s.w.Write(p)
+	}
+	return len(p), nil
 }
 
 type cappedBuffer struct{ bytes.Buffer }
