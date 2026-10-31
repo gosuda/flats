@@ -14,6 +14,7 @@ import { mount as approvalPage, decidedBy, approvalsTable } from './approval.js'
 const tick = () => new Promise((resolve) => setTimeout(resolve, 20));
 const all = (root, pred) => [root, ...(root.childNodes || []).flatMap((n) => all(n, () => true))].filter((n) => n.tagName && pred(n));
 const byText = (root, text) => all(root, (e) => e.tagName === 'BUTTON' && e.textContent === text);
+const apButtons = (root, text) => byText(root, text).filter((e) => e.getAttribute('aria-label') === text + ' Autopilot');
 const byId = (root, id) => all(root, (e) => e.getAttribute('id') === id)[0];
 const switches = (root) => all(root, (e) => e.tagName === 'INPUT' && e.getAttribute('role') === 'switch');
 const openDialogs = () => all(document.body, (e) => e.tagName === 'DIALOG' && e.open !== false);
@@ -25,6 +26,8 @@ const lastToast = () => toasts.childNodes.at(-1);
 
 // --- fake host ---
 const BASE = '/console/api/experiments/autopilot';
+const PI = '/console/api/experiments/public-instance';
+let publicInstance = { enabled: false, network: 'portal', usable: true, reason: '', private_flats: 2 };
 let stored;
 const reset = (view) => { stored = { enabled: false, allowed: [], guide: '', guide_max: 4000, ...view }; };
 const calls = [];
@@ -43,6 +46,14 @@ globalThis.fetch = async (url, opts) => {
     delete answers[key];
     const r = typeof a === 'function' ? await a() : a;
     return json(r.status, r.body);
+  }
+  if (key === 'GET ' + PI) return json(200, { public_instance: publicInstance });
+  if (key === 'PUT ' + PI) {
+    if (body.enabled && (!publicInstance.usable || body.confirmed_network !== publicInstance.network)) {
+      return json(409, { error: 'the default public network changed; review it and turn Public instance on again' });
+    }
+    publicInstance = { ...publicInstance, enabled: body.enabled };
+    return json(200, { public_instance: publicInstance });
   }
   if (key === 'GET ' + BASE) return json(200, { autopilot: stored });
   if (key === 'PUT ' + BASE) {
@@ -99,8 +110,8 @@ const warning = all(main, (e) => (e.getAttribute('class') || '') === 'callout ca
 assert.equal(warning.textContent, 'Only people change this page: agents must never change it, including through a browser or by calling the console. Flats cannot enforce that. The console has no login and only refuses requests from other websites, so a program that can reach this address can do what this page does.');
 assert.ok(main.textContent.indexOf('Only people change this page') < main.textContent.indexOf('Autopilot'), 'the warning is at the top');
 assert.ok(byId(main, 'autopilot-state').textContent.includes('Off'));
-assert.equal(byText(main, 'Turn on').length, 1);
-assert.equal(byText(main, 'Turn on')[0].getAttribute('aria-label'), 'Turn on Autopilot');
+assert.equal(apButtons(main, 'Turn on').length, 1);
+assert.equal(apButtons(main, 'Turn on')[0].getAttribute('aria-label'), 'Turn on Autopilot');
 // While off, no switches and no guide (rule 9).
 assert.equal(switches(main).length, 0);
 assert.equal(all(main, (e) => e.tagName === 'TEXTAREA').length, 0);
@@ -109,7 +120,7 @@ assert.ok(!main.textContent.includes('Operation guide'));
 
 // Turn on asks once, listing the operations kept from before (rule 10).
 // Cancel sends nothing.
-byText(main, 'Turn on')[0].dispatch('click');
+apButtons(main, 'Turn on')[0].dispatch('click');
 await tick();
 assert.equal(openDialogs().length, 1);
 let dialog = openDialogs()[0];
@@ -123,7 +134,7 @@ await tick();
 assert.equal(sent('').length, 0, 'a cancelled Turn on sends nothing');
 assert.equal(stored.enabled, false);
 // Confirming sends exactly the listed operations and shows the switches.
-byText(main, 'Turn on')[0].dispatch('click');
+apButtons(main, 'Turn on')[0].dispatch('click');
 await tick();
 openDialogs()[0].close('ok');
 await tick();
@@ -131,7 +142,7 @@ assert.deepEqual(sent('').at(-1).body, { enabled: true, confirmed_allowed: ['dep
 assert.equal(sent('').at(-1).headers['X-Flats-Console'], '1');
 assert.equal(stored.enabled, true);
 assert.equal(lastToast().textContent, 'Autopilot is on.');
-assert.equal(byText(main, 'Turn off').length, 1);
+assert.equal(apButtons(main, 'Turn off').length, 1);
 assert.ok(byId(main, 'autopilot-state').textContent.includes('On'));
 // While on: nine switches under three sub-headings and the guide (rule 11).
 assert.deepEqual(switches(main).map((s) => s.getAttribute('id')), DISPLAY_IDS.map((id) => 'autopilot-op-' + id));
@@ -147,7 +158,7 @@ stop();
 // The confirmation lists in display order and sends the server's order.
 reset({ allowed: ['delete_version', 'deploy', 'make_public'] });
 ({ main, stop } = await open('experiments'));
-byText(main, 'Turn on')[0].dispatch('click');
+apButtons(main, 'Turn on')[0].dispatch('click');
 await tick();
 assert.deepEqual(all(byId(openDialogs()[0], 'autopilot-confirm-allowed'), (e) => e.tagName === 'LI').map((li) => li.textContent), ['Deploy', 'Delete versions', 'Make Public']);
 openDialogs()[0].close('ok');
@@ -159,7 +170,7 @@ stop();
 // With nothing allowed, the confirmation says so and sends an empty list.
 reset({});
 ({ main, stop } = await open('experiments'));
-byText(main, 'Turn on')[0].dispatch('click');
+apButtons(main, 'Turn on')[0].dispatch('click');
 await tick();
 dialog = openDialogs()[0];
 assert.ok(dialog.textContent.includes('No operation is allowed yet; agents can decide nothing until you turn one on.'));
@@ -174,7 +185,7 @@ stop();
 reset({ allowed: ['deploy'] });
 ({ main, stop } = await open('experiments'));
 stored = { ...stored, allowed: ['deploy', 'delete_flat'] };
-byText(main, 'Turn on')[0].dispatch('click');
+apButtons(main, 'Turn on')[0].dispatch('click');
 await tick();
 openDialogs()[0].close('ok');
 await tick();
@@ -186,7 +197,7 @@ const loads = calls.filter((c) => c.key === 'GET ' + BASE).length;
 dialog.close('ok');
 await tick();
 assert.equal(calls.filter((c) => c.key === 'GET ' + BASE).length, loads + 1, 'the page reloads');
-byText(main, 'Turn on')[0].dispatch('click');
+apButtons(main, 'Turn on')[0].dispatch('click');
 await tick();
 assert.deepEqual(all(byId(openDialogs()[0], 'autopilot-confirm-allowed'), (e) => e.tagName === 'LI').map((li) => li.textContent), ['Deploy', 'Delete flats'],
   'the reloaded page lists the stored operations');
@@ -198,12 +209,12 @@ stop();
 // Turn off acts at once, without a dialog (rule 10).
 reset({ enabled: true, allowed: ['deploy'], guide: 'Deploy previews only.' });
 ({ main, stop } = await open('experiments'));
-byText(main, 'Turn off')[0].dispatch('click');
+apButtons(main, 'Turn off')[0].dispatch('click');
 await tick();
 assert.equal(openDialogs().length, 0, 'no confirmation');
 assert.deepEqual(sent('').at(-1).body, { enabled: false });
 assert.equal(lastToast().textContent, 'Autopilot is off.');
-assert.equal(byText(main, 'Turn on').length, 1);
+assert.equal(apButtons(main, 'Turn on').length, 1);
 assert.equal(switches(main).length, 0, 'the switches are hidden again');
 assert.deepEqual(stored.allowed, ['deploy'], 'turning off keeps the operations');
 stop();
@@ -339,8 +350,133 @@ answers['GET ' + BASE] = { status: 500, body: { error: 'storage unavailable' } }
 ({ main, stop } = await open('experiments'));
 assert.ok(main.textContent.includes('Cannot load Autopilot') && main.textContent.includes('storage unavailable'));
 assert.ok(main.textContent.includes('Only people change this page'));
-assert.equal(byText(main, 'Turn on').length + byText(main, 'Turn off').length, 0);
+assert.equal(apButtons(main, 'Turn on').length + apButtons(main, 'Turn off').length, 0);
 stop();
+
+// --- Public instance ---
+const piToggle = (root) => all(root, (e) => e.tagName === 'BUTTON' && (e.getAttribute('aria-label') || '').endsWith(' Public instance'))[0];
+const piSent = () => calls.filter((c) => c.key === 'PUT ' + PI);
+reset({ enabled: true, guide: 'Saved guide.' });
+({ main, stop } = await open('experiments'));
+assert.ok(byId(main, 'autopilot-state'));
+assert.ok(byId(main, 'public-instance-state').textContent.includes('Off'));
+assert.ok(main.textContent.includes('New flats are created Public on the default public network, and private links are turned off.'));
+assert.ok(byId(main, 'public-instance-state').textContent.includes('Default public network: Portal'));
+assert.ok(main.textContent.indexOf('Autopilot') < main.textContent.indexOf('Public instance'));
+const unsaved = byId(main, 'autopilot-guide-text');
+unsaved.value = 'Keep this unsaved guide.';
+unsaved.dispatch('input');
+const unchangedGuide = () => {
+  assert.equal(byId(main, 'autopilot-guide-text'), unsaved, 'the other box is not redrawn');
+  assert.equal(unsaved.value, 'Keep this unsaved guide.');
+  assert.equal(byText(main, 'Save guide')[0].disabled, false);
+};
+const beforeCancel = piSent().length;
+piToggle(main).dispatch('click');
+await tick();
+dialog = openDialogs()[0];
+assert.ok(dialog.textContent.includes('Turn on Public instance?'));
+assert.ok(dialog.textContent.includes('including flats agents create, will be Public on Portal'));
+assert.ok(dialog.textContent.includes('Anyone on the internet can open it'));
+assert.ok(dialog.textContent.includes('Documents, designs and boards run at once'));
+assert.ok(dialog.textContent.includes('Each save of a new website or page is published without an approval.'));
+assert.ok(dialog.textContent.includes('Private links stop working, on the Flats machine too, including Draft and version previews'));
+assert.ok(dialog.textContent.includes('preview a Draft, edit a design or open the history'));
+assert.ok(dialog.textContent.includes('in a browser. Agents keep these through MCP.'));
+assert.ok(dialog.textContent.includes('2 flats are Private now. They will have no working link until they are made Public or the mode is turned off.'));
+assert.equal(byText(dialog, 'Turn on')[0].className, 'btn btn-danger');
+dialog.close('cancel');
+await tick();
+assert.equal(piSent().length, beforeCancel);
+piToggle(main).dispatch('click');
+await tick();
+openDialogs()[0].close('ok');
+await tick();
+assert.deepEqual(piSent().at(-1).body, { enabled: true, confirmed_network: 'portal' });
+assert.equal(piSent().at(-1).headers['X-Flats-Console'], '1');
+assert.equal(lastToast().textContent, 'Public instance is on.');
+assert.ok(byId(main, 'public-instance-state').textContent.includes('On'));
+unchangedGuide();
+piToggle(main).dispatch('click');
+await tick();
+assert.equal(openDialogs().length, 0, 'Turn off acts without confirmation');
+assert.deepEqual(piSent().at(-1).body, { enabled: false });
+assert.equal(lastToast().textContent, 'Public instance is off.');
+unchangedGuide();
+
+// A stale confirmed network is shown, then only this section reloads.
+publicInstance = { ...publicInstance, network: 'tailscale-funnel' };
+piToggle(main).dispatch('click');
+await tick();
+openDialogs()[0].close('ok');
+await tick();
+dialog = openDialogs()[0];
+assert.ok(dialog.textContent.includes('The default public network changed'));
+assert.ok(dialog.textContent.includes('review it and turn Public instance on again'));
+assert.equal(publicInstance.enabled, false);
+const piLoads = calls.filter((c) => c.key === 'GET ' + PI).length;
+const apLoads = calls.filter((c) => c.key === 'GET ' + BASE).length;
+dialog.close('ok');
+await tick();
+assert.equal(calls.filter((c) => c.key === 'GET ' + PI).length, piLoads + 1);
+assert.equal(calls.filter((c) => c.key === 'GET ' + BASE).length, apLoads);
+assert.ok(byId(main, 'public-instance-state').textContent.includes('Tailscale Funnel'));
+unchangedGuide();
+// Other failures also show the error and re-read the stored section.
+answers['PUT ' + PI] = { status: 500, body: { error: 'storage unavailable' } };
+piToggle(main).dispatch('click');
+await tick();
+openDialogs()[0].close('ok');
+await tick();
+assert.ok(openDialogs()[0].textContent.includes('Cannot turn on Public instance'));
+assert.ok(openDialogs()[0].textContent.includes('storage unavailable'));
+openDialogs()[0].close('ok');
+await tick();
+unchangedGuide();
+stop();
+
+// A load failure belongs to its own section only.
+for (const failed of [BASE, PI]) {
+  reset({});
+  answers['GET ' + failed] = { status: 500, body: { error: 'section unavailable' } };
+  ({ main, stop } = await open('experiments'));
+  assert.ok(main.textContent.includes('Cannot load ' + (failed === BASE ? 'Autopilot' : 'Public instance')));
+  assert.ok(main.textContent.includes('section unavailable'));
+  assert.ok(byId(main, failed === BASE ? 'public-instance-state' : 'autopilot-state'));
+  stop();
+}
+
+// No usable default means no Turn on, with an explanation and a Networks link.
+publicInstance = { enabled: false, network: '', usable: false, reason: 'No default public network is selected.', private_flats: 1 };
+({ main, stop } = await open('experiments'));
+assert.equal(piToggle(main).getAttribute('disabled'), '');
+assert.ok(main.textContent.includes(publicInstance.reason));
+assert.ok(all(byId(main, 'public-instance'), (e) => e.tagName === 'A' && e.getAttribute('href') === '/settings/networks').length);
+stop();
+publicInstance = { ...publicInstance, enabled: true, network: 'portal', reason: 'Portal is turned off.' };
+({ main, stop } = await open('experiments'));
+assert.ok(main.textContent.includes('New flats cannot be created until the default public network is turned on again.'));
+assert.equal(piToggle(main).getAttribute('disabled'), null, 'Turn off stays available');
+piToggle(main).dispatch('click');
+await tick();
+assert.equal(publicInstance.enabled, false);
+assert.equal(piToggle(main).getAttribute('disabled'), '');
+assert.equal(openDialogs().length, 0);
+stop();
+
+// Counts use singular only for one. Provider IDs get the existing UI label.
+for (const count of [0, 1, 2]) {
+  publicInstance = { enabled: false, network: 'proxy-public', usable: true, reason: '', private_flats: count };
+  ({ main, stop } = await open('experiments'));
+  piToggle(main).dispatch('click');
+  await tick();
+  dialog = openDialogs()[0];
+  assert.ok(dialog.textContent.includes('Public on Reverse proxy (public)'));
+  assert.ok(dialog.textContent.includes(count === 1 ? '1 flat is Private now. It will have no working link until it is made Public' : `${count} flats are Private now. They will have no working link until they are made Public`));
+  dialog.close('cancel');
+  await tick();
+  stop();
+}
 
 // --- Agents page (rule 25) ---
 const BEGIN = 'Agents can create flats, save Drafts, open previews and read logs. ';

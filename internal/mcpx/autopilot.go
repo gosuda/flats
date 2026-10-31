@@ -12,16 +12,16 @@ import (
 
 	runtimeref "github.com/gosuda/flats/docs"
 	"github.com/gosuda/flats/internal/api"
-	"github.com/gosuda/flats/internal/clientstate"
 	"github.com/gosuda/flats/internal/core"
 	"github.com/gosuda/flats/internal/store"
 )
 
-// requestState is the Autopilot copy one HTTP request works with. Handler
+// requestState is the mode snapshot one HTTP request works with. Handler
 // reads the settings once per request; the server choice, guide pages,
 // guide revision and approval texts of that request all use this copy.
 // Agent decisions check the stored settings again in core.
 type requestState struct {
+	Public    *runtimeref.PublicInstanceState
 	Autopilot core.Autopilot
 	Guide     *runtimeref.AutopilotState // Autopilot.GuideState(); nil while off
 	Arrival   core.Arrival               // set only while Autopilot is on
@@ -30,7 +30,7 @@ type requestState struct {
 type stateKey struct{}
 
 // stateOf returns the request's copy; without one (an in-memory session)
-// Autopilot is off.
+// both modes are off.
 func stateOf(ctx context.Context) requestState {
 	st, _ := ctx.Value(stateKey{}).(requestState)
 	return st
@@ -39,6 +39,10 @@ func stateOf(ctx context.Context) requestState {
 func withState(r *http.Request, svc *core.Service) context.Context {
 	ap := svc.Autopilot()
 	st := requestState{Autopilot: ap, Guide: ap.GuideState()}
+	if svc.PublicInstance().Enabled {
+		_, network := svc.DefaultProviders()
+		st.Public = &runtimeref.PublicInstanceState{Network: network, Label: publicNetworkLabel(network)}
+	}
 	if ap.Enabled {
 		st.Arrival = arrivalOf(r)
 	}
@@ -131,6 +135,9 @@ func (t *tools) describe(tool *mcp.Tool) *mcp.Tool {
 	if t.autopilot {
 		tool.Description = autopilotDescription(tool.Name, tool.Description)
 	}
+	if t.publicInstance {
+		tool.Description = publicInstanceDescription(tool.Name, tool.Description)
+	}
 	return tool
 }
 
@@ -200,13 +207,6 @@ func agentsMayDecide(a store.Approval, ap core.Autopilot) bool {
 	}
 	need, err := core.AutopilotNeeds(a.Action, a.Params)
 	return err == nil && need&^ap.Allowed == 0
-}
-
-// checkResultAutopilot is the check_client result while Autopilot is on:
-// today's result plus an additive autopilot member.
-type checkResultAutopilot struct {
-	clientstate.CheckResult
-	Autopilot autopilotInfo `json:"autopilot"`
 }
 
 type autopilotInfo struct {

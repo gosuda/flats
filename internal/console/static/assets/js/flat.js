@@ -72,6 +72,8 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
   // once saved.
   const isDocs = () => flat && isLive(flat);
   const serverParts = () => flat && hasServer(flat);
+  const publishesOnSave = () => flat.private_links_off && flat.created_public_instance && visibilityOf(flat.visibility) === 'public' && !isDocs();
+  const activationWhen = () => publishesOnSave() ? 'the next published save, approved activation or Flats host restart' : 'the next approved activation or Flats host restart';
 
   const page = h('section', { class: 'page site-page' },
     h('a', { class: 'back', href: '/', 'data-nav': true }, icon('back'), 'All flats'),
@@ -104,7 +106,7 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
         if (serverParts()) { loadEnv(); loadSecrets(); loadNetwork(); }
         loadHostProviders();
       } else {
-        if (!isDocs()) await Promise.all([loadVersions(), loadPreviews()]);
+        if (!isDocs()) await Promise.all([loadVersions(), flat.private_links_off ? null : loadPreviews()]);
         logs.poll();
       }
     }
@@ -133,7 +135,7 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
       const detail = proxyDetail(flat, url);
       return detail ? h('div', { class: 'muted small', text: detail }) : null;
     };
-    add('Private URL', serving
+    if (!flat.private_links_off) add('Private URL', serving
       ? h('div', null, extLink(shownPrivate),
           pending ? h('div', { class: 'muted small' },
             h('span', { class: 'badge badge-' + privateState, text: privateState }), ' ',
@@ -154,9 +156,14 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
     }
 
     fill(headSlot, siteHeader(flat, 'deployments'),
+      flat.private_links_off ? h('p', { class: 'muted', text: 'Private links are turned off on this host (public instance mode).' }) : null,
+      flat.private_links_off && visibilityOf(flat.visibility) === 'private'
+        ? h('p', { class: 'muted', text: 'This flat has no working link until it is made Public or public instance mode is turned off.' }) : null,
       section('Status', 'status', urls),
+      publishesOnSave()
+        ? h('p', { class: 'muted', text: 'Each save publishes the next version without an approval while public instance mode is on and visibility stays Public.' }) : null,
       isDocs() ? null : section('Versions', 'versions', versionsSlot),
-      isDocs() ? null : section('Open previews', 'previews', previewsSlot),
+      isDocs() || flat.private_links_off ? null : section('Open previews', 'previews', previewsSlot),
       section('Logs', 'logs', logs.el));
   }
 
@@ -225,7 +232,7 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
       const edit = accessOf(flat) === 'edit';
       if (pre && pre.safe_point) {
         const pinned = pre.safe_point_pinned === true;
-        const open = flat.private_url ? extLink(privateURL(flat), 'Open History', 'btn btn-small') : null;
+        const open = privateURL(flat) ? extLink(privateURL(flat), 'Open History', 'btn btn-small') : null;
         rows.push(h('div', { class: 'setting-row' },
           h('div', null, h('span', { class: 'setting-title', text: 'Safe point' }), h('div', { class: 'muted small', text: edit ? 'Kept while guests can edit' : 'From the last time guests could edit' })),
           h('div', { class: 'setting-sharing' },
@@ -404,9 +411,11 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
     const rows = vs.map((v) => {
       const actions = h('div', { class: 'cell-actions' });
       if (!v.pruned) {
-        const prev = h('button', { type: 'button', class: 'btn btn-small', text: 'Preview', 'aria-label': `Preview version ${v.number}` });
-        prev.addEventListener('click', () => busy(prev, async () => { if (await previewVersion(flat, v.number)) loadPreviews(); }));
-        actions.appendChild(prev);
+        if (!flat.private_links_off) {
+          const prev = h('button', { type: 'button', class: 'btn btn-small', text: 'Preview', 'aria-label': `Preview version ${v.number}` });
+          prev.addEventListener('click', () => busy(prev, async () => { if (await previewVersion(flat, v.number)) loadPreviews(); }));
+          actions.appendChild(prev);
+        }
         if (v.number === live) {
           // A page has no environment to apply.
           if (serverParts()) actions.appendChild(redeployButton());
@@ -484,7 +493,7 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
         d.git_dirty ? h('span', { class: 'badge badge-warn', text: 'dirty', title: 'Uncommitted changes when saved' }) : null),
       h('td', { class: 'msg' }, d.message || h('span', { class: 'muted', text: '—' })),
       h('td', null, bytes(d.size), h('div', { class: 'muted small', text: `${plural(d.files, 'file')} · ${d.kind}` })),
-      h('td', null, h('div', { class: 'cell-actions' }, prev, pub)));
+      h('td', null, h('div', { class: 'cell-actions' }, flat.private_links_off ? null : prev, pub)));
   }
 
   // redeployButton restarts the live version, e.g. after environment settings changed.
@@ -585,7 +594,7 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
       busy(save, async () => {
         try {
           await api.putEnv(slug, name.value, value.value);
-          toast(`Variable ${name.value} saved. It applies on the next approved activation or Flats host restart.`, 'success');
+          toast(`Variable ${name.value} saved. It applies on ${activationWhen()}.`, 'success');
           loadEnv(); logs.poll();
         } catch (err) { toast(err.message, 'error'); }
       });
@@ -607,13 +616,13 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
       del.addEventListener('click', () => busy(del, async () => {
         const ok = await confirmDialog({
           title: `Delete variable ${v.name}?`,
-          body: 'The running version keeps its current environment until the next approved activation or Flats host restart.',
+          body: `The running version keeps its current environment until ${activationWhen()}.`,
           confirmLabel: 'Delete', danger: true,
         });
         if (!ok) return;
         try {
           await api.deleteEnv(slug, v.name);
-          toast(`Variable ${v.name} deleted. It applies on the next approved activation or Flats host restart.`, 'success');
+          toast(`Variable ${v.name} deleted. It applies on ${activationWhen()}.`, 'success');
           loadEnv();
         } catch (err) { toast(err.message, 'error'); }
       }));
@@ -625,8 +634,8 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
     })) : h('p', { class: 'muted', text: 'No ordinary environment variables.' });
     const apply = flat.live_version
       ? h('div', { class: 'inline-form' },
-        h('span', { class: 'muted', text: `Changes apply on the next approved activation or Flats host restart: redeploy the live version ${flat.live_version} to use them now.` }), redeployButton())
-      : h('p', { class: 'muted', text: 'Changes apply when a deployment is approved.' });
+        h('span', { class: 'muted', text: `Changes apply on ${activationWhen()}: redeploy the live version ${flat.live_version} to use them now.` }), redeployButton())
+      : h('p', { class: 'muted', text: publishesOnSave() ? 'Changes apply on the next published save.' : 'Changes apply when a deployment is approved.' });
     fill(envSlot, add,
       h('p', { class: 'muted', text: 'Values are stored as plain text and readable by authorized agents. Use Secrets for credentials. Server-side JavaScript reads env.NAME; WASI reads environment variables. Static files and browser bundles receive no injected values.' }),
       items, form, apply,
@@ -707,9 +716,9 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
       : h('p', { class: 'muted', text: 'No secrets.' });
     const apply = flat.live_version
       ? h('div', { class: 'inline-form' },
-        h('span', { class: 'muted', text: `Changes apply on the next approved activation or Flats host restart: redeploy the live version ${flat.live_version} to use them now.` }),
+        h('span', { class: 'muted', text: `Changes apply on ${activationWhen()}: redeploy the live version ${flat.live_version} to use them now.` }),
         redeployButton())
-      : h('p', { class: 'muted', text: 'Secrets apply when a deployment is approved.' });
+      : h('p', { class: 'muted', text: publishesOnSave() ? 'Secrets apply on the next published save.' : 'Secrets apply when a deployment is approved.' });
     const addSecret = h('button', { type: 'button', class: 'btn btn-small', text: 'Add secret', 'aria-expanded': 'false', 'aria-controls': 'secret-form' });
     form.hidden = true;
     addSecret.addEventListener('click', () => {

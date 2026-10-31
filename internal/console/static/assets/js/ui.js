@@ -560,6 +560,7 @@ export function openTargets(f) {
 // privateURL is the flat's private_url, or, when that is a Local address
 // this device cannot open, the first private address that it can.
 export function privateURL(f) {
+  if (f?.private_links_off) return '';
   if (!f?.private_url || !serverOnly(f.private_url)) return f?.private_url;
   return openTargets(f).private[0]?.url || f.private_url;
 }

@@ -21,6 +21,14 @@ The three content types then have distinct roles:
 | `page` | an agent | one HTML page with charts and visualizations | after an approved version and deployment |
 | `flat` | an agent | a website or app (static or server) | after an approved version and deployment |
 
+The [public instance mode exception](public-instance.md#new-flats) applies
+to rules 4, 5 and 6 below. While the mode is on, every save of a Public page
+created by the mode also creates and deploys the next version without
+approval. Older pages, Private pages and saves while the mode is off keep
+the usual approved version/deploy steps. `create_flat` creates a Public,
+Unpublished page in the mode, but does not publish its starter Draft. Bundle,
+replacement and revision checks still apply.
+
 ## Behavior
 
 1. **Explicit type.** A bundle is a page only when its `flats.json` says

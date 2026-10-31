@@ -10,7 +10,7 @@ The question "who decides this value?" picks the place:
 | Decided by | Stored in | Examples |
 | --- | --- | --- |
 | The operator | `config.json` | addresses, system policies, permitted networks, console domains, provider settings |
-| Flats while running | `flats.db` | flats, drafts, versions, deployments, document and design revisions, approvals, per-flat provider permission, events, analytics (page views, and per-day usage in `usagedays`), ordinary app environment variables, encrypted secrets, encrypted operator keys, console node records, [Autopilot settings](#autopilot-settings) |
+| Flats while running | `flats.db` | flats, drafts, versions, deployments, document and design revisions, approvals, per-flat provider permission, events, analytics (page views, and per-day usage in `usagedays`), ordinary app environment variables, encrypted secrets, encrypted operator keys, console node records, [Autopilot settings](#autopilot-settings), [public instance settings](#public-instance-settings) |
 | The flat | `flats/<slug>/` | uploaded code, revision contents, the flat's SQLite database and FILES |
 | Nobody may read it in plain text | separate files | `secret.key` |
 | A client machine's user | `flats-client/connection.json` | which Flats host the CLI and `flats mcp` use, saved by `flats connect` |
@@ -123,7 +123,7 @@ and an empty guide:
 | Table | Holds |
 | --- | --- |
 | `autopilot` | One row (`id` 1): `enabled` (0 or 1), `ops` (the bit set of operations agents may decide, below 512; the bits are listed in [Autopilot](design.md#autopilot)), `guide` (the operation guide as the operator saved it; the host refuses more than 4,000 code points) and `updated_at` (Unix milliseconds of the last change, 0 when never changed) |
-| `autopilot_changes` | The host log line of each committed change (`seq`, `at` in Unix milliseconds, `line`, `logged`) until it is logged; the newest 100 logged lines stay |
+| `autopilot_changes` | The shared Experiments change log, including public instance changes from step 22: the host log line of each committed change (`seq`, `at` in Unix milliseconds, `line`, `logged`) until it is logged; the newest 100 logged lines stay |
 
 Nothing in them is secret, so they are not encrypted. Because every database
 from step 21 on has the `autopilot` row, that row does not count when Flats
@@ -131,6 +131,46 @@ checks whether a database already holds data. A release older than step 21
 refuses the database; going back means restoring the backup taken before the
 migration, which loses the agent decisions made since. To stop Autopilot
 without going back, turn it off in the console, or stop Flats.
+
+### Public instance settings
+
+[Public instance mode](spec/public-instance.md) lives only in `flats.db`,
+independently of Autopilot. It has no `config.json` key, environment variable,
+`flats serve` flag, CLI command or MCP tool. Only Settings › Experiments
+changes it, through the [console routes](surfaces.md#experiments-routes).
+Changes apply without a restart.
+
+Database step 22 creates `public_instance` on new and upgraded hosts, with
+one row, `id` 1. Its `enabled` is 0 or 1 and starts at 0; `updated_at` is the
+Unix-millisecond time of the last change, or 0 when never changed. The row is
+not encrypted and does not count when Flats checks whether a database already
+holds data. A change writes the row and a `public instance:` line to the
+shared `autopilot_changes` table in one transaction. The existing Experiments
+log sync writes and marks both kinds of lines, with the same retention.
+
+Turn on requires `network.default_public` to name a public provider in
+`network.permitted`, and confirms that provider's current ID. This checks
+permission, not route readiness. The mode grants no provider the host has not
+already permitted. While on, a new flat gets only that public grant besides
+implicit Local, starts Public with view-only access and needs no visibility
+approval. Every private link, Local included, is disabled. If the default is
+later cleared or no longer permitted, the mode stays on, the console warns
+and new creation is refused without a fallback. Existing flats keep their
+visibility and grants. Turn off restores retained private links without
+changing visibility.
+
+Database step 23 adds `flats.created_public_instance`, a 0-or-1 mark with a
+default of 0 for existing flats. Creation while the mode is on sets it to 1
+in the same transaction as visibility and grants. Rename and restart keep
+it, and turning the mode off does not clear it. While the mode is on and a
+marked website or page is Public, each save stores and deploys the next
+version without approval. Older flats, marked Private flats and saves while
+the mode is off keep the separate approved version/deploy steps. The page
+starter Draft from `create_flat` is not published.
+
+A binary older than database step 23 refuses this database. To run it,
+restore the backup from before migration, losing changes made since. To stop
+the mode without restoring a backup, turn it off in the console or stop Flats.
 
 ## config.json
 
@@ -218,7 +258,8 @@ does not permit Funnel, and Local needs no entry. `private_backend:
 "tailscale"` requires `tailscale` in `permitted`. While `default_private` is
 empty, it also makes every new flat allowed on Tailscale when it is created
 (the operator can turn that off per flat); a non-empty `default_private`
-decides instead. Flats that already exist keep their providers.
+decides instead. This private grant is skipped while public instance mode is
+on. Flats that already exist keep their providers.
 
 `default_private` (`local`, `tailscale`, `netbird` or `proxy`) and `default_public`
 (`tailscale-funnel`, `portal`, `zrok`, `cloudflare-quick`, `netbird-expose` or
@@ -226,9 +267,13 @@ decides instead. Flats that already exist keep their providers.
 a new flat is allowed on when it is created, besides Local. Each must be in
 `permitted`; other permitted providers are not granted to new flats. An empty
 `default_private` follows `private_backend`, and an empty `default_public`
-grants no public provider. A new flat is always Private: a public default is a
-permission only and opens nothing until the operator approves making the flat
-public. Turning a provider off in the console clears a default that names it.
+grants no public provider. With public instance mode off, a new flat is
+Private: a public default is a permission only and opens nothing until an
+approved change to Public. While [public instance mode](#public-instance-settings)
+is on, only the public default is granted besides Local, and a new flat starts
+Public without a visibility approval. Saving a Public website or page
+created by the mode publishes it without approval; older flats keep approved
+version creation and deployment. Turning a provider off in the console clears a default that names it.
 The console's Settings → Networks turns a
 provider on or off while the host runs: turning one on saves the file and
 starts its backend at once (a backend contacts nothing until a flat allows the

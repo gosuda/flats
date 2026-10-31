@@ -70,5 +70,8 @@ func pageCreatedText(fi FlatInfo) string {
 	if fi.Draft != nil {
 		rev = fi.Draft.Revision
 	}
+	if fi.privateLinksOff {
+		return fmt.Sprintf("Created unpublished Public page %s with a starter Draft (revision %d). %s. Next: save_page, create_version to save a version (with approval), then deploy that version. Private previews are disabled (topic.page).", fi.Slug, rev, linkText(fi))
+	}
 	return fmt.Sprintf("Created unpublished Private page %s with a starter Draft (revision %d). Next: save_page, open_preview with version 0, create_version to save a version (with approval), then deploy that version (topic.page).", fi.Slug, rev)
 }

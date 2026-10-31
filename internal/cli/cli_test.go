@@ -951,6 +951,52 @@ func TestPublicURLsAlwaysCarryTheNotice(t *testing.T) {
 	}
 }
 
+func TestFlatLinksWithoutPrivateURL(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		fields string
+		link   string
+		notice string
+	}{
+		{"public", `"private_url":"","public_url":"https://notes.example","public_notice":"Anyone can open this flat."`, "https://notes.example", "Anyone can open this flat."},
+		{"public notice fallback", `"public_url":"https://notes.example"`, "https://notes.example", publicURLNotice},
+		{"unpublished", `"private_links_off":true,"connection_state":"unavailable"`, "no link yet (unavailable)", ""},
+		{"provider error", `"private_links_off":true,"connection_state":"error"`, "no link yet (error)", ""},
+		{"private unchanged", `"private_url":"https://notes.ts","private_state":"starting","private_detail":"connecting"`, "https://notes.ts", ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			api, srv := newFakeAPI(t)
+			flat := `{"slug":"notes","visibility":"public",` + tt.fields + `}`
+			api.handle("GET /api/flats", 200, `{"flats":[`+flat+`]}`)
+			api.handle("GET /api/flats/notes", 200, flat)
+			api.handle("POST /api/flats/notes/deploy", 200, `{"flat":`+flat+`,"version":1}`)
+			api.handle("POST /api/flats/notes/rollback", 200, `{"flat":`+flat+`,"version":1}`)
+			api.handle("POST /api/flats/old-notes/rename", 200, flat)
+			for _, args := range [][]string{
+				{"list"}, {"info", "notes"}, {"deploy", "--flat", "notes", "--version", "1"},
+				{"rollback", "notes"}, {"rename", "old-notes", "notes"},
+			} {
+				t.Run(args[0], func(t *testing.T) {
+					r := run(t, srv.URL, "", args...)
+					if r.code != ExitOK || r.stderr != "" || !strings.Contains(r.stdout, tt.link) {
+						t.Fatalf("link: %+v", r)
+					}
+					if tt.notice != "" {
+						if !strings.Contains(r.stdout, tt.notice) || strings.Contains(r.stdout, "private:") || strings.Contains(r.stdout, "no link yet") {
+							t.Fatalf("public link: %s", r.stdout)
+						}
+					} else if strings.Contains(r.stdout, publicURLNotice) || strings.Contains(r.stdout, "public:") || strings.Contains(r.stdout, "(*)") {
+						t.Fatalf("unexpected public link notice: %s", r.stdout)
+					}
+					if tt.name == "private unchanged" && args[0] != "list" && !strings.Contains(r.stdout, "  private: https://notes.ts\n  starting: connecting (`flats info` shows when it is ready)\n") {
+						t.Fatalf("private link changed: %s", r.stdout)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestUnknownFlatIsAnError(t *testing.T) {
 	api, srv := newFakeAPI(t)
 	// Older servers answer the events and versions lists of a missing flat
@@ -1036,6 +1082,36 @@ func TestDeployDocumentRunsAtOnce(t *testing.T) {
 	}
 	if want := "Saved document notes; it is running now (private) at http://notes.localhost:7878. Documents have no publish step."; !strings.Contains(r.stdout, want) || strings.Contains(r.stdout, "Draft") || strings.Contains(r.stdout, "publish`") {
 		t.Fatalf("stdout:\n%s", r.stdout)
+	}
+}
+
+func TestSaveDocumentWithoutPrivateURL(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		fields string
+		link   string
+		notice string
+	}{
+		{"public", `"private_url":"","public_url":"https://notes.example","public_notice":"Anyone can open this flat."`, "at https://notes.example", "Anyone can open this flat."},
+		{"public notice fallback", `"public_url":"https://notes.example"`, "at https://notes.example", publicURLNotice},
+		{"no link", `"connection_state":"unavailable"`, "with no link yet (unavailable)", ""},
+		{"provider error", `"connection_state":"error"`, "with no link yet (error)", ""},
+		{"private preferred", `"private_url":"http://notes.localhost:7878","public_url":"https://notes.example"`, "at http://notes.localhost:7878", ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			api, srv := newFakeAPI(t)
+			api.handle("POST /api/flats/notes/document", 201, `{"flat":{"slug":"notes","type":"docs","visibility":"public","running":true,`+tt.fields+`}}`)
+			dir := t.TempDir()
+			writeTree(t, dir, map[string]string{"index.md": "# Notes"})
+			r := run(t, srv.URL, "", "save-document", "notes", dir)
+			want := "Saved document notes; it is running now (public) " + tt.link + ". Documents have no publish step.\n"
+			if tt.notice != "" {
+				want += "  note: " + tt.notice + "\n"
+			}
+			if r.code != ExitOK || r.stderr != "" || r.stdout != want {
+				t.Fatalf("save-document: %+v; want stdout %q", r, want)
+			}
+		})
 	}
 }
 

@@ -27,6 +27,7 @@ export function shareDialog(initial, onChange = () => {}) {
   const notice = h('p', { class: 'muted small share-notice' });
   const explanation = h('p', { class: 'muted small' });
   const networks = h('div', { class: 'muted small' });
+  const networkAccess = h('span', { class: 'muted small' });
   const internetRow = h('div', { class: 'share-person' });
   const guestNote = h('p', { class: 'alert alert-warn small', hidden: true },
     h('strong', { text: "Guests can't see history." }), ` ${words?.guestsCannot || ''} You can restore any earlier state from History.`);
@@ -52,7 +53,7 @@ export function shareDialog(initial, onChange = () => {}) {
           h('span', { class: 'muted small', text: 'Owner' })),
         h('div', { class: 'share-person' }, h('span', { class: 'share-avatar' }, icon('lock')),
           h('div', null, h('div', { text: 'People on your networks' }), networks),
-          h('span', { class: 'muted small', text: words ? 'Can edit' : 'Can open' })),
+          networkAccess),
         internetRow,
         explanation),
       guestNote,
@@ -63,7 +64,9 @@ export function shareDialog(initial, onChange = () => {}) {
     const vis = visibilityOf(flat.visibility);
     const key = accessOf(flat);
     radios.forEach((r) => { r.checked = r.value === key; r.disabled = pending; });
-    networks.textContent = vis === 'private' ? privateAccess(route) : 'Through Local and your private networks';
+    networks.textContent = flat.private_links_off ? 'Private links are turned off'
+      : vis === 'private' ? privateAccess(route) : 'Through Local and your private networks';
+    networkAccess.textContent = flat.private_links_off ? '' : words ? 'Can edit' : 'Can open';
     drawInternet(key);
     guestNote.hidden = key !== 'edit';
     stopRow.hidden = key !== 'edit';
@@ -72,7 +75,7 @@ export function shareDialog(initial, onChange = () => {}) {
     refresh.setAttribute('aria-busy', String(pending));
     refresh.className = 'btn btn-small' + (pending ? ' is-disabled' : '');
     notice.textContent = vis === 'private' ? '' : (flat.public_notice || PUBLIC_ACCESS_NOTICE);
-    explanation.textContent = vis === 'private' ? 'Other permitted networks may provide additional private links.' : 'Public links can be opened by anyone.';
+    explanation.textContent = vis === 'private' ? (flat.private_links_off ? '' : 'Other permitted networks may provide additional private links.') : 'Public links can be opened by anyone.';
     status.textContent = refreshError ? 'Could not refresh. Showing the last known state: ' + route.message + ' Try Refresh again.' : route.message;
     // A Local link seen from another device is not shown: the status
     // explains where it opens.
@@ -170,6 +173,10 @@ const failedStates = new Set(['error', 'needs-login', 'unavailable']);
 // Share requires a usable current route, rather than an address alone.
 export function shareRoute(flat) {
   const isPublic = visibilityOf(flat.visibility) === 'public';
+  if (flat.private_links_off && !isPublic) return {
+    url: '', provider: '', usable: false,
+    message: 'This flat has no working link until it is made Public or public instance mode is turned off.',
+  };
   const current = (flat.endpoints || []).filter(e => e.audience === 'current' &&
     (!e.host || e.host === flat.slug) && publicProviders.has(e.provider) === isPublic);
   const candidates = current.filter(e => e.permitted && e.state !== 'stopped');

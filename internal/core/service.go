@@ -37,11 +37,12 @@ import (
 type Via string
 
 const (
-	ViaMCP     Via = "mcp"
-	ViaCLI     Via = "cli"
-	ViaAPI     Via = "api"
-	ViaConsole Via = "console" // a human operator in the web console
-	ViaSystem  Via = "system"
+	ViaMCP            Via = "mcp"
+	ViaCLI            Via = "cli"
+	ViaAPI            Via = "api"
+	ViaConsole        Via = "console" // a human operator in the web console
+	ViaSystem         Via = "system"
+	ViaPublicInstance Via = "public instance mode"
 )
 
 // Errors returned to callers.
@@ -170,6 +171,7 @@ type Service struct {
 	publicBoardHook func(*board.Instance) publicBoard
 	// ap caches the stored Autopilot settings for readers.
 	ap autopilotCache
+	pi publicInstanceCache
 }
 
 // redirect owns an old slug while its route is served or provider teardown is
@@ -267,6 +269,9 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 		return nil, err
 	}
 	if err := s.downgradeEdit(ctx); err != nil {
+		return nil, err
+	}
+	if err := s.loadPublicInstance(ctx); err != nil {
 		return nil, err
 	}
 	if err := s.restore(ctx); err != nil {
@@ -596,10 +601,13 @@ func (s *Service) siteHandler(slugName string, public bool) http.Handler {
 	if public {
 		route = routePublic
 	}
+	gated := s.linkGate(public, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		s.serveSite(lf, slugName, public, epoch, w, r)
+	}))
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		// Counted before any check, so Flats' own answers (the public
 		// epoch's and "not deployed" 503s, the rate limit's 429) count too.
-		serveCounted(lf.usage, route, w, r, func(w http.ResponseWriter, r *http.Request) { s.serveSite(lf, slugName, public, epoch, w, r) })
+		serveCounted(lf.usage, route, w, r, gated.ServeHTTP)
 	})
 }
 
@@ -670,7 +678,7 @@ func (s *Service) ensureExposure(ctx context.Context, f store.Flat) error {
 	}
 	lf := s.state(f.Slug)
 	if lf.cur.Load() == nil {
-		if f.Visibility.Public() {
+		if f.Visibility.Public() && (!f.CreatedPublicInstance || f.LiveVersion > 0) {
 			return fmt.Errorf("%w: no current runtime is serving", ErrNotDeployed)
 		}
 		return nil
@@ -737,7 +745,8 @@ func errPublicDisabled() error {
 type FlatView struct {
 	Type string `json:"type"`
 	store.Flat
-	PrivateURL string `json:"private_url"`
+	PrivateURL      string `json:"private_url"`
+	PrivateLinksOff bool   `json:"private_links_off,omitempty"`
 	// PrivateState is the private host's state once it is served: "ready"
 	// when the URL answers, "starting" while the node joins the tailnet or
 	// waits for its HTTPS certificate (PrivateDetail says which).
@@ -842,7 +851,7 @@ func (s *Service) view(ctx context.Context, f store.Flat) FlatView {
 		v.PortalListing = mode
 	}
 	v.PortalHidden = s.listingHidden(v.PortalListing)
-	if f.Visibility.Canonical().Public() && s.cfg.Public != nil {
+	if f.Visibility.Canonical().Public() && (!f.CreatedPublicInstance || f.LiveVersion > 0) && s.cfg.Public != nil {
 		if ok, _ := s.st.ProviderPermitted(ctx, f.Slug, store.ProviderPortal); ok {
 			v.PublicURL = s.cfg.Public.URL(f.Slug)
 			v.ConnectionState = "unavailable"
@@ -909,8 +918,18 @@ func (s *Service) view(ctx context.Context, f store.Flat) FlatView {
 	if v.Endpoints == nil {
 		v.Endpoints = []ExposureEndpoint{}
 	}
-	if v.ConnectionState == "" {
+	if s.PublicInstance().Enabled {
+		v.PrivateURL, v.PrivateState, v.PrivateDetail = "", "", ""
+		v.PrivateLinksOff = true
+		v.Endpoints = slices.DeleteFunc(v.Endpoints, func(ep ExposureEndpoint) bool { return !PublicProvider(ep.Provider) })
+		if !f.Visibility.Public() || v.ConnectionState == "" {
+			v.ConnectionState = "unavailable"
+		}
+	} else if v.ConnectionState == "" {
 		v.ConnectionState = v.PrivateState
+	}
+	if f.CreatedPublicInstance && f.Visibility.Public() && f.LiveVersion == 0 {
+		v.PublicURL, v.ConnectionState = "", "unavailable"
 	}
 	if v.ConnectionState == "" && f.LiveVersion > 0 {
 		v.ConnectionState = "unavailable"
@@ -1046,21 +1065,12 @@ func (s *Service) createFlatLocked(ctx context.Context, slugName, name string, v
 		name = slugName
 	}
 	now := s.now()
-	f := store.Flat{Slug: slugName, Name: name, Visibility: store.Private, CreatedAt: now, UpdatedAt: now}
-	// A new flat inherits the host's default providers: the private default
-	// (network.default_private, else network.private_backend) and the public
-	// default (network.default_public). It stays Private either way: a public
-	// grant is only a permission and opens nothing until an approved
-	// visibility change. The flat, the grants and the events recording them
-	// are written together.
-	var providers []string
-	events := []store.Event{{Time: now, Level: "info", Kind: "flat", Message: "flat created via " + string(via)}}
-	for _, d := range s.newFlatProviders() {
-		providers = append(providers, d.provider)
-		events = append(events, store.Event{Time: now, Level: "info", Kind: "provider",
-			Message: fmt.Sprintf("provider %s permitted=true by default (%s)", d.provider, d.why)})
+	policy, err := s.newFlatPolicy(now, via)
+	if err != nil {
+		return FlatView{}, err
 	}
-	if err := s.st.CreateFlatRecorded(ctx, f, providers, events); err != nil {
+	f := store.Flat{Slug: slugName, Name: name, Visibility: policy.visibility, PublicAccess: policy.access, CreatedPublicInstance: policy.createdPublicInstance, CreatedAt: now, UpdatedAt: now}
+	if err := s.st.CreateFlatRecorded(ctx, f, policy.providers, policy.events); err != nil {
 		if errors.Is(err, store.ErrExists) {
 			return FlatView{}, withKind(ErrConflict, err)
 		}
@@ -1068,30 +1078,6 @@ func (s *Service) createFlatLocked(ctx context.Context, slugName, name string, v
 	}
 	s.state(slugName)
 	return s.view(ctx, f), nil
-}
-
-type defaultGrant struct{ provider, why string }
-
-// newFlatProviders returns the providers a new flat is allowed on from the
-// start. A configured default that the host no longer permits is skipped.
-func (s *Service) newFlatProviders() []defaultGrant {
-	n := s.settings.network()
-	permitted := s.settings.permitted()
-	var out []defaultGrant
-	switch {
-	case n.DefaultPrivate == store.ProviderTailscale && slices.Contains(permitted, store.ProviderTailscale):
-		out = append(out, defaultGrant{store.ProviderTailscale, "network.default_private is tailscale"})
-	case n.DefaultPrivate == store.ProviderNetbird && slices.Contains(permitted, store.ProviderNetbird):
-		out = append(out, defaultGrant{store.ProviderNetbird, "network.default_private is netbird"})
-	case n.DefaultPrivate == store.ProviderProxy && slices.Contains(permitted, store.ProviderProxy):
-		out = append(out, defaultGrant{store.ProviderProxy, "network.default_private is proxy"})
-	case n.DefaultPrivate == "" && s.cfg.PrivateBackend == "tailscale":
-		out = append(out, defaultGrant{store.ProviderTailscale, "network.private_backend is tailscale"})
-	}
-	if p := n.DefaultPublic; p != "" && slices.Contains(permitted, p) {
-		out = append(out, defaultGrant{p, "network.default_public is " + p})
-	}
-	return out
 }
 
 // DefaultProviders reports the providers new flats inherit, for the console.
@@ -1139,10 +1125,13 @@ type SaveMeta struct {
 	// historical writes a bundle rebuilt from a document revision, which
 	// may exceed the upload-only Markdown total (bundle.WriteHistorical).
 	historical bool
+	// starter suppresses publication of the page placeholder created by create_flat.
+	starter bool
 }
 
 // SaveVersion validates files and stores them as the flat's draft.
-// It never allocates a published version and never changes what is live.
+// Public websites and pages created by public instance mode also publish the save
+// while the mode is on.
 // The flat is created when it does not exist yet.
 func (s *Service) SaveVersion(ctx context.Context, slugName string, files []bundle.File, meta SaveMeta, via Via) (store.Version, error) {
 	if err := slug.Validate(slugName); err != nil {
@@ -1201,8 +1190,14 @@ func (s *Service) saveVersionLocked(ctx context.Context, slugName string, files 
 		}
 	}
 	v, err := s.saveDraftLocked(ctx, slugName, files, meta, via)
-	if err != nil || !docs {
+	if err != nil {
 		return v, err
+	}
+	if !docs {
+		if meta.starter {
+			return v, nil
+		}
+		return s.publishPublicInstanceSaveLocked(ctx, slugName, v)
 	}
 	// A document has no publish step: its save runs at once, Private
 	// unless the operator already approved Public. Its revision is recorded
@@ -1512,12 +1507,16 @@ func (s *Service) Deploy(ctx context.Context, slugName string, n int, via Via) (
 // starts it on the live data and makes it live. The check does not run
 // against live data. The caller holds s.lock(f.Slug).
 func (s *Service) deployLocked(ctx context.Context, f store.Flat, n int, kind string, via Via, approvalID string) (DeployResult, error) {
-	start := time.Now()
-	slugName := f.Slug
-	v, err := s.st.GetVersion(ctx, slugName, n)
+	v, err := s.st.GetVersion(ctx, f.Slug, n)
 	if err != nil {
 		return DeployResult{}, err
 	}
+	return s.deployVersionLocked(ctx, f, v, kind, via, approvalID)
+}
+
+func (s *Service) deployVersionLocked(ctx context.Context, f store.Flat, v store.Version, kind string, via Via, approvalID string) (DeployResult, error) {
+	start := time.Now()
+	slugName, n := f.Slug, v.Number
 	lifecyclePhase(ctx, "before_health", slugName, approvalID)
 	env, err := s.captureEnvironment(ctx, slugName, v)
 	if err != nil {
@@ -1548,8 +1547,12 @@ func (s *Service) deployLocked(ctx context.Context, f store.Flat, n int, kind st
 func (s *Service) activate(ctx context.Context, f store.Flat, d *deployed, h HealthResult, kind string, via Via, approvalID string, start time.Time) (DeployResult, error) {
 	slugName, n, prev := f.Slug, d.version.Number, f.LiveVersion
 	var commitErr error
-	if kind == "publish" || kind == "save" {
-		commitErr = s.st.CommitPublished(ctx, d.version, prev, approvalID, s.now())
+	if kind == "publish" || kind == "save" || kind == "public-instance" {
+		deploymentKind := "publish"
+		if kind == "public-instance" {
+			deploymentKind = kind
+		}
+		commitErr = s.st.CommitPublished(ctx, d.version, prev, deploymentKind, approvalID, s.now())
 	} else {
 		commitErr = s.st.SetLive(ctx, slugName, n, prev, kind, approvalID, s.now())
 	}
@@ -2213,7 +2216,11 @@ func (s *Service) hostState(host string) (string, string) {
 // previewView selects a currently registered Private route. After a per-flat
 // Tailscale revocation, a surviving Local preview must not advertise a dead URL.
 func (s *Service) previewView(ctx context.Context, p store.Preview) PreviewView {
-	pv := PreviewView{Preview: p, URL: s.cfg.Private.URL(p.Host), ExpiresAt: p.LastAccess.Add(s.previewTTL())}
+	pv := PreviewView{Preview: p, ExpiresAt: p.LastAccess.Add(s.previewTTL())}
+	if s.PublicInstance().Enabled {
+		return pv
+	}
+	pv.URL = s.cfg.Private.URL(p.Host)
 	pv.State, pv.Detail = s.hostState(p.Host)
 	if observer, ok := s.cfg.Lifecycle.(LifecycleObserver); ok {
 		pv.URL, pv.State, pv.Detail = "", "unavailable", "route not reported"
@@ -2244,6 +2251,9 @@ const maxPreviews = 5
 
 // OpenPreview serves a saved version at a new random private address.
 func (s *Service) OpenPreview(ctx context.Context, slugName string, n int) (PreviewView, error) {
+	if s.PublicInstance().Enabled {
+		return PreviewView{}, fmt.Errorf("%w: previews are private links and %w", ErrConflict, ErrPublicInstanceOn)
+	}
 	unlock, err := s.lockStorage(slugName)
 	if err != nil {
 		return PreviewView{}, err

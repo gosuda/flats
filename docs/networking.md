@@ -43,10 +43,13 @@ On a Private flat or one without live content running, allowing a public provide
 only records the permission. It never makes the flat Public.
 
 Each mode has a **default for new flats** in Settings → Networks. A
-new flat starts allowed on Local plus the private and public defaults only,
-even when more providers are on for the host, and it is always created
-Private. Allow more providers on a flat to serve it on several networks. The console
-shows a private open button (lock icon) and, while the flat is public, a
+new flat normally starts allowed on Local plus the private and public defaults
+only, even when more providers are on for the host, and it is created Private.
+While [public instance mode](#public-instance-mode) is on, it starts Public
+with view-only access and gets only the public default besides Local; every
+private link is disabled. Allow more providers on a flat to serve it on
+several networks. With private links enabled, the console shows a private
+open button (lock icon) and, while the flat is public, a
 public one (globe icon); a button lists every address when its kind has
 several.
 
@@ -59,7 +62,10 @@ and Local. A private default of Local means no preference. Readiness does not
 matter for this choice. `public_url` is the ready route on the host's public
 default if the flat has one, otherwise the first ready public route. Previews
 follow the same rule over the routes that serve previews: Local, Tailscale and
-the Private reverse proxy.
+the Private reverse proxy. While public instance mode is on, flat results
+report no private URL or private endpoints, and preview results report no
+URL. A Public flat's connection state comes only from public routes; a
+Private flat's is `unavailable`.
 
 **Rename redirects.** After a rename, a request to the old address is
 redirected to the new flat's address on the network the request arrived on.
@@ -67,6 +73,53 @@ Only when the new flat has no route there does it go to `private_url` (for a
 Private route) or `public_url` (for a Public route). A visitor on the Flats
 host who follows an old `*.localhost` link stays on Local, and one who comes
 through the reverse proxy stays on the proxy.
+
+## Public instance mode
+
+For a host whose new flats should be open to anyone with the link, turn on
+**Public instance** under **Settings › Experiments**. It is off by default
+and only the console changes it; there is no configuration key, environment
+variable, CLI command or MCP tool for it. Choose a default public network in
+Settings › Networks and turn that provider on first. Turn on asks you to
+confirm the named network and warns how many existing Private flats will
+have no working link.
+
+While on, every new flat starts Public with view-only access, without a
+visibility approval. It is allowed on the default public network and Local,
+not on the private default or any other provider. Documents, designs and
+boards run at creation. Websites and pages start Public and Unpublished,
+with no public link until a version is created and deployed through their
+approvals. A public route that fails to open leaves creation successful and
+the flat Public, with the provider's state or error reported. Allowing that
+provider again, a restart or a key change can recover it. If the default
+public network is cleared or no longer turned on, creation is refused with a
+conflict and creates nothing. There is no Private or provider fallback.
+
+Every private link answers 403 with a page saying that private links are
+turned off on this host. This covers Local on the Flats machine, Tailscale,
+NetBird and the Private reverse proxy, including Draft and version previews
+and rename redirects. Tailscale's plain-HTTP port still redirects to the same
+host over HTTPS before Flats handles it; that redirect serves no content and
+the HTTPS address answers 403. Private links do not redirect to public ones.
+Turning on closes private editing connections and design event streams.
+Flats stops showing private links and refuses `open_preview`. Browser design
+editing and browser revision history are unavailable; agent edits, revision
+operations, health checks and data snapshots keep working. Console addresses,
+MCP and approval links do not change.
+
+Existing flats keep their visibility, public access level and grants. Later
+visibility changes, public editing and every other approval keep their rules.
+You can still make a flat Private through its approval to take it off the
+internet, but it then has no working link while the mode is on. Public is not
+access control, and public link results keep their notice. Routes, grants,
+previews and redirects are retained; previews still expire normally. Turn off
+acts at once without a confirmation and lets retained private links serve
+again. Flats created Public stay Public. Old event entries keep their text,
+even if it names a private link that now answers 403.
+
+The [spec](spec/public-instance.md) gives the product rules, and the
+[architecture](design.md#public-instance-mode) describes request ordering and
+the gate shared by private links.
 
 ## Running the console on Tailscale
 
@@ -100,7 +153,8 @@ With the private backend on Tailscale and no other private default chosen
 start, so its private and preview links use the tailnet:
 
 - Choosing that backend is your standing permission for the Private Tailscale
-  routes of every flat created afterwards, including flats an agent creates.
+  routes of every flat created afterwards, including flats an agent creates,
+  except while public instance mode is on, which skips private-default grants.
 - Each grant is logged as a `provider` event. Turn it off under the flat's
   Networks to keep a flat on the host only.
 - It never allows Funnel, Portal, zrok, quick tunnels or NetBird Expose. Flats created earlier keep their
@@ -303,8 +357,8 @@ An example Grafana dashboard for these metrics, with import steps, is in
 
 Removing a flat's Tailscale, NetBird or Private reverse proxy permission stops
 its current, preview and redirect routes on that network before saving the
-revocation. Local stays
-available, and a separately permitted Public Tailscale Funnel route stays up.
+revocation. Local stays registered, but answers 403 while public instance
+mode is on. A separately permitted Public Tailscale Funnel route stays up.
 An unconfirmed stop keeps the permission allowed so the operator can retry.
 
 A currently Public flat must complete an approved change to Private before its
@@ -322,6 +376,8 @@ address" marked "server only", with a note that says how to open it from
 other devices. While a reverse proxy kind is on, that note names the proxy as
 another way to open a flat from other devices. Reverse proxy addresses are
 ordinary links.
+While public instance mode is on, the console shows none of these private or
+Local links, even on the Flats machine.
 
 ## Publishing through zrok
 
@@ -505,11 +561,13 @@ state.
   Cloudflare quick tunnels, NetBird Expose or a Public reverse proxy.
   Public is not access control: anyone with the URL can open the flat.
 
-Configuration alone never publishes a version or changes visibility. Public
-requires an approved transition with a registered, configured and permitted
-public route. Websites and pages also need a deployed version; documents and
-designs run without publication. Both directions, Private → Public and
-Public → Private, wait for an approval in the console.
+Configuration alone never publishes a version or changes an existing flat's
+visibility. With public instance mode off, Public requires an approved
+transition with a registered, configured and permitted public route. While
+the mode is on, new flats start Public without a visibility approval.
+Websites and pages still need an approved deployment before serving public
+content; documents, designs and boards run at creation. Later changes in both
+directions, Private to Public and Public to Private, still wait for approval.
 
 A visibility approval of a website or page freezes the live version it was
 requested for: a deployment or rollback while it is pending makes it stale,

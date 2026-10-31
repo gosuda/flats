@@ -83,7 +83,7 @@ Errors are JSON: `{"error", "category", "problems": [{"path","message","fix"}], 
 | 400 | Invalid input, including malformed or repeated `expected_revision` |
 | 403 | Not allowed from this surface, or a cross-site browser request |
 | 404 | Not found, or the host does not manage that feature |
-| 409 | Conflict: stale Draft revision, unpublished flat made Public, not deployed, unavailable, stale approval, provider not permitted or not ready, unconfirmed public stop, unchanged content, provider in use |
+| 409 | Conflict: stale Draft revision, unpublished flat made Public through an approval, not deployed, unavailable, stale approval, provider not permitted or not ready, unconfirmed public stop, unchanged content, provider in use, unusable or changed public instance network, preview while public instance mode is on |
 | 412 | `config_changed`: `config.json` changed since the host read it, or the console page is stale |
 | 415 | A mutating `/api` request without a JSON or archive type or `X-Flats-Client` |
 | 422 | Bundle validation, a failed health check or runtime start, or a board write or import over the disk quota (`board_capacity`) |
@@ -104,11 +104,11 @@ mounted under both prefixes; **console** routes exist only under
 | GET | `/status` | both | `{ok, system, upload_max_bytes}`: host, networks, limits, build version |
 | GET | `/client` | both | Client manifest: server build, client contract, guide and bootstrap revisions, `server_url` ([Updating a client](release.md#updating-a-client)) |
 | GET | `/flats` | both | List; `?q=` filters by slug or name |
-| POST | `/flats` | api | `{slug, name}` creates an empty Private flat (201). The console never creates flats |
+| POST | `/flats` | api | `{slug, name}` creates an empty flat (201): Private by default, Public with view-only access while public instance mode is on. The console never creates flats |
 | GET | `/flats/{slug}` | both | Flat view |
 | GET | `/flats/{slug}/document` | both | `?doc=`: live Markdown of a docs flat, or its saved content when not running |
 | GET | `/flats/{slug}/draft` | both | Current Private Draft metadata, or 404 |
-| POST, PUT | `/flats/{slug}/draft` | both | Complete archive (tar, tar.gz, zip); query `expected_revision`, `git_sha`, `git_dirty`, `message`. 201 `{draft}`; never a version or approval. Documents are refused here |
+| POST, PUT | `/flats/{slug}/draft` | both | Complete archive (tar, tar.gz, zip); query `expected_revision`, `git_sha`, `git_dirty`, `message`. 201 `{draft}` normally; public instance publication on save also returns the published version, deployment and flat. No approval is created by a save. Documents are refused here |
 | POST | `/flats/{slug}/document` | both | Complete docs archive; replaces the whole live bundle without approval. 201 `{flat}` |
 | GET | `/flats/{slug}/board` | api | `get_board` read of a board: `?revision=&frame=&rect=x,y,w,h&ids=a,b&format=full\|outline&cursor=&limit=`; answers `{seq, revision, pending, meta, elements, next?}` |
 | POST | `/flats/{slug}/board` | api | An `update_board` body `{op_id, ops, layout?, assets?, if_seq?, message?, replace?}` (assets' `content` in base64; the body at most `upload_max_bytes × 4/3` plus 16 MiB, so one call carries images of about one upload limit in total; send more over several calls or in a data file through the import route); applies at once without approval and creates a missing board. Answers `{revision, seq, ids, layout, results, assets?, created?, warning?}` |
@@ -121,7 +121,7 @@ mounted under both prefixes; **console** routes exist only under
 | POST | `/flats/{slug}/deploy` | both | `{version}` (`version > 0`): 202 `activate` request for an existing version |
 | POST | `/flats/{slug}/rollback` | both | `{version, restore_data}` (0 = previous live): 202 `rollback` request; data is kept unless `restore_data` |
 | GET | `/flats/{slug}/deployments` | both | Deployment history |
-| POST | `/flats/{slug}/previews` | both | `{target: "draft", version: 0}` or `{version: n}`: 201 Private preview. There is no Public Draft route |
+| POST | `/flats/{slug}/previews` | both | `{target: "draft", version: 0}` or `{version: n}`: 201 Private preview, or 409 while public instance mode is on. There is no Public Draft route |
 | GET | `/flats/{slug}/previews` | both | Open previews |
 | DELETE | `/previews/{host}` | both | Close a preview |
 | POST | `/flats/{slug}/visibility` | both | `{visibility, access?, reason}`: 202 `set_visibility` request in either direction; `access` is `view` (default for Public) or `edit` (boards and documents only, anyone can edit: [boards](spec/board-public-edit.md), [documents](spec/docs-public-edit.md)); the same visibility and level answers 200 `status: "done"`, `visibility unchanged`; Public for an unpublished flat is 409 |
@@ -161,6 +161,8 @@ mounted under both prefixes; **console** routes exist only under
 | PUT | `/experiments/autopilot` | console | `{enabled: true, confirmed_allowed: [...]}` turns Autopilot on with the operations the confirmation listed; `{enabled: false}` turns it off |
 | PUT | `/experiments/autopilot/operations/{op}` | console | `{allowed}` allows or disallows one operation |
 | PUT | `/experiments/autopilot/guide` | console | `{guide}` saves the operation guide |
+| GET | `/experiments/public-instance` | console | Public instance status, including the default public network and the number of Private flats ([Experiments routes](#experiments-routes)) |
+| PUT | `/experiments/public-instance` | console | `{enabled: true, confirmed_network: "<provider ID>"}` turns the mode on; `{enabled: false}` turns it off |
 
 Approval outcomes, frozen parameters and the `result_data` enums are defined in
 the [lifecycle core contract](lifecycle-core-contract.md). Version creation,
@@ -184,6 +186,16 @@ permissions and the Portal listing take effect immediately.
   `portal_hidden` (the listing Flats asks the relays for, not what they show).
   Visibility outputs are `private` or `public`; legacy listed/unlisted inputs
   are stored as public. URLs are never authorization or proof of publication.
+  A flat created by public instance mode carries
+  `created_public_instance: true` for its lifetime, omitted otherwise. While public instance mode is
+  on, the view adds `private_links_off: true`,
+  returns an empty `private_url`, clears `private_state` and `private_detail`
+  and lists only public endpoints. The flag is absent while off. A Private
+  flat reports `connection_state: "unavailable"`; a Public flat reports only
+  its public connection state, never a private fallback. A never-deployed
+  website or page can be Public and Unpublished, with `live_version` 0, an
+  empty `public_url` and `connection_state: "unavailable"`. Preview results
+  also clear their URLs. Stored grants and old event texts do not change.
 - **Draft saves.** The receipt describes the exact saved content: `type`,
   `flat`, `revision`, `hash`, `size`, `files`, `kind`, git metadata, `message`,
   `saved_at`. GET `draft` reads the current Draft with `base_version`,
@@ -234,11 +246,11 @@ permissions and the Portal listing take effect immediately.
 
 ### Experiments routes
 
-The four `/experiments/autopilot` routes read and change the
-[Autopilot](design.md#autopilot) settings. They exist only under
+Experiments routes exist only under
 `/console/api` (`/api/experiments/...` is 404) and pass the console guard, so
 the CLI, API clients and requests without `X-Flats-Console` get 403. MCP has
-no tool for them. Every route answers the settings:
+no tool for them. The four `/experiments/autopilot` routes read and change
+the [Autopilot](design.md#autopilot) settings. Each answers those settings:
 
 ```json
 {"autopilot": {
@@ -258,6 +270,35 @@ unknown operation ID, or a guide over 4,000 code points is 400 `invalid`.
 Turning on with a `confirmed_allowed` that differs from the stored operations
 is 409 `conflict` and changes nothing. A change takes effect for the next MCP
 request, and Flats writes it to the host log without the guide text.
+
+`GET` and `PUT /experiments/public-instance` read and change
+[public instance mode](design.md#public-instance-mode). Both answer:
+
+```json
+{"public_instance": {
+  "enabled": true,
+  "network": "portal",
+  "usable": true,
+  "reason": "",
+  "private_flats": 2,
+  "updated_at": "2026-10-24T09:00:00Z"
+}}
+```
+
+`network` is the default public provider ID, or an empty string. `usable`
+means it is a public provider permitted by the host, not that a route is
+ready. When false, `reason` explains why. `private_flats` counts flats that
+would have no working link while the mode is on. `updated_at` is omitted
+until the first change. GET reads the stored row, current network settings
+and the flat count, not the cached mode alone.
+
+PUT requires a single JSON object with `enabled`. Turning on also requires
+the string `confirmed_network`; turning off refuses that member. Missing,
+null, wrong-typed or unknown fields are 400 `invalid`. An unusable network
+or a confirmed ID that no longer matches the default is 409 `conflict`,
+without a change. Successful changes take effect before PUT returns and
+write a host-log line with the actor and time. A repeated unchanged state
+writes and logs nothing. Neither route changes Autopilot.
 
 ## CLI
 
@@ -302,6 +343,10 @@ and JSON modes, with the approval URL, its status and how to poll it. A pending
 Private-to-Public request says that internet access begins only after approval;
 it never describes the flat as already Public. The CLI has no approve, reject,
 provider-permission, key or Experiments command against a running host.
+While public instance mode is on, text output uses the public URL with its
+notice, or reports `no link yet (<connection_state>)`; it never prints a
+private link. Preview creation is refused, and successful creation still
+exits 0 when the flat was saved but its public exposure failed.
 
 ## MCP
 
@@ -326,27 +371,39 @@ Document saves return `flat` without a Draft or version. Version operations use
 positive numbers and return the pending approval, its status and link. There is
 no provider-permission, settings or key tool, no decision tool except the
 Autopilot tools while Autopilot is on, and the MCP handler never gains console
-authority. The server instructions describe Private URLs as
-Local loopback or explicitly permitted Tailscale, NetBird or reverse proxy
-routes, and pending visibility notices use the future tense. Removed tools (`save_version`,
+authority. With public instance mode off, the server instructions describe
+Private URLs as Local loopback or explicitly permitted Tailscale, NetBird or
+reverse proxy routes, and pending visibility notices use the future tense. Removed tools (`save_version`,
 `save_version_from_dir`, `publish`) have no aliases.
 
 Revision management of documents, designs and boards also happens inside the
-flat's own Private route; see [Revision store](revision-store.md).
+flat's own Private route while private links are enabled; see
+[Revision store](revision-store.md). While public instance mode is on, those
+browser routes are disabled, but MCP revision operations keep working.
 `rollback_revision` on a board answers `{status, revision}`, or `{status,
 warning}` without a revision when the restore applied but its revision is not
 recorded yet (import pending, or already deleted by retention); it must not be
 resent.
 
+### MCP mode variants
+
+MCP caches four server variants for each upload limit, keyed by Autopilot and
+public instance on/off. An upload-limit change clears the cache. Each HTTP
+request reads both modes once, gets the matching server and uses the same
+copy for its guide pages, guide revision, `check_client`, `get_client_skill`
+and `get_approval` texts. Switches and the
+operation guide, and the public instance network ID and label, are read per
+request, so changing them rebuilds no server. The server instructions name no
+network. Autopilot replacements apply before public instance replacements.
+With both modes off, instructions, tools/list schemas and texts, guide pages
+and the guide revision are byte-identical to a host without these modes.
+Each instruction variant is limited to 2,300 bytes.
+
 ### Autopilot tools
 
-MCP builds two servers for each upload limit, one with Autopilot off and one
-with it on. Each HTTP request reads the settings once, gets the matching
-server, and uses the same copy for its guide pages, guide revision,
-`check_client`, `get_client_skill` and `get_approval` texts. Switches and the
-operation guide are read per request, so changing them rebuilds no server.
-With Autopilot off, every tool, schema, instruction, guide page and result is
-the same as on a host without Autopilot.
+With Autopilot off, every tool, schema, instruction, guide page and result
+keeps the behavior of a host without Autopilot. Public instance mode applies
+its own independent text changes when on.
 
 While Autopilot is on, the server adds two tools:
 
@@ -404,11 +461,60 @@ The other texts change only while Autopilot is on:
   decide it. On an `applying` approval decided by an agent it names the agent
   decider. Other texts and the structured output do not change.
 
+### Public instance texts
+
+Public instance mode adds no creation, approval or settings tool. While on,
+it changes the server instructions and the descriptions of `create_flat`,
+`save_draft`, `save_draft_from_dir`, `save_page`, `save_document`,
+`save_design`, `update_board`, `import_board`, `open_preview` and
+`set_visibility`. These texts say that new flats start Public with view-only
+access on the default public network and that private links and previews are
+disabled. Saving a Public website or page created by the mode publishes the
+next numbered version without approval. Flats created before the mode keep
+approved version creation and deployment, as do marked flats saved while
+Private or while the mode is off. A `create_flat` page starter is not
+published. Shared input-field descriptions keep their off text.
+
+`guide` adds `topic.public-instance`, whose network ID and label are rendered
+per request, and a refusal page for `open_preview` while the mode is on.
+Those pages and the refusal category are absent on off servers. Public
+replacements also update topics `approvals`, `index`, `docs`, `board`,
+`canvas`, `page`, `static`, `preview-verify` and `preview-check` wherever they
+promise Private creation, Private links or previews. `topic.instructions`
+shows the selected instructions. The guide revision includes public instance
+content and the network only while on. Turning the mode off returns to the
+revision for the remaining Autopilot state.
+
+`check_client` adds `public_instance` only while on, with `enabled: true`,
+`network` and `read: "guide topic.public-instance"`. With both modes on, it
+reports both that member and `autopilot`. Address-bearing tool results use
+the public URL with `public_notice`, or say that the public link is not open
+yet and name the connection state and detail. Exposure failure does not make
+a successful creation a tool error. A published save reports its version
+number and public link with `public_notice`, or the not-open state, instead
+of instructions to request version/deploy approvals. Publication failure is
+a failed save: API uses the cause's error status, MCP returns a tool error
+and CLI exits non-zero. Each reports the saved Draft revision and cause;
+the live version and previous version list are unchanged. Mode-off and
+ineligible-flat save texts keep their original wording. `open_preview` is
+refused with a conflict
+explaining that previews are private links and public instance mode is on.
+Making a flat Private still uses its approval and can leave it with no
+working link.
+
+The runtime reference, content types reference and `llms.txt` documents stay
+fixed. `topic.public-instance` states that its rules take precedence over
+them. While the mode is off, none of its instruction, tool, result or guide
+text changes apply. With both modes on, both sets of texts apply and every
+approval other than initial Public creation and publication on save remains
+necessary. Publishing on save is independent of Autopilot switches; explicit
+version creation and deployment still request approvals.
+
 ### Board tools
 
 | Tool | Input | Result |
 | --- | --- | --- |
-| `create_flat {type: "board"}` | `slug`, `name` | An empty Private board (revision 1, `created`) |
+| `create_flat {type: "board"}` | `slug`, `name` | An empty board (revision 1, `created`), Private by default or Public with view-only access while public instance mode is on |
 | `get_board` | `slug`, `revision?`, `frame?`, `rect?`, `ids?`, `format?` (`full` or `outline`), `cursor?`, `limit?` | `{seq, revision, pending, elements, next?}`; each element carries `ver` for guards |
 | `update_board` | `slug`, `op_id`, `ops`, `assets?` (`[{ref, content}]`, `content` in base64; image elements give the ref as `asset`; images of about one `upload_max_bytes` in total per call, as the request is at most `upload_max_bytes × 1.5` plus 1 MiB), `layout?`, `if_seq?`, `message?`, `replace?` | `{revision, seq, ids, layout, results, assets}`; all operations apply or none, as one revision. `revision` is null with a `warning` while its import is pending |
 | `get_board_share` | `slug`, `n?` | One selection a person sent to the agent, or the recent list; deleted elements are `missing` |
@@ -533,10 +639,12 @@ they run once saved.
   for confirmation because that address stops accepting new requests;
   buttons act at once. A disabled action shows its reason next to it or on
   hover and keyboard focus.
-- **Experiments.** Features whose behavior and names may still change; at
-  first only Autopilot. A warning at the top says that only people change
-  this page and that Flats cannot enforce it. While Autopilot is off, the
-  page shows only its On/Off row with Turn on. Turn on opens a confirmation
+- **Experiments.** Features whose behavior and names may still change,
+  Autopilot followed by Public instance. A warning at the top says that only
+  people change this page and that Flats cannot enforce it. Each section
+  loads and redraws independently, so a public instance change preserves an
+  unsaved Autopilot guide. While Autopilot is off, its section shows only its
+  On/Off row with Turn on. Turn on opens a confirmation
   that lists the operations allowed now (or says none is), says that anyone
   on the internet can open a Public flat and that Flats does not enforce the
   operation guide, and sends the listed operations as `confirmed_allowed`;
@@ -551,6 +659,15 @@ they run once saved.
   the settings again. The operation guide has a counter of code points out
   of 4,000 and its own Save guide and Discard buttons; Save is enabled while
   the text differs and fits. Unsaved text is dropped when the page is left.
+  Public instance has one On/Off row. Turn on is disabled with a reason and
+  a link to Networks while no usable default public network exists. Its
+  confirmation names that network, explains immediate public access for new
+  documents, designs and boards and publication without approval on each save
+  of a new website or page, warns that private links, previews, browser design
+  editing and browser history stop working, and counts existing Private flats that will
+  have no working link. It sends `confirmed_network`; Turn off acts at once
+  without a dialog. While on with an unusable default, the section warns
+  that creation is refused.
 - **Approvals.** A top-bar item with the number of pending requests opens the
   queue.
 - **Approval page.** Names version creation (including legacy `publish`
@@ -563,6 +680,13 @@ they run once saved.
   are shown as stored, always as text. The approvals list does not show it.
 
 Legacy `public-listed` and `public-unlisted` values are shown as Public.
+While `private_links_off` is true, list and flat pages hide private open
+buttons, Local addresses, previews and Open History. A note replaces the
+Private URL line, and Private flats say that they have no working link.
+Share uses public links, and its "People on your networks" row says private
+links are turned off. Make Private and its approval page warn that the flat
+will have no working link while the mode is on. These texts and actions
+return to their usual behavior when it is off.
 Permission for a network does not publish a flat or change its visibility, and
 Tailscale being connected does not permit Funnel. Removing a public network
 while the flat is Public is refused (`provider_in_use`) and the console shows

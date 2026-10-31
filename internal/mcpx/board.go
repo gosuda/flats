@@ -21,13 +21,13 @@ func registerBoard(s *mcp.Server, t *tools) {
 	mcp.AddTool(s, &mcp.Tool{Name: "get_board", Annotations: ro,
 		Description: "Read a board (an infinite-canvas whiteboard people and agents edit live; guide topic.board) as structured data: elements with their ver, seq (the current state), revision and pending. " +
 			"Narrow it by frame, rect [x, y, w, h] or ids; format outline lists types, text and connections cheaply. Pages hold limit elements (default 500); pass next as cursor. revision reads an earlier revision. Read before you change a board."}, t.getBoard)
-	mcp.AddTool(s, &mcp.Tool{Name: "update_board", Annotations: write,
+	mcp.AddTool(s, t.describe(&mcp.Tool{Name: "update_board", Annotations: write,
 		Description: "Write a board, creating it when the slug is missing: add, set, reparent, delete, group, ungroup, zorder and delete_frame_contents operations, layout help and images (assets). " +
-			"All operations apply or none, as one revision, at once: no Draft, publish or approval; on a Public board everyone sees it immediately. Guard with if_seq or if_ver; op_id (8-120 characters) makes a resend safe. Guide topic.board."}, t.updateBoard)
+			"All operations apply or none, as one revision, at once: no Draft, publish or approval; on a Public board everyone sees it immediately. Guard with if_seq or if_ver; op_id (8-120 characters) makes a resend safe. Guide topic.board."}), t.updateBoard)
 	mcp.AddTool(s, &mcp.Tool{Name: "get_board_share", Annotations: ro,
 		Description: "Read a selection a person sent from the board with Send to agent (\"#7\" is n 7): its elements now, with deleted ones listed as missing. Without n, the recent selections. Shares last 24 hours or until the board restarts (guide topic.board)."}, t.getBoardShare)
-	mcp.AddTool(s, &mcp.Tool{Name: "import_board", Annotations: write,
-		Description: "Import a Flats board data file (.zip as base64, at most the host upload limit) into a board, creating it when the slug is missing: mode add copies the elements with new ids to the right of the board, mode replace replaces the whole board. One revision, applied at once (guide topic.board)."}, t.importBoard)
+	mcp.AddTool(s, t.describe(&mcp.Tool{Name: "import_board", Annotations: write,
+		Description: "Import a Flats board data file (.zip as base64, at most the host upload limit) into a board, creating it when the slug is missing: mode add copies the elements with new ids to the right of the board, mode replace replaces the whole board. One revision, applied at once (guide topic.board)."}), t.importBoard)
 }
 
 // GetBoardIn reads a board.
@@ -199,7 +199,7 @@ func writeBoardResult(b *strings.Builder, out UpdateBoardOut) {
 		b.WriteString(" Warning: " + out.Warning + ".")
 	}
 	if f := out.Flat; f != nil {
-		fmt.Fprintf(b, " It is live, %s, at %s; there is no publish step.", f.Visibility, f.PrivateURL)
+		fmt.Fprintf(b, " It is live, %s, at %s; there is no publish step.", f.Visibility, linkText(*f))
 		if f.Visibility == "public" {
 			b.WriteString(" This board is Public: everyone on the internet sees the change now.")
 		}

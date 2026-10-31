@@ -39,7 +39,7 @@ func (e *routeEpoch) request(r *http.Request) (*http.Request, func()) {
 
 func (s *Service) previewHandler(p *preview) http.Handler {
 	e := s.routeEpoch("preview:" + p.host)
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	return s.linkGate(false, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		r, done := e.request(r)
 		defer done()
 		if r.Context().Err() != nil {
@@ -49,5 +49,5 @@ func (s *Service) previewHandler(p *preview) http.Handler {
 		p.last.Store(s.now().UnixMilli())
 		w.Header().Set("X-Robots-Tag", "noindex")
 		p.handler.ServeHTTP(w, withRouteHeaders(r, false))
-	})
+	}))
 }

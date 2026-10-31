@@ -2,6 +2,7 @@ package mcpx
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -49,7 +50,8 @@ func registerGuide(s *mcp.Server, svc *core.Service, autopilot bool) {
 		Description: description,
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true},
 	}, func(ctx context.Context, _ *mcp.CallToolRequest, in GuideIn) (*mcp.CallToolResult, GuideOut, error) {
-		out := guide(in.Items, svc.UploadLimit(), stateOf(ctx).Guide)
+		st := stateOf(ctx)
+		out := guide(in.Items, svc.UploadLimit(), st.Guide, st.Public)
 		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: guideText(out)}}}, out, nil
 	})
 }
@@ -69,9 +71,9 @@ func guideItems() []string {
 }
 
 // guide resolves items. A bare topic name ("server.db") means its topic;
-// duplicates are read once. st is the request's Autopilot state, nil while
-// Autopilot is off.
-func guide(items []string, uploadLimit int64, st *runtimeref.AutopilotState) GuideOut {
+// duplicates are read once. st and pi are the request's mode states, nil
+// while their respective modes are off.
+func guide(items []string, uploadLimit int64, st *runtimeref.AutopilotState, pi *runtimeref.PublicInstanceState) GuideOut {
 	if len(items) == 0 {
 		items = []string{"topic.index"}
 	}
@@ -79,7 +81,17 @@ func guide(items []string, uploadLimit int64, st *runtimeref.AutopilotState) Gui
 	if st != nil {
 		all = autopilotGuideItems
 	}
-	out := GuideOut{Items: []GuideItem{}, GuideRevision: runtimeref.EffectiveGuideRevision(uploadLimit, st)}
+	baseItems := all
+	if pi != nil {
+		all = func() []string {
+			items := append(baseItems(), "topic.public-instance")
+			for _, cat := range runtimeref.PublicInstanceRefusalCategories() {
+				items = append(items, "refusal."+cat)
+			}
+			return items
+		}
+	}
+	out := GuideOut{Items: []GuideItem{}, GuideRevision: runtimeref.EffectiveGuideRevision(uploadLimit, st, pi)}
 	seen := map[string]bool{}
 	refusalSeen := false
 	for _, raw := range items {
@@ -91,7 +103,7 @@ func guide(items []string, uploadLimit int64, st *runtimeref.AutopilotState) Gui
 			continue
 		}
 		seen[id] = true
-		md, ok := guidePage(id, uploadLimit, st)
+		md, ok := guidePage(id, uploadLimit, st, pi)
 		if !ok {
 			out.Unknown = append(out.Unknown, raw)
 			continue
@@ -110,7 +122,25 @@ func guide(items []string, uploadLimit int64, st *runtimeref.AutopilotState) Gui
 	return out
 }
 
-func guidePage(id string, uploadLimit int64, st *runtimeref.AutopilotState) (string, bool) {
+func guidePage(id string, uploadLimit int64, st *runtimeref.AutopilotState, pi *runtimeref.PublicInstanceState) (string, bool) {
+	if pi != nil {
+		if cat, ok := strings.CutPrefix(id, "refusal."); ok {
+			if md, ok := runtimeref.PublicInstanceRefusal(cat); ok {
+				return md, true
+			}
+		}
+		if id == "topic.public-instance" {
+			return runtimeref.PublicInstancePage(*pi), true
+		}
+		if id == "topic.instructions" {
+			return "## Server instructions\n\nThe MCP server sends this text at initialization.\n\n" + runtimeref.ServerInstructions(uploadLimit, st != nil, true) + "\n", true
+		}
+		md, ok := guidePage(id, uploadLimit, st, nil)
+		if ok {
+			md = runtimeref.PublicInstanceTopicOverlay(strings.TrimPrefix(id, "topic."), md)
+		}
+		return md, ok
+	}
 	if st != nil {
 		return autopilotGuidePage(id, uploadLimit, *st)
 	}
@@ -163,6 +193,9 @@ func guideText(out GuideOut) string {
 // errorCategory classifies every tool error: the core category, invalid for
 // upload validation, and internal for anything else.
 func errorCategory(err error) string {
+	if errors.Is(err, core.ErrPublicInstanceOn) {
+		return "public_instance_on"
+	}
 	if c := core.ErrorCategory(err); c != "" {
 		return c
 	}

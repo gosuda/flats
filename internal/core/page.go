@@ -62,6 +62,6 @@ func (s *Service) savePageStarter(ctx context.Context, slugName, name string, vi
 	}
 	page := strings.ReplaceAll(pageStarter, "{{title}}", html.EscapeString(title))
 	files := []bundle.File{{Path: "index.html", Data: []byte(page)}, {Path: bundle.ManifestName, Data: manifest}}
-	_, err = s.SaveVersion(ctx, slugName, files, SaveMeta{Message: "created", CheckRevision: true, ExpectedRevision: 0}, via)
+	_, err = s.SaveVersion(ctx, slugName, files, SaveMeta{Message: "created", CheckRevision: true, ExpectedRevision: 0, starter: true}, via)
 	return err
 }

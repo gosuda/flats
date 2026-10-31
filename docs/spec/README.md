@@ -41,6 +41,7 @@ list.
 | [Delete from the flat list](console-row-delete.md) | implemented | A Delete item in each flat's "…" menu that turns into a slide control in place; dragging its handle to the end deletes the flat |
 | [Flats behind a reverse proxy](reverse-proxy-sites.md) | implemented | `proxy` and `proxy-public` providers that serve flats through an operator's reverse proxy, address selection by host default, and rename redirects on the arrival network |
 | [Autopilot](autopilot.md) | implemented | An opt-in mode in the new Settings › Experiments tab where agents approve or reject pending approvals for the operations the operator allows, with an operation guide for agents |
+| [Public instance mode](public-instance.md) | implemented | An opt-in Experiments mode in which every new flat is created Public on the default public network and no private address is handed out or served |
 
 ## Where the technical designs live
 
@@ -60,3 +61,4 @@ docs:
 | Reverse proxy providers: template and listener, Manager and app paths, address selection by host default, rename redirects on the arrival network | [networking.md](../networking.md#serving-flats-behind-a-reverse-proxy), [network-provider-lifecycle.md](../network-provider-lifecycle.md#reverse-proxy), [configuration.md](../configuration.md#reverse-proxy-keys) |
 | Client checks, CLI updates and skill sync | [release.md](../release.md#updating-a-client), [agents.md](../agents.md#keeping-clients-current) |
 | Autopilot: operations, what an approval needs, agent decisions and their records, arrival networks, settings and host log, MCP on and off texts, the Experiments screen, storage | [design.md](../design.md#autopilot), [surfaces.md](../surfaces.md#autopilot-tools), [configuration.md](../configuration.md#autopilot-settings) |
+| Public instance mode: creation policy, private-link gate and request ordering, MCP texts, console, storage and migration | [design.md](../design.md#public-instance-mode), [surfaces.md](../surfaces.md#public-instance-texts), [configuration.md](../configuration.md#public-instance-settings), [lifecycle-core-contract.md](../lifecycle-core-contract.md#migration) |

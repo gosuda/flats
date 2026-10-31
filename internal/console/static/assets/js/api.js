@@ -100,6 +100,8 @@ export const api = {
   // save since then makes the server refuse with 412.
   saveSettings: (values, etag) => request('PUT', '/settings', values, etag ? { 'If-Match': `"${etag}"` } : undefined),
   settingsImpact: (values) => post('/settings/impact', values),
+  publicInstance: () => get('/experiments/public-instance'),
+  setPublicInstance: (enabled, network) => request('PUT', '/experiments/public-instance', enabled ? { enabled, confirmed_network: network } : { enabled }),
   // Autopilot (Settings › Experiments). Turning it on sends the operations
   // the confirmation listed; the server refuses with 409 if they changed.
   autopilot: () => get('/experiments/autopilot'),

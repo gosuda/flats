@@ -98,7 +98,7 @@ async function showLive(slug, what) {
   if (!f) { toast('Done.', 'success'); return; }
   const pub = publicURL(f);
   await infoDialog(`Version ${f.live_version} ${what}`, [
-    f.private_url ? h('p', null, 'Private URL: ', extLink(privateURL(f))) : null,
+    privateURL(f) ? h('p', null, 'Private URL: ', extLink(privateURL(f))) : null,
     pub ? h('p', null, 'Public URL: ', extLink(pub)) : null,
     pub ? h('p', { class: 'notice-text', text: publicNoticeOf(f) }) : null,
   ]);
@@ -134,6 +134,7 @@ export async function redeployLive(flat) {
 // previewVersion opens a private preview of version n, or of the draft when
 // n is 0.
 export async function previewVersion(flat, n) {
+  if (flat.private_links_off) return false;
   try {
     const p = await api.openPreview(flat.slug, n);
     await infoDialog(n ? `Preview of version ${p.version}` : 'Preview of the draft', [
@@ -327,7 +328,9 @@ export async function setVisibility(flat, vis, access) {
     body: [
       h('p', { text: `Visibility changes from ${accessLabel(flat.visibility, flat.public_access)} to ${vis === 'private' ? to.label : ACCESS[access === 'view' ? 'view' : 'public'].label}.` }),
       widening && notice ? h('p', { class: 'alert alert-warn', text: notice }) : null,
-      vis === 'private' ? h('p', { class: 'muted', text: 'The public address goes offline. The private address keeps working.' }) : null,
+      vis === 'private' ? h('p', { class: 'muted', text: flat.private_links_off
+        ? 'The public address goes offline. While public instance mode is on, the flat will have no working link.'
+        : 'The public address goes offline. The private address keeps working.' }) : null,
     ],
     confirmLabel: widening ? `Make ${to.label.toLowerCase()}` : 'Change visibility',
     danger: widening,
@@ -453,7 +456,7 @@ function blockedDialog(flat, pre, problems) {
     const targets = {
       limits: h('a', { class: 'btn', href: '/settings/limits', 'data-nav': true, text: 'Open Limits' }),
       revisions: h('a', { class: 'btn', href: base + '/settings#revisions', 'data-nav': true, text: 'Open revision settings' }),
-      history: flat.private_url ? extLink(privateURL(flat), 'Open History', 'btn') : null,
+      history: privateURL(flat) ? extLink(privateURL(flat), 'Open History', 'btn') : null,
     };
     const actions = [...new Set(problems.map((p) => PROBLEMS[p.code]?.action).filter(Boolean))].map((a) => targets[a]).filter(Boolean);
     const cancel = h('button', { type: 'button', class: 'btn', text: 'Cancel' });

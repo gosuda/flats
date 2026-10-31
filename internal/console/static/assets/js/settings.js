@@ -126,7 +126,7 @@ export function mount(main, [section, sub], ctx) {
     else if (active === 'networks') run = networksPage(page, saved, load);
     else if (active === 'console') run = consolePage(page, saved, load);
     else if (active === 'limits') run = limitsPage(page, saved, load);
-    else if (active === 'experiments') run = experimentsPage(page, load);
+    else if (active === 'experiments') run = experimentsPage(page);
     else run = agentsPage(page);
     return Promise.resolve(run).then(done);
   };
@@ -359,7 +359,7 @@ function defaultsForm(data, providers, saved, reload, notice, page) {
       { key: DEFAULT_KEYS.private, kind: 'select', label: 'Private network', options: choices('private'), initial: effectiveDefault('private', data),
         help: 'New flats are reachable here. Local is always included.' },
       { key: DEFAULT_KEYS.public, kind: 'select', label: 'Public network', options: choices('public'), initial: effectiveDefault('public', data),
-        help: 'Used once you approve making a flat public. New flats always start Private.' },
+        help: 'Used once you approve making a flat public. New flats start Private, except in public instance mode (Settings › Experiments).' },
     ]]],
   });
 }
@@ -1888,26 +1888,77 @@ function experimentsHead() {
   ];
 }
 
-// experimentsPage holds Autopilot: on or off, the operations agents may
-// decide and the operation guide. Every control acts at once except the
-// guide, which has its own Save button.
-async function experimentsPage(page, reload) {
+// Each experiment reloads only its own box, keeping unsaved input in the other.
+async function experimentsPage(page) {
   page.ctx.setTitle('Experiments · Settings');
   const token = page.token;
-  let view;
-  let error;
-  try {
-    view = (await api.autopilot()).autopilot;
-  } catch (err) {
-    error = err;
-  }
-  if (!page.ctx.alive() || page.token !== token) return;
-  if (token) token.drawn = true;
-  if (error) fill(page.content, experimentsHead(), errorPanel(error, 'Cannot load Autopilot'));
-  else drawAutopilot(page, view, reload);
+  const apBox = h('div', null, loading());
+  const piBox = h('div', null, loading());
+  fill(page.content, experimentsHead(), apBox, piBox);
+  const current = () => page.ctx.alive() && page.token === token;
+  const sections = [
+    { box: apBox, load: () => api.autopilot(), key: 'autopilot', name: 'Autopilot', draw: drawAutopilot },
+    { box: piBox, load: () => api.publicInstance(), key: 'public_instance', name: 'Public instance', draw: drawPublicInstance },
+  ];
+  const draw = (section, result) => {
+    if (!current()) return;
+    const reload = async () => {
+      const [next] = await Promise.allSettled([section.load()]);
+      draw(section, next);
+    };
+    if (result.status === 'rejected') fill(section.box, errorPanel(result.reason, 'Cannot load ' + section.name));
+    else section.draw(section.box, page, result.value[section.key], reload);
+  };
+  const results = await Promise.allSettled(sections.map((section) => section.load()));
+  if (!current()) return;
+  token.drawn = true;
+  sections.forEach((section, i) => draw(section, results[i]));
 }
 
-function drawAutopilot(page, view, reload) {
+function drawPublicInstance(box, page, view, reload) {
+  const on = view.enabled;
+  const network = view.network ? infoOf(view.network).label : 'None';
+  const toggle = h('button', { type: 'button', class: 'btn btn-small' + (on ? ' btn-danger-text' : ' btn-primary'),
+    disabled: !on && !view.usable, text: on ? 'Turn off' : 'Turn on',
+    'aria-label': `${on ? 'Turn off' : 'Turn on'} Public instance` });
+  toggle.addEventListener('click', () => busy(toggle, async () => {
+    if (!on) {
+      if (!view.usable) return;
+      const count = view.private_flats;
+      const ok = await confirmDialog({
+        title: 'Turn on Public instance?',
+        body: [
+          h('p', { text: `Every new flat, including flats agents create, will be Public on ${network}. Anyone on the internet can open it. Documents, designs and boards run at once. Each save of a new website or page is published without an approval.` }),
+          h('p', { text: 'Private links stop working, on the Flats machine too, including Draft and version previews. People can no longer preview a Draft, edit a design or open the history of a document, design or board in a browser. Agents keep these through MCP.' }),
+          h('p', { class: 'alert alert-warn', text: `${plural(count, 'flat')} ${count === 1 ? 'is' : 'are'} Private now. ${count === 1 ? 'It will have' : 'They will have'} no working link until ${count === 1 ? 'it is' : 'they are'} made Public or the mode is turned off.` }),
+        ],
+        confirmLabel: 'Turn on', danger: true,
+      });
+      if (!ok) return;
+    }
+    let res;
+    try {
+      res = await api.setPublicInstance(!on, view.network);
+    } catch (err) {
+      await infoDialog(err.status === 409 ? 'The default public network changed' : `Cannot turn ${on ? 'off' : 'on'} Public instance`, errorPanel(err));
+      if (page.ctx.alive()) reload();
+      return;
+    }
+    if (!page.ctx.alive()) return;
+    toast(`Public instance is ${on ? 'off' : 'on'}.`, 'success');
+    drawPublicInstance(box, page, res.public_instance, reload);
+  }));
+  fill(box, group('public-instance', 'Public instance', '', list(
+    row({ id: 'public-instance-state', title: ['Public instance', ' ', on ? pill('On', 'on') : pill('Off', 'off')],
+      desc: 'New flats are created Public on the default public network, and private links are turned off.',
+      meta: ['Default public network: ' + network], ctl: toggle })),
+    !view.usable ? callout(on ? 'warn' : 'info',
+      on ? h('p', { text: 'New flats cannot be created until the default public network is turned on again.' }) : null,
+      h('p', { text: view.reason }),
+      h('a', { href: '/settings/networks', 'data-nav': true, text: 'Settings › Networks' })) : null));
+}
+
+function drawAutopilot(box, page, view, reload) {
   const allowed = () => view.allowed || [];
   const on = view.enabled;
   const toggle = h('button', { type: 'button', class: 'btn btn-small' + (on ? ' btn-danger-text' : ' btn-primary'),
@@ -1927,7 +1978,7 @@ function drawAutopilot(page, view, reload) {
     }
     if (!page.ctx.alive()) return;
     toast(done, 'success');
-    drawAutopilot(page, res.autopilot, reload);
+    drawAutopilot(box, page, res.autopilot, reload);
   }
   async function turnOn() {
     // confirmed_allowed is sent as the server listed it; only the display is sorted.
@@ -1960,7 +2011,7 @@ function drawAutopilot(page, view, reload) {
         h('span', { text: 'They see a change when they reconnect' })),
       ctl: toggle })));
   if (!on) {
-    fill(page.content, experimentsHead(), autopilot);
+    fill(box, autopilot);
     return;
   }
 
@@ -1975,7 +2026,7 @@ function drawAutopilot(page, view, reload) {
   let queue = Promise.resolve();
   const update = (next) => {
     view = next;
-    if (!view.enabled) { drawAutopilot(page, view, reload); return; }
+    if (!view.enabled) { drawAutopilot(box, page, view, reload); return; }
     for (const [id, input] of switches) if (!pending.has(id)) input.checked = allowed().includes(id);
   };
   const reread = () => api.autopilot()
@@ -2013,7 +2064,7 @@ function drawAutopilot(page, view, reload) {
   const subgroups = [...new Set(OPERATIONS.map((op) => op.group))].map((name) =>
     h('div', { class: 's-sub' }, h('h4', { text: name }), list(...OPERATIONS.filter((op) => op.group === name).map(opRow))));
 
-  fill(page.content, experimentsHead(), autopilot,
+  fill(box, autopilot,
     group('autopilot-ops', 'Operations agents may decide', 'Each switch applies as soon as you change it.', subgroups),
     group('autopilot-guide', 'Operation guide', 'Agents read it while Autopilot is on.', list(guideRow(view))));
 }

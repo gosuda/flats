@@ -177,6 +177,8 @@ func (s *Server) Handler() http.Handler {
 			h("PUT /experiments/autopilot", s.setAutopilotEnabled)
 			h("PUT /experiments/autopilot/operations/{op}", s.setAutopilotOp)
 			h("PUT /experiments/autopilot/guide", s.setAutopilotGuide)
+			h("GET /experiments/public-instance", s.getPublicInstance)
+			h("PUT /experiments/public-instance", s.setPublicInstance)
 		} else {
 			h("POST /flats", s.createFlat)
 			h("GET /flats/{slug}/board", s.getBoard)
@@ -398,11 +400,11 @@ func (s *Server) createFlat(w http.ResponseWriter, r *http.Request, via core.Via
 	writeJSON(w, 201, f)
 }
 
-// SaveResponse describes a Private Draft or a live document.
-// Saving never creates a numbered version or requests approval.
+// SaveResponse describes an exact Draft save, a published save, or a live document.
 type SaveResponse struct {
-	Draft *SavedDraft    `json:"draft,omitempty"`
-	Flat  *core.FlatView `json:"flat,omitempty"`
+	Draft   *SavedDraft    `json:"draft,omitempty"`
+	Flat    *core.FlatView `json:"flat,omitempty"`
+	Version int            `json:"version,omitempty"`
 }
 
 // SavedDraft is metadata of this exact save, captured under the core storage
@@ -466,12 +468,19 @@ func (s *Server) saveContent(w http.ResponseWriter, r *http.Request, via core.Vi
 		fail(w, err)
 		return
 	}
-	if f, err := s.Svc.GetFlat(r.Context(), r.PathValue("slug")); err == nil && f.Type == contenttype.Docs {
+	f, ferr := s.Svc.GetFlat(r.Context(), r.PathValue("slug"))
+	if ferr == nil && f.Type == contenttype.Docs {
 		writeJSON(w, http.StatusCreated, SaveResponse{Flat: &f})
 		return
 	}
 	draft := SavedDraftFrom(saved)
 	out := SaveResponse{Draft: &draft}
+	if saved.Published {
+		out.Version = saved.Number
+		if ferr == nil {
+			out.Flat = &f
+		}
+	}
 	writeJSON(w, http.StatusCreated, out)
 }
 
