@@ -17,10 +17,10 @@ import (
 func registerDesign(s *mcp.Server, t *tools) {
 	no := false
 	write := &mcp.ToolAnnotations{DestructiveHint: &no}
-	mcp.AddTool(s, &mcp.Tool{Name: "save_design", Annotations: write,
+	mcp.AddTool(s, t.describe(&mcp.Tool{Name: "save_design", Annotations: write,
 		Description: "Write files of a design (a canvas of HTML artboards people and agents edit live; guide topic.canvas), creating it when absent. " +
 			"One call is one revision and applies at once, Private unless the operator made it Public: no Draft, publish or approval. " +
-			"Files you do not name stay as they are; list paths to remove in delete. canvas.json is the index (title, boards with x/y/w/h, order, notes)."}, t.saveDesign)
+			"Files you do not name stay as they are; list paths to remove in delete. canvas.json is the index (title, boards with x/y/w/h, order, notes)."}), t.saveDesign)
 	mcp.AddTool(s, &mcp.Tool{Name: "get_design", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 		Description: "Read a design: without path, its canvas, file list (path, size, hash, gen), revision and each artboard's tweaks; with path, one file's content. Read it before changing files people may have edited."}, t.getDesign)
 	mcp.AddTool(s, &mcp.Tool{Name: "list_revisions", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
@@ -80,11 +80,11 @@ func (t *tools) saveDesign(ctx context.Context, _ *mcp.CallToolRequest, in SaveD
 	var b strings.Builder
 	switch {
 	case res.Created:
-		fmt.Fprintf(&b, "Created design %s (revision %d). It is live, %s, at %s; there is no publish step.", in.Slug, res.Revision, f.Visibility, f.PrivateURL)
+		fmt.Fprintf(&b, "Created design %s (revision %d). It is live, %s, at %s; there is no publish step.", in.Slug, res.Revision, f.Visibility, linkText(out.Flat))
 	case len(res.Changed) == 0:
 		fmt.Fprintf(&b, "Nothing changed; design %s stays at revision %d.", in.Slug, res.Revision)
 	default:
-		fmt.Fprintf(&b, "Saved revision %d of design %s (%d files changed). It is live at %s.", res.Revision, in.Slug, len(res.Changed), f.PrivateURL)
+		fmt.Fprintf(&b, "Saved revision %d of design %s (%d files changed). It is live at %s.", res.Revision, in.Slug, len(res.Changed), linkText(out.Flat))
 	}
 	if f.Visibility.Public() {
 		b.WriteString(" This design is Public: everyone on the internet sees the change now.")

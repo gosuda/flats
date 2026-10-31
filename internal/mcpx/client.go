@@ -19,18 +19,20 @@ type clientOriginKey struct{}
 func clientManifest(ctx context.Context, svc *core.Service) clientstate.Manifest {
 	limit := svc.UploadLimit()
 	m := clientstate.NewManifest(buildinfo.Get(), limit)
-	m.GuideRevision = runtimeref.EffectiveGuideRevision(limit, stateOf(ctx).Guide)
+	m.GuideRevision = runtimeref.EffectiveGuideRevision(limit, stateOf(ctx).Guide, stateOf(ctx).Public)
 	m.ServerURL, _ = ctx.Value(clientOriginKey{}).(string)
 	return m
 }
 
-func registerClient(s *mcp.Server, svc *core.Service, autopilot bool) {
+func registerClient(s *mcp.Server, svc *core.Service, autopilot, public bool) {
 	check := &mcp.Tool{
 		Name:        "check_client",
 		Description: "Check CLI, loaded guide and bootstrap compatibility with this host. Read-only; omitted local facts remain unknown. Read guide topic.client-update for refresh steps. server_url is a routing hint, not authenticated identity.",
 		Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true, IdempotentHint: true},
 	}
-	if autopilot {
+	if public {
+		registerPublicClient(s, check, svc, autopilot)
+	} else if autopilot {
 		// The result gains an additive autopilot member; the off server keeps
 		// today's result type and schema.
 		mcp.AddTool(s, check, func(ctx context.Context, _ *mcp.CallToolRequest, in clientstate.CheckInput) (*mcp.CallToolResult, checkResultAutopilot, error) {

@@ -31,7 +31,10 @@ func Handler(svc *core.Service, opts Options) http.Handler {
 	}
 	servers := &serverCache{svc: svc, version: version}
 	newHandler := func(external bool) http.Handler {
-		return mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server { return servers.get(stateOf(r.Context()).Autopilot.Enabled) },
+		return mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {
+			st := stateOf(r.Context())
+			return servers.get(st.Autopilot.Enabled, st.Public != nil)
+		},
 			&mcp.StreamableHTTPOptions{
 				Stateless:    true,
 				JSONResponse: true,
@@ -62,61 +65,50 @@ func Handler(svc *core.Service, opts Options) http.Handler {
 // copy and before it is served.
 var stateTaken atomic.Pointer[func(*http.Request)]
 
-// serverCache keeps two MCP servers, one with Autopilot off and one with it
-// on, and rebuilds both when the upload limit changes, so the limit quoted
-// in the server instructions matches the one enforced. The servers do not
-// depend on the Autopilot switches or guide: those are read per request.
+// serverCache holds the four mode combinations. Networks, allowed operations
+// and guides are request state, not server state.
+type serverModes struct{ autopilot, public bool }
+
 type serverCache struct {
 	svc     *core.Service
 	version string
-
 	mu      sync.Mutex
 	limit   int64
-	off, on *mcp.Server
+	servers map[serverModes]*mcp.Server
 }
 
-func (c *serverCache) get(autopilot bool) *mcp.Server {
-	srv, _ := c.server(autopilot)
+func (c *serverCache) get(autopilot, public bool) *mcp.Server {
+	srv, _ := c.server(autopilot, public)
 	return srv
 }
 
-// current returns the Autopilot-off server together with the upload limit
-// it was built for.
-func (c *serverCache) current() (*mcp.Server, int64) { return c.server(false) }
+// current returns the fixed off server for llms.txt.
+func (c *serverCache) current() (*mcp.Server, int64) { return c.server(false, false) }
 
-func (c *serverCache) server(autopilot bool) (*mcp.Server, int64) {
+func (c *serverCache) server(autopilot, public bool) (*mcp.Server, int64) {
 	limit := c.svc.UploadLimit()
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if c.limit != limit {
-		c.off, c.on, c.limit = nil, nil, limit
+	if c.limit != limit || c.servers == nil {
+		c.servers, c.limit = make(map[serverModes]*mcp.Server), limit
 	}
-	if !autopilot {
-		if c.off == nil {
-			srv := mcp.NewServer(&mcp.Implementation{Name: "flats", Title: "Flats", Version: c.version},
-				&mcp.ServerOptions{Instructions: instructions(limit)})
-			register(srv, &tools{svc: c.svc})
-			registerGuide(srv, c.svc, false)
-			registerClient(srv, c.svc, false)
-			registerReference(srv, c.version, limit)
-			registerContentTypes(srv, c.version, limit)
-			c.off = srv
-		}
-		return c.off, limit
+	mode := serverModes{autopilot: autopilot, public: public}
+	if srv := c.servers[mode]; srv != nil {
+		return srv, limit
 	}
-	if c.on == nil {
-		srv := mcp.NewServer(&mcp.Implementation{Name: "flats", Title: "Flats", Version: c.version},
-			&mcp.ServerOptions{Instructions: runtimeref.AutopilotInstructions(limit)})
-		t := &tools{svc: c.svc, autopilot: true}
-		register(srv, t)
-		registerGuide(srv, c.svc, true)
-		registerClient(srv, c.svc, true)
-		registerReference(srv, c.version, limit)
-		registerContentTypes(srv, c.version, limit)
+	srv := mcp.NewServer(&mcp.Implementation{Name: "flats", Title: "Flats", Version: c.version},
+		&mcp.ServerOptions{Instructions: runtimeref.ServerInstructions(limit, autopilot, mode.public)})
+	t := &tools{svc: c.svc, autopilot: autopilot, publicInstance: mode.public}
+	register(srv, t)
+	registerGuide(srv, c.svc, autopilot)
+	registerClient(srv, c.svc, autopilot, mode.public)
+	registerReference(srv, c.version, limit)
+	registerContentTypes(srv, c.version, limit)
+	if autopilot {
 		registerAutopilot(srv, t)
-		c.on = srv
 	}
-	return c.on, limit
+	c.servers[mode] = srv
+	return srv, limit
 }
 
 // maxBody bounds a JSON-RPC request: inline files arrive base64 (4/3 of
