@@ -180,7 +180,10 @@ or Tailscale route remains in memory, then stops every Funnel listener and
 confirms every candidate node retirement before it stops Portal or Local. A
 public listener or node failure therefore leaves Local reachable and keeps the
 appropriate route or cleanup record for retry; sibling slug routes are
-untouched. When no tailnet backend exists because neither Tailscale provider
+untouched. Retirement serializes against `ServeExposure` for that slug: an
+in-flight open for the retiring slug either registers before the route snapshot
+(and is stopped by the retirement) or waits to register after `StopSlug`
+returns as a fresh open. Serves of other slugs proceed concurrently. When no tailnet backend exists because neither Tailscale provider
 is granted, `StopSlug` removes only the validated host's local `tsnet/<host>`
 directory. It does not start a backend or contact control, and it prevents a
 later flat with the same slug from loading the historical identity. The old

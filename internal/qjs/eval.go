@@ -1,13 +1,21 @@
 package qjs
 
+import "fmt"
+
 func load(c *Context, file string, flags ...EvalOptionFunc) (*Value, error) {
 	if file == "" {
 		return nil, ErrInvalidFileName
+	}
+	if err := c.checkOpen(); err != nil {
+		return nil, fmt.Errorf("load %s: %w", file, err)
 	}
 
 	// Module: Force TypeModule() since load only works with modules
 	flags = append(flags, TypeModule())
 	option := createEvalOption(c, file, flags...)
+	if err := checkEvalOption(option); err != nil {
+		return nil, err
+	}
 
 	evalOptions := option.Handle()
 
@@ -22,8 +30,14 @@ func eval(c *Context, file string, flags ...EvalOptionFunc) (*Value, error) {
 	if file == "" {
 		return nil, ErrInvalidFileName
 	}
+	if err := c.checkOpen(); err != nil {
+		return nil, fmt.Errorf("eval %s: %w", file, err)
+	}
 
 	option := createEvalOption(c, file, flags...)
+	if err := checkEvalOption(option); err != nil {
+		return nil, err
+	}
 
 	evalOptions := option.Handle()
 	defer option.Free()
@@ -34,7 +48,14 @@ func eval(c *Context, file string, flags ...EvalOptionFunc) (*Value, error) {
 }
 
 func compile(c *Context, file string, flags ...EvalOptionFunc) (_ []byte, err error) {
+	if err := c.checkOpen(); err != nil {
+		return nil, fmt.Errorf("compile %s: %w", file, err)
+	}
+
 	option := createEvalOption(c, file, flags...)
+	if err := checkEvalOption(option); err != nil {
+		return nil, err
+	}
 
 	evalOptions := option.Handle()
 	defer option.Free()
@@ -53,6 +74,14 @@ func compile(c *Context, file string, flags ...EvalOptionFunc) (_ []byte, err er
 	copy(bytes, bytecodeBytes)
 
 	return bytes, nil
+}
+
+func checkEvalOption(option *EvalOption) error {
+	if err := cStringError("file", option.file); err != nil {
+		return err
+	}
+
+	return cStringError("code", option.code)
 }
 
 func normalizeJsValue(c *Context, value *Value) (*Value, error) {

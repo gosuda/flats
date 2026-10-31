@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gosuda/flats/internal/qjs"
+	"github.com/gosuda/flats/internal/jsengine"
 )
 
 // resetDocumentImages forgets the images this process holds, as a new
@@ -171,7 +171,7 @@ func TestImageInitSplitPerRuntime(t *testing.T) {
 				t.Fatalf("images=%v worker %d: %+v, want %+v", images, i, got, want)
 			}
 			restored := false
-			w.firstVM(t, func(vm *jsVM) { restored = vm.rt.Restored() })
+			w.firstVM(t, func(vm *jsVM) { restored = vm.eng.Restored() })
 			if images && i == 1 && !restored {
 				t.Fatalf("second worker did not restore the image")
 			}
@@ -223,7 +223,7 @@ func TestImageCreateLoadAndFiles(t *testing.T) {
 	resetDocumentImages()
 	w = mustImageWorker(t, workerSpec{Dir: dir, ImagePath: path, Generation: 2})
 	w.firstVM(t, func(vm *jsVM) {
-		if !vm.rt.Restored() {
+		if !vm.eng.Restored() {
 			t.Fatal("not restored from the file")
 		}
 	})
@@ -243,12 +243,12 @@ func TestImageCreateLoadAndFiles(t *testing.T) {
 		t.Fatal("corrupt image not deleted")
 	}
 	w.firstVM(t, func(vm *jsVM) {
-		if vm.rt.Restored() {
+		if vm.eng.Restored() {
 			t.Fatal("restored a corrupt image")
 		}
 	})
 	w.ready()
-	if _, err := qjs.UnmarshalImage(mustRead(t, path)); err != nil {
+	if _, err := jsengine.UnmarshalImage(mustRead(t, path)); err != nil {
 		t.Fatalf("rewritten image: %v", err)
 	}
 	if got := meta(t, w); got.Gen != 3 {
@@ -292,14 +292,15 @@ func TestImageBindingInvalidation(t *testing.T) {
 	w := mustImageWorker(t, workerSpec{Dir: dir, ImagePath: path})
 	w.ready()
 	w.close()
-	img, err := qjs.UnmarshalImage(mustRead(t, path))
+	img, err := jsengine.UnmarshalImage(mustRead(t, path))
 	if err != nil {
 		t.Fatal(err)
 	}
 	base, _ := imageBinding(w.worker)
-	opt := (&jsVM{w: w.worker}).options()
-	opt.ImageBinding = base
-	if !img.Compatible(opt) {
+	spec := (&jsVM{w: w.worker}).engineSpec()
+	spec.ImageBinding = base
+	compatible := img.Compatible
+	if !compatible(spec) {
 		t.Fatal("image does not match its own binding")
 	}
 	for name, change := range map[string]func() func(){
@@ -325,8 +326,8 @@ func TestImageBindingInvalidation(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		opt.ImageBinding = b
-		if b == base || img.Compatible(opt) {
+		spec.ImageBinding = b
+		if b == base || compatible(spec) {
 			t.Errorf("%s: image still compatible", name)
 		}
 	}
@@ -337,7 +338,7 @@ func TestImageBindingInvalidation(t *testing.T) {
 	resetDocumentImages()
 	w = mustImageWorker(t, workerSpec{Dir: dir, ImagePath: path})
 	w.firstVM(t, func(vm *jsVM) {
-		if vm.rt.Restored() {
+		if vm.eng.Restored() {
 			t.Fatal("restored an image of another prelude")
 		}
 	})
@@ -371,7 +372,7 @@ func TestImageUnwritableDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !vm.rt.Restored() {
+	if !vm.eng.Restored() {
 		t.Fatal("pool runtime not restored from memory")
 	}
 	vm.close()
@@ -529,7 +530,7 @@ func TestImageHoldsNoSecrets(t *testing.T) {
 			t.Fatal("restored runtime lost the env")
 		}
 		w2.firstVM(t, func(vm *jsVM) {
-			if !vm.rt.Restored() {
+			if !vm.eng.Restored() {
 				t.Fatalf("%s: not restored", name)
 			}
 		})

@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gosuda/flats/internal/qjs"
+	"github.com/gosuda/flats/internal/jsengine"
 )
 
 // docsDist is a document runtime directory: the built-in docs app with a
@@ -61,7 +61,7 @@ func TestImageDocsRestore(t *testing.T) {
 			t.Fatalf("restored page differs: %d %.200q", got.Status, got.Body)
 		}
 		w.firstVM(t, func(vm *jsVM) {
-			if !vm.rt.Restored() {
+			if !vm.eng.Restored() {
 				t.Fatal("not restored")
 			}
 		})
@@ -82,17 +82,17 @@ func TestImageDocsCensus(t *testing.T) {
 		w.data = newDataStore(w.spec.DataDir)
 		defer w.data.Close()
 		vm := allocJSVM(w, nil)
-		opt := vm.options()
-		c := &qjs.Census{}
-		opt.Census = c
-		if err := vm.newRuntime(opt); err != nil {
+		spec := vm.engineSpec()
+		c := &jsengine.Census{}
+		spec.Census = c
+		if err := vm.newEngine(spec); err != nil {
 			t.Fatal(err)
 		}
 		defer vm.close()
-		if err := vm.startup(func(qc *qjs.Context) error { return vm.load(qc, false) }); err != nil {
+		if err := vm.startup(vm.load); err != nil {
 			t.Fatal(err)
 		}
-		return c.WallReads.Load(), c.MonoReads.Load(), c.FileOpens.Load(), c.FileCloses.Load(), vm.rt.ImageEligible(), vm.hostUsed
+		return c.WallReads.Load(), c.MonoReads.Load(), c.FileOpens.Load(), c.FileCloses.Load(), vm.eng.ImageEligible(), vm.hostUsed
 	}
 	empty := t.TempDir()
 	writeFiles(t, empty, map[string]string{"server.js": "export default {};"})

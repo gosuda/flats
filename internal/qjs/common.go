@@ -47,20 +47,6 @@ type NumberType interface {
 }
 
 var (
-	// Overflow bounds for numeric types.
-	numericBounds = map[reflect.Kind][2]float64{
-		reflect.Int8:    {math.MinInt8, math.MaxInt8},
-		reflect.Int16:   {math.MinInt16, math.MaxInt16},
-		reflect.Int32:   {math.MinInt32, math.MaxInt32},
-		reflect.Int64:   {math.MinInt64, math.MaxInt64},
-		reflect.Uint8:   {0, math.MaxUint8},
-		reflect.Uint16:  {0, math.MaxUint16},
-		reflect.Uint32:  {0, math.MaxUint32},
-		reflect.Uint64:  {0, math.MaxUint64},
-		reflect.Float32: {-math.MaxFloat32, math.MaxFloat32},
-		reflect.Float64: {-math.MaxFloat64, math.MaxFloat64},
-	}
-
 	// TypedArray types for validation.
 	typedArrayTypes = []string{
 		"Uint8Array",
@@ -337,6 +323,12 @@ func (ac *JsArrayToGoConverter[T]) Convert() (T, error) {
 		return zero, newJsToGoErr(ac.input, err, "Array")
 	}
 
+	if ac.tracker.Track(ac.input.Raw()) {
+		return zero, fmt.Errorf("cannot convert JS array to Go: circular reference")
+	}
+
+	defer ac.tracker.UnTrack(ac.input.Raw())
+
 	jsLen := jsArray.Len()
 	if ac.targetType == nil || ac.targetType.Kind() == reflect.Interface {
 		return ac.convertToInterface(jsArray, jsLen)
@@ -363,10 +355,8 @@ func (ac *JsArrayToGoConverter[T]) convertToInterface(jsArray *Array, jsLen int6
 		jsElem.Free()
 
 		if convErr != nil {
-			return ac.sample, newJsToGoErr(
-				jsArray.Value,
-				convErr,
-				fmt.Sprintf("array/set element at index %d", int(i)),
+			return ac.sample, fmt.Errorf(
+				"cannot convert JS array/set element at index %d to Go: %w", int(i), convErr,
 			)
 		}
 
@@ -390,10 +380,8 @@ func (ac *JsArrayToGoConverter[T]) convertToSlice(jsArray *Array, jsLen int64) (
 		jsElem.Free()
 
 		if convErr != nil {
-			return ac.sample, newJsToGoErr(
-				jsArray.Value,
-				convErr,
-				fmt.Sprintf("array/set element at index %d", int(i)),
+			return ac.sample, fmt.Errorf(
+				"cannot convert JS array/set element at index %d to Go: %w", int(i), convErr,
 			)
 		}
 
@@ -423,10 +411,8 @@ func (ac *JsArrayToGoConverter[T]) convertToArray(jsArray *Array, jsLen int64) (
 		jsElem.Free()
 
 		if convErr != nil {
-			return ac.sample, newJsToGoErr(
-				jsArray.Value,
-				convErr,
-				fmt.Sprintf("array/set element at index %d", int(i)),
+			return ac.sample, fmt.Errorf(
+				"cannot convert JS array/set element at index %d to Go: %w", int(i), convErr,
 			)
 		}
 
@@ -504,32 +490,45 @@ func FloatToInt(floatVal float64, targetKind reflect.Kind) (any, error) {
 	return result, nil
 }
 
-func IsValid32BitFloat(floatVal float64, targetKind reflect.Kind) error {
-	var bounds [2]float64
-	if targetKind == reflect.Int {
-		bounds = [2]float64{math.MinInt32, math.MaxInt32}
-	} else {
-		bounds = [2]float64{0, math.MaxUint32}
-	}
-
-	if floatVal < bounds[0] || floatVal > bounds[1] {
-		return newOverflowErr(floatVal, targetKind.String())
-	}
-
-	return nil
-}
-
+// NumericBoundsCheck reports whether floatVal fits targetKind without wrapping.
 func NumericBoundsCheck(floatVal float64, targetKind reflect.Kind) error {
-	if bounds, ok := numericBounds[targetKind]; ok {
-		if floatVal < bounds[0] || floatVal > bounds[1] {
+	var fits bool
+
+	switch targetKind {
+	case reflect.Int:
+		fits = floatFitsSignedInt(floatVal, strconv.IntSize)
+	case reflect.Int8:
+		fits = floatFitsSignedInt(floatVal, 8)
+	case reflect.Int16:
+		fits = floatFitsSignedInt(floatVal, 16)
+	case reflect.Int32:
+		fits = floatFitsSignedInt(floatVal, 32)
+	case reflect.Int64:
+		fits = floatFitsSignedInt(floatVal, 64)
+	case reflect.Uint:
+		fits = floatFitsUnsignedInt(floatVal, strconv.IntSize)
+	case reflect.Uint8:
+		fits = floatFitsUnsignedInt(floatVal, 8)
+	case reflect.Uint16:
+		fits = floatFitsUnsignedInt(floatVal, 16)
+	case reflect.Uint32:
+		fits = floatFitsUnsignedInt(floatVal, 32)
+	case reflect.Uint64:
+		fits = floatFitsUnsignedInt(floatVal, 64)
+	case reflect.Uintptr:
+		fits = floatFitsUnsignedInt(floatVal, strconv.IntSize)
+	case reflect.Float32:
+		if floatVal < -math.MaxFloat32 || floatVal > math.MaxFloat32 {
 			return newOverflowErr(floatVal, targetKind.String())
 		}
+
+		return nil
+	default:
+		return nil
 	}
 
-	// Special handling for int/uint on 32-bit platforms
-	isIntUint := targetKind == reflect.Int || targetKind == reflect.Uint
-	if isIntUint && Is32BitPlatform() {
-		return IsValid32BitFloat(floatVal, targetKind)
+	if !fits {
+		return newOverflowErr(floatVal, targetKind.String())
 	}
 
 	return nil
@@ -584,6 +583,28 @@ func processTempValue[T any](prefix string, temp any, err error, samples ...T) (
 	return valueT, nil
 }
 
+// floatFitsSignedInt reports whether a parsed float lies inside the range of
+// a signed integer of the given bit size.
+func floatFitsSignedInt(val float64, bits int) bool {
+	if math.IsNaN(val) {
+		return false
+	}
+
+	upper := math.Ldexp(1, bits-1)
+
+	return val >= -upper && val < upper
+}
+
+// floatFitsUnsignedInt reports whether a parsed float lies inside the range
+// of an unsigned integer of the given bit size.
+func floatFitsUnsignedInt(val float64, bits int) bool {
+	if math.IsNaN(val) {
+		return false
+	}
+
+	return val >= 0 && val < math.Ldexp(1, bits)
+}
+
 func StringToNumeric(s string, targetType reflect.Type) (result any, err error) {
 	s = strings.TrimSpace(s)
 
@@ -609,7 +630,7 @@ func StringToNumeric(s string, targetType reflect.Type) (result any, err error) 
 	// then truncate to integer, which mimics JavaScript's Number() conversion
 	switch targetType.Kind() {
 	case reflect.Int:
-		if val, err := strconv.ParseFloat(s, 64); err == nil {
+		if val, err := strconv.ParseFloat(s, 64); err == nil && floatFitsSignedInt(val, strconv.IntSize) {
 			return int(val), nil
 		}
 	case reflect.Int8:
@@ -634,11 +655,11 @@ func StringToNumeric(s string, targetType reflect.Type) (result any, err error) 
 			}
 		}
 	case reflect.Int64:
-		if val, err := strconv.ParseFloat(s, 64); err == nil {
+		if val, err := strconv.ParseFloat(s, 64); err == nil && floatFitsSignedInt(val, 64) {
 			return int64(val), nil
 		}
 	case reflect.Uint:
-		if val, err := strconv.ParseFloat(s, 64); err == nil && val >= 0 {
+		if val, err := strconv.ParseFloat(s, 64); err == nil && floatFitsUnsignedInt(val, strconv.IntSize) {
 			return uint(val), nil
 		}
 	case reflect.Uint8:
@@ -663,11 +684,11 @@ func StringToNumeric(s string, targetType reflect.Type) (result any, err error) 
 			}
 		}
 	case reflect.Uint64:
-		if val, err := strconv.ParseFloat(s, 64); err == nil && val >= 0 {
+		if val, err := strconv.ParseFloat(s, 64); err == nil && floatFitsUnsignedInt(val, 64) {
 			return uint64(val), nil
 		}
 	case reflect.Uintptr:
-		if val, err := strconv.ParseFloat(s, 64); err == nil && val >= 0 {
+		if val, err := strconv.ParseFloat(s, 64); err == nil && floatFitsUnsignedInt(val, strconv.IntSize) {
 			return uintptr(val), nil
 		}
 	case reflect.Float32:
@@ -896,7 +917,6 @@ func ChannelToJSObjectValue(
 
 // CreateChannelSendFunc creates 'func(T) error' for sending T to a channel.
 func CreateChannelSendFunc(chanRValue reflect.Value) any {
-	errValue := ErrZeroRValue
 	chanElemRType := chanRValue.Type().Elem()
 	funcRType := reflect.FuncOf(
 		[]reflect.Type{chanElemRType},
@@ -905,18 +925,17 @@ func CreateChannelSendFunc(chanRValue reflect.Value) any {
 	)
 
 	fn := reflect.MakeFunc(funcRType, func(args []reflect.Value) []reflect.Value {
-		valueToSend := args[0]
 		chosen, _, _ := reflect.Select([]reflect.SelectCase{
-			{Dir: reflect.SelectSend, Chan: chanRValue, Send: valueToSend},
+			{Dir: reflect.SelectSend, Chan: chanRValue, Send: args[0]},
 			{Dir: reflect.SelectDefault},
 		})
 
 		// Default case was chosen - send would block
 		if chosen == 1 {
-			errValue = reflect.ValueOf(ErrChanSend)
+			return []reflect.Value{reflect.ValueOf(ErrChanSend)}
 		}
 
-		return []reflect.Value{errValue}
+		return []reflect.Value{ErrZeroRValue}
 	})
 
 	return fn.Interface()

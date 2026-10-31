@@ -33,6 +33,8 @@ var (
 	ErrChanSend                = errors.New("channel send would block: buffer full or no receiver ready")
 	ErrChanReceive             = errors.New("channel receive would block: buffer empty or no sender ready")
 	ErrChanCloseReceiveOnly    = errors.New("cannot close receive-only channel")
+	ErrOutOfMemory             = errors.New("out of memory")
+	ErrStringContainsNUL       = errors.New("string contains a NUL byte")
 )
 
 func combineErrors(errs ...error) error {

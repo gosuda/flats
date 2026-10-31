@@ -6,6 +6,7 @@ import (
 	_ "embed"
 	"errors"
 	"fmt"
+	"math"
 	"runtime/debug"
 	"sync"
 	"sync/atomic"
@@ -181,7 +182,12 @@ func New(options ...Option) (_ *Runtime, err error) {
 	// FORK (flats): no host directory unless explicitly requested, and then
 	// read-only. Upstream mounted Option.CWD (default os.Getwd()) read-write.
 	if option.ReadOnlyDir != "" {
-		modCfg = modCfg.WithFSConfig(readOnlyMount(option.ReadOnlyDir, option.Census))
+		fsConfig, mountErr := readOnlyMount(option.ReadOnlyDir, option.Census)
+		if mountErr != nil {
+			return nil, mountErr
+		}
+
+		modCfg = modCfg.WithFSConfig(fsConfig)
 	}
 	if runtime.module, err = runtime.wrt.InstantiateModule(option.Context, shell.compiled, modCfg); err != nil {
 		return nil, fmt.Errorf("failed to instantiate module: %w", err)
@@ -212,12 +218,30 @@ func New(options ...Option) (_ *Runtime, err error) {
 	return runtime, nil
 }
 
+// checkOpen returns ErrRuntimeClosed once the native runtime is gone: after
+// Close, or after a deadline closed the guest module.
+func (r *Runtime) checkOpen() error {
+	if r == nil || r.module == nil || r.module.IsClosed() {
+		return ErrRuntimeClosed
+	}
+
+	return nil
+}
+
 func (r *Runtime) Raw() uint64 {
+	if err := r.checkOpen(); err != nil {
+		panic(fmt.Errorf("read the runtime handle after it closed: %w", err))
+	}
+
 	return r.handle.raw
 }
 
 // FreeQJSRuntime frees the QJS runtime.
 func (r *Runtime) FreeQJSRuntime() {
+	if r == nil || r.context == nil || r.handle == nil {
+		return
+	}
+
 	defer func() {
 		err := AnyToError(recover())
 		if err != nil {
@@ -231,6 +255,10 @@ func (r *Runtime) FreeQJSRuntime() {
 
 // Mem returns the WebAssembly memory interface for this runtime.
 func (r *Runtime) Mem() *Mem {
+	if err := r.checkOpen(); err != nil {
+		panic(fmt.Errorf("read runtime memory after it closed: %w", err))
+	}
+
 	return r.mem
 }
 
@@ -282,16 +310,28 @@ func (r *Runtime) Close() {
 
 // Load executes a JavaScript file in the runtime's context.
 func (r *Runtime) Load(file string, flags ...EvalOptionFunc) (*Value, error) {
+	if err := r.checkOpen(); err != nil {
+		return nil, fmt.Errorf("load %s: %w", file, err)
+	}
+
 	return r.context.Load(file, flags...)
 }
 
 // Eval executes JavaScript code in the runtime's context.
 func (r *Runtime) Eval(file string, flags ...EvalOptionFunc) (*Value, error) {
+	if err := r.checkOpen(); err != nil {
+		return nil, fmt.Errorf("eval %s: %w", file, err)
+	}
+
 	return r.context.Eval(file, flags...)
 }
 
 // Compile compiles JavaScript code to bytecode without executing it.
 func (r *Runtime) Compile(file string, flags ...EvalOptionFunc) ([]byte, error) {
+	if err := r.checkOpen(); err != nil {
+		return nil, fmt.Errorf("compile %s: %w", file, err)
+	}
+
 	return r.context.Compile(file, flags...)
 }
 
@@ -314,9 +354,21 @@ func (r *Runtime) CallUnPack(name string, args ...uint64) (uint32, uint32) {
 
 // Malloc allocates memory in the WebAssembly linear memory and return a pointer to it.
 func (r *Runtime) Malloc(size uint64) uint64 {
+	if err := r.checkOpen(); err != nil {
+		panic(fmt.Errorf("allocate %d bytes after the runtime closed: %w", size, err))
+	}
+
+	if size > math.MaxUint32 {
+		panic(fmt.Errorf("failed to allocate %d bytes: exceeds the wasm32 address space", size))
+	}
+
 	ptrs, err := r.malloc.Call(r.context, size)
 	if err != nil {
 		panic(fmt.Errorf("failed to allocate memory: %w", err))
+	}
+
+	if ptrs[0] == 0 && size != 0 {
+		panic(fmt.Errorf("%w: cannot allocate %d bytes", ErrOutOfMemory, size))
 	}
 
 	return ptrs[0]
@@ -324,20 +376,32 @@ func (r *Runtime) Malloc(size uint64) uint64 {
 
 // FreeHandle releases memory allocated in WebAssembly linear memory.
 func (r *Runtime) FreeHandle(ptr uint64) {
+	if r == nil || r.free == nil || r.module == nil || r.module.IsClosed() || r.context == nil {
+		return
+	}
+
 	if _, err := r.free.Call(r.context, ptr); err != nil {
+		if r.module.IsClosed() {
+			return
+		}
+
 		panic(fmt.Errorf("failed to free memory: %w", err))
 	}
 }
 
 // FreeJsValue frees a JavaScript value in the QuickJS runtime.
 func (r *Runtime) FreeJsValue(val uint64) {
+	if r == nil || r.module == nil || r.module.IsClosed() || r.context == nil {
+		return
+	}
+
 	r.Call("QJS_FreeValue", r.context.Raw(), val)
 }
 
 // NewBytesHandle creates a handle for byte data in WebAssembly memory.
 func (r *Runtime) NewBytesHandle(b []byte) *Handle {
-	if len(b) == 0 {
-		return nil
+	if uint64(len(b)) > math.MaxUint32 {
+		panic(fmt.Errorf("failed to allocate %d bytes: exceeds the wasm32 address space", len(b)))
 	}
 
 	ptr := r.Malloc(uint64(len(b)))
@@ -348,8 +412,7 @@ func (r *Runtime) NewBytesHandle(b []byte) *Handle {
 
 // NewStringHandle creates a handle for string data with null termination.
 func (r *Runtime) NewStringHandle(v string) *Handle {
-	// Allocate len+1 for null terminator
-	ptr := r.Malloc(uint64(len(v) + 1))
+	ptr := r.Malloc(uint64(len(v)) + 1)
 
 	r.mem.MustWrite(uint32(ptr), []byte(v))
 	r.mem.MustWrite(uint32(ptr)+uint32(len(v)), []byte{0})
@@ -376,6 +439,10 @@ func (r *Runtime) initializeRuntime() {
 }
 
 func (r *Runtime) call(name string, args ...uint64) uint64 {
+	if err := r.checkOpen(); err != nil {
+		panic(fmt.Errorf("call %s after the runtime closed: %w", name, err))
+	}
+
 	fn := r.module.ExportedFunction(name)
 	if fn == nil {
 		panic(fmt.Errorf("WASM function %s not found", name))
@@ -428,7 +495,7 @@ func (p *Pool) Get() (*Runtime, error) {
 
 	select {
 	case rt := <-p.pools:
-		return p.prepareRuntimeForUse(rt), nil
+		return p.use(rt)
 	default:
 	}
 
@@ -438,20 +505,32 @@ func (p *Pool) Get() (*Runtime, error) {
 
 	select {
 	case rt := <-p.pools:
-		return p.prepareRuntimeForUse(rt), nil
+		return p.use(rt)
 	default:
 		return p.createNewRuntime()
 	}
 }
 
+func (p *Pool) use(rt *Runtime) (*Runtime, error) {
+	if rt == nil || rt.module == nil || rt.module.IsClosed() {
+		return p.createNewRuntime()
+	}
+
+	return p.prepareRuntimeForUse(rt), nil
+}
+
 // Put returns the runtime back to the pool for reuse.
 // If the pool is full, the runtime is closed to prevent resource leaks.
 func (p *Pool) Put(rt *Runtime) {
-	if rt == nil {
+	if rt == nil || rt.module == nil {
+		return
+	}
+	if rt.module.IsClosed() {
+		defer func() { _ = recover() }()
+		rt.Close()
 		return
 	}
 
-	// Update stack top before returning to pool
 	if rt.handle != nil {
 		rt.Call("QJS_UpdateStackTop", rt.handle.raw)
 	}
@@ -492,4 +571,10 @@ func (p *Pool) createNewRuntime() (*Runtime, error) {
 }
 
 // MemorySize returns linear memory bytes in O(1), without walking the JS heap.
-func (r *Runtime) MemorySize() uint32 { return r.module.Memory().Size() }
+func (r *Runtime) MemorySize() uint32 {
+	if err := r.checkOpen(); err != nil {
+		panic(fmt.Errorf("read memory size after the runtime closed: %w", err))
+	}
+
+	return r.module.Memory().Size()
+}

@@ -178,8 +178,12 @@ func (h *Handle) String() string {
 		return ""
 	}
 
+	if err := h.runtime.checkOpen(); err != nil {
+		panic(fmt.Errorf("read a packed string after the runtime closed: %w", err))
+	}
+
 	if h.raw == 0 {
-		if h.runtime != nil && h.runtime.context != nil && h.runtime.context.HasException() {
+		if h.runtime.context != nil && h.runtime.context.HasException() {
 			panic(h.runtime.context.Exception())
 		}
 
@@ -197,17 +201,27 @@ func (h *Handle) Bytes() []byte {
 		return nil
 	}
 
+	if err := h.runtime.checkOpen(); err != nil {
+		panic(fmt.Errorf("read packed bytes after the runtime closed: %w", err))
+	}
+
 	addr, size := h.runtime.mem.UnpackPtr(h.raw)
-	if addr == 0 || size == 0 {
+	if size == 0 {
 		return nil
 	}
 
-	defer h.runtime.FreeHandle(uint64(addr))
+	if addr == 0 {
+		panic(fmt.Errorf("%w: packed bytes of %d bytes", ErrInvalidPointer, size))
+	}
 
-	data := h.runtime.mem.MustRead(addr, uint64(size))
+	data, err := h.runtime.mem.Read(addr, uint64(size))
+	if err != nil {
+		panic(fmt.Errorf("read %d packed bytes at %#x: %w", size, addr, err))
+	}
 
 	result := make([]byte, size)
 	copy(result, data)
+	h.runtime.FreeHandle(uint64(addr))
 
 	return result
 }

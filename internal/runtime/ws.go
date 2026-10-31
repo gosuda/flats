@@ -8,6 +8,7 @@ import (
 	"net"
 	"net/http"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -183,15 +184,32 @@ func (h *wsHub) close(id int64, code int, reason string) error {
 	c := h.conns[id]
 	h.mu.Unlock()
 	if c != nil {
-		if code < 1000 || code > 4999 {
-			code = 1000
-		}
-		if len(reason) > 123 {
-			reason = reason[:123]
-		}
-		c.Close(code, reason)
+		c.Close(closeCode(code), closeReason(reason))
 	}
 	return nil
+}
+
+func closeCode(code int) int {
+	switch {
+	case code >= 1000 && code <= 1003:
+		return code
+	case code >= 1007 && code <= 1014:
+		return code
+	case code >= 3000 && code <= 4999:
+		return code
+	default:
+		return 1000
+	}
+}
+
+// closeReason bounds a close frame's reason to 123 bytes of valid UTF-8, the
+// remaining space in a 125-byte control frame after the status code.
+func closeReason(reason string) string {
+	reason = strings.ToValidUTF8(reason, "")
+	if len(reason) > 123 {
+		reason = strings.ToValidUTF8(reason[:123], "")
+	}
+	return reason
 }
 
 // loop takes Private events first: a Public event is taken only while the
@@ -330,22 +348,15 @@ func (h *wsHub) serve(w http.ResponseWriter, r *http.Request, url string, header
 	for {
 		msg, err := c.ReadMessage(MaxWSMessage)
 		if err != nil {
-			var ce *wsconn.CloseError
-			var ne net.Error
-			switch {
-			case errors.As(err, &ce):
+			if ce, ok := errors.AsType[*wsconn.CloseError](err); ok {
 				code, reason = ce.Code, ce.Reason
-				if code == 1005 {
-					c.Close(1000, "")
-				} else {
-					c.Close(code, "")
-				}
-			case errors.As(err, &ne) && ne.Timeout():
+				c.Close(closeCode(code), "")
+			} else if ne, ok := errors.AsType[net.Error](err); ok && ne.Timeout() {
 				code, reason = 1001, "idle timeout"
 				c.Close(code, reason)
-			default:
+			} else {
 				c.Close(1006, "")
-				if endCode, endWhy := c.CloseStatus(); endCode != 0 { // a concurrent close or full send queue won
+				if endCode, endWhy := c.CloseStatus(); endCode != 0 {
 					code, reason = endCode, endWhy
 				}
 			}

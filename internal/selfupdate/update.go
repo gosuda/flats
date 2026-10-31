@@ -104,6 +104,19 @@ func checksum(raw []byte, name string) (string, error) {
 // memory. Verification stays as before: the archive digest is checked before
 // this runs, and the trailing drain below still confirms the remainder of the
 // decompressed stream inside the budget.
+type writeRecorder struct {
+	w   io.Writer
+	err error
+}
+
+func (r *writeRecorder) Write(p []byte) (int, error) {
+	n, err := r.w.Write(p)
+	if err != nil && r.err == nil {
+		r.err = err
+	}
+	return n, err
+}
+
 func extractTo(w io.Writer, raw []byte) error {
 	gz, e := gzip.NewReader(bytes.NewReader(raw))
 	if e != nil {
@@ -131,8 +144,12 @@ func extractTo(w io.Writer, raw []byte) error {
 		if found || h.Typeflag != tar.TypeReg || h.Size <= 0 || h.Size > executableLimit {
 			return failure("assets_unavailable", "invalid flats executable entry")
 		}
-		if _, e = io.Copy(w, io.LimitReader(tr, executableLimit+1)); e != nil {
-			return e
+		rec := &writeRecorder{w: w}
+		if _, e = io.Copy(rec, io.LimitReader(tr, executableLimit+1)); e != nil {
+			if rec.err != nil {
+				return failure("filesystem", "write candidate executable: %w", rec.err)
+			}
+			return fmt.Errorf("read release archive: %w", e)
 		}
 		found = true
 	}

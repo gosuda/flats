@@ -14,12 +14,11 @@ import (
 	"path"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
 	"github.com/gosuda/flats/internal/egress"
-	"github.com/gosuda/flats/internal/qjs"
+	"github.com/gosuda/flats/internal/jsengine"
 )
 
 //go:embed prelude.js
@@ -29,22 +28,15 @@ var preludeJS string
 // It is not goroutine-safe: a pool hands it to one request at a time.
 type jsVM struct {
 	w             *worker
-	ctx           *swapCtx // the qjs runtime's context; never replaced
-	rt            *qjs.Runtime
-	out           *lineWriter
-	errOut        *lineWriter
+	eng           *jsengine.Engine
 	broken        bool
-	gc            *qjs.Value // native collector captured before guest code can replace it
-	gcBytes       uint64
-	gcCalls       uint32
-	gcMemory      uint32
 	networkActive bool
 	networkCalls  int
 	hostUsed      bool
 
-	db     *sql.Conn // per-VM connection (opened on first use)
+	db     *sql.Conn
 	dbUsed bool
-	ws     wsSink // nil for request VMs
+	ws     wsSink
 }
 
 type wsSink interface {
@@ -72,6 +64,7 @@ type errVMFailed struct {
 }
 
 func (e *errVMFailed) Error() string { return e.err.Error() }
+func (e *errVMFailed) Unwrap() error { return e.err }
 
 func newJSVM(w *worker, ws wsSink) (*jsVM, error) {
 	if w.spec.ImagePath != "" && imagesEnabled() {
@@ -83,10 +76,10 @@ func newJSVM(w *worker, ws wsSink) (*jsVM, error) {
 // newPlainVM loads the prelude and the flat's module into a new runtime.
 func newPlainVM(w *worker, ws wsSink) (*jsVM, error) {
 	vm := allocJSVM(w, ws)
-	if err := vm.newRuntime(vm.options()); err != nil {
+	if err := vm.newEngine(vm.engineSpec()); err != nil {
 		return nil, err
 	}
-	if err := vm.startup(func(c *qjs.Context) error { return vm.load(c, true) }); err != nil {
+	if err := vm.startup(vm.loadWithInit); err != nil {
 		vm.close()
 		return nil, err
 	}
@@ -94,137 +87,99 @@ func newPlainVM(w *worker, ws wsSink) (*jsVM, error) {
 }
 
 func allocJSVM(w *worker, ws wsSink) *jsVM {
-	return &jsVM{w: w, ws: ws, ctx: newSwapCtx(),
-		out:    &lineWriter{log: w.log, level: "info"},
-		errOut: &lineWriter{log: w.log, level: "error"},
-	}
+	return &jsVM{w: w, ws: ws}
 }
 
-// options are the qjs options of every runtime of the worker.
-func (vm *jsVM) options() qjs.Option {
+func (vm *jsVM) engineSpec() jsengine.Spec {
 	w := vm.w
-	return qjs.Option{
-		Context:            vm.ctx,
-		ReadOnlyDir:        w.spec.Dir,
-		CloseOnContextDone: true,
-		CacheDir:           w.spec.CacheDir,
-		MemoryLimitPages:   w.spec.pages(),
-		// QuickJS's own heap limit, below the wasm cap so ordinary
-		// exhaustion is a clean InternalError rather than a failed malloc.
-		MemoryLimit: int(w.spec.pages()) * 65536 * 3 / 4,
-		Stdout:      vm.out,
-		Stderr:      vm.errOut,
+	return jsengine.Spec{
+		Dir:             w.spec.Dir,
+		Entry:           w.spec.Entry,
+		TimeoutMS:       int(w.spec.timeout().Milliseconds()),
+		MaxInputBytes:   MaxRequestBody,
+		MaxOutputBytes:  MaxResponseBody,
+		MaxHostArgBytes: MaxRequestBody,
+		CacheDir:        w.spec.CacheDir,
+		MemoryPages:     int(w.spec.pages()),
+		Stdout:          &lineWriter{log: w.log, level: "info"},
+		Stderr:          &lineWriter{log: w.log, level: "error"},
+		Prelude:         preludeJS,
+		BootSource:      bootSource(w.spec.Entry),
+		RawCodec:        vm.docsCodec,
+		Host:            vm.hostCall,
 	}
 }
 
-// newRuntime creates vm.rt, from the worker's prewarmed shell when it fits.
-// Any failure with the shell is retried without it.
-func (vm *jsVM) newRuntime(opt qjs.Option) (err error) {
-	if s := takePrewarmedShell(opt); s != nil {
-		o := opt
-		o.Shell = s
-		if vm.rt, err = qjs.New(o); err == nil {
+func (vm *jsVM) newEngine(spec jsengine.Spec) (err error) {
+	if s := takePrewarmedShell(spec); s != nil {
+		sp := spec
+		sp.Shell = s
+		if vm.eng, err = jsengine.Open(sp, sp.Host); err == nil {
 			return nil
 		}
 	}
-	if vm.rt, err = qjs.New(opt); err != nil {
-		return fmt.Errorf("start JavaScript runtime: %w", err)
+	if vm.eng, err = jsengine.Open(spec, spec.Host); err != nil {
+		return err
 	}
 	return nil
 }
 
-// startup runs a loading step within the worker's timeout and maps its
-// failures to the startup errors the host reports.
-func (vm *jsVM) startup(f func(*qjs.Context) error) error {
+func (vm *jsVM) startup(f func(context.Context) error) error {
 	w := vm.w
 	ctx, cancel := context.WithTimeout(context.Background(), w.spec.timeout())
 	defer cancel()
-	err := vm.guard(ctx, f)
+	err := f(ctx)
 	if err != nil {
-		var fe *errVMFailed
-		if errors.As(err, &fe) && fe.timedOut {
+		if ctx.Err() != nil || strings.Contains(err.Error(), "context deadline exceeded") {
 			return fmt.Errorf("%s did not finish loading within %s (top-level code must not block)", w.spec.Entry, w.spec.timeout())
+		}
+		if strings.Contains(err.Error(), "maximum call stack size exceeded") {
+			return fmt.Errorf("loading %s: maximum call stack size exceeded (recursion too deep)", w.spec.Entry)
 		}
 		return err
 	}
-	if !vm.rt.StackIntact() {
-		return fmt.Errorf("loading %s: maximum call stack size exceeded (recursion too deep)", w.spec.Entry)
-	}
-	vm.gcMemory = vm.rt.MemorySize()
 	return nil
 }
 
-// jsBindingOrder names what load registers and evaluates, in order; it is
-// part of the document image key (image.go).
 const jsBindingOrder = "gc,__flats_host,__flats_docs_codec,prelude,boot"
 
-// load registers the host functions, evaluates the prelude and imports the
-// flat's module. With init, __flats_init hands the runtime its generation
-// and env before the module loads; without it the caller must call
-// initRuntime before the first request.
-func (vm *jsVM) load(c *qjs.Context, init bool) error {
-	vm.gc = c.Global().GetPropertyStr("gc")
-	c.SetFunc("__flats_host", vm.hostCall)
-	c.SetFunc("__flats_docs_codec", vm.docsCodec)
-	v, err := c.Eval("flats:prelude.js", qjs.Code(preludeJS))
-	if err != nil {
-		return fmt.Errorf("prelude: %w", err)
+func (vm *jsVM) load(ctx context.Context) error {
+	return vm.loadModule(ctx)
+}
+
+func (vm *jsVM) loadWithInit(ctx context.Context) error {
+	if err := vm.initRuntime(ctx); err != nil {
+		return err
 	}
-	v.Free()
-	if init {
-		if err := vm.initRuntime(c); err != nil {
-			return err
-		}
-	}
-	entry := "/" + path.Clean(strings.TrimPrefix(vm.w.spec.Entry, "/"))
-	boot := fmt.Sprintf("import mod from %s;\nglobalThis.__flats_setModule(mod);\n", jsString(entry))
-	v, err = c.Eval("/__flats_boot__.js", qjs.Code(boot), qjs.TypeModule())
+	return vm.loadModule(ctx)
+}
+
+func bootSource(entry string) string {
+	e := "/" + path.Clean(strings.TrimPrefix(entry, "/"))
+	return fmt.Sprintf("import mod from %s;\nglobalThis.__flats_setModule(mod);\n", jsString(e))
+}
+
+func (vm *jsVM) loadModule(ctx context.Context) error {
+	boot := bootSource(vm.w.spec.Entry)
+	_, err := vm.eng.Eval(ctx, "/__flats_boot__.js", boot, true)
 	if err != nil {
 		return errors.New(cleanLoadError(err.Error(), vm.w.spec.Entry))
 	}
-	if v != nil {
-		v.Free()
-	}
 	return nil
 }
 
-// initRuntime calls the prelude's one-shot __flats_init, which fetches this
-// runtime's generation and env from the host.
-func (vm *jsVM) initRuntime(c *qjs.Context) error {
-	v, err := c.Global().InvokeJS("__flats_init")
+func (vm *jsVM) initRuntime(ctx context.Context) error {
+	_, err := vm.eng.Call(ctx, "__flats_init", "")
 	if err != nil {
 		return fmt.Errorf("prelude: %w", err)
 	}
-	v.Free()
 	return nil
 }
 
-// swapCtx is the context.Context a qjs runtime passes to every wasm call.
-// wazero (CloseOnContextDone) starts a watcher goroutine per call that reads
-// ctx.Done(), possibly after the call returned, so the runtime's context must
-// never be replaced; instead the current request's context is swapped
-// atomically inside it. Between requests it is context.Background().
-type swapCtx struct {
-	cur atomic.Pointer[context.Context]
-}
-
-func newSwapCtx() *swapCtx {
-	s := &swapCtx{}
-	s.set(context.Background())
-	return s
-}
-
-func (s *swapCtx) set(ctx context.Context)     { s.cur.Store(&ctx) }
-func (s *swapCtx) current() context.Context    { return *s.cur.Load() }
-func (s *swapCtx) Deadline() (time.Time, bool) { return s.current().Deadline() }
-func (s *swapCtx) Done() <-chan struct{}       { return s.current().Done() }
-func (s *swapCtx) Err() error                  { return s.current().Err() }
-func (s *swapCtx) Value(key any) any           { return s.current().Value(key) }
-
-// cleanLoadError turns QuickJS module load errors into a short message.
 func cleanLoadError(msg, entry string) string {
 	msg = strings.TrimSpace(msg)
-	if strings.Contains(msg, "export 'default'") || strings.Contains(msg, "default") && strings.Contains(msg, "not found") {
+	msg = strings.TrimPrefix(msg, "fatal: ")
+	if strings.Contains(msg, "export 'default'") || (strings.Contains(msg, "default") && strings.Contains(msg, "not found")) {
 		return fmt.Sprintf("%s has no default export; write `export default { async fetch(request, env) { ... } }` (%s)", entry, msg)
 	}
 	if strings.Contains(msg, "could not load module filename '/"+strings.TrimPrefix(path.Clean(entry), "/")+"'") {
@@ -233,76 +188,37 @@ func cleanLoadError(msg, entry string) string {
 	return "loading " + entry + ": " + msg
 }
 
-// trimStack drops the Go stack dump qjs appends to wasm call failures.
-func trimStack(s string) string {
-	if i := strings.Index(s, "\nstack:"); i >= 0 {
-		s = s[:i]
-	}
-	return s
-}
-
 func jsString(s string) string {
 	b, _ := json.Marshal(s)
 	return string(b)
 }
 
-// guard runs f with ctx as the deadline of every wasm call, converting the
-// panics qjs raises on a closed module (timeout) or a trap into errVMFailed.
-// After an errVMFailed the VM is marked broken and must be discarded.
-func (vm *jsVM) guard(ctx context.Context, f func(*qjs.Context) error) (err error) {
-	c := vm.rt.Context()
-	vm.ctx.set(ctx)
-	defer func() {
-		if r := recover(); r != nil {
-			vm.broken = true
-			err = &errVMFailed{err: errors.New(trimStack(fmt.Sprint(r))), timedOut: ctx.Err() != nil}
-		}
-		vm.ctx.set(context.Background())
-		vm.out.Flush()
-		vm.errOut.Flush()
-	}()
-	return f(c)
-}
-
-// invoke calls a global JS function fn(arg) that returns a string (or a
-// promise of one) and awaits it.
 func (vm *jsVM) invoke(ctx context.Context, fn, arg string) (out string, err error) {
+	if _, ok := ctx.Deadline(); !ok {
+		timeout := DefaultTimeout
+		if vm.w != nil {
+			timeout = vm.w.spec.timeout()
+		}
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, timeout)
+		defer cancel()
+	}
 	vm.networkActive = fn == "__flats_dispatch" || fn == "__flats_ws"
 	vm.networkCalls = 0
 	defer func() { vm.networkActive = false }()
-	err = vm.guard(ctx, func(c *qjs.Context) (callErr error) {
-		// Register first so the returned value and original promise are freed
-		// before collecting request-local cycles, within the request deadline.
-		defer vm.collectCycles(c, &callErr)
-		vm.gcBytes += uint64(len(arg))
-		a := c.NewString(arg)
-		p, err := c.Global().InvokeJS(fn, a)
-		a.Free()
-		if err != nil {
+
+	out, err = vm.eng.Call(ctx, fn, arg)
+	if err != nil {
+		timedOut := ctx.Err() != nil || strings.Contains(err.Error(), "context deadline exceeded")
+		if errors.Is(err, jsengine.ErrPoisoned) || errors.Is(err, jsengine.ErrClosed) {
 			vm.broken = true
-			return &errVMFailed{err: errors.New(trimStack(err.Error())), timedOut: ctx.Err() != nil}
 		}
-		defer p.Free()
-		r := p
-		if p.IsPromise() {
-			if r, err = p.Await(); err != nil {
-				vm.broken = true
-				return &errVMFailed{err: errors.New(trimStack(err.Error())), timedOut: ctx.Err() != nil}
-			}
+		var fatal *jsengine.Fatal
+		if errors.As(err, &fatal) {
+			vm.broken = true
 		}
-		if r != p {
-			defer r.Free()
-		}
-		out = r.String()
-		vm.gcBytes += uint64(len(out))
-		return nil
-	})
-	if vm.rt != nil && !vm.broken && !vm.rt.StackIntact() {
-		// The call recursed into the guard zone at the bottom of the C stack
-		// (or past it, corrupting the heap): the result cannot be trusted.
-		vm.broken = true
-		if err == nil {
-			err = &jsError{Name: "RangeError", Message: "Maximum call stack size exceeded (recursion too deep)"}
+		if vm.broken || timedOut {
+			err = &errVMFailed{err: err, timedOut: timedOut}
 		}
 	}
 	vm.afterCall()
@@ -311,8 +227,6 @@ func (vm *jsVM) invoke(ctx context.Context, fn, arg string) (out string, err err
 			Error jsError `json:"__error"`
 		}
 		if json.Unmarshal([]byte(out), &e) == nil {
-			// InternalError covers out-of-memory, stack overflow and other
-			// engine failures after which the runtime may be inconsistent.
 			if e.Error.Name == "InternalError" || strings.Contains(e.Error.Message, "out of memory") {
 				vm.broken = true
 			}
@@ -341,40 +255,6 @@ func (vm *jsVM) afterCall() {
 // exception and has no persistent signal exposed by the binding, so it cannot
 // reliably trigger recovery or VM replacement (nor does cap-sized linear memory
 // prove exhaustion after GC, since linear memory never shrinks).
-func (vm *jsVM) collectCycles(c *qjs.Context, callErr *error) {
-	if vm.broken || vm.gc == nil {
-		return
-	}
-	vm.gcCalls++
-	memory := vm.rt.MemorySize()
-	trafficDue := vm.gcBytes >= 4*1024*1024
-	limit := uint32(32)
-	if capBytes := uint64(vm.w.spec.pages()) * 65536; uint64(memory) >= capBytes-capBytes/4 {
-		limit = 1
-	}
-	if !trafficDue && memory <= vm.gcMemory && vm.gcCalls < limit {
-		return
-	}
-	vm.gcBytes, vm.gcCalls, vm.gcMemory = 0, 0, memory
-	defer func() {
-		if r := recover(); r != nil {
-			vm.broken = true
-			if *callErr == nil {
-				*callErr = &errVMFailed{err: errors.New(trimStack(fmt.Sprint(r))), timedOut: vm.ctx.Err() != nil}
-			}
-		}
-	}()
-	v, err := c.Invoke(vm.gc, c.Global())
-	if v != nil {
-		v.Free()
-	}
-	if err != nil {
-		vm.broken = true
-		if *callErr == nil {
-			*callErr = &errVMFailed{err: errors.New(trimStack(err.Error())), timedOut: vm.ctx.Err() != nil}
-		}
-	}
-}
 
 // moduleInfo is what a module's default export provides. PublicPools is a
 // built-in docs internal (not runtime API v1): separate Public WebSocket
@@ -400,19 +280,9 @@ func (vm *jsVM) close() {
 		vm.db.Close()
 		vm.db = nil
 	}
-	if vm.rt != nil {
-		if vm.gc != nil {
-			func() {
-				defer func() { recover() }()
-				vm.gc.Free()
-			}()
-			vm.gc = nil
-		}
-		func() {
-			defer func() { recover() }() // Close panics on a module closed by a timeout
-			vm.rt.Close()
-		}()
-		vm.rt = nil
+	if vm.eng != nil {
+		vm.eng.Close()
+		vm.eng = nil
 	}
 }
 
@@ -435,31 +305,13 @@ func outboundContext(ctx context.Context) (context.Context, func()) {
 }
 
 // hostCall implements __flats_host(op, argsJSON) -> resultJSON.
-func (vm *jsVM) hostCall(this *qjs.This) (*qjs.Value, error) {
-	args := this.Args()
-	defer func() {
-		for _, a := range args {
-			a.Free()
-		}
-	}()
-	if len(args) != 2 {
-		return nil, errors.New("bad host call")
-	}
-	if !vm.hostUsed {
-		// The runtime now holds host data: never capture it (image.go).
-		vm.hostUsed = true
-		vm.rt.Taint("host operation")
-	}
-	op := args[0].String()
-	raw := args[1].String()
-	c := this.Context()
-	vm.gcBytes += uint64(len(op) + len(raw))
-	res, err := vm.host(vm.ctx.current(), op, json.RawMessage(raw))
-	vm.gcBytes += uint64(len(res))
+func (vm *jsVM) hostCall(ctx context.Context, op string, raw []byte) ([]byte, error) {
+	vm.hostUsed = true
+	res, err := vm.host(ctx, op, json.RawMessage(raw))
 	if err != nil {
 		return nil, err
 	}
-	return c.NewString(res), nil
+	return []byte(res), nil
 }
 
 func (vm *jsVM) host(ctx context.Context, op string, raw json.RawMessage) (string, error) {
@@ -722,38 +574,19 @@ func (e *jsEngine) close() {
 // docsCodec keeps bounded binary serialization out of the interpreted VM.
 // It has no I/O capabilities. Fetch and binary response bodies use separate
 // limits for their binary bridges.
-func (vm *jsVM) docsCodec(this *qjs.This) (*qjs.Value, error) {
-	args := this.Args()
-	defer func() {
-		for _, a := range args {
-			a.Free()
-		}
-	}()
-	if len(args) != 2 {
-		return nil, errors.New("invalid docs codec arguments")
-	}
-	c := this.Context()
+func (vm *jsVM) docsCodec(op string, in jsengine.Value) (jsengine.Value, error) {
 	readString := func() (string, error) {
-		// The JS wrapper supplies JSON to preserve NUL and lone surrogates across
-		// qjs's C-string bridge without percent-encoding allocations.
 		var value string
-		raw := args[1].String()
-		vm.gcBytes += uint64(len(raw))
+		raw := in.String()
 		err := json.Unmarshal([]byte(raw), &value)
 		return value, err
 	}
-	newString := func(s string) *qjs.Value {
-		vm.gcBytes += uint64(len(s))
-		return c.NewString(s)
+	newString := func(s string) jsengine.Value {
+		return in.NewString(s)
 	}
-	newBuffer := func(b []byte) *qjs.Value {
-		vm.gcBytes += uint64(len(b))
-		return c.NewArrayBuffer(b)
+	newBuffer := func(b []byte) jsengine.Value {
+		return in.NewArrayBuffer(b)
 	}
-	if args[1].IsByteArray() {
-		vm.gcBytes += uint64(args[1].ByteLen())
-	}
-	op := args[0].String()
 	max := 1536 * 1024
 	if op == "fetch.encode" {
 		max = egress.MaxRequestBody
@@ -766,90 +599,86 @@ func (vm *jsVM) docsCodec(this *qjs.This) (*qjs.Value, error) {
 	}
 	switch op {
 	case "response.encode":
-		if !args[1].IsByteArray() {
-			return nil, errors.New("docs codec binary limit")
+		if !in.IsByteArray() {
+			return jsengine.Value{}, errors.New("docs codec binary limit")
 		}
-		if args[1].ByteLen() > int64(max) {
-			return nil, fmt.Errorf("response body larger than %d MiB", MaxResponseBody>>20)
+		if in.ByteLen() > int64(max) {
+			return jsengine.Value{}, fmt.Errorf("response body larger than %d MiB", MaxResponseBody>>20)
 		}
-		return newString(base64.StdEncoding.EncodeToString(args[1].ToByteArray())), nil
+		return newString(base64.StdEncoding.EncodeToString(in.ToByteArray())), nil
 	case "encode", "fetch.encode":
-		if !args[1].IsByteArray() || args[1].ByteLen() > int64(max) {
-			return nil, errors.New("docs codec binary limit")
+		if !in.IsByteArray() || in.ByteLen() > int64(max) {
+			return jsengine.Value{}, errors.New("docs codec binary limit")
 		}
-		return newString(base64.StdEncoding.EncodeToString(args[1].ToByteArray())), nil
+		return newString(base64.StdEncoding.EncodeToString(in.ToByteArray())), nil
 	case "decode", "fetch.decode":
 		s, err := readString()
 		if err != nil {
-			return nil, err
+			return jsengine.Value{}, err
 		}
 		if len(s) > ((max+2)/3)*4 {
-			return nil, errors.New("docs codec base64 limit")
+			return jsengine.Value{}, errors.New("docs codec base64 limit")
 		}
 		b, err := base64.StdEncoding.Strict().DecodeString(s)
 		if err != nil || len(b) > max || base64.StdEncoding.EncodeToString(b) != s {
-			return nil, errors.New("invalid canonical base64")
+			return jsengine.Value{}, errors.New("invalid canonical base64")
 		}
 		return newBuffer(b), nil
 	case "textEncode":
 		s, err := readString()
 		if err != nil {
-			return nil, err
+			return jsengine.Value{}, err
 		}
 		if len(s) > max {
-			return nil, errors.New("docs codec text limit")
+			return jsengine.Value{}, errors.New("docs codec text limit")
 		}
 		if !utf8.ValidString(s) {
 			s = strings.ToValidUTF8(s, "\ufffd")
 		}
 		return newBuffer([]byte(s)), nil
 	case "textDecode":
-		if !args[1].IsByteArray() || args[1].ByteLen() > int64(max) {
-			return nil, errors.New("docs codec binary limit")
+		if !in.IsByteArray() || in.ByteLen() > int64(max) {
+			return jsengine.Value{}, errors.New("docs codec binary limit")
 		}
-		b := args[1].ToByteArray()
+		b := in.ToByteArray()
 		if !utf8.Valid(b) {
-			return nil, errors.New("invalid UTF8")
+			return jsengine.Value{}, errors.New("invalid UTF8")
 		}
 		raw, err := json.Marshal(string(b))
 		if err != nil {
-			return nil, err
+			return jsengine.Value{}, err
 		}
 		return newString(string(raw)), nil
 	case "length":
 		s, err := readString()
 		if err != nil {
-			return nil, err
+			return jsengine.Value{}, err
 		}
 		if len(s) > 4*1024*1024 {
-			return nil, errors.New("docs codec text limit")
+			return jsengine.Value{}, errors.New("docs codec text limit")
 		}
-		vm.gcBytes += 4
-		return c.NewInt32(int32(len(s))), nil
+		return in.NewInt32(int32(len(s))), nil
 	case "digest":
 		s, err := readString()
 		if err != nil {
-			return nil, err
+			return jsengine.Value{}, err
 		}
 		if len(s) > 4*1024*1024 {
-			return nil, errors.New("docs codec digest limit")
+			return jsengine.Value{}, errors.New("docs codec digest limit")
 		}
 		sum := sha256.Sum256([]byte(s))
 		return newString(hex.EncodeToString(sum[:])), nil
 	case "digests":
-		// Many SHA-256 digests in one call: the hex digests concatenated,
-		// 64 characters each, in input order.
-		raw := args[1].String()
-		vm.gcBytes += uint64(len(raw))
+		raw := in.String()
 		if len(raw) > 8*1024*1024 {
-			return nil, errors.New("docs codec digest limit")
+			return jsengine.Value{}, errors.New("docs codec digest limit")
 		}
 		var list []string
 		if err := json.Unmarshal([]byte(raw), &list); err != nil {
-			return nil, err
+			return jsengine.Value{}, err
 		}
-		if len(list) > 1<<20 {
-			return nil, errors.New("docs codec digest limit")
+		if limit := vm.stringByteLimit() / (sha256.Size * 2); len(list) > limit {
+			return jsengine.Value{}, fmt.Errorf("docs codec digest result is larger than this runtime can hold: at most %d digests", limit)
 		}
 		out := make([]byte, 0, len(list)*sha256.Size*2)
 		for _, s := range list {
@@ -858,8 +687,16 @@ func (vm *jsVM) docsCodec(this *qjs.This) (*qjs.Value, error) {
 		}
 		return newString(string(out)), nil
 	default:
-		return nil, errors.New("unknown docs codec")
+		return jsengine.Value{}, errors.New("unknown docs codec")
 	}
+}
+
+func (vm *jsVM) stringByteLimit() int {
+	pages := DefaultMemoryPages
+	if vm.w != nil && vm.w.spec.pages() > 0 {
+		pages = int(vm.w.spec.pages())
+	}
+	return pages * 65536 * 3 / 8
 }
 
 // afterReady runs once the worker has reported ready: it writes a document

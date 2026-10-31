@@ -2,6 +2,13 @@
 #include <sys/stat.h>
 #include <limits.h>
 #include <float.h>
+#include <math.h>
+
+static void clear_pending_exception(JSContext *ctx)
+{
+    if (JS_HasException(ctx))
+        JS_FreeValue(ctx, JS_GetException(ctx));
+}
 
 #ifdef QJS_DEBUG_RUNTIME_ADDRESS
 /**
@@ -229,6 +236,8 @@ bool input_is_file(QJSEvalOptions opts)
     return !has_bytecode && !has_script;
 }
 
+/* Returns an owned resolved path (or an owned copy of the name when nothing
+ * matches); the caller must free it. NULL on allocation failure. */
 char *detect_entry_point(char *module_name)
 {
     char *module_path = strdup(module_name);
@@ -253,10 +262,10 @@ char *detect_entry_point(char *module_name)
             free(module_path);
             return candidate;
         }
+        free(candidate);
     }
-    free(module_path);
 
-    return module_name;
+    return module_path;
 }
 
 bool QJS_IsUndefined(JSValue val)
@@ -313,7 +322,13 @@ bool QJS_IsConstructor(JSContext *ctx, JSValue v)
 
 bool QJS_IsInstanceOf(JSContext *ctx, JSValue v, JSValue obj)
 {
-    return JS_IsInstanceOf(ctx, v, obj) == 0 ? false : true;
+    int r = JS_IsInstanceOf(ctx, v, obj);
+    if (r < 0)
+    {
+        JS_FreeValue(ctx, JS_GetException(ctx));
+        return false;
+    }
+    return r > 0;
 }
 
 bool QJS_IsObject(JSValue v)
@@ -354,18 +369,19 @@ bool QJS_IsArray(JSValue v)
  */
 uint64_t *QJS_ToCString(JSContext *ctx, JSValueConst val)
 {
-    const char *str = JS_ToCString(ctx, val);
+    size_t len = 0;
+    const char *str = JS_ToCStringLen(ctx, &len, val);
     if (!str)
     {
         return NULL;
     }
 
-    size_t len = strlen(str);
     uint64_t *result = malloc(sizeof(uint64_t));
     if (!result)
     {
         JS_FreeCString(ctx, str);
-        return NULL; // Allocation failure
+        JS_ThrowOutOfMemory(ctx);
+        return NULL;
     }
 
     // Store the address of the string in the high 32 bits and the length in the low 32 bits
@@ -376,9 +392,9 @@ uint64_t *QJS_ToCString(JSContext *ctx, JSValueConst val)
 int64_t QJS_ToInt64(JSContext *ctx, JSValue val)
 {
     int64_t i64;
-    int ret = JS_ToInt64(ctx, &i64, val);
-    if (ret != 0)
+    if (JS_ToInt64(ctx, &i64, val) != 0)
     {
+        clear_pending_exception(ctx);
         return 0;
     }
     return i64;
@@ -387,9 +403,9 @@ int64_t QJS_ToInt64(JSContext *ctx, JSValue val)
 int32_t QJS_ToInt32(JSContext *ctx, JSValue val)
 {
     int32_t i32;
-    int ret = JS_ToInt32(ctx, &i32, val);
-    if (ret != 0)
+    if (JS_ToInt32(ctx, &i32, val) != 0)
     {
+        clear_pending_exception(ctx);
         return 0;
     }
 
@@ -399,9 +415,9 @@ int32_t QJS_ToInt32(JSContext *ctx, JSValue val)
 uint32_t QJS_ToUint32(JSContext *ctx, JSValue val)
 {
     uint32_t u32;
-    int ret = JS_ToUint32(ctx, &u32, val);
-    if (ret != 0)
+    if (JS_ToUint32(ctx, &u32, val) != 0)
     {
+        clear_pending_exception(ctx);
         return 0;
     }
     return u32;
@@ -410,9 +426,9 @@ uint32_t QJS_ToUint32(JSContext *ctx, JSValue val)
 double QJS_ToFloat64(JSContext *ctx, JSValue val)
 {
     double d;
-    int ret = JS_ToFloat64(ctx, &d, val);
-    if (ret != 0)
+    if (JS_ToFloat64(ctx, &d, val) != 0)
     {
+        clear_pending_exception(ctx);
         return 0.0;
     }
     return d;
@@ -424,7 +440,7 @@ double QJS_ToEpochTime(JSContext *ctx, JSValue val)
     // First check if val is a Date object
     if (!JS_IsDate(val))
     {
-        return 0.0; // Return 0 for non-Date objects
+        return NAN;
     }
 
     // Get the "getTime" method from the Date object
@@ -435,7 +451,8 @@ double QJS_ToEpochTime(JSContext *ctx, JSValue val)
     if (JS_IsException(getTime_func))
     {
         JS_FreeValue(ctx, getTime_func);
-        return 0.0;
+        clear_pending_exception(ctx);
+        return NAN;
     }
 
     // Call getTime() method
@@ -445,11 +462,18 @@ double QJS_ToEpochTime(JSContext *ctx, JSValue val)
     if (JS_IsException(result))
     {
         JS_FreeValue(ctx, result);
-        return 0.0;
+        clear_pending_exception(ctx);
+        return NAN;
     }
 
     // Convert the result to double (milliseconds since epoch)
-    double epoch_ms = QJS_ToFloat64(ctx, result);
+    double epoch_ms;
+    if (JS_ToFloat64(ctx, &epoch_ms, result) != 0)
+    {
+        JS_FreeValue(ctx, result);
+        clear_pending_exception(ctx);
+        return NAN;
+    }
     JS_FreeValue(ctx, result);
 
     return epoch_ms;
@@ -458,6 +482,11 @@ double QJS_ToEpochTime(JSContext *ctx, JSValue val)
 JSValue QJS_NewString(JSContext *ctx, const char *str)
 {
     return JS_NewString(ctx, str);
+}
+
+JSValue QJS_NewStringLen(JSContext *ctx, const char *str, uint32_t len)
+{
+    return JS_NewStringLen(ctx, str, len);
 }
 
 JSValue QJS_NewInt64(JSContext *ctx, int64_t val)
@@ -498,19 +527,21 @@ JSValue QJS_NewFloat64(JSContext *ctx, uint64_t bits)
  */
 uint64_t *QJS_AtomToCString(JSContext *ctx, JSAtom atom)
 {
-    const char *str = JS_AtomToCString(ctx, atom);
+    size_t len = 0;
+    const char *str = JS_AtomToCStringLen(ctx, &len, atom);
     if (!str)
     {
         return NULL;
     }
 
-    size_t len = strlen(str);
     uint64_t *result = malloc(sizeof(uint64_t));
     if (!result)
     {
         JS_FreeCString(ctx, str);
-        return NULL; // Allocation failure
+        JS_ThrowOutOfMemory(ctx);
+        return NULL;
     }
+
     // Store the address of the string in the high 32 bits and the length in the low 32 bits
     *result = ((uint64_t)(uintptr_t)str << 32) | (uint32_t)len;
     return result;
@@ -527,7 +558,7 @@ uint64_t *QJS_GetOwnPropertyNames(JSContext *ctx, JSValue v)
         &ptr,
         &size,
         v,
-        JS_GPN_STRING_MASK | JS_GPN_SYMBOL_MASK | JS_GPN_PRIVATE_MASK);
+        JS_GPN_STRING_MASK | JS_GPN_SYMBOL_MASK);
 
     if (result < 0)
     {
@@ -537,8 +568,8 @@ uint64_t *QJS_GetOwnPropertyNames(JSContext *ctx, JSValue v)
     uint64_t *packed_result = malloc(sizeof(uint64_t));
     if (!packed_result)
     {
-        // Free the property array if allocation fails
         js_free(ctx, ptr);
+        JS_ThrowOutOfMemory(ctx);
         return NULL;
     }
 
@@ -572,7 +603,8 @@ uint64_t *QJS_GetArrayBuffer(JSContext *ctx, JSValue obj)
     uint64_t *result = malloc(sizeof(uint64_t));
     if (!result)
     {
-        return NULL; // Allocation failure
+        JS_ThrowOutOfMemory(ctx);
+        return NULL;
     }
 
     // Store the address of the arr in the high 32 bits and the length in the low 32 bits
@@ -583,27 +615,25 @@ uint64_t *QJS_GetArrayBuffer(JSContext *ctx, JSValue obj)
 uint64_t *QJS_JSONStringify(JSContext *ctx, JSValue v)
 {
     JSValue ref = JS_JSONStringify(ctx, v, JS_NewNull(), JS_NewNull());
-    const char *ptr = JS_ToCString(ctx, ref);
-
-    if (!ptr)
-    {
-        JS_FreeValue(ctx, ref);
+    if (JS_IsException(ref))
         return NULL;
-    }
+
+    const char *ptr = JS_ToCString(ctx, ref);
+    JS_FreeValue(ctx, ref);
+    if (!ptr)
+        return NULL;
 
     size_t len = strlen(ptr);
     uint64_t *result = malloc(sizeof(uint64_t));
     if (!result)
     {
-        JS_FreeValue(ctx, ref);
         JS_FreeCString(ctx, ptr);
-        return NULL; // Allocation failure
+        JS_ThrowOutOfMemory(ctx);
+        return NULL;
     }
 
     // Store the address of the string in the high 32 bits and the length in the low 32 bits
     *result = ((uint64_t)(uintptr_t)ptr << 32) | (uint32_t)len;
-    JS_FreeValue(ctx, ref);
-    JS_FreeCString(ctx, ptr);
     return result;
 }
 

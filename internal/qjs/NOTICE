@@ -1,8 +1,10 @@
 This directory is a fork of github.com/fastschema/qjs v0.0.6
 (https://github.com/fastschema/qjs), Copyright (c) 2025 Nguyen Ngoc Phuong and
 Contributors, used under the MIT License (see LICENSE in this directory).
-qjs.wasm and qjswasm/ are unchanged from v0.0.6. The upstream *_test.go files
-were not copied (they need testify); fork_test.go covers the changes below.
+qjs.wasm and qjswasm/ are v0.0.6 plus the C changes in items 16 to 19; the Go
+binding hardening is items 20 to 32. The
+upstream *_test.go files were not copied (they need testify); fork_test.go,
+audit_regression_test.go and audit_cglue_test.go cover the changes below.
 
 Changes made for Flats (search for "FORK (flats)"):
 
@@ -97,3 +99,115 @@ an atomically swapped per-request context instead (internal/runtime does).
     New also no longer dereferences its nil named result on error paths
     (before, those errors became a recovered nil-pointer panic and the
     wazero runtime leaked).
+16. qjswasm/helpers.c, qjs.wasm: QJS_IsInstanceOf returns false and clears
+    the pending exception when JS_IsInstanceOf fails (-1 used to read as
+    true, so Map/Set/ArrayBuffer detection classified throwing objects as
+    instances and left the context poisoned). detect_entry_point frees each
+    suffix candidate that does not exist. qjs.wasm is rebuilt from these
+    sources with the pinned quickjs-ng d01ca44, clang 23 with the WASI
+    wasm32-wasip1 sysroot, and wasm-opt -O3; the build is not byte-identical
+    to upstream's wasi-sdk 20 binary.
+
+17. qjswasm/eval.c: the bytecode path handed its function object to
+    JS_EvalFunction, which consumes it, and then freed it again when
+    evaluation threw. The first throwing bytecode Eval corrupted the guest
+    heap and the next call trapped. Loading non-module bytecode as a module
+    leaked the compiled module. A resolved entry point is now owned by its
+    caller (detect_entry_point leaked one allocation per file evaluation and
+    per module import), and a module the loader cannot resolve throws a
+    ReferenceError instead of returning a null module with no exception.
+18. qjswasm/helpers.c: QJS_ToInt64, QJS_ToInt32, QJS_ToUint32 and
+    QJS_ToFloat64 clear the pending exception of a failed conversion, so
+    converting a symbol or an object with a throwing valueOf no longer
+    poisons the context (the next, unrelated Eval used to fail with the stale
+    TypeError). QJS_ToEpochTime reports NaN and clears the exception when a
+    Date's getTime throws or returns a non-number, so a hostile Date reads as
+    invalid instead of 1970. QJS_ToCString and QJS_AtomToCString pack the
+    real string length instead of strlen, so a JS string or property key with
+    U+0000 reaches Go whole instead of being truncated at the NUL;
+    QJS_NewStringLen (new export) sets a string from an explicit byte length.
+    QJS_JSONStringify keeps the string it returns (the caller frees it with
+    JS_FreeCString; it used to free it before returning),
+    QJS_GetOwnPropertyNames no longer returns VM-private atoms, every
+    packed-pointer helper throws an out-of-memory exception instead of
+    returning NULL when its wrapper allocation fails, and init of the
+    QJS_PROXY_VALUE prototype frees the prototype object it hands to the
+    constructor.
+19. qjswasm/, scripts/build-qjs-wasm.sh, Makefile: `make qjs-wasm` rebuilds
+    qjs.wasm from the pinned quickjs-ng
+    d01ca4491fb24ccfeccb4c7394e28a3b21fd5986 with Homebrew llvm, wasi-libc,
+    wasi-runtimes and wasm-opt -O3. The script copies the glue from
+    internal/qjs/qjswasm/, fails with a clear message when a tool is missing,
+    and reproduces the shipped binary byte for byte (it configures with
+    -DQJS_BUILD_LIBC=ON, which compiles quickjs-libc.c with the _GNU_SOURCE
+    the quickjs build sets, and -DCMAKE_POLICY_VERSION_MINIMUM=3.5).
+    qjs.wasm SHA-256:
+    79284a9282ad8471573a4d52401362e27d149f1d70b4175cb5affc960a8dc9a9
+
+20. common.go/gotojs.go: JS number → Go integer conversions bound-check every
+    integer kind (int, int8..int64, uint, uint8..uint64, uintptr) with an
+    exclusive upper bound; 2**63 used to become MinInt64 and negative or
+    rounded values became garbage for uint, uint64 and uintptr. The
+    string-to-integer path shares the same bound.
+21. gotojs.go: cyclic Go maps and non-empty slices are detected like cyclic
+    pointers and reported as errors instead of recursing until the Go stack
+    overflows; empty slices are exempt so shared backing arrays are not
+    mistaken for cycles. Pointer tracking now converts uintptr to the
+    tracker's type directly, so public GoStructToJs/GoSliceToJs/GoMapToJs
+    also accept nested pointers.
+22. gotojs.go: Go map keys that stringify to the same JS property name are
+    reported as an error instead of silently overwriting an earlier entry.
+23. gotojs.go: anonymous struct and pointer-to-struct fields are flattened
+    into the JS object even when the embedded type is unexported (as
+    encoding/json does); a JS property whose target path needs a nil
+    embedded pointer that cannot be set is an error, not a silent omission.
+24. common.go/jstogo.go: cyclic JS arrays, Sets and Maps report "circular
+    reference" instead of recursing without bound; arrays are classified
+    before the Map/Set/ArrayBuffer string-tag probes, and array-element
+    conversion errors no longer stringify the array, because doing so on a
+    self-referential array recursed inside the guest and left the runtime
+    trapping on the next call.
+25. jstogo.go: an invalid JS Date (getTime returns NaN) is an error instead
+    of 1970-01-01; JsTypedArrayToGo rejects negative or out-of-buffer
+    byteOffset/byteLength instead of slicing out of range.
+26. jstogo.go: a converted JS function whose Go signature has no error
+    result panics with a descriptive error when the call or conversion
+    fails, instead of panicking inside reflect.MakeFunc.
+27. runtime.go, context.go, value.go, handle.go, eval.go: lifecycle guards.
+    Load/Eval/Compile after Close (or after a deadline closed the guest
+    module) return ErrRuntimeClosed; other Runtime/Context/Value/Handle
+    reads panic with a wrapped ErrRuntimeClosed. Free/FreeHandle/
+    FreeJsValue/FreeQJSRuntime and repeated Close are no-ops after Close,
+    and a free that fails only because a deadline closed the module is
+    ignored, so deferred teardown cannot mask the original timeout panic.
+    FreeQJSRuntime no longer dereferences a nil context. Pool.Put refuses a
+    closed runtime and Pool.Get replaces one.
+28. runtime.go, context.go, options.go: Malloc rejects sizes above the
+    wasm32 address space and reports ErrOutOfMemory when malloc returns 0
+    for a non-empty request. NewBytesHandle returns a zero handle for empty
+    input. Negative MemoryLimit/MaxStackSize/MaxExecutionTime/GCThreshold
+    are refused at New.
+29. mem.go, handle.go: zero-length Read/ReadString accept a null address;
+    Read validates addr+size against memory and the 32-bit limit before
+    wazero; ReadString reports ErrIndexOutOfRange for an address at or past
+    the end. Handle.Bytes reads and copies a packed store before freeing it
+    (a failed read no longer frees a pointer it never read), refuses a
+    record with size>0 and address 0, and Value.Bytes refuses a JSValue
+    handle (use ToByteArray).
+30. stack.go: a relocated StackSize at or below the 64 KiB canary is refused
+    instead of writing the canary past its block into the heap.
+31. value.go, context.go, eval.go: Exception formats any thrown value (null,
+    undefined, symbol, number, object with throwing toString/getter/proxy)
+    without panicking and clears a failed conversion instead of recursively
+    formatting the secondary exception. SetProperty/SetPropertyStr/
+    SetPropertyIndex check the C result and panic with the cleared
+    exception instead of leaving the context poisoned. ParseJSON panics
+    with the parse error after clearing it, so the context stays clean.
+    Type derives NaN/Infinity from the number value.
+32. image.go: Option.ReadOnlyDir is a confined mount: OpenFile/Stat resolve
+    the host path and refuse anything that resolves outside the directory
+    (symlinks included), Lstat/Readlink resolve only the parent, guest
+    paths are cleaned against "/", and New refuses a missing or
+    non-directory mount. ImageEligible treats a deadline-closed module as
+    closed (ErrRuntimeClosed) and the image decoder validates
+    page/random-state/kind fields after the CRC.

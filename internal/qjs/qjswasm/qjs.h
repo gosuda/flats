@@ -60,6 +60,7 @@ int js__has_suffix(const char *str, const char *suffix);
 char *append_suffix(const char *base, const char *suffix);
 bool input_is_file(QJSEvalOptions opts);
 void js_set_global_objs(JSContext *ctx);
+/* Returns an owned resolved path (caller frees) or NULL on allocation failure. */
 char *detect_entry_point(char *module_name);
 JSValue js_std_await(JSContext *ctx, JSValue obj);
 void QJS_Free(QJSRuntime *qjs);
@@ -123,6 +124,7 @@ bool QJS_IsArray(JSValue v);
 bool QJS_IsConstructor(JSContext *ctx, JSValue v);
 bool QJS_IsInstanceOf(JSContext *ctx, JSValue v, JSValue obj);
 JSValue QJS_NewString(JSContext *ctx, const char *str);
+JSValue QJS_NewStringLen(JSContext *ctx, const char *str, uint32_t len);
 JSValue QJS_CreateFunctionProxy(JSContext *ctx, uint64_t handle_id, uint64_t ctx_id, uint64_t is_async);
 JSValue QJS_NewInt64(JSContext *ctx, int64_t val);
 JSValue QJS_NewUint32(JSContext *ctx, uint32_t val);
@@ -136,6 +138,8 @@ uint64_t *QJS_GetOwnPropertyNames(JSContext *ctx, JSValue v);
 JSValue QJS_ParseJSON(JSContext *ctx, const char *buf);
 JSValue QJS_NewBool(JSContext *ctx, int val);
 uint64_t *QJS_GetArrayBuffer(JSContext *ctx, JSValue obj);
+/* Returns a packed JS-owned string (free with JS_FreeCString) in a malloc'd
+ * wrapper (free the wrapper); NULL leaves a pending exception on failure. */
 uint64_t *QJS_JSONStringify(JSContext *ctx, JSValue v);
 int QJS_SetPropertyUint32(JSContext *ctx, JSValue this_obj, uint64_t idx, JSValue val);
 JSValue QJS_GetPropertyUint32(JSContext *ctx, JSValue this_obj, uint32_t idx);
