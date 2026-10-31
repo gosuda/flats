@@ -213,6 +213,19 @@ func FromArchive(r io.Reader, lim Limits) ([]File, error) {
 	return fromArchive(r, lim, tarOverhead)
 }
 
+type transportReader struct {
+	r   io.Reader
+	err error
+}
+
+func (tr *transportReader) Read(p []byte) (int, error) {
+	n, err := tr.r.Read(p)
+	if err != nil && !errors.Is(err, io.EOF) && tr.err == nil {
+		tr.err = err
+	}
+	return n, err
+}
+
 // fromArchive is FromArchive with the tar.gz expansion allowance as a
 // parameter, so tests can exercise the bound without huge archives.
 func fromArchive(r io.Reader, lim Limits, overhead int64) ([]File, error) {
@@ -223,7 +236,8 @@ func fromArchive(r io.Reader, lim Limits, overhead int64) ([]File, error) {
 	// once straight into the collector and never buffered whole. Only zip
 	// needs the entire archive in memory, because zip.NewReader reads entries
 	// by offset into a single buffer.
-	br := bufio.NewReader(r)
+	transport := &transportReader{r: r}
+	br := bufio.NewReader(transport)
 	magic, err := br.Peek(4)
 	if err != nil && !errors.Is(err, io.EOF) {
 		return nil, err
@@ -243,6 +257,9 @@ func fromArchive(r io.Reader, lim Limits, overhead int64) ([]File, error) {
 	case bytes.HasPrefix(magic, []byte{0x1f, 0x8b}):
 		gz, gerr := gzip.NewReader(io.LimitReader(br, capacity))
 		if gerr != nil {
+			if transport.err != nil {
+				return nil, transport.err
+			}
 			return nil, &ValidationError{Problems: []Problem{{Message: "invalid gzip data: " + gerr.Error(), Fix: "send a valid .tar.gz, .tar or .zip archive"}}}
 		}
 		defer gz.Close()
@@ -259,6 +276,9 @@ func fromArchive(r io.Reader, lim Limits, overhead int64) ([]File, error) {
 		}
 	default:
 		err = c.readTar(io.LimitReader(br, capacity))
+	}
+	if transport.err != nil {
+		return nil, transport.err
 	}
 	if err != nil {
 		return nil, err
@@ -294,7 +314,10 @@ func (c *collector) readTar(r io.Reader) error {
 			continue
 		case tar.TypeReg, tar.TypeRegA:
 			if err := c.addFile(h.Name, tr, fs.FileMode(h.Mode)); err != nil {
-				return err
+				if _, ok := IsValidation(err); ok || strings.HasPrefix(err.Error(), "upload has more than") {
+					return err
+				}
+				return &ValidationError{Problems: []Problem{{Message: "corrupt tar archive: " + err.Error(), Fix: "re-create the archive"}}}
 			}
 		case tar.TypeSymlink, tar.TypeLink:
 			c.verr.add(h.Name, "links are not allowed", "copy the target file into the build instead of linking it")

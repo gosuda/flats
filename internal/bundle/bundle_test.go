@@ -5,6 +5,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"compress/gzip"
+	"errors"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -549,5 +550,76 @@ func TestInvalidArchiveHintsUseDraftSave(t *testing.T) {
 	}
 	if !strings.Contains(validation.Problems[0].Fix, "flats save-draft <slug> <dir>") {
 		t.Fatalf("hint lacks working command: %+v", validation.Problems)
+	}
+}
+
+type failAfterReader struct {
+	r         io.Reader
+	remaining int
+	err       error
+}
+
+func (f *failAfterReader) Read(p []byte) (int, error) {
+	if f.remaining <= 0 {
+		return 0, f.err
+	}
+	if len(p) > f.remaining {
+		p = p[:f.remaining]
+	}
+	n, err := f.r.Read(p)
+	f.remaining -= n
+	if f.remaining == 0 {
+		return n, f.err
+	}
+	return n, err
+}
+
+func TestTransportFailureNotValidationError(t *testing.T) {
+	var buf bytes.Buffer
+	tw := tar.NewWriter(&buf)
+	writeEntry(t, tw, &tar.Header{Name: "index.html", Mode: 0o644, Size: 11}, "hello world")
+	writeEntry(t, tw, &tar.Header{Name: "style.css", Mode: 0o644, Size: 20}, "body { color: red; }")
+	tw.Close()
+	tarData := buf.Bytes()
+
+	artificialErr := errors.New("simulated network drop")
+	reader := &failAfterReader{r: bytes.NewReader(tarData), remaining: 200, err: artificialErr}
+	_, err := FromArchive(reader, Limits{MaxBytes: 1 << 20})
+	if _, ok := IsValidation(err); ok {
+		t.Fatalf("transport failure produced ValidationError: %v", err)
+	}
+	if !errors.Is(err, artificialErr) {
+		t.Fatalf("want artificialErr, got %v", err)
+	}
+
+	readerEOF := &failAfterReader{r: bytes.NewReader(tarData), remaining: 200, err: io.ErrUnexpectedEOF}
+	_, err = FromArchive(readerEOF, Limits{MaxBytes: 1 << 20})
+	if _, ok := IsValidation(err); ok {
+		t.Fatalf("unexpected EOF produced ValidationError: %v", err)
+	}
+	if !errors.Is(err, io.ErrUnexpectedEOF) {
+		t.Fatalf("want io.ErrUnexpectedEOF, got %v", err)
+	}
+
+	gzData := tgz(t, map[string]string{"index.html": "hello world", "style.css": "body { color: red; }"})
+	readerGz := &failAfterReader{r: bytes.NewReader(gzData), remaining: 50, err: artificialErr}
+	_, err = FromArchive(readerGz, Limits{MaxBytes: 1 << 20})
+	if _, ok := IsValidation(err); ok {
+		t.Fatalf("gzip transport failure produced ValidationError: %v", err)
+	}
+	if !errors.Is(err, artificialErr) {
+		t.Fatalf("want artificialErr, got %v", err)
+	}
+
+	corrupt := bytes.Clone(tarData)
+	corrupt[10] ^= 0xff
+	_, err = FromArchive(bytes.NewReader(corrupt), Limits{MaxBytes: 1 << 20})
+	if _, ok := IsValidation(err); !ok {
+		t.Fatalf("complete corrupt archive want ValidationError, got %v", err)
+	}
+
+	_, err = FromArchive(strings.NewReader("not an archive"), Limits{MaxBytes: 1 << 20})
+	if _, ok := IsValidation(err); !ok {
+		t.Fatalf("not an archive want ValidationError, got %v", err)
 	}
 }
