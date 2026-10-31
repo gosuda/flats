@@ -368,3 +368,45 @@ test("a departed guest's name leaves the creator line of a member's tab", async 
   assert.equal(frameLabel(), 'Frame Work, 1 element');
   assert.equal(creator('e_0000000001'), 'Guest', 'a rebuilt list agrees');
 });
+
+const memberWelcome = { t: 'welcome', v: 1, session: 'S', access: 'private', me: { key: 'browser:pat', name: 'pat', verified: false } };
+
+test('a reconnect while the name prompt is open does not stack another', async (t) => {
+  const { app, doc, socket } = await page(t);
+  const open = () => [...doc.querySelectorAll('dialog')].filter((d) => d.open);
+  let ws = socket();
+  ws.open();
+  ws.recv(memberWelcome);
+  assert.equal(open().length, 1, 'the name prompt opens on arrival');
+  // The socket drops and the tab reconnects while nobody has answered yet.
+  ws.drop();
+  t.mock.timers.tick(2000);
+  ws = socket();
+  ws.open();
+  ws.recv(memberWelcome);
+  assert.equal(open().length, 1, 'one name prompt, not a second one over the first');
+  assert.ok(app.isMember && !app.canEdit, 'still unnamed, so still read only');
+});
+
+test('a summarized ack reports edits to elements someone else deleted', async (t) => {
+  const { app, doc, socket } = await page(t);
+  const ws = socket();
+  ws.open();
+  ws.recv({ t: 'welcome', v: 1, session: 'S', access: 'private', me: { key: 'ts:pat@example.com', name: 'pat', verified: true } });
+  ws.recv(snapshot([sticky('e_0000000001', 'hi')]));
+  const toasts = () => [...doc.querySelector('.toasts').children].map(textOf);
+  let batch = app.commit([{ op: 'zorder', ids: ['e_0000000001'], inc_of: { e_0000000001: 1 }, to: 'front' }]);
+  assert.ok(batch);
+  // Above 64 KiB of results the server summarizes each operation as
+  // {ok: count, void: {reason: count}} (Appendix A "Results").
+  ws.recv({ t: 'ack', n: batch.n, seq: 2, results: [{ ok: 0, void: { gone: 3 } }] });
+  assert.ok(toasts().some((s) => /Edits to 3 elements someone else deleted were not applied\./.test(s)),
+    `a summarized result still reports the deleted elements: ${JSON.stringify(toasts())}`);
+  // The detailed form, an operation's {"ok": [id], "void": {id: reason}},
+  // keeps reporting the same way.
+  batch = app.commit([{ op: 'meta', g: 'title', val: 'Plan 2' }]);
+  assert.ok(batch);
+  ws.recv({ t: 'ack', n: batch.n, seq: 2, results: [{ ok: [], void: { e_0000000002: 'gone' } }] });
+  assert.ok(toasts().some((s) => /Edits to 1 element someone else deleted were not applied\./.test(s)),
+    `a detailed result still reports the deleted element: ${JSON.stringify(toasts())}`);
+});
