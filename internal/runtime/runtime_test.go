@@ -252,7 +252,13 @@ func writeFiles(t *testing.T, dir string, files map[string]string) {
 	}
 }
 
-func startFlat(t *testing.T, m *Manager, name string, files map[string]string, entry string, env map[string]string) (*flat, error) {
+type flatOption func(*core.RuntimeSpec)
+
+func withUsageSink(sink core.UsageSink) flatOption {
+	return func(s *core.RuntimeSpec) { s.Usage = sink }
+}
+
+func startFlat(t *testing.T, m *Manager, name string, files map[string]string, entry string, env map[string]string, opts ...flatOption) (*flat, error) {
 	t.Helper()
 	root := t.TempDir()
 	dir := filepath.Join(root, "versions", "1")
@@ -260,6 +266,9 @@ func startFlat(t *testing.T, m *Manager, name string, files map[string]string, e
 	writeFiles(t, dir, files)
 	f := &flat{logs: &logs{}, dataDir: filepath.Join(root, "data"), root: root}
 	f.spec = core.RuntimeSpec{Flat: name, Version: 1, Dir: dir, Entry: entry, DataDir: f.dataDir, Env: env, Log: f.logs.add}
+	for _, opt := range opts {
+		opt(&f.spec)
+	}
 	inst, err := m.Start(context.Background(), f.spec)
 	if err != nil {
 		return nil, err
@@ -276,9 +285,9 @@ func startFlat(t *testing.T, m *Manager, name string, files map[string]string, e
 	return f, nil
 }
 
-func mustStart(t *testing.T, m *Manager, name string, files map[string]string, entry string, env map[string]string) *flat {
+func mustStart(t *testing.T, m *Manager, name string, files map[string]string, entry string, env map[string]string, opts ...flatOption) *flat {
 	t.Helper()
-	f, err := startFlat(t, m, name, files, entry, env)
+	f, err := startFlat(t, m, name, files, entry, env, opts...)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}

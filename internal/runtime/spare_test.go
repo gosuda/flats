@@ -756,24 +756,6 @@ func TestSpareQuietExit(t *testing.T) {
 	}
 }
 
-// startWithSink is startFlat with a usage sink.
-func startWithSink(t *testing.T, m *Manager, name string, files map[string]string, entry string, sink core.UsageSink) (*flat, error) {
-	t.Helper()
-	root := t.TempDir()
-	dir := filepath.Join(root, "versions", "1")
-	writeFiles(t, dir, files)
-	f := &flat{logs: &logs{}, dataDir: filepath.Join(root, "data"), root: root}
-	f.spec = core.RuntimeSpec{Flat: name, Version: 1, Dir: dir, Entry: entry, DataDir: f.dataDir, Log: f.logs.add, Usage: sink}
-	inst, err := m.Start(context.Background(), f.spec)
-	if err != nil {
-		return nil, err
-	}
-	f.inst = inst
-	f.srv = httptest.NewServer(inst)
-	t.Cleanup(func() { f.srv.Close(); f.inst.Stop() })
-	return f, nil
-}
-
 // An adopted pre-started worker charges the flat only for the CPU it used
 // after it received its spec, never for its warm-up.
 func TestSpareUsageExcludesWarmUp(t *testing.T) {
@@ -782,7 +764,7 @@ func TestSpareUsageExcludesWarmUp(t *testing.T) {
 	mustStart(t, m, "first", spareTestFiles(), "index.js", nil)
 	sp := waitSpare(t, m, 0)
 	sink := &recSink{}
-	f, err := startWithSink(t, m, "second", spareTestFiles(), "index.js", sink)
+	f, err := startFlat(t, m, "second", spareTestFiles(), "index.js", nil, withUsageSink(sink))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -818,7 +800,7 @@ func TestSpareDiesBeforeSpecAckUsage(t *testing.T) {
 	mustStart(t, m, "first", spareTestFiles(), "index.js", nil)
 	sp := waitSpare(t, m, 0)
 	sink := &recSink{}
-	f, err := startWithSink(t, m, testDieAdoptedFlat, spareTestFiles(), "index.js", sink)
+	f, err := startFlat(t, m, testDieAdoptedFlat, spareTestFiles(), "index.js", nil, withUsageSink(sink))
 	if err != nil {
 		t.Fatal(err)
 	}
