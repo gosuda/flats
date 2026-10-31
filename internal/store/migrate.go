@@ -58,6 +58,7 @@ var migrations = []migration{
 	{19, "public access level", addPublicAccess},
 	{20, "document guest lines", addRevisionGuestLines},
 	{21, "autopilot", addAutopilot},
+	{22, "public instance", addPublicInstance},
 }
 
 func latestVersion() int { return migrations[len(migrations)-1].version }
@@ -72,7 +73,7 @@ type Info struct {
 	Version int          `json:"version"` // PRAGMA user_version
 	Latest  int          `json:"latest"`  // newest schema this build supports
 	IsFlats bool         `json:"is_flats"`
-	HasData bool         `json:"has_data"`          // some table other than host_binding and autopilot has a row
+	HasData bool         `json:"has_data"`          // some table other than host_binding and Experiments settings has a row
 	Binding *HostBinding `json:"binding,omitempty"` // nil when no host is bound
 }
 
@@ -130,9 +131,8 @@ func Inspect(path string) (Info, error) {
 		return info, fmt.Errorf("%w: no tables but schema version %d", ErrNotFlats, info.Version)
 	}
 	for _, t := range tables {
-		// autopilot always holds its one settings row, from the migration
-		// that created it.
-		if t == "host_binding" || t == "autopilot" || info.HasData {
+		// Experiments settings always hold their row, even on an empty host.
+		if t == "host_binding" || t == "autopilot" || t == "public_instance" || info.HasData {
 			continue
 		}
 		if err := db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM "`+strings.ReplaceAll(t, `"`, `""`)+`")`).Scan(&info.HasData); err != nil {

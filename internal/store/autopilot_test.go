@@ -47,7 +47,12 @@ func TestMigrationAutopilot(t *testing.T) {
 	t.Run("schema 20", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "f.db")
 		saved := migrations
-		migrations = saved[:len(saved)-1]
+		for i, m := range saved {
+			if m.version > 20 {
+				migrations = saved[:i]
+				break
+			}
+		}
 		s, err := Open(path)
 		migrations = saved
 		if err != nil {
