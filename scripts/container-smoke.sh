@@ -120,6 +120,24 @@ for key in sys.argv[1].split("."): value=value[key]
 print(value)' "$1" "$2"
 }
 
+# approval_applied checks exactly the requested approval, never a pending-list
+# candidate. It reads the host API rather than `flats approvals wait`: commit
+# images run this script with the binary of an older commit, which may not
+# have that verb. The disposable test operator is separate from the CLI client.
+approval_applied() {
+	curl -fsS --max-time 5 "$url/api/approvals/$1" >"$work/approval-result" || return 1
+	decision_status=$(json_field status "$work/approval-result") || fail "invalid approval receipt"
+	case "$decision_status" in
+	approved) ;;
+	pending|applying) return 1;;
+	*) fail "approval $1 ended $decision_status: $(cat "$work/approval-result")";;
+	esac
+	cleanup_pending=$(python3 -c 'import json,sys
+print((json.load(open(sys.argv[1])).get("result_data") or {}).get("cleanup_pending") is True)' "$work/approval-result") ||
+		fail "invalid approval receipt"
+	[ "$cleanup_pending" = False ] || fail "approval $1 applied but storage cleanup is pending: $(cat "$work/approval-result")"
+}
+
 # approve_requested LABEL REQUEST approves only the ID captured by that request.
 # This intervention is allowed only against this smoke test's own Docker data.
 approve_requested() {
@@ -128,9 +146,7 @@ approve_requested() {
 	case "$request_id" in ''|*[!a-zA-Z0-9_-]*) fail "invalid approval ID for $1";; esac
 	echo "OPERATOR INTERVENTION (disposable container): approve $request_id for $1" >&2
 	console -X POST "$url/console/api/approvals/$request_id/approve" >/dev/null || fail "approving $request_id for $1 failed"
-	# The wait verb succeeds only for an approval that applied without pending
-	# storage cleanup; its stderr already explains any refusal or timeout.
-	"$flats" --json approvals wait "$request_id" >"$work/approval-result" || fail "waiting for approval $request_id failed"
+	wait_for "approval $request_id" approval_applied "$request_id"
 }
 
 # deploy_approved FLAT saves its Draft, freezes that exact receipt for an
