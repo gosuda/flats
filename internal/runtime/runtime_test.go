@@ -153,7 +153,7 @@ func newManager(t *testing.T) *Manager {
 	if err := os.Symlink(filepath.Join(cacheRoot, "cache"), filepath.Join(dir, "cache")); err != nil {
 		t.Fatal(err)
 	}
-	m := &Manager{DataDir: dir, Exe: exe, Env: append([]string{testWorkerEnv + "=1"}, testImageEnv()...), Logf: t.Logf}
+	m := &Manager{DataDir: dir, Exe: exe, Env: append([]string{testWorkerEnv + "=1"}, testImageEnv()...), Logf: t.Logf, Timeout: 60 * time.Second}
 	t.Cleanup(m.Close)
 	return m
 }
@@ -674,6 +674,7 @@ export default {
 func TestInfiniteLoopTimesOut(t *testing.T) {
 	t.Parallel()
 	m := newManager(t)
+	m.Timeout = DefaultTimeout
 	f := mustStart(t, m, "loop", map[string]string{"index.js": limitsApp}, "index.js", nil)
 	if r := f.get(t, "/"); r.status != 200 {
 		t.Fatalf("warmup = %d", r.status)
@@ -1052,6 +1053,7 @@ func main() {
 	}
 	wasm, _ := os.ReadFile(out)
 	m := newManager(t)
+	m.Timeout = DefaultTimeout
 	probeServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }))
 	defer probeServer.Close()
 	probeAddr := strings.TrimPrefix(probeServer.URL, "http://")
