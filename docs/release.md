@@ -282,6 +282,12 @@ It:
    the `--listen` address when one is given, else `host.console_addr` in
    `config.json` (default `http://127.0.0.1:7878`).
 
+After every successful run the installer prints a pointer for agents:
+`flats mcp-config` shows how to connect an agent, and `flats agent-setup docs`
+is optional and makes Flats the agents' document tool (see
+[Use Flats for documents](agents.md#use-flats-for-documents)). The installer
+runs neither command, stays non-interactive and never edits an agent file.
+
 Service registration is the default because a host is meant to stay up.
 `--no-service` installs only the binary, for hosts that run `flats serve`
 under another supervisor or in the foreground. The installer never enables a
@@ -350,7 +356,9 @@ on macOS and `${XDG_CONFIG_HOME:-~/.config}/Flats` on Linux.
 
 Install a specific release with `--version v1.2.3`. Downgrading across a data
 migration is not supported; restore the backup taken before the upgrade.
-`flats uninstall` removes the service and keeps the data.
+`flats uninstall` removes the service and keeps the data. It also leaves agent
+files as they are, and `flats agent-setup docs --undo` reverts a setup made with
+`flats agent-setup docs`.
 
 ## Updating a client
 

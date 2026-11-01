@@ -619,6 +619,12 @@ Status:   $status
 Remove:   flats uninstall   (keeps your flats and data)
 EOF
 	fi
+
+	cat <<'EOF'
+
+Agents:   flats mcp-config          (connect an agent)
+          flats agent-setup docs    (optional: use Flats for documents)
+EOF
 }
 
 main "$@"
