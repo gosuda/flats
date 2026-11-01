@@ -1371,11 +1371,12 @@ func (s *Service) checkIsolated(ctx context.Context, f store.Flat, v store.Versi
 		d.inst.Stop()
 	}
 	t := contenttype.FromManifest(v.Manifest)
-	if h.OK && (t == contenttype.Design || t == contenttype.Board) {
-		return h, nil // the shell is internal; its creation is logged as a design or board event
+	shell := t == contenttype.Design || t == contenttype.Board || t == contenttype.Notebook
+	if h.OK && shell {
+		return h, nil // the shell is internal; the content type logs its creation
 	}
 	what := fmt.Sprintf("version %d", v.Number)
-	if t == contenttype.Design || t == contenttype.Board {
+	if shell {
 		what = "the " + typeNoun(t)
 	} else if t == contenttype.Docs {
 		what = "the saved document" // a document has no versions or Draft
@@ -1741,7 +1742,7 @@ var ErrorCategories = []string{
 	"stale_approval", "public_stop_unconfirmed", "provider_not_permitted", "provider_unavailable",
 	"runtime_unavailable", "unavailable", "provider_in_use", "not_deployed", "unchanged_content",
 	"provider_not_ready", "config_overridden", "config_changed", "runtime_start_failed", "snapshot_failed",
-	"health_check_failed", "edit_conflict", "document_capacity", "board_capacity", "public_edit_blocked", "conflict", "forbidden", "not_docs", "not_design", "not_board", "no_revisions", "document_not_found", "not_found", "invalid",
+	"health_check_failed", "edit_conflict", "document_capacity", "board_capacity", "notebook_capacity", "public_edit_blocked", "conflict", "forbidden", "not_docs", "not_design", "not_board", "not_notebook", "no_revisions", "document_not_found", "not_found", "invalid",
 }
 
 // ErrorCategory defines cause precedence for persisted failures and transports.
@@ -1791,6 +1792,8 @@ func ErrorCategory(err error) string {
 		return "document_capacity"
 	case errors.Is(err, ErrBoardCapacity):
 		return "board_capacity"
+	case errors.Is(err, ErrNotebookCapacity):
+		return "notebook_capacity"
 	case errors.Is(err, ErrPublicEditBlocked):
 		return "public_edit_blocked"
 	case errors.Is(err, ErrAutopilotOff):
@@ -1809,6 +1812,8 @@ func ErrorCategory(err error) string {
 		return "not_design"
 	case errors.Is(err, ErrNotBoard):
 		return "not_board"
+	case errors.Is(err, ErrNotNotebook):
+		return "not_notebook"
 	case errors.Is(err, ErrDocumentNotFound):
 		return "document_not_found"
 	case errors.Is(err, store.ErrNotFound):

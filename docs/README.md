@@ -19,8 +19,9 @@ deploy.
 | --- | --- |
 | [Connecting agents](agents.md) | Plugin, `flats connect`, direct MCP setup, the `guide` tool, llms.txt |
 | [Runtime API v1](runtime-api-v1.md) | The complete server-flat contract: handler, FILES, DB, encoding, limits (generated) |
-| [Content types](content-types.md) | Websites, HTML pages, Markdown documents, HTML design canvases and whiteboards (generated) |
+| [Content types](content-types.md) | Websites, HTML pages, Markdown documents, HTML design canvases, whiteboards and notebooks (generated) |
 | [Boards](content-types.md#boards) | Create and edit whiteboards with people and agents; structured operations, imports and revision history (generated) |
+| [Notebooks](content-types.md#notebooks) | Create and edit page trees with blocks and inline databases with people and agents; structured operations, Markdown and revision history (generated) |
 | [Server runtime types](agent/types/flats-runtime-v1.d.ts) | TypeScript declarations of runtime API v1, served as guide `topic.server.types` |
 | [`agent/`](agent) | Source of the MCP `guide` topics and both generated references |
 
@@ -35,9 +36,10 @@ the full list.
 
 | Page | Covers |
 | --- | --- |
-| [Content data models](spec/content-models.md) | The Version model (websites, pages) and the Revision model (documents, design); implemented |
+| [Content data models](spec/content-models.md) | The Version model (websites, pages) and the Revision model (documents, designs, boards, notebooks); implemented |
 | [Design content type](spec/design-type.md) | Canvas of HTML artboards with live editing and revisions; background in [research](research/claude-artifacts-design.md) |
 | [Board content type](spec/board.md) | Infinite-canvas whiteboard people and agents edit together, with revisions; [technical design](spec/board-technical-design.md) |
+| [Notebook content type](spec/notebook.md) | Tree of pages with blocks and inline databases people and agents edit together, with revisions; [technical design](spec/notebook-technical-design.md) |
 
 ## Design and contracts
 
@@ -46,7 +48,7 @@ the full list.
 | [Design](design.md) | Architecture and trust model: process layout, manifest, content types, exposure, approvals, secrets, handler ABI |
 | [Lifecycle core contract](lifecycle-core-contract.md) | Drafts, versions, deploys, approvals, data and store migrations in the core |
 | [Surfaces](surfaces.md) | HTTP API routes, CLI, MCP tools and the web console |
-| [Revision store](revision-store.md) | Revisions, pins, quotas and rollback for documents, designs and boards |
+| [Revision store](revision-store.md) | Revisions, pins, quotas and rollback for documents, designs, boards and notebooks |
 | [Network provider lifecycle](network-provider-lifecycle.md) | Provider manager states and teardown |
 | [Docs app internals](internal/docs-app.md) | Host integration of the collaborative Markdown editor |
 | [Idle document worker internals](internal/docs-worker-idle.md) | How document workers sleep when idle and wake on demand: ownership, leases, preparation, clean sleep, tests |

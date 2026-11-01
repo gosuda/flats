@@ -3,6 +3,9 @@ package core
 import (
 	"context"
 	"net/http"
+	"strings"
+
+	"github.com/gosuda/flats/internal/slug"
 )
 
 // routeEpoch owns requests admitted during one exposure lifetime. Its context
@@ -10,11 +13,14 @@ import (
 type routeEpoch struct {
 	ctx    context.Context
 	cancel context.CancelFunc
+	id     string
 }
+
+type routeEpochKey struct{}
 
 func (s *Service) routeEpoch(key string) *routeEpoch {
 	ctx, cancel := context.WithCancel(context.Background())
-	e := &routeEpoch{ctx: ctx, cancel: cancel}
+	e := &routeEpoch{ctx: ctx, cancel: cancel, id: slug.Random(24)}
 	actual, loaded := s.routeEpochs.LoadOrStore(key, e)
 	if loaded {
 		cancel()
@@ -26,6 +32,9 @@ func (s *Service) revokeRoute(key string) {
 	if e, ok := s.routeEpochs.LoadAndDelete(key); ok {
 		e.(*routeEpoch).cancel()
 	}
+	if slugName, public := strings.CutPrefix(key, "public:"); public {
+		s.withdrawNotebookPublic(slugName)
+	}
 }
 
 func (e *routeEpoch) request(r *http.Request) (*http.Request, func()) {
@@ -34,7 +43,7 @@ func (e *routeEpoch) request(r *http.Request) (*http.Request, func()) {
 	if e.ctx.Err() != nil {
 		cancel()
 	}
-	return r.WithContext(ctx), func() { stop(); cancel() }
+	return r.WithContext(context.WithValue(ctx, routeEpochKey{}, e)), func() { stop(); cancel() }
 }
 
 func (s *Service) previewHandler(p *preview) http.Handler {

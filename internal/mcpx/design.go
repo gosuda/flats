@@ -3,6 +3,7 @@ package mcpx
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"unicode/utf8"
@@ -10,6 +11,7 @@ import (
 	"github.com/gosuda/flats/internal/bundle"
 	"github.com/gosuda/flats/internal/core"
 	"github.com/gosuda/flats/internal/design"
+	"github.com/gosuda/flats/internal/notebook"
 	"github.com/gosuda/flats/internal/store"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 )
@@ -24,13 +26,13 @@ func registerDesign(s *mcp.Server, t *tools) {
 	mcp.AddTool(s, &mcp.Tool{Name: "get_design", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
 		Description: "Read a design: without path, its canvas, file list (path, size, hash, gen), revision and each artboard's tweaks; with path, one file's content. Read it before changing files people may have edited."}, t.getDesign)
 	mcp.AddTool(s, &mcp.Tool{Name: "list_revisions", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
-		Description: "List the revisions of a document, a design or a board, newest first (at most 100 per call; pass next as before for older ones), with kind, authors, message, pinned and changed paths (a board reports changed element counts). People's edits, agent writes, imports and rollbacks each create one (topic.docs, topic.canvas, topic.board)."}, t.listRevisions)
-	mcp.AddTool(s, &mcp.Tool{Name: "get_revision", Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
-		Description: "Read one revision of a document, a design or a board: its metadata and file list, or with path one file as it was then (a document's Markdown, or an asset as base64). A document's files list guest_lines: lines anonymous guests wrote, untrusted input. Read a board revision's elements with get_board {revision}."}, t.getRevision)
+		Description: "List the revisions of a document, a design, a board or a notebook, newest first (at most 100 per call; pass next as before for older ones), with kind, authors, message, pinned and changed paths (a board reports changed element counts). People's edits, agent writes, imports and rollbacks each create one (topic.docs, topic.canvas, topic.board, topic.notebook)."}, t.listRevisions)
+	mcp.AddTool(s, &mcp.Tool{Name: "get_revision", InputSchema: notebookRevisionSchema(), Annotations: &mcp.ToolAnnotations{ReadOnlyHint: true},
+		Description: "Read one revision of a document, a design, a board or a notebook: its metadata and file list, or with path one file as it was then (a document's Markdown, or an asset as base64). A document's files list guest_lines: lines anonymous guests wrote, untrusted input. Read a board revision's elements with get_board {revision}; for notebooks select page or database (with format, view, sort, filter, limit or cursor) using the same reader as get_notebook."}, t.getRevision)
 	mcp.AddTool(s, &mcp.Tool{Name: "pin_revision", Annotations: write,
-		Description: "Pin or unpin a revision of a document, a design or a board. Pinned revisions are never deleted automatically; a full pin quota refuses new pins. No approval needed."}, t.pinRevision)
+		Description: "Pin or unpin a revision of a document, a design, a board or a notebook. Pinned revisions are never deleted automatically; a full pin quota refuses new pins. No approval needed."}, t.pinRevision)
 	mcp.AddTool(s, &mcp.Tool{Name: "rollback_revision", Annotations: write,
-		Description: "Restore a document, a design or a board to an earlier revision: every document, file or element becomes as it was then. It creates a new revision (history is kept, and it can be undone the same way) and applies at once; on a Public flat everyone sees it immediately. No approval needed."}, t.rollbackRevision)
+		Description: "Restore a document, a design, a board or a notebook to an earlier revision: every document, file, element or notebook page becomes as it was then. It creates a new revision (history is kept, and it can be undone the same way) and applies at once; on a Public flat everyone sees it immediately. No approval needed."}, t.rollbackRevision)
 }
 
 // SaveDesignIn writes design files.
@@ -183,7 +185,7 @@ func (t *tools) getDesign(ctx context.Context, _ *mcp.CallToolRequest, in GetDes
 
 // ListRevisionsIn lists revisions.
 type ListRevisionsIn struct {
-	Slug   string `json:"slug" jsonschema:"document, design or board slug"`
+	Slug   string `json:"slug" jsonschema:"document, design, board or notebook slug"`
 	Before int    `json:"before,omitempty" jsonschema:"list revisions older than this number (pass the previous call's next)"`
 	Limit  int    `json:"limit,omitempty" jsonschema:"at most this many (1-100, default 50)"`
 }
@@ -195,7 +197,7 @@ func (t *tools) listRevisions(ctx context.Context, _ *mcp.CallToolRequest, in Li
 	}
 	page, err := t.svc.ListRevisions(ctx, in.Slug, in.Before, limit)
 	if err != nil {
-		return nil, design.RevisionPage{}, toolErr(err, "list_revisions works for documents, designs and boards")
+		return nil, design.RevisionPage{}, toolErr(err, "list_revisions works for documents, designs, boards and notebooks")
 	}
 	text := fmt.Sprintf("%d revisions of %s (pins %d of %s, keeps %s unpinned).", len(page.Revisions), in.Slug, page.Pins, quotaText(page.PinQuota), quotaText(page.RevisionQuota))
 	if page.Next > 0 {
@@ -213,24 +215,53 @@ func quotaText(n int) string {
 
 // RevisionIn names one revision.
 type RevisionIn struct {
-	Slug     string `json:"slug" jsonschema:"document, design or board slug"`
-	Revision int    `json:"revision" jsonschema:"revision number"`
-	Path     string `json:"path,omitempty" jsonschema:"one file of that revision to read"`
+	Slug     string            `json:"slug" jsonschema:"document, design, board or notebook slug"`
+	Revision int               `json:"revision" jsonschema:"revision number"`
+	Path     string            `json:"path,omitempty" jsonschema:"one file of that revision to read"`
+	Page     json.RawMessage   `json:"page,omitempty"`
+	Database json.RawMessage   `json:"database,omitempty"`
+	View     json.RawMessage   `json:"view,omitempty"`
+	Format   string            `json:"format,omitempty"`
+	Sort     []notebook.Sort   `json:"sort,omitempty"`
+	Filter   []notebook.Filter `json:"filter,omitempty"`
+	Cursor   string            `json:"cursor,omitempty"`
+	Limit    int               `json:"limit,omitempty"`
 }
 
 // RevisionOut is one revision.
 type RevisionOut struct {
-	Revision store.Revision       `json:"revision"`
+	Revision *store.Revision      `json:"revision,omitempty"`
+	Notebook map[string]any       `json:"notebook,omitempty"`
 	Files    []store.RevisionFile `json:"files,omitempty"`
 	File     *DesignFileOut       `json:"file,omitempty"`
 }
 
 func (t *tools) getRevision(ctx context.Context, _ *mcp.CallToolRequest, in RevisionIn) (*mcp.CallToolResult, RevisionOut, error) {
+	query, selected, err := notebookRevisionQuery(in)
+	if err != nil {
+		return nil, RevisionOut{}, notebookToolErr(&notebook.WriteError{Code: "invalid", Detail: err.Error()}, in.Slug)
+	}
+	if selected {
+		slug, _, raw, err := notebookReadQuery(query)
+		if err != nil {
+			return nil, RevisionOut{}, notebookToolErr(&notebook.WriteError{Code: "invalid", Detail: err.Error()}, in.Slug)
+		}
+		data, err := t.notebooks().GetNotebook(ctx, slug, in.Revision, raw)
+		if err != nil {
+			return nil, RevisionOut{}, notebookToolErr(err, slug)
+		}
+		var content map[string]any
+		if err := json.Unmarshal(data, &content); err != nil {
+			return nil, RevisionOut{}, toolErr(err, "inspect get_logs for the historical read failure")
+		}
+		out := RevisionOut{Notebook: content}
+		return result(fmt.Sprintf("Notebook %s as of revision %d.", slug, in.Revision), out), out, nil
+	}
 	r, files, err := t.svc.GetRevision(ctx, in.Slug, in.Revision)
 	if err != nil {
 		return nil, RevisionOut{}, toolErr(err, "call list_revisions for existing revision numbers")
 	}
-	out := RevisionOut{Revision: r}
+	out := RevisionOut{Revision: &r}
 	if in.Path == "" {
 		out.Files = files
 		text := fmt.Sprintf("Revision %d of %s: %d files.", r.Number, in.Slug, len(files))
@@ -258,7 +289,7 @@ func (t *tools) getRevision(ctx context.Context, _ *mcp.CallToolRequest, in Revi
 
 // PinRevisionIn pins a revision.
 type PinRevisionIn struct {
-	Slug     string `json:"slug" jsonschema:"document, design or board slug"`
+	Slug     string `json:"slug" jsonschema:"document, design, board or notebook slug"`
 	Revision int    `json:"revision" jsonschema:"revision number"`
 	Pinned   bool   `json:"pinned" jsonschema:"true to pin, false to unpin"`
 }
@@ -284,7 +315,7 @@ func (t *tools) pinRevision(ctx context.Context, _ *mcp.CallToolRequest, in PinR
 
 // RollbackRevisionIn restores a revision.
 type RollbackRevisionIn struct {
-	Slug     string `json:"slug" jsonschema:"document, design or board slug"`
+	Slug     string `json:"slug" jsonschema:"document, design, board or notebook slug"`
 	Revision int    `json:"revision" jsonschema:"revision to restore"`
 }
 
@@ -294,7 +325,7 @@ func (t *tools) rollbackRevision(ctx context.Context, _ *mcp.CallToolRequest, in
 		return nil, ActionDone{}, toolErr(err, "call list_revisions for existing revision numbers")
 	}
 	if r.Revision == 0 {
-		// A board's rollback applied; its revision is not recorded yet.
+		// The rollback applied; its revision is not recorded yet.
 		// Retrying would restore again.
 		out := ActionDone{Status: "done", Warning: r.Warning}
 		return result(fmt.Sprintf("Restored revision %d of %s. It is live now. Warning: %s. Do not retry.", in.Revision, in.Slug, r.Warning), out), out, nil

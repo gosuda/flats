@@ -1,0 +1,22 @@
+[
+  {
+    "code": "raw_html",
+    "line": 1,
+    "message": "Raw HTML remains literal paragraph text."
+  },
+  {
+    "code": "raw_html",
+    "line": 3,
+    "message": "Raw HTML remains literal paragraph text."
+  },
+  {
+    "code": "raw_html",
+    "line": 3,
+    "message": "Raw HTML remains literal paragraph text."
+  },
+  {
+    "code": "raw_html",
+    "line": 5,
+    "message": "Raw HTML remains literal paragraph text."
+  }
+]

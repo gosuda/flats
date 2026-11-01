@@ -1,7 +1,7 @@
 ## Flats guide index
 
 Flats hosts websites, small server apps, HTML pages, collaborative Markdown
-documents, designs and boards ("flats") on the operator's own machine. Read only the topics your task needs,
+documents, designs, boards and notebooks ("flats") on the operator's own machine. Read only the topics your task needs,
 several per call: `guide {"items":["topic.server","topic.server.db"]}`.
 
 ### Route by intent
@@ -17,9 +17,10 @@ several per call: `guide {"items":["topic.server","topic.server.db"]}`.
 | Draw a chart, tooltip or diagram that reads correctly (in a page or any website) | `topic.page.visuals` | |
 | Design screens, a prototype, posters or social images on a canvas people edit with you (runs Private at once; no publish or approval). `topic.canvas` is the design topic | `topic.canvas`, `topic.design` | `create_flat {type: "design"}`, `save_design`, `get_design`, `list_revisions` |
 | Brainstorm, sort ideas or draw a flowchart on a whiteboard of stickies, shapes and connectors that people edit with you (runs Private at once; no publish or approval) | `topic.board` | `create_flat {type: "board"}`, `get_board`, `update_board`, `get_board_share`, `import_board` |
+| Keep a wiki, notes or a tracker: pages of blocks with inline databases people sort, filter and edit with you (runs Private at once; no publish or approval) | `topic.notebook` | `create_flat {type: "notebook"}`, `get_notebook`, `update_notebook` |
 | Write a Markdown document (runs Private at once; no publish or approval) | `topic.docs` | `create_flat {type: "docs"}`, `save_document` |
 | Fix or add to a Markdown document (no approval; Public is visible at once) | `topic.docs` | `get_document`, `update_document` |
-| See or undo earlier changes of a document, design or board | `topic.docs`, `topic.canvas`, `topic.board` | `list_revisions`, `get_revision`, `rollback_revision` |
+| See or undo earlier changes of a document, design, board or notebook | `topic.docs`, `topic.canvas`, `topic.board`, `topic.notebook` | `list_revisions`, `get_revision`, `rollback_revision` |
 | Give an app settings, credentials or API access | `topic.env-secrets`, `topic.server.fetch` | `list_env`, `set_env`, `list_secrets`, `get_network` |
 | Make a flat public or private, or delete it | `topic.approvals` | `set_visibility`, `delete_flat` (ask the user first) |
 | Roll back code or restore data | `topic.rollback-data` | `rollback` |
@@ -31,9 +32,9 @@ For an existing flat, call `get_flat` before changing anything.
 
 ### Workflow map
 
-Websites and pages follow these steps. Documents, designs and boards do not: they have no
-Draft, versions, previews or publish, and every save runs at once (`topic.docs`,
-`topic.canvas`, `topic.board`).
+Websites and pages follow these steps. Documents, designs, boards and notebooks do not: they
+have no Draft, versions, previews or publish, and every save runs at once (`topic.docs`,
+`topic.canvas`, `topic.board`, `topic.notebook`).
 
 1. **Draft.** `save_draft` uploads the complete build;
    saving creates a missing flat and only changes its Private Draft. Nothing

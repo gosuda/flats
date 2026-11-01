@@ -263,7 +263,8 @@ page = start(); await tick();
 assert.equal(timers.size, 0);
 assert.equal(feedback(page.main).hidden, undefined); // hidden attribute remains set
 assert.equal(feedback(page.main).getAttribute('hidden'), '');
-for (const example of ['Website:', 'Document:', 'Page:', 'Design:', 'Board:']) assert.ok(page.main.textContent.includes(example));
+for (const example of ['Website:', 'Document:', 'Page:', 'Design:', 'Board:', 'Notebook:']) assert.ok(page.main.textContent.includes(example));
+assert.ok(page.main.textContent.includes('Document, design, board and notebook changes take effect as soon as they are saved'));
 assert.equal(all(page.main, (e) => e.textContent === 'Connect an agent' && e.tagName === 'A')[0].getAttribute('href'), '/settings/agents');
 page.stop(); await tick();
 assert.equal(timers.size, 0);

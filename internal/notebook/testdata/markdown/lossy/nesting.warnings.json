@@ -1,0 +1,12 @@
+[
+  {
+    "code": "nesting_flattened",
+    "line": 7,
+    "message": "Excess list nesting becomes siblings at depth six."
+  },
+  {
+    "code": "nesting_flattened",
+    "line": 8,
+    "message": "Excess list nesting becomes siblings at depth six."
+  }
+]

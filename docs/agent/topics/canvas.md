@@ -1,7 +1,8 @@
 ## Designs
 
 This is the design topic. For a whiteboard of sticky notes, shapes and
-connectors that people rearrange by hand, read `topic.board`.
+connectors that people rearrange by hand, read `topic.board`; for pages of
+notes and tracker tables, read `topic.notebook`.
 
 A design (`type: "design"`) is a canvas of HTML artboards: screens, landing
 pages, posters, social images, diagrams and click-through prototypes.

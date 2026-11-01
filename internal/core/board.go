@@ -22,6 +22,7 @@ import (
 	"github.com/gosuda/flats/internal/board/engine"
 	"github.com/gosuda/flats/internal/bundle"
 	"github.com/gosuda/flats/internal/contenttype"
+	"github.com/gosuda/flats/internal/notebook"
 	"github.com/gosuda/flats/internal/slug"
 	"github.com/gosuda/flats/internal/store"
 )
@@ -109,6 +110,10 @@ func (s *Service) liveBoard(slugName string) *board.Instance {
 // stopInstance stops a live instance. A board first tells its open canvases
 // why: code is deleted or renamed.
 func stopInstance(inst Instance, code string) {
+	if in, ok := inst.(*notebook.Instance); ok {
+		in.Shutdown(code)
+		return
+	}
 	if in, ok := inst.(*board.Instance); ok {
 		in.Shutdown(code)
 		return
@@ -1084,6 +1089,9 @@ func (s *Service) catchUpRevisions(ctx context.Context, slugName string) error {
 	st, err := s.st.ContentState(ctx, slugName)
 	if err == nil && st.Type == contenttype.Board {
 		return s.catchUpBoard(ctx, slugName)
+	}
+	if err == nil && st.Type == contenttype.Notebook {
+		return s.catchUpNotebook(ctx, slugName)
 	}
 	return s.catchUpDocs(ctx, slugName)
 }
