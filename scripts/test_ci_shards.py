@@ -49,7 +49,7 @@ class ShardListTests(unittest.TestCase):
         scheduled = ROOT / ".github/workflows/notebook-memory-race.yml"
         routine = one_line(r"^ +lane: \[(.+)\]$", ci).split(", ")
         large = one_line(r"^ +lane: \[(.+)\]$", scheduled).split(", ")
-        self.assertEqual(routine, ["core", "services", "notebook", "board-1", "board-2"])
+        self.assertEqual(routine, ["core-1", "core-2", "services", "notebook-1", "notebook-2", "board-1", "board-2"])
         groups = case_labels(SCRIPTS / "ci-memory.sh")
         self.assertEqual(large, ["notebook-large-" + group for group in groups])
         self.assertEqual(sorted(routine + large), sorted(case_labels(SCRIPTS / "ci-race.sh")))
@@ -144,21 +144,38 @@ esac
         self.assertEqual({s: h for s, h in hits.items() if h},
                          {"other": ["github.com/gosuda/flats/internal/notebook"]})
 
-    def test_notebook_race_lane_runs_the_whole_package(self):
+    def race_args(self, *args):
         with tempfile.TemporaryDirectory() as directory:
             stub = Path(directory) / "go"
-            stub.write_text('#!/bin/sh\necho "$@"\n')
+            stub.write_text('#!/bin/sh\nprintf "%s\\n" "$@"\n')
             stub.chmod(0o755)
             env = {**os.environ, "PATH": f"{directory}:{os.environ['PATH']}"}
-            result = subprocess.run(["sh", str(SCRIPTS / "ci-race.sh"), "notebook"],
+            result = subprocess.run(["sh", str(SCRIPTS / "ci-race.sh"), *args],
                                     env=env, capture_output=True, text=True)
-            override = subprocess.run(["sh", str(SCRIPTS / "ci-race.sh"), "notebook", "-timeout=30m"],
-                                      env=env, capture_output=True, text=True)
-        self.assertEqual((result.returncode, result.stdout.split()),
-                         (0, ["test", "-race", "-timeout=18m", "./internal/notebook/..."]))
-        # go test keeps the last -timeout, so a caller's value overrides the default.
-        self.assertEqual((override.returncode, override.stdout.split()),
-                         (0, ["test", "-race", "-timeout=18m", "-timeout=30m", "./internal/notebook/..."]))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout.splitlines()
+
+    def test_split_race_lanes_complement_each_other(self):
+        # The second lane skips exactly what the first runs, so every test of
+        # the package runs in one of them, including new or renamed tests.
+        for package, first, second in [("./internal/notebook/...", "notebook-1", "notebook-2"),
+                                        ("./internal/core", "core-1", "core-2"),
+                                        ("./internal/board", "board-1", "board-2")]:
+            with self.subTest(package=package):
+                a, b = self.race_args(first), self.race_args(second)
+                self.assertEqual(a[-1], package)
+                self.assertEqual(b[-1], package)
+                self.assertEqual(a[a.index("-run") + 1], b[b.index("-skip") + 1])
+                self.assertNotIn("-skip", a)
+                self.assertNotIn("-run", b)
+
+    def test_notebook_race_lanes_keep_the_long_timeout(self):
+        for lane in ("notebook-1", "notebook-2"):
+            with self.subTest(lane=lane):
+                args = self.race_args(lane)
+                self.assertEqual(args[:3], ["test", "-race", "-timeout=18m"])
+                # go test keeps the last -timeout, so a caller's value overrides the default.
+                self.assertIn("-timeout=30m", self.race_args(lane, "-timeout=30m")[3:])
 
     def test_notebook_large_lanes_enable_only_memory_tests(self):
         want = {

@@ -23,9 +23,11 @@ go mod tidy                         # CI requires no go.mod/go.sum diff
 go vet ./...
 make docs-check                     # Markdown links and anchors, uncached
 go test ./...                       # as eight shards: scripts/ci-test.sh <shard>
-scripts/ci-race.sh core             # go test -race, in five routine lanes
+scripts/ci-race.sh core-1           # go test -race, in seven routine lanes
+scripts/ci-race.sh core-2
 scripts/ci-race.sh services
-scripts/ci-race.sh notebook
+scripts/ci-race.sh notebook-1
+scripts/ci-race.sh notebook-2
 scripts/ci-race.sh board-1
 scripts/ci-race.sh board-2
 scripts/ci-memory.sh reader         # large fixtures, without -race
@@ -57,14 +59,16 @@ CGO-free somewhere: darwin/arm64 by the `install-macos` job, darwin/amd64 by
 the `netbird` job on Linux, and linux/amd64 and linux/arm64 by the
 `container` job.
 
-`scripts/ci-race.sh` runs five race lanes on each pull request and main
-push: the core service; the API, app, MCP, store, Portal and WebSocket
-packages with the runtime's FILES, WASI and WebSocket limit tests and the
-board engine; the whole notebook package with its default model seed count;
-and the board server in two lanes, split by test name like the runtime and
-docs shards. These jobs retain their 20-minute limit. The `notebook` lane
-sets an 18-minute test timeout, since the package runs close to `go test`'s
-default of 10 minutes. The default Markdown retained-memory test covers all six payload kinds at 1 MiB and keeps the option-schema cases
+`scripts/ci-race.sh` runs seven race lanes on each pull request and main
+push: the core service in two lanes; the API, app, MCP, store, Portal and
+WebSocket packages with the runtime's FILES, WASI and WebSocket limit tests
+and the board engine; the whole notebook package with its default model seed
+count in two lanes; and the board server in two lanes. Each two-lane package
+is split by test name like the runtime and docs shards: the first lane runs
+a `-run` pattern, the second `-skip`s the same pattern. These jobs retain
+their 20-minute limit. The `notebook-1` and `notebook-2` lanes set an
+18-minute test timeout; the whole package took about nine minutes in one
+lane, close to `go test`'s default of 10 minutes. The default Markdown retained-memory test covers all six payload kinds at 1 MiB and keeps the option-schema cases
 at 1.5 and 16 MiB as well. Its default-only `bounded_growth` subtest permits
 at most 1 MiB more sampled heap at 16 MiB than at 1 MiB, in addition to the
 unchanged 4 MiB ceiling for each read. This rejects retaining every option id

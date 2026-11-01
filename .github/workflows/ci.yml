@@ -137,16 +137,25 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        lane: [core, services, notebook, board-1, board-2]
+        lane: [core-1, core-2, services, notebook-1, notebook-2, board-1, board-2]
+        # The two lanes of a package compile it alike: one cache per package,
+        # written only by its -1 lane.
+        include:
+          - {lane: core-1, cache: core}
+          - {lane: core-2, cache: core}
+          - {lane: services, cache: services}
+          - {lane: notebook-1, cache: notebook}
+          - {lane: notebook-2, cache: notebook}
+          - {lane: board-1, cache: board}
+          - {lane: board-2, cache: board}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-go
         with:
-          # The board lanes compile the same package: one cache, one writer.
-          cache-key: race-${{ startsWith(matrix.lane, 'board') && 'board' || matrix.lane }}
-          save-build: ${{ matrix.lane != 'board-2' }}
+          cache-key: race-${{ matrix.cache }}
+          save-build: ${{ !endsWith(matrix.lane, '-2') }}
           # The lanes used to share one race job.
           restore-fallback: race
       - name: Races

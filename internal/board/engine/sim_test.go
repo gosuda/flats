@@ -899,9 +899,10 @@ func sameRows[K comparable, R any](m map[K]R, rows []R, key func(R) K) bool {
 // exactly how it was after (4.10). Edits mix additions, moves with carry,
 // text, multi-element stacking changes, deletions, revives, membership,
 // groups and metadata; undo and redo come in runs. BOARD_SEEDS sets the
-// number of seeds (default 500).
+// number of seeds (default 100; 50 already reach every engine statement
+// that 500 do).
 func TestRandomUndoRedo(t *testing.T) {
-	forSeeds(t, 500, runUndoRedo)
+	forSeeds(t, 100, runUndoRedo)
 }
 
 // boardView is the board as undo must restore it: the metadata and every
