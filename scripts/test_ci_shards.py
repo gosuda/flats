@@ -44,15 +44,40 @@ class ShardListTests(unittest.TestCase):
         self.assertEqual(sorted(s.strip() for s in release.split(",")), sorted(self.shards))
         self.assertEqual(sorted(fallback.split()), sorted(self.shards))
 
-    def test_ci_runs_every_race_lane(self):
+    def test_routine_and_scheduled_race_lanes_cover_every_lane_once(self):
         ci = ROOT / ".github/workflows/ci.yml"
-        lanes = one_line(r"^ +lane: \[(.+)\]$", ci)
-        self.assertEqual(sorted(s.strip() for s in lanes.split(",")),
-                         sorted(case_labels(SCRIPTS / "ci-race.sh")))
+        scheduled = ROOT / ".github/workflows/notebook-memory-race.yml"
+        routine = one_line(r"^ +lane: \[(.+)\]$", ci).split(", ")
+        large = one_line(r"^ +lane: \[(.+)\]$", scheduled).split(", ")
+        self.assertEqual(routine, ["core", "services", "notebook", "board-1", "board-2"])
+        groups = case_labels(SCRIPTS / "ci-memory.sh")
+        self.assertEqual(large, ["notebook-large-" + group for group in groups])
+        self.assertEqual(sorted(routine + large), sorted(case_labels(SCRIPTS / "ci-race.sh")))
+
+    def test_large_memory_groups_run_on_prs_without_race(self):
+        ci = (ROOT / ".github/workflows/ci.yml").read_text()
+        job = ci.split("\n  notebook-memory:\n", 1)[1].split("\n  # Native macOS:", 1)[0]
+        groups = re.search(r"for group in (.+); do", job).group(1).split()
+        self.assertEqual(groups, case_labels(SCRIPTS / "ci-memory.sh"))
+        self.assertIn('scripts/ci-memory.sh "$group" || failed=1', job)
+        self.assertIn('exit "$failed"', job)
+        self.assertNotIn("-race", job)
+        self.assertIn("timeout-minutes: 20", job)
+        self.assertIn("scripts/ci-memory.sh", ci.split("      - name: Lint\n", 1)[1])
+
+    def test_memory_races_are_weekly_or_manual_and_read_only(self):
+        workflow = (ROOT / ".github/workflows/notebook-memory-race.yml").read_text()
+        triggers = workflow.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]
+        self.assertEqual(re.findall(r"^  (\w+):", triggers, re.M), ["schedule", "workflow_dispatch"])
+        self.assertIn("cron: '17 3 * * 1'", triggers)
+        self.assertIn("permissions:\n  contents: read\n", workflow)
+        self.assertNotIn(": write", workflow)
+        self.assertIn("timeout-minutes: 30", workflow)
+        self.assertIn('scripts/ci-race.sh "${{ matrix.lane }}"', workflow)
 
     def test_large_reader_lane_includes_directly_flagged_tests(self):
-        script = (SCRIPTS / "ci-race.sh").read_text()
-        patterns = re.findall(r"^\s*large_(?:reader|markdown)='(.+)'$", script, re.M)
+        script = (SCRIPTS / "ci-memory.sh").read_text()
+        patterns = re.findall(r"^\s*pattern='(.+)'$", script, re.M)[:2]
         self.assertEqual(len(patterns), 2)
         flagged = set()
         for path in (ROOT / "internal/notebook").glob("*_test.go"):
@@ -64,20 +89,6 @@ class ShardListTests(unittest.TestCase):
         for name in flagged:
             with self.subTest(test=name):
                 self.assertEqual(sum(re.fullmatch(p, name) is not None for p in patterns), 1)
-
-    def test_large_reader_race_lane_has_its_own_timeout(self):
-        ci = (ROOT / ".github/workflows/ci.yml").read_text()
-        race = ci.split("\n  race:\n", 1)[1].split("\n  install-macos:\n", 1)[0]
-        self.assertEqual(re.findall(r"^    timeout-minutes: (.+)$", race, re.M),
-                         ["${{ startsWith(matrix.lane, 'notebook-large') && 30 || 20 }}"])
-
-    def test_large_lanes_run_one_command_each(self):
-        script = (SCRIPTS / "ci-race.sh").read_text()
-        for lane in ("notebook-large-reader", "notebook-large-markdown", "notebook-large-source"):
-            with self.subTest(lane=lane):
-                body = script.split(f"\n{lane})\n", 1)[1].split("\n\t;;", 1)[0]
-                self.assertEqual(len(re.findall(r"^\trun ", body, re.M)), 1)
-                self.assertIn("-timeout=25m", body)
 
 
 class ShardPackageTests(unittest.TestCase):
@@ -165,14 +176,52 @@ esac
                 stub.chmod(0o755)
                 env = {**os.environ, "PATH": f"{directory}:{os.environ['PATH']}",
                        "NOTEBOOK_LARGE_MEMORY_TESTS": "0"}
-                result = subprocess.run(
-                    ["sh", str(SCRIPTS / "ci-race.sh"), lane, "-v"],
-                    env=env, capture_output=True, text=True)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(result.stdout.splitlines(), [
-                    "1", "test", "-race", "-v", "-count=1", "-timeout=25m", "-run",
-                    selector, package,
-                ])
+                for script, group, flags in [
+                    ("ci-race.sh", lane, ["-race"]),
+                    ("ci-memory.sh", lane.removeprefix("notebook-large-"), []),
+                ]:
+                    result = subprocess.run(
+                        ["sh", str(SCRIPTS / script), group, "-v"],
+                        env=env, capture_output=True, text=True)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout.splitlines(), [
+                        "1", "test", *flags, "-v", "-count=1", "-timeout=25m", "-run",
+                        selector, package,
+                    ])
+
+    def test_memory_dispatch_rejects_unknown_groups_and_propagates_failure(self):
+        with tempfile.TemporaryDirectory() as directory:
+            stub = Path(directory) / "go"
+            stub.write_text('#!/bin/sh\nexit 7\n')
+            stub.chmod(0o755)
+            env = {**os.environ, "PATH": f"{directory}:{os.environ['PATH']}"}
+            for group in ("reader", "markdown", "source"):
+                for script, name, code in [("ci-memory.sh", group, 7),
+                                           ("ci-race.sh", "notebook-large-" + group, 1)]:
+                    result = subprocess.run(["sh", str(SCRIPTS / script), name],
+                                            env=env, capture_output=True, text=True)
+                    self.assertEqual(result.returncode, code)
+            for args in ([], ["unknown"]):
+                result = subprocess.run(["sh", str(SCRIPTS / "ci-memory.sh"), *args],
+                                        env=env, capture_output=True, text=True)
+                self.assertEqual(result.returncode, 2)
+
+    def test_memory_job_runs_every_group_after_a_failure(self):
+        ci = (ROOT / ".github/workflows/ci.yml").read_text()
+        job = ci.split("\n  notebook-memory:\n", 1)[1].split("\n  # Native macOS:", 1)[0]
+        command = job.split("        run: |\n", 1)[1]
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            stub = work / "scripts/ci-memory.sh"
+            stub.parent.mkdir()
+            stub.write_text('#!/bin/sh\necho "$1"\n[ "$1" != "$FAIL_GROUP" ]\n')
+            stub.chmod(0o755)
+            for failed_group in ("reader", "markdown", "source", "none"):
+                result = subprocess.run(["sh", "-c", command], cwd=work,
+                                        env={**os.environ, "FAIL_GROUP": failed_group},
+                                        capture_output=True, text=True)
+                self.assertEqual(result.stdout.splitlines(), ["reader", "markdown", "source"])
+                self.assertEqual(result.returncode, 0 if failed_group == "none" else 1)
 
     def test_layout_without_board(self):
         packages = [p for p in self.CURRENT if not p.startswith("internal/board/") and p != "internal/board"]

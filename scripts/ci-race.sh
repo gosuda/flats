@@ -26,10 +26,9 @@
 # The package takes about nine minutes under -race on a CI runner, close to
 # go test's default 10-minute timeout, so the lane sets 18 minutes inside
 # its 20-minute job. A caller's own -timeout comes later and wins.
-# The three notebook-large lanes set NOTEBOOK_LARGE_MEMORY_TESTS=1 for the
-# reader, Markdown and host-source memory fixtures (8 and 32 MiB). Each lane
-# runs one go test command, so its 25-minute test timeout leaves room for the
-# build within the lane's own 30-minute job.
+# The three notebook-large lanes use the same memory fixtures as ci-memory.sh,
+# with race detection. They run weekly or manually, outside routine PR CI.
+# Each keeps a 25-minute test timeout within its 30-minute job.
 #
 # Every command of a lane runs even after an earlier one fails, so the log
 # shows all failures; the lane then fails.
@@ -66,16 +65,13 @@ notebook)
 	run go test -race -timeout=18m "$@" ./internal/notebook/...
 	;;
 notebook-large-reader)
-	large_reader='^(TestReaderRetainedMemoryAndContinuations|TestReaderSelectionPreparationMemory|TestReaderCollectionQueryMemory|TestReaderHistoricalSourceMemory)$'
-	run env NOTEBOOK_LARGE_MEMORY_TESTS=1 go test -race "$@" -count=1 -timeout=25m -run "$large_reader" ./internal/notebook
+	run "$(dirname "$0")/ci-memory.sh" reader -race "$@"
 	;;
 notebook-large-markdown)
-	large_markdown='^TestMarkdownRetainedMemory$'
-	run env NOTEBOOK_LARGE_MEMORY_TESTS=1 go test -race "$@" -count=1 -timeout=25m -run "$large_markdown" ./internal/notebook
+	run "$(dirname "$0")/ci-memory.sh" markdown -race "$@"
 	;;
 notebook-large-source)
-	large_source='^TestNotebookSourceHistoryMemory$'
-	run env NOTEBOOK_LARGE_MEMORY_TESTS=1 go test -race "$@" -count=1 -timeout=25m -run "$large_source" ./internal/core
+	run "$(dirname "$0")/ci-memory.sh" source -race "$@"
 	;;
 board-1)
 	run go test -race "$@" -run "$board_1" ./internal/board
