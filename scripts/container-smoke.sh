@@ -58,23 +58,9 @@ fail() {
 	exit 1
 }
 
-# expected_version prints the version a binary built with the stamp $1
-# reports. A v0.0.0-… stamp is a development build (a main commit image is
-# v0.0.0-sha-<commit>), which reports the commit it was built from, read here
-# from the binary $2's own build information.
-expected_version() {
-	case $1 in
-	v0.0.0-*)
-		info=$(go version -m "$2") || fail "cannot read the build information of $2"
-		rev=$(printf '%s\n' "$info" | sed -n 's/.*vcs\.revision=\([0-9a-f]*\).*/\1/p')
-		[ -n "$rev" ] || fail "$2 records no commit"
-		dirty=
-		printf '%s\n' "$info" | grep -q 'vcs\.modified=true' && dirty=-dirty
-		printf '%.7s%s\n' "$rev" "$dirty"
-		;;
-	*) printf '%s\n' "$1" ;;
-	esac
-}
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=lib-gate.sh
+. "$(cd "$(dirname "$0")" && pwd)/lib-gate.sh"
 # A binary from before internal/buildinfo, such as an older commit image built
 # by the Commit images workflow, reports the stamp itself and no system.build
 # in /api/status; its version --json has no release field.
@@ -135,15 +121,21 @@ print(value)' "$1" "$2"
 }
 
 # approval_applied checks exactly the requested approval, never a pending-list
-# candidate. The disposable test operator is separate from the CLI client.
+# candidate. It reads the host API rather than `flats approvals wait`: commit
+# images run this script with the binary of an older commit, which may not
+# have that verb. The disposable test operator is separate from the CLI client.
 approval_applied() {
 	curl -fsS --max-time 5 "$url/api/approvals/$1" >"$work/approval-result" || return 1
 	decision_status=$(json_field status "$work/approval-result") || fail "invalid approval receipt"
 	case "$decision_status" in
-	approved) return 0;;
+	approved) ;;
 	pending|applying) return 1;;
 	*) fail "approval $1 ended $decision_status: $(cat "$work/approval-result")";;
 	esac
+	cleanup_pending=$(python3 -c 'import json,sys
+print((json.load(open(sys.argv[1])).get("result_data") or {}).get("cleanup_pending") is True)' "$work/approval-result") ||
+		fail "invalid approval receipt"
+	[ "$cleanup_pending" = False ] || fail "approval $1 applied but storage cleanup is pending: $(cat "$work/approval-result")"
 }
 
 # approve_requested LABEL REQUEST approves only the ID captured by that request.

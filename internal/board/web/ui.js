@@ -2,6 +2,8 @@
 // in-page dialogs and menus. Nothing here uses inline style attributes, so
 // the app runs under the shell's CSP (style-src 'self').
 
+'use strict';
+
 export const $ = (sel, root = document) => root.querySelector(sel);
 
 export function h(tag, attrs = {}, ...children) {

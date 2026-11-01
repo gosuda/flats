@@ -1,5 +1,7 @@
 // randomUUID requires a secure context; getRandomValues also works on the
 // private HTTP origins supported by Flats. Both paths use browser entropy.
+'use strict';
+
 export function randomUUID(crypto = globalThis.crypto) {
   if (typeof crypto.randomUUID === "function") return crypto.randomUUID();
   const bytes = crypto.getRandomValues(new Uint8Array(16));

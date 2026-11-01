@@ -22,8 +22,8 @@ const (
 
 // addPublicAccess adds the public access level and its change counter to
 // flats, the safe point to content_state and guest credits to revisions
-// (board-public-edit-TECH 2.1, 5.2). Every flat that is Public now starts at
-// view.
+// (board-public-edit-technical-design 2.1, 5.2). Every flat that is Public now
+// starts at view.
 func addPublicAccess(ctx context.Context, x executor) error {
 	for _, c := range []struct{ table, col, def string }{
 		{"flats", "public_access", "TEXT NOT NULL DEFAULT ''"},

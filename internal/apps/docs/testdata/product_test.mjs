@@ -1,5 +1,7 @@
 // Opt-in: FLATS_PLAYWRIGHT_MODULE=/absolute/path/index.mjs node this-file BIN EVIDENCE
 // Disposable real flats serve, MCP authoring, operator approvals, two browsers.
+'use strict';
+
 import assert from 'node:assert/strict';
 import { spawn, execFileSync } from 'node:child_process';
 import { mkdtemp, mkdir, writeFile, readFile, rm } from 'node:fs/promises';

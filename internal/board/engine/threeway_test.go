@@ -13,9 +13,9 @@ import (
 )
 
 // TestScreensServerAndReference feeds one operation sequence to simulated
-// editors, the server and the reference model (board-TECH 14, Randomized
-// tests: every screen = the server = the reference model). 3 to 5 editors
-// prepare batches from their screens with the operations the reference
+// editors, the server and the reference model (board-technical-design 14,
+// Randomized tests: every screen = the server = the reference model). 3 to 5
+// editors prepare batches from their screens with the operations the reference
 // model knows (add, set, delete, restore, group, ungroup), lose their
 // connections now and then and resend pending batches. Rollbacks and agent
 // calls interleave. Each batch reaches the reference model at the moment

@@ -3,7 +3,6 @@ package store
 import (
 	"context"
 	"database/sql"
-	"database/sql/driver"
 	"errors"
 	"fmt"
 	"time"
@@ -53,7 +52,7 @@ var (
 	ErrApprovalNotPending = errors.New("approval no longer pending")
 )
 
-// AutopilotChange is the host log line of one committed settings change.
+// AutopilotChange is the host log line of one committed Experiments change.
 type AutopilotChange struct {
 	Seq  int64
 	At   time.Time
@@ -94,48 +93,29 @@ func getAutopilot(ctx context.Context, x executor) (AutopilotRow, error) {
 // the value read here.
 func (s *Store) UpdateAutopilot(ctx context.Context, now time.Time,
 	change func(stored AutopilotRow) (next AutopilotRow, line string, err error)) (AutopilotRow, bool, error) {
-	conn, err := s.db.Conn(ctx)
-	if err != nil {
-		return AutopilotRow{}, false, err
-	}
-	defer conn.Close()
-	if _, err := conn.ExecContext(ctx, `BEGIN IMMEDIATE`); err != nil {
-		return AutopilotRow{}, false, err
-	}
-	done := false
-	defer func() {
-		if done {
-			return
+	var stored, next AutopilotRow
+	wrote, err := s.immediate(ctx, func(x executor) (bool, error) {
+		var err error
+		stored, err = getAutopilot(ctx, x)
+		if err != nil {
+			return false, err
 		}
-		if _, err := conn.ExecContext(context.WithoutCancel(ctx), `ROLLBACK`); err != nil {
-			// A connection whose transaction state is unknown must not go
-			// back to the pool.
-			_ = conn.Raw(func(any) error { return driver.ErrBadConn })
+		var line string
+		next, line, err = change(stored)
+		if err != nil || next.sameSettings(stored) {
+			return false, err
 		}
-	}()
-	stored, err := getAutopilot(ctx, conn)
-	if err != nil {
-		return AutopilotRow{}, false, err
-	}
-	next, line, err := change(stored)
-	if err != nil {
+		next.UpdatedAt = fromUnix(unix(now))
+		if _, err := x.ExecContext(ctx, `UPDATE autopilot SET enabled=?, ops=?, guide=?, updated_at=? WHERE id=1`,
+			next.Enabled, int64(next.Ops), next.Guide, unix(now)); err != nil {
+			return false, err
+		}
+		_, err = x.ExecContext(ctx, `INSERT INTO autopilot_changes (at, line) VALUES (?, ?)`, unix(now), line)
+		return err == nil, err
+	})
+	if err != nil || !wrote {
 		return stored, false, err
 	}
-	if next.sameSettings(stored) {
-		return stored, false, nil
-	}
-	next.UpdatedAt = fromUnix(unix(now))
-	if _, err := conn.ExecContext(ctx, `UPDATE autopilot SET enabled=?, ops=?, guide=?, updated_at=? WHERE id=1`,
-		next.Enabled, int64(next.Ops), next.Guide, unix(now)); err != nil {
-		return stored, false, err
-	}
-	if _, err := conn.ExecContext(ctx, `INSERT INTO autopilot_changes (at, line) VALUES (?, ?)`, unix(now), line); err != nil {
-		return stored, false, err
-	}
-	if _, err := conn.ExecContext(ctx, `COMMIT`); err != nil {
-		return stored, false, err
-	}
-	done = true
 	return next, true, nil
 }
 

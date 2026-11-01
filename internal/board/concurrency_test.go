@@ -278,8 +278,8 @@ func TestCanvasNeedsNoOutsideService(t *testing.T) {
 // TestLargeFrameMoveDeltaArrivesInParts moves a frame carrying 6,000
 // members over the socket: the delta is larger than one server frame, so
 // the other editor receives it in parts that reassemble into every member's
-// change under one seq (board-TECH 14 Deterministic counterexamples,
-// splitting the delta of a large frame move).
+// change under one seq (board-technical-design 14 Deterministic
+// counterexamples, splitting the delta of a large frame move).
 func TestLargeFrameMoveDeltaArrivesInParts(t *testing.T) {
 	ctx := context.Background()
 	b := newTB(t)

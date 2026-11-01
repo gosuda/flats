@@ -19,6 +19,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/gosuda/flats/internal/contenttype"
+	"github.com/gosuda/flats/internal/core"
 )
 
 // --- deploy ---
@@ -109,13 +110,9 @@ func (a *app) upload(src, slug, message string, expected int, document bool) err
 		return err
 	}
 	var out struct {
-		Draft *draftView `json:"draft"`
-		Flat  *struct {
-			Type       string `json:"type"`
-			Running    bool   `json:"running"`
-			Visibility string `json:"visibility"`
-			PrivateURL string `json:"private_url"`
-		} `json:"flat"`
+		Draft   *draftView `json:"draft"`
+		Flat    *flatView  `json:"flat"`
+		Version int        `json:"version"`
 	}
 
 	_ = json.Unmarshal(resp.Body, &out)
@@ -141,19 +138,57 @@ func (a *app) upload(src, slug, message string, expected int, document bool) err
 	if f := out.Flat; f != nil && f.Type == "docs" {
 		// A document has no Draft or publish step: the save runs it.
 		if f.Running {
-			fmt.Fprintf(w, "Saved document %s; it is running now (%s) at %s. Documents have no publish step.\n", slug, f.Visibility, f.PrivateURL)
+			link := "at " + f.PrivateURL
+			if f.PrivateURL == "" {
+				if f.PublicURL != "" {
+					link = "at " + f.PublicURL
+				} else {
+					link = fmt.Sprintf("with no link yet (%s)", f.ConnectionState)
+				}
+			}
+			fmt.Fprintf(w, "Saved document %s; it is running now (%s) %s. Documents have no publish step.\n", slug, f.Visibility, link)
+			if f.PrivateURL == "" && f.PublicURL != "" {
+				fmt.Fprintf(w, "  note: %s\n", publicNotice(*f))
+			}
 		} else {
 			fmt.Fprintf(w, "Saved document %s, but it is not running; `flats logs %s` has details.\n", slug, slug)
 		}
 		return nil
 	}
-	if d := out.Draft; d != nil {
+	if out.Version > 0 {
+		fmt.Fprintf(w, "Saved %s and published as version %d.\n", slug, out.Version)
+		if f := out.Flat; f != nil {
+			if f.PublicURL != "" {
+				fmt.Fprintf(w, "  public: %s\n", f.PublicURL)
+			}
+			state := f.ConnectionState
+			if state == "" {
+				state = "unavailable"
+			}
+			if f.PublicURL == "" || (state != "ready" && state != "key-expiring") {
+				detail := ""
+				for _, ep := range f.Endpoints {
+					if core.PublicProvider(core.ProviderID(ep.Provider)) && ep.State == state {
+						detail = ep.Detail
+						break
+					}
+				}
+				if detail != "" {
+					state += ": " + detail
+				}
+				fmt.Fprintf(w, "  the public link is not open yet (%s)\n", state)
+			}
+			fmt.Fprintf(w, "  note: %s\n", publicNotice(*f))
+		} else {
+			fmt.Fprintln(w, "  the public link is not open yet (unavailable)")
+		}
+	} else if d := out.Draft; d != nil {
 		fmt.Fprintf(w, "Saved Private Draft revision %d of %s: %d files, %s%s (type %s)\n", d.Revision, slug, d.Files, humanBytes(d.Size), gitLabel(d.GitSHA, d.GitDirty), displayType(d.Type))
 	}
 	if info.IsDir() && ps.Skipped > 0 {
 		fmt.Fprintf(w, "  skipped %d entries (.git, node_modules, .DS_Store, ...)\n", ps.Skipped)
 	}
-	if d := out.Draft; d != nil {
+	if d := out.Draft; d != nil && out.Version == 0 {
 		fmt.Fprintf(w, "Current version is unchanged. Request approval for this saved content with `flats create-version %s --revision %d --hash %s`, or preview with `flats preview %s`.\n", slug, d.Revision, d.Hash, slug)
 	}
 
@@ -170,6 +205,13 @@ func (a *app) deployExisting(slug string, n int) error {
 	if err != nil {
 		return err
 	}
+	return a.deployOutcome(resp, res)
+}
+
+// deployOutcome reports a deploy or rollback result: a request waiting for
+// the operator's approval routes through action (exit 3); otherwise --json
+// emits the raw reply and the deploy receipt prints.
+func (a *app) deployOutcome(resp response, res deployResult) error {
 	if res.Status == "pending_approval" {
 		return a.action(resp, res.pendingAction(), "")
 	}
@@ -219,6 +261,9 @@ func printURLs(w io.Writer, f flatView) {
 	if f.PublicURL != "" {
 		fmt.Fprintf(w, "  public:  %s\n", f.PublicURL)
 		fmt.Fprintf(w, "  note: %s\n", publicNotice(f))
+	}
+	if f.PrivateLinksOff && f.PrivateURL == "" && f.PublicURL == "" {
+		fmt.Fprintf(w, "  no link yet (%s)\n", f.ConnectionState)
 	}
 }
 
@@ -289,6 +334,9 @@ func (a *app) list(args []string) error {
 	var notes []string
 	for _, f := range out.Flats {
 		u := f.PrivateURL
+		if f.PrivateLinksOff && u == "" {
+			u = fmt.Sprintf("no link yet (%s)", f.ConnectionState)
+		}
 		if f.PublicURL != "" {
 			u = f.PublicURL + " (*)"
 			notes = append(notes, fmt.Sprintf("  %s: %s", f.Slug, publicNotice(f)))
@@ -443,15 +491,7 @@ func (a *app) rollback(args []string) error {
 	if err != nil {
 		return err
 	}
-	if res.Status == "pending_approval" {
-		return a.action(resp, res.pendingAction(), "")
-	}
-	if a.jsonOut {
-		a.emitRaw(resp)
-		return nil
-	}
-	printDeploy(a.out, res)
-	return nil
+	return a.deployOutcome(resp, res)
 }
 
 func (a *app) preview(args []string) error {
@@ -834,6 +874,9 @@ func (a *app) readSecret(name string) (string, error) {
 // --- approvals ---
 
 func (a *app) approvals(args []string) error {
+	if len(args) > 0 && args[0] == "wait" {
+		return a.approvalsWait(args[1:])
+	}
 	fs := a.flags("approvals")
 	status := fs.String("status", "", "filter: pending, approved, rejected or failed")
 	if _, err := a.parse(fs, args, 0, 0); err != nil {
@@ -869,6 +912,70 @@ func (a *app) approvals(args []string) error {
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", ap.ID, ap.Flat, action, ap.Status, ap.Via, ap.RequestedAt.Local().Format(timeFmt), oneLine(ap.Reason))
 	}
 	return tw.Flush()
+}
+
+// approvalsWait polls GET /api/approvals/{id} until the operator's decision
+// lands, so shell gates do not reimplement the loop around curl. It prints the
+// approval receipt only for an approval that applied cleanly: a refused
+// request and a timeout both exit non-zero, and an approval that left storage
+// cleanup pending fails with the receipt on stderr.
+func (a *app) approvalsWait(args []string) error {
+	fs := a.flags("approvals wait")
+	timeout := fs.Int("timeout", 600, "seconds to wait for the operator's decision")
+	pos, err := a.parse(fs, args, 1, 1)
+	if err != nil {
+		return err
+	}
+	if *timeout <= 0 {
+		return usagef("--timeout must be a positive number of seconds")
+	}
+	id := pos[0]
+	interval := a.env.PollInterval
+	if interval <= 0 {
+		interval = time.Second
+	}
+	deadline := time.Now().Add(time.Duration(*timeout) * time.Second)
+	for {
+		var ap approval
+		resp, err := a.client().call(a.ctx, http.MethodGet, "/api/approvals/"+pathEscape(id), nil, nil, &ap)
+		if err != nil {
+			return err
+		}
+		switch ap.Status {
+		case "approved":
+			if ap.ResultData != nil && ap.ResultData.CleanupPending {
+				fmt.Fprintf(a.errw, "Deletion applied but cleanup is pending; inspect the receipt and repair storage before restarting. Do not repeat deletion.\n%s\n", resp.Body)
+				return exitCode(ExitError)
+			}
+			if a.jsonOut {
+				a.emitRaw(resp)
+				return nil
+			}
+			if ap.Result != "" {
+				fmt.Fprintf(a.out, "Approval %s approved: %s\n", id, ap.Result)
+			} else {
+				fmt.Fprintf(a.out, "Approval %s approved\n", id)
+			}
+			return nil
+		case "failed", "rejected":
+			fmt.Fprintf(a.errw, "Approval %s ended %s: %s\n", id, ap.Status, resp.Body)
+			return exitCode(ExitError)
+		case "pending", "applying":
+			// The request is still with the operator or being applied.
+		default:
+			fmt.Fprintf(a.errw, "Unknown approval state: %s\n", resp.Body)
+			return exitCode(ExitError)
+		}
+		if time.Until(deadline) <= 0 {
+			fmt.Fprintf(a.errw, "Timed out waiting for operator decision for %s; the request remains pending\n", id)
+			return exitCode(ExitError)
+		}
+		select {
+		case <-a.ctx.Done():
+			return a.ctx.Err()
+		case <-time.After(interval):
+		}
+	}
 }
 
 // --- formatting ---

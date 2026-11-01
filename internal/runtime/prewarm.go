@@ -16,7 +16,11 @@ import (
 // when its options match; any later runtime is created as before. It also
 // pays SQLite's once-per-process costs with a throwaway database, so the
 // flat's first env.DB use does not.
-
+//
+// Lifecycle: startPrewarm swaps in a fresh done for the new warm-up; the
+// warm-up goroutine finishes by storing shell or logging a failure and then
+// closes done; takePrewarmedShell or releasePrewarmedShell empties shell
+// exactly once.
 var prewarm struct {
 	mu    sync.Mutex
 	done  chan struct{} // closed when the prewarm started last has finished

@@ -155,7 +155,7 @@ func TestGuestReviveRules(t *testing.T) {
 // TestAuthorshipOnlyRollback: a rollback that restores the same visible
 // content with other authorship raises the element's ver, so a guard read
 // before fails, and sends the element whole; an ordinary set that changes
-// authorship carries it (TECH public edit 7, board-TECH 8.1).
+// authorship carries it (TECH public edit 7, board-technical-design 8.1).
 func TestAuthorshipOnlyRollback(t *testing.T) {
 	h := newHarness(t)
 	if _, err := h.agent(AgentCall{Ops: []AgentOp{{Op: "add", El: elOf(map[string]any{"id": eid("a"), "type": "sticky",

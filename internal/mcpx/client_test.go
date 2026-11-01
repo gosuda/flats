@@ -2,11 +2,119 @@ package mcpx
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
+	"reflect"
 	"strings"
 	"testing"
 
+	"github.com/google/jsonschema-go/jsonschema"
+	"github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"github.com/gosuda/flats/internal/clientstate"
 )
+
+func TestClientModeCompatibility(t *testing.T) {
+	for _, ap := range []bool{false, true} {
+		for _, public := range []bool{false, true} {
+			t.Run(fmt.Sprintf("autopilot=%v/public=%v", ap, public), func(t *testing.T) {
+				e := newEnv(t)
+				if ap {
+					setAutopilot(t, e, "")
+				}
+				if public {
+					publicInstanceOn(t, e)
+				}
+				cs := connect(t, e.localURL)
+				var manifest clientstate.Manifest
+				if text, failed := call(t, cs, "get_client_skill", map[string]any{}, &manifest); failed {
+					t.Fatal(text)
+				}
+				base, err := clientstate.Check(manifest, clientstate.CheckInput{})
+				if err != nil {
+					t.Fatal(err)
+				}
+				// These value-field shapes are the four pre-refactor wire contracts.
+				apInfo := autopilotInfo{Enabled: true, Allowed: []string{}, Read: "guide topic.autopilot"}
+				piInfo := publicInstanceInfo{Enabled: true, Network: "portal", Read: "guide topic.public-instance"}
+				var want any = base
+				switch {
+				case ap && public:
+					want = struct {
+						clientstate.CheckResult
+						Autopilot      autopilotInfo      `json:"autopilot"`
+						PublicInstance publicInstanceInfo `json:"public_instance"`
+					}{CheckResult: base, Autopilot: apInfo, PublicInstance: piInfo}
+				case ap:
+					want = struct {
+						clientstate.CheckResult
+						Autopilot autopilotInfo `json:"autopilot"`
+					}{CheckResult: base, Autopilot: apInfo}
+				case public:
+					want = struct {
+						clientstate.CheckResult
+						PublicInstance publicInstanceInfo `json:"public_instance"`
+					}{CheckResult: base, PublicInstance: piInfo}
+				}
+				wantJSON, err := json.Marshal(want)
+				if err != nil {
+					t.Fatal(err)
+				}
+				res, err := cs.CallTool(t.Context(), &mcp.CallToolParams{Name: "check_client", Arguments: map[string]any{}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				if res.IsError || len(res.Content) != 1 {
+					t.Fatalf("check_client: %+v", res)
+				}
+				text, ok := res.Content[0].(*mcp.TextContent)
+				if !ok || text.Text != string(wantJSON) {
+					t.Fatalf("check_client text = %+v, want %s", res.Content, wantJSON)
+				}
+				var wantStructured any
+				if err := json.Unmarshal(wantJSON, &wantStructured); err != nil {
+					t.Fatal(err)
+				}
+				if !reflect.DeepEqual(res.StructuredContent, wantStructured) {
+					t.Fatalf("structured result = %+v, want %+v", res.StructuredContent, wantStructured)
+				}
+				wantSchema, err := jsonschema.ForType(reflect.TypeOf(want), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				wantSchemaJSON, err := json.Marshal(wantSchema)
+				if err != nil {
+					t.Fatal(err)
+				}
+				tools, err := cs.ListTools(t.Context(), nil)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, tool := range tools.Tools {
+					if tool.Name != "check_client" {
+						continue
+					}
+					got, err := json.Marshal(tool.OutputSchema)
+					if err != nil {
+						t.Fatal(err)
+					}
+					var gotSchema, expectedSchema any
+					if err := json.Unmarshal(got, &gotSchema); err != nil {
+						t.Fatal(err)
+					}
+					if err := json.Unmarshal(wantSchemaJSON, &expectedSchema); err != nil {
+						t.Fatal(err)
+					}
+					if !reflect.DeepEqual(gotSchema, expectedSchema) {
+						t.Fatalf("schema = %s, want %s", got, wantSchemaJSON)
+					}
+					return
+				}
+				t.Fatal("check_client missing")
+			})
+		}
+	}
+}
 
 func TestClientTools(t *testing.T) {
 	e := newEnv(t)

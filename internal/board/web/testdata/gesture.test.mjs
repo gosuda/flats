@@ -1,3 +1,5 @@
+'use strict';
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { drawToolOverlays } from '../gesture.js';
@@ -10,7 +12,7 @@ function recorder() {
   const log = [];
   return new Proxy({ log }, {
     get(t, k) { return k in t ? t[k] : (...args) => log.push([k, ...args]); },
-    set(t, k, v) { log.push(['set', k, v]); return true; },
+    set(_t, k, v) { log.push(['set', k, v]); return true; },
   });
 }
 
@@ -19,7 +21,7 @@ function setup() {
   app.commit = (batch) => app.commits.push(batch);
   const pen = new PenTool(app);
   // The stand-in changes canvas state, which must not reach the stroke.
-  const select = { draw(ctx) { ctx.log.push(['select']); ctx.globalAlpha = 0.08; ctx.translate(5, 5); } };
+  const select = { draw(ctx, _r) { ctx.log.push(['select']); ctx.globalAlpha = 0.08; ctx.translate(5, 5); } };
   const r = { theme: THEMES.light, toScreen: (x, y) => [x, y] };
   return { app, pen, select, r };
 }

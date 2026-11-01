@@ -1,4 +1,6 @@
 // Turns the descriptors from live.js into CodeMirror decorations.
+'use strict';
+
 import {
   Decoration,
   EditorView,

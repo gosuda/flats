@@ -81,7 +81,8 @@ type Revision struct {
 	Held bool `json:"held,omitempty"`
 	// Elements counts a board revision's element changes; a board reports
 	// them instead of its bucket paths in Changes.
-	Elements *ElementCounts `json:"elements,omitempty"`
+	Elements      *ElementCounts       `json:"elements,omitempty"`
+	NotebookPages []NotebookPageChange `json:"pages,omitempty"`
 	// SafePoint marks the safe point of a board or document while anyone
 	// can edit it: it cannot be unpinned then. Readers fill it in.
 	SafePoint bool `json:"safe_point,omitempty"`
@@ -169,8 +170,8 @@ func addContentRevisions(ctx context.Context, x executor) error {
 }
 
 // addRevisionGuestLines adds the line ranges guests wrote in each document
-// of a revision (docs-public-edit-TECH 2.8). Only documents with guest text
-// have a row; it goes with its revision.
+// of a revision (docs-public-edit-technical-design 2.8). Only documents with
+// guest text have a row; it goes with its revision.
 func addRevisionGuestLines(ctx context.Context, x executor) error {
 	_, err := x.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS revision_guest_lines (
  flat TEXT NOT NULL,

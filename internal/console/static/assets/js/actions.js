@@ -1,6 +1,7 @@
 // Flat actions shared by the list and the flat page. Each asks for
 // confirmation first and reports the outcome; they resolve true when the
 // server state changed.
+'use strict';
 
 import { h, dateTime, bytes, VISIBILITY, visibilityOf, accessOf, accessLabel, editWords, ACCESS, becomingNoticeFor, publicURL, publicNoticeOf, PUBLIC_NETWORKS } from './dom.js';
 import { api, ApiError } from './api.js';
@@ -97,7 +98,7 @@ async function showLive(slug, what) {
   if (!f) { toast('Done.', 'success'); return; }
   const pub = publicURL(f);
   await infoDialog(`Version ${f.live_version} ${what}`, [
-    f.private_url ? h('p', null, 'Private URL: ', extLink(privateURL(f))) : null,
+    privateURL(f) ? h('p', null, 'Private URL: ', extLink(privateURL(f))) : null,
     pub ? h('p', null, 'Public URL: ', extLink(pub)) : null,
     pub ? h('p', { class: 'notice-text', text: publicNoticeOf(f) }) : null,
   ]);
@@ -133,6 +134,7 @@ export async function redeployLive(flat) {
 // previewVersion opens a private preview of version n, or of the draft when
 // n is 0.
 export async function previewVersion(flat, n) {
+  if (flat.private_links_off) return false;
   try {
     const p = await api.openPreview(flat.slug, n);
     await infoDialog(n ? `Preview of version ${p.version}` : 'Preview of the draft', [
@@ -163,7 +165,7 @@ export async function deleteVersion(flat, n) {
   if (!ok) return false;
   try {
     const result = await api.deleteVersion(flat.slug, n);
-    if (result?.status === 'cleanup_pending' || result?.cleanup_pending) {
+    if (result?.cleanup_pending) {
       await infoDialog('Version removed; cleanup pending', [
         h('p', { text: `Version ${n} was removed from the version list. Private storage cleanup is still pending.` }),
         h('p', { class: 'alert alert-warn', text: result.message || 'Restart Flats before saving, creating, deploying, or previewing this flat so storage cleanup can finish.' }),
@@ -278,7 +280,7 @@ export function deleteInPlace(flat, ctl, on) {
       // The deadline covers the approval this console decides, if any.
       const res = await withDeadline(DELETE_WAIT_MS, 'delete request', async (signal) => approve(await api.remove(flat.slug, signal), signal));
       // Only a Flats answer confirms: a proxy's page can also be a 200.
-      if (res && (res.status === 'done' || res.status === 'approved')) {
+      if (applied(res)) {
         gone(`${name} was deleted.`, 'success');
         return;
       }
@@ -309,10 +311,9 @@ export function deleteInPlace(flat, ctl, on) {
   }
 }
 
-// setVisibility changes visibility after a confirm; widening shows the notice.
-// access ('view' or 'edit') is the public access level of a board or a
-// document flat. Stopping
-// guest editing and allowing it have their own steps.
+// setVisibility changes visibility after a confirm; widening shows the
+// notice. access ('view' or 'edit') is the public access level of a board or
+// a document flat. Stopping and allowing guest editing have their own steps.
 export async function setVisibility(flat, vis, access) {
   const fromKey = accessOf(flat);
   if (vis === 'public' && access === 'edit') return allowGuestEditing(flat);
@@ -327,7 +328,9 @@ export async function setVisibility(flat, vis, access) {
     body: [
       h('p', { text: `Visibility changes from ${accessLabel(flat.visibility, flat.public_access)} to ${vis === 'private' ? to.label : ACCESS[access === 'view' ? 'view' : 'public'].label}.` }),
       widening && notice ? h('p', { class: 'alert alert-warn', text: notice }) : null,
-      vis === 'private' ? h('p', { class: 'muted', text: 'The public address goes offline. The private address keeps working.' }) : null,
+      vis === 'private' ? h('p', { class: 'muted', text: flat.private_links_off
+        ? 'The public address goes offline. While public instance mode is on, the flat will have no working link.'
+        : 'The public address goes offline. The private address keeps working.' }) : null,
     ],
     confirmLabel: widening ? `Make ${to.label.toLowerCase()}` : 'Change visibility',
     danger: widening,
@@ -344,9 +347,9 @@ export async function setVisibility(flat, vis, access) {
 }
 
 // canGoPublic checks what a Private flat needs before it can be Public.
-// Documents, designs and boards run without published versions
-// (live_version is 0 for designs and boards), so only versioned types need
-// a live version first.
+// Documents, designs, boards and notebooks run without published versions
+// (live_version is 0 for designs, boards and notebooks), so only versioned
+// types need a live version first.
 async function canGoPublic(flat) {
   if (!isLive(flat) && !flat.live_version) {
     await infoDialog('Publish first', `${label(flat)} has no live version yet. Save a version and publish it, then make it public.`);
@@ -359,11 +362,15 @@ async function canGoPublic(flat) {
   return true;
 }
 
+// applied reports a response the host confirmed as applied: an action that
+// ran ('done') or an approval decision receipt ('approved').
+const applied = (res) => res?.status === 'done' || res?.status === 'approved';
+
 // confirmed returns a visibility result that the host confirmed as applied:
 // an approved request, or a change that was already in place. Anything else
 // is reported as a failure rather than announced as done.
 function confirmed(res) {
-  if (res?.status === 'approved' || res?.status === 'done') return res;
+  if (applied(res)) return res;
   throw Object.assign(new Error(res?.result || res?.error || 'Flats did not confirm the change.'), { body: {} });
 }
 
@@ -429,7 +436,7 @@ const check = (ok, ...text) => h('li', { class: 'check' + (ok ? ' ok' : ' no') }
 const PROBLEMS = {
   disk_quota_off: { text: () => [h('strong', { text: 'Disk quota is off.' }), ' Set a disk quota in Settings, Limits.'], action: 'limits' },
   revision_quota_unlimited: { text: (f) => [h('strong', { text: 'Revision quota is unlimited.' }), ` Set a revision quota for ${label(f)} in Settings, Limits, or in this flat's settings.`], action: 'revisions' },
-  pin_quota_full: { text: (f, pre) => [h('strong', { text: `Pin quota is full (${pre.pins} of ${pre.pin_quota}).` }), ' Flats needs one free pin for the safe point. Unpin a revision in History.'], action: 'history' },
+  pin_quota_full: { text: (_f, pre) => [h('strong', { text: `Pin quota is full (${pre.pins} of ${pre.pin_quota}).` }), ' Flats needs one free pin for the safe point. Unpin a revision in History.'], action: 'history' },
 };
 
 // blockedDialog lists what must change before guests can edit, with one
@@ -449,7 +456,7 @@ function blockedDialog(flat, pre, problems) {
     const targets = {
       limits: h('a', { class: 'btn', href: '/settings/limits', 'data-nav': true, text: 'Open Limits' }),
       revisions: h('a', { class: 'btn', href: base + '/settings#revisions', 'data-nav': true, text: 'Open revision settings' }),
-      history: flat.private_url ? extLink(privateURL(flat), 'Open History', 'btn') : null,
+      history: privateURL(flat) ? extLink(privateURL(flat), 'Open History', 'btn') : null,
     };
     const actions = [...new Set(problems.map((p) => PROBLEMS[p.code]?.action).filter(Boolean))].map((a) => targets[a]).filter(Boolean);
     const cancel = h('button', { type: 'button', class: 'btn', text: 'Cancel' });

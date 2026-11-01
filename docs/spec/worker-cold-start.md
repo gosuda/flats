@@ -51,7 +51,7 @@ add to it.
 
 ## Current state
 
-Implemented as designed in [worker-cold-start-TECH.md](worker-cold-start-TECH.md).
+Implemented as designed in [worker-cold-start-technical-design.md](worker-cold-start-technical-design.md).
 Measured with a ready pre-started worker (p95 of 20 samples, gated budget
 tests): sleeping document first page 26–33 ms on macOS and 25–29 ms in a
 2-CPU Linux container, collaboration hello 24–30 ms, a tiny JavaScript flat's

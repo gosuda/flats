@@ -4,6 +4,8 @@
 // guests send and receive it, and viewers appear as numbered entries
 // (board-public-edit.md rules 10 to 13).
 
+'use strict';
+
 import { $, h, icon, popover, replace, plural } from './ui.js';
 import { badge } from './guest.js';
 import { FONT } from './render.js';

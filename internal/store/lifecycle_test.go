@@ -89,7 +89,7 @@ func TestLifecycleCommitPublicationIsAtomic(t *testing.T) {
 		t.Fatal(err)
 	}
 	v := Version{Flat: "atomic", Number: 1, Hash: "one", Kind: "static", Manifest: json.RawMessage(`{}`), Published: true, CreatedAt: now}
-	if err := s.CommitPublished(ctx, v, 99, "wrong", now); err == nil {
+	if err := s.CommitPublished(ctx, v, 99, "publish", "wrong", now); err == nil {
 		t.Fatal("invalid previous live accepted")
 	}
 	vs, _ := s.ListVersions(ctx, "atomic")
@@ -97,10 +97,10 @@ func TestLifecycleCommitPublicationIsAtomic(t *testing.T) {
 	if len(vs) != 0 || len(hist) != 0 {
 		t.Fatalf("partial failed publication %v %v", vs, hist)
 	}
-	if err := s.CommitPublished(ctx, v, 0, "approved", now); err != nil {
+	if err := s.CommitPublished(ctx, v, 0, "publish", "approved", now); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.CommitPublished(ctx, v, 0, "approved", now); err == nil {
+	if err := s.CommitPublished(ctx, v, 0, "publish", "approved", now); err == nil {
 		t.Fatal("duplicate publication accepted")
 	}
 	vs, _ = s.ListVersions(ctx, "atomic")

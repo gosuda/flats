@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -324,5 +325,36 @@ func TestProxiedEarlyBodyRefusalIsImmediate(t *testing.T) {
 	resp.Body.Close()
 	if _, err := br.ReadByte(); err != io.EOF || time.Since(start) > 5*time.Second {
 		t.Fatalf("503 then %v after %v", err, time.Since(start))
+	}
+}
+
+func TestRequestJSONMatchesMarshal(t *testing.T) {
+	p := reqPayload{Method: "POST", URL: "http://flat.test/", Headers: map[string]string{"x-a": "b"}}
+	bodies := [][]byte{
+		{},
+		[]byte("hi"),
+		[]byte("\"\\<>&\b\f\n\r\t\x00\x01\x1f\x7f"),
+		[]byte("héllo — 한국어 🌍"),
+		[]byte("  "),
+		{0xff, 0xfe, 0x80},
+		[]byte("valid � replacement"),
+		{0xed, 0xa0, 0x80},
+		bytes.Repeat([]byte("0123456789abcdef"), 6000),
+	}
+	for _, body := range bodies {
+		s := string(body)
+		p.Body = &s
+		want, err := json.Marshal(p)
+		if err != nil {
+			t.Fatalf("marshal %q: %v", body[:min(8, len(body))], err)
+		}
+		if got := requestJSON(p, body); !bytes.Equal(got, want) {
+			t.Fatalf("body %q: got %q want %q", body[:min(8, len(body))], got[:min(80, len(got))], want[:min(80, len(want))])
+		}
+	}
+	p.Body = nil
+	want, _ := json.Marshal(p)
+	if got := requestJSON(p, nil); !bytes.Equal(got, want) {
+		t.Fatalf("nil body: got %q want %q", got, want)
 	}
 }

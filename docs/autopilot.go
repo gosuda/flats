@@ -185,11 +185,17 @@ func AutopilotGuideRevision(uploadLimit int64, st AutopilotState) string {
 	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
-// EffectiveGuideRevision is GuideRevision while Autopilot is off (st nil)
-// and AutopilotGuideRevision while it is on.
-func EffectiveGuideRevision(uploadLimit int64, st *AutopilotState) string {
+// EffectiveGuideRevision identifies the active guide. A nil mode state keeps
+// the corresponding mode off; omitting pi preserves existing callers.
+func EffectiveGuideRevision(uploadLimit int64, st *AutopilotState, pi ...*PublicInstanceState) string {
+	var rev string
 	if st == nil {
-		return GuideRevision(uploadLimit)
+		rev = GuideRevision(uploadLimit)
+	} else {
+		rev = AutopilotGuideRevision(uploadLimit, *st)
 	}
-	return AutopilotGuideRevision(uploadLimit, *st)
+	if len(pi) != 0 && pi[0] != nil {
+		rev = publicInstanceGuideRevision(rev, *pi[0])
+	}
+	return rev
 }

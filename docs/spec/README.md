@@ -6,7 +6,7 @@ change that needs to break one updates the page first.
 - `<name>.md` is the product spec (PRD): principles and requirements,
   independent of any implementation. It may describe a target that is not
   implemented yet.
-- `<name>-TECH.md` is the technical design of a spec whose feature has not
+- `<name>-technical-design.md` is the technical design of a spec whose feature has not
   shipped yet. When the feature ships, its durable design moves into the
   architecture docs (see below) and the TECH page is removed. Principles that
   span several features, such as the content data models, have no TECH page.
@@ -26,9 +26,11 @@ list.
 | [Development workflow](dev-workflow.md) | implemented | Instruction-based design, implementation and testing stages with cross-model adversarial review, and a review evidence helper |
 | [Config reload on SIGHUP](config-reload.md) | implemented | SIGHUP reloads config.json on a running host: live-applied keys take effect, restart-required keys wait for the next start |
 | [Idle document workers](docs-worker-idle.md) | implemented | Automatic idle sleep and demand-driven recovery of built-in document workers |
-| [Content data models](content-models.md) | implemented | The Version model (websites, pages) and the Revision model (documents, designs) |
+| [Content data models](content-models.md) | implemented | The Version model (websites, pages) and the Revision model (documents, designs, boards, notebooks) |
 | [Design content type](design-type.md) | implemented | `type: "design"`: a canvas of HTML artboards people and agents edit live, with revisions |
 | [Board content type](board.md) | partly implemented | `type: "board"`: an infinite-canvas whiteboard of native elements people and agents edit together live, with revisions |
+| [Notebook content type](notebook.md) | partly implemented | `type: "notebook"`: a tree of pages with editable blocks and inline databases, live collaboration, structured agent operations, and revisions |
+| [Notebook technical design](notebook-technical-design.md) | partly implemented | N1 notebook architecture, item and concurrency model, storage, protocol, browser editor, agent interface, and validation plan |
 | [Anonymous public editing for boards](board-public-edit.md) | partly implemented | A Public board level where anyone with the link can edit after typing a name, viewers named automatically, and the Share and Permissions controls |
 | [Anonymous public editing for documents](docs-public-edit.md) | partly implemented | The board's "anyone can edit" Public level for documents: guest names, viewers, the guest projection, limits, guest revisions and the shared console controls |
 | [Page content type](page-type.md) | implemented | `type: "page"`: one static HTML document with assets, on the website lifecycle |
@@ -42,6 +44,7 @@ list.
 | [Flats behind a reverse proxy](reverse-proxy-sites.md) | implemented | `proxy` and `proxy-public` providers that serve flats through an operator's reverse proxy, address selection by host default, and rename redirects on the arrival network |
 | [Agent document routing](agent-document-routing.md) | implemented | `flats agent-setup docs`: an opt-in, previewable and undoable setup that makes Flats the document tool of Claude Code, Codex and Cursor, and blocks the competing Claude Docs route |
 | [Autopilot](autopilot.md) | implemented | An opt-in mode in the new Settings › Experiments tab where agents approve or reject pending approvals for the operations the operator allows, with an operation guide for agents |
+| [Public instance mode](public-instance.md) | implemented | An opt-in Experiments mode in which every new flat is created Public on the default public network and no private address is handed out or served |
 
 ## Where the technical designs live
 
@@ -50,7 +53,7 @@ docs:
 
 | Feature | Architecture docs |
 | --- | --- |
-| Revision store shared by documents and designs: storage, import, quotas, pins, retention, rollback | [revision-store.md](../revision-store.md) |
+| Revision store shared by documents, designs, boards and notebooks: storage, import, quotas, pins, retention, rollback | [revision-store.md](../revision-store.md) |
 | Document revisions in the docs worker: capture, activation, intents, host operations, the History panel | [internal/docs-app.md](../internal/docs-app.md#document-revisions) |
 | Design and page types: type handling, bundles, serving, editing model | [design.md](../design.md) |
 | Routes, MCP tools, CLI commands and console screens of every type | [surfaces.md](../surfaces.md) |
@@ -62,3 +65,4 @@ docs:
 | Client checks, CLI updates and skill sync | [release.md](../release.md#updating-a-client), [agents.md](../agents.md#keeping-clients-current) |
 | Agent document routing: the targets, the settings and block edits, the plan, confirmation, backups and undo | [agents.md](../agents.md#use-flats-for-documents) |
 | Autopilot: operations, what an approval needs, agent decisions and their records, arrival networks, settings and host log, MCP on and off texts, the Experiments screen, storage | [design.md](../design.md#autopilot), [surfaces.md](../surfaces.md#autopilot-tools), [configuration.md](../configuration.md#autopilot-settings) |
+| Public instance mode: creation policy, private-link gate and request ordering, MCP texts, console, storage and migration | [design.md](../design.md#public-instance-mode), [surfaces.md](../surfaces.md#public-instance-texts), [configuration.md](../configuration.md#public-instance-settings), [lifecycle-core-contract.md](../lifecycle-core-contract.md#migration) |

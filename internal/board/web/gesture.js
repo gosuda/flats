@@ -5,6 +5,8 @@
 // drawToolOverlays draws the current tool's overlay and then, when gesture is
 // a different tool, the gesture's preview on top. Each draw gets its own
 // canvas state.
+'use strict';
+
 export function drawToolOverlays(ctx, r, tool, gesture) {
   for (const t of gesture && gesture !== tool ? [tool, gesture] : [tool]) {
     if (!t.draw) continue;

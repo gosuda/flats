@@ -2,6 +2,7 @@ package qjs
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"sync"
@@ -37,8 +38,13 @@ const stackCanarySize = 64 << 10
 var canary = bytes.Repeat([]byte{0xA5}, stackCanarySize)
 
 var (
-	patchMu    sync.Mutex
-	patchCache = map[*byte][]byte{}
+	patchMu sync.Mutex
+	// One cached patch keyed by content hash: the standard module is by far
+	// the common input and any cache eviction re-patches, so a larger map
+	// only delays the same work while growing without bound.
+	patchKey  [sha256.Size]byte
+	patchOut  []byte
+	patchHave bool
 )
 
 func readLEB(b []byte, i int) (uint32, int, error) {
@@ -80,10 +86,11 @@ func exportStackPointer(wasm []byte) ([]byte, error) {
 	if len(wasm) == 0 {
 		return nil, errors.New("empty wasm")
 	}
+	sum := sha256.Sum256(wasm)
 	patchMu.Lock()
 	defer patchMu.Unlock()
-	if out, ok := patchCache[&wasm[0]]; ok {
-		return out, nil
+	if patchHave && patchKey == sum {
+		return patchOut, nil
 	}
 	if len(wasm) < 8 || !bytes.Equal(wasm[:4], []byte("\x00asm")) {
 		return nil, errors.New("not a wasm module")
@@ -181,7 +188,7 @@ func exportStackPointer(wasm []byte) ([]byte, error) {
 	if !patched {
 		return nil, errors.New("no export section")
 	}
-	patchCache[&wasm[0]] = out
+	patchKey, patchOut, patchHave = sum, out, true
 	return out, nil
 }
 

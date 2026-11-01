@@ -41,9 +41,68 @@ const (
 	SourceFlag    Source = "flag" // a per-run override, never stored
 )
 
-// Network providers that network.permitted may name, in canonical order.
-// Local is always available and is not listed.
-var providers = []string{"tailscale", "tailscale-funnel", "portal", "zrok", "cloudflare-quick", "netbird", "netbird-expose", "proxy", "proxy-public"}
+// provider describes one network provider in canonical order. Local is
+// always available and is never listed.
+type provider struct {
+	name           string
+	defaultPrivate bool // a network.default_private value
+	defaultPublic  bool // a network.default_public value
+}
+
+// providers is the single table behind network.permitted, the network
+// default checks and the hints those specs name.
+var providers = []provider{
+	{"tailscale", true, false},
+	{"tailscale-funnel", false, true},
+	{"portal", false, true},
+	{"zrok", false, true},
+	{"cloudflare-quick", false, true},
+	{"netbird", true, false},
+	{"netbird-expose", false, true},
+	{"proxy", true, false},
+	{"proxy-public", false, true},
+}
+
+func (p provider) isPrivate() bool { return p.defaultPrivate }
+func (p provider) isPublic() bool  { return p.defaultPublic }
+
+// privateProviders returns the private providers in canonical order, and
+// publicProviders the public ones.
+func privateProviders() []provider {
+	var out []provider
+	for _, p := range providers {
+		if p.isPrivate() {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func publicProviders() []provider {
+	var out []provider
+	for _, p := range providers {
+		if p.isPublic() {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// quotedNames joins the provider names in "..." separated by commas, with
+// the given conjunction before the last.
+func quotedNames(ps []provider, conj string) string {
+	quoted := make([]string, len(ps))
+	for i, p := range ps {
+		quoted[i] = strconv.Quote(p.name)
+	}
+	return strings.Join(quoted[:len(quoted)-1], ", ") + " " + conj + " " + quoted[len(quoted)-1]
+}
+
+var (
+	permittedHint   = `list any of ` + quotedNames(providers, "and") + ` once each; local is always available`
+	defaultPrivHint = `use "local", ` + quotedNames(privateProviders(), "or") + `, or "" to follow network.private_backend`
+	defaultPubHint  = `use ` + quotedNames(publicProviders(), "or") + `, or "" for none`
+)
 
 type kind int
 
@@ -86,7 +145,7 @@ var specs = []spec{
 	{key: "host.server_runtime", kind: kindBool, def: true, override: true,
 		hint: "use true or false"},
 	{key: "network.permitted", kind: kindList, def: []string{}, check: checkPermitted,
-		hint: `list any of "tailscale", "tailscale-funnel", "portal", "zrok", "cloudflare-quick", "netbird", "netbird-expose", "proxy" and "proxy-public" once each; local is always available`},
+		hint: permittedHint},
 	{key: "network.private_backend", kind: kindString, def: "local", check: checkBackend,
 		hint: `use "local" or "tailscale"`},
 	// The providers a new flat is allowed on from the start, one per mode.
@@ -94,9 +153,9 @@ var specs = []spec{
 	// flats get no public provider. A new flat is always Private: a public
 	// default is only a permission, never exposure.
 	{key: "network.default_private", kind: kindString, def: "", check: checkDefaultPrivate,
-		hint: `use "local", "tailscale", "netbird" or "proxy", or "" to follow network.private_backend`},
+		hint: defaultPrivHint},
 	{key: "network.default_public", kind: kindString, def: "", check: checkDefaultPublic,
-		hint: `use "tailscale-funnel", "portal", "zrok", "cloudflare-quick", "netbird-expose" or "proxy-public", or "" for none`},
+		hint: defaultPubHint},
 	// The system limits accept every value up to 2^53-1 (exact in JSON
 	// numbers everywhere), as the settings table did.
 	// The console's tailnet names, in the order they were added. Each one is
@@ -466,21 +525,19 @@ func ephemeralPort(addr string) bool {
 }
 
 func checkDefaultPrivate(v any) (any, error) {
-	switch s := v.(string); s {
-	case "", "local", "tailscale", "netbird", "proxy":
+	s := v.(string)
+	if s == "" || s == "local" || slices.ContainsFunc(privateProviders(), func(p provider) bool { return p.name == s }) {
 		return s, nil
-	default:
-		return nil, fmt.Errorf("%q is not a private provider", s)
 	}
+	return nil, fmt.Errorf("%q is not a private provider", s)
 }
 
 func checkDefaultPublic(v any) (any, error) {
-	switch s := v.(string); s {
-	case "", "tailscale-funnel", "portal", "zrok", "cloudflare-quick", "netbird-expose", "proxy-public":
+	s := v.(string)
+	if s == "" || slices.ContainsFunc(publicProviders(), func(p provider) bool { return p.name == s }) {
 		return s, nil
-	default:
-		return nil, fmt.Errorf("%q is not a public provider", s)
 	}
+	return nil, fmt.Errorf("%q is not a public provider", s)
 }
 
 func checkBackend(v any) (any, error) {
@@ -501,17 +558,17 @@ func checkPermitted(v any) (any, error) {
 		if p == "local" {
 			return nil, fieldErr(path, "remove it; local is always available", "local is not a grant")
 		}
-		if !slices.Contains(providers, p) {
-			return nil, fieldErr(path, `use "tailscale", "tailscale-funnel", "portal", "zrok", "cloudflare-quick", "netbird", "netbird-expose", "proxy" or "proxy-public"`, "unknown provider %q", p)
+		if slices.IndexFunc(providers, func(x provider) bool { return x.name == p }) < 0 {
+			return nil, fieldErr(path, `use `+quotedNames(providers, "or"), "unknown provider %q", p)
 		}
 		if slices.Contains(list[:i], p) {
 			return nil, fieldErr(path, "list each provider once", "duplicate provider %q", p)
 		}
 	}
 	out := []string{}
-	for _, p := range providers {
-		if slices.Contains(list, p) {
-			out = append(out, p)
+	for _, pr := range providers {
+		if slices.Contains(list, pr.name) {
+			out = append(out, pr.name)
 		}
 	}
 	return out, nil

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/netip"
 	"strconv"
@@ -176,4 +177,75 @@ func (s *Server) setAutopilotGuide(w http.ResponseWriter, r *http.Request, _ cor
 		return
 	}
 	writeAutopilot(w, a)
+}
+
+type publicInstanceView struct {
+	Enabled      bool       `json:"enabled"`
+	Network      string     `json:"network"`
+	Usable       bool       `json:"usable"`
+	Reason       string     `json:"reason"`
+	PrivateFlats int        `json:"private_flats"`
+	UpdatedAt    *time.Time `json:"updated_at,omitempty"`
+}
+
+func writePublicInstance(w http.ResponseWriter, status core.PublicInstanceStatus) {
+	v := publicInstanceView{
+		Enabled: status.Enabled, Network: status.Network, Usable: status.Usable,
+		Reason: status.Reason, PrivateFlats: status.PrivateFlats,
+	}
+	if !status.UpdatedAt.IsZero() {
+		t := status.UpdatedAt.UTC()
+		v.UpdatedAt = &t
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"public_instance": v})
+}
+
+func (s *Server) getPublicInstance(w http.ResponseWriter, r *http.Request, _ core.Via) {
+	status, err := s.Svc.PublicInstanceStatus(r.Context())
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writePublicInstance(w, status)
+}
+
+func (s *Server) setPublicInstance(w http.ResponseWriter, r *http.Request, _ core.Via) {
+	var in struct {
+		Enabled          *bool           `json:"enabled"`
+		ConfirmedNetwork json.RawMessage `json:"confirmed_network"`
+	}
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&in); err != nil {
+		invalidBody(w, "invalid JSON body: %v", err)
+		return
+	}
+	if err := dec.Decode(new(json.RawMessage)); err != io.EOF {
+		invalidBody(w, "body must contain one JSON object")
+		return
+	}
+	if in.Enabled == nil {
+		invalidBody(w, `body must be {"enabled": true, "confirmed_network": "<network>"} or {"enabled": false}`)
+		return
+	}
+	var confirmed string
+	switch {
+	case *in.Enabled && in.ConfirmedNetwork == nil:
+		invalidBody(w, "turning public instance mode on needs confirmed_network, the network the confirmation listed")
+		return
+	case !*in.Enabled && in.ConfirmedNetwork != nil:
+		invalidBody(w, "confirmed_network is only for turning public instance mode on")
+		return
+	case *in.Enabled:
+		if bytes.Equal(in.ConfirmedNetwork, []byte("null")) || json.Unmarshal(in.ConfirmedNetwork, &confirmed) != nil {
+			invalidBody(w, "confirmed_network must be a network ID string")
+			return
+		}
+	}
+	status, err := s.Svc.SetPublicInstance(r.Context(), *in.Enabled, confirmed, consoleActor(r))
+	if err != nil {
+		fail(w, err)
+		return
+	}
+	writePublicInstance(w, status)
 }

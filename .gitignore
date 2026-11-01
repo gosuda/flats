@@ -11,3 +11,9 @@
 
 # OS
 .DS_Store
+
+# >>> managed: dev tooling (edit via harness, not by hand)
+scripts/__pycache__/
+*.pyc
+.biome/
+# <<< managed

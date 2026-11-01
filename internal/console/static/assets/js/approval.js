@@ -1,4 +1,5 @@
 // Approval page: what an agent asked for and who decided it.
+'use strict';
 
 import { h, clear, dateTime, timeEl, visibilityOf, accessKey, accessOf, accessLabel, editWords, visibilityBadge, becomingNoticeFor } from './dom.js';
 import { api } from './api.js';
@@ -26,6 +27,10 @@ export function cleanupPending(a) {
 const requested = (p) => ({ vis: p.visibility, access: visibilityOf(p.visibility) === 'public' ? p.access || 'view' : '' });
 const fromState = (p) => ({ vis: p.from, access: visibilityOf(p.from) === 'public' ? p.from_access || '' : '' });
 const badgeOf = (s) => visibilityBadge(s.vis, s.access);
+
+const visibilityNotice = (vis, flat) => visibilityOf(vis) === 'private' && flat?.private_links_off
+  ? 'The public address goes offline. While public instance mode is on, the flat will have no working link.'
+  : becomingNoticeFor(vis);
 
 // describeApproval is a one-line summary for lists.
 export function describeApproval(a) {
@@ -146,7 +151,7 @@ export function mount(main, [id], ctx) {
       return;
     }
     const grantsEdit = a.action === 'set_visibility' && p.access === 'edit';
-    const notice = a.action === 'set_visibility' && !grantsEdit ? becomingNoticeFor(p.visibility) : '';
+    const notice = a.action === 'set_visibility' && !grantsEdit ? visibilityNotice(p.visibility, flat) : '';
     if (notice && a.status === 'pending') body.appendChild(h('p', { class: 'alert alert-warn', text: notice }));
     if (grantsEdit && a.status === 'pending') body.appendChild(guestEditNotes(flat));
     if (a.action === 'delete_version' && a.status === 'pending') {
@@ -179,7 +184,7 @@ export function mount(main, [id], ctx) {
   async function decide(a, yes, flat) {
     const p = params(a);
     const notice = !yes || a.action !== 'set_visibility' ? ''
-      : p.access === 'edit' ? `Anyone on the internet who has the link will be able to add, change and delete ${editWords(flat).everything}.` : becomingNoticeFor(p.visibility);
+      : p.access === 'edit' ? `Anyone on the internet who has the link will be able to add, change and delete ${editWords(flat).everything}.` : visibilityNotice(p.visibility, flat);
     const ok = await confirmDialog({
       title: yes ? `Approve: ${describeApproval(a)}?` : `Reject: ${describeApproval(a)}?`,
       body: [

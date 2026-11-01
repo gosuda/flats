@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "flats-board-v1",
   "title": "Flats board, format 1",
-  "description": "Board elements, board.json and person operations (docs/spec/board-TECH.md Appendix A). The Go server and the JS client check the same rules.",
+  "description": "Board elements, board.json and person operations (docs/spec/board-technical-design.md Appendix A). The Go server and the JS client check the same rules.",
   "$defs": {
     "Id": {
       "description": "An element id.",

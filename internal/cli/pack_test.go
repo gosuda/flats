@@ -141,7 +141,15 @@ func gitCmd(t *testing.T, dir string, args ...string) string {
 	base := []string{"-c", "user.name=flats-test", "-c", "user.email=test@example.invalid", "-c", "commit.gpgsign=false", "-c", "init.defaultBranch=main"}
 	cmd := exec.Command("git", append(base, args...)...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
+	var env []string
+	for _, kv := range os.Environ() {
+		switch k, _, _ := strings.Cut(kv, "="); k {
+		case "GIT_DIR", "GIT_WORK_TREE", "GIT_INDEX_FILE", "GIT_COMMON_DIR", "GIT_OBJECT_DIRECTORY", "GIT_PREFIX":
+			continue
+		}
+		env = append(env, kv)
+	}
+	cmd.Env = append(env, "GIT_CONFIG_GLOBAL=/dev/null", "GIT_CONFIG_NOSYSTEM=1")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)

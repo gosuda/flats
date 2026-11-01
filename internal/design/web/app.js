@@ -1,6 +1,7 @@
 // Flats design canvas app. Plain ES module, no dependencies.
 // It shows a design's artboards on a pan/zoom canvas and, on a Private
 // route, edits layout, notes, text and tweaks through /_design/api/ops.
+'use strict';
 
 import { createWheelPan } from './wheel.js';
 
@@ -57,6 +58,7 @@ const S = {
   editing: false,
   selected: null,        // board path
   focus: null,           // { path }
+  booted: false,         // boot chose canvas or focus; no frame loads before
   revision: null,        // viewing revision number (read-only), or null for live
   revState: null,        // canvas of the viewed revision
   panel: null,           // 'tweaks' | 'revisions' | null
@@ -199,9 +201,8 @@ function applyView() {
   $('.world').style.transform = `translate(${S.view.x}px, ${S.view.y}px) scale(${S.view.z})`;
   const out = $('.zoom output');
   if (out) out.textContent = Math.round(S.view.z * 100) + '%';
-  // keep titles readable: counter-scale strips
-  // and keep each strip within its board's on-screen width so titles of
-  // neighbouring boards never overlap at low zoom
+  // Counter-scale the title strips so board names stay readable and titles
+  // of neighbouring boards never overlap at low zoom.
   for (const f of S.frames.values()) {
     f.strip.style.transform = `scale(${1 / S.view.z})`;
     f.strip.style.maxWidth = (parseFloat(f.el.style.width) || 0) * S.view.z + 'px';
@@ -222,7 +223,7 @@ function bounds() {
   let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
   for (const b of Object.values(c.boards || {})) { x0 = Math.min(x0, b.x); y0 = Math.min(y0, b.y - 30); x1 = Math.max(x1, b.x + b.w); y1 = Math.max(y1, b.y + b.h); }
   for (const n of Object.values(c.notes || {})) { x0 = Math.min(x0, n.x); y0 = Math.min(y0, n.y); x1 = Math.max(x1, n.x + (n.w || 240)); y1 = Math.max(y1, n.y + 80); }
-  return isFinite(x0) ? { x0, y0, x1, y1 } : { x0: 0, y0: 0, x1: 800, y1: 600 };
+  return Number.isFinite(x0) ? { x0, y0, x1, y1 } : { x0: 0, y0: 0, x1: 800, y1: 600 };
 }
 function fit() {
   const vp = $('.viewport').getBoundingClientRect();
@@ -337,17 +338,23 @@ function makeFrame(path) {
 // frames outright.
 function loadFrame(f, path, hash) {
   f.loaded = true;
-  f.error && f.error.remove(); f.error = null;
+  f.loadedAt = hash + '|' + assetSignature();
+  // An error seen at the same content (for example in the focus view) stays
+  // marked: the new document need not repeat an error caused by interaction.
+  if (f.error && f.errorAt !== f.loadedAt) { f.error.remove(); f.error = null; }
   const iframe = h('iframe', {
     title: `Artboard ${path}`, loading: 'lazy', referrerpolicy: 'no-referrer',
-   
     src: fileURL(path, hash),
   });
   f.iframe = iframe;
   f.frame.replaceChildren(iframe);
 }
 
+// loadVisible gives boards near the viewport their first frame. Behind the
+// full-window view it loads nothing: every frame there costs memory a phone
+// may not have, and the canvas is hidden anyway.
 function loadVisible() {
+  if (!S.booted || S.focus) return;
   const vp = $('.viewport').getBoundingClientRect();
   const margin = 400;
   for (const [path, f] of S.frames) {
@@ -425,7 +432,7 @@ function makeNote(id, n) {
   }
   return el;
 }
-function editNote(el, textEl, id, n) {
+function editNote(_el, textEl, id, n) {
   const ta = h('textarea', { 'aria-label': 'Note text' });
   ta.value = n.text;
   textEl.replaceWith(ta); ta.focus();
@@ -479,9 +486,14 @@ window.addEventListener('message', async (e) => {
     e.source.postMessage({ flats: 'design', type: 'boards', paths: Object.keys(canvas().boards || {}) }, '*');
     if (hit.f && S.editing) e.source.postMessage({ flats: 'design', type: 'mode', mode: 'edit' }, '*');
     if (hit.focus) e.source.postMessage({ flats: 'design', type: 'mode', mode: 'play' }, '*');
-  } else if (m.type === 'error' && hit.f) {
-    if (!hit.f.error) { hit.f.error = h('div', { class: 'error', role: 'status' }); hit.f.el.appendChild(hit.f.error); }
-    hit.f.error.textContent = 'Error: ' + String(m.message).slice(0, 200);
+  } else if (m.type === 'error') {
+    // The focus view reports on its board's canvas frame, loaded or not,
+    // with the content the reporting document was opened with.
+    const f = hit.f || S.frames.get(hit.path);
+    if (!f) return;
+    if (!f.error) { f.error = h('div', { class: 'error', role: 'status' }); f.el.appendChild(f.error); }
+    f.error.textContent = 'Error: ' + String(m.message).slice(0, 200);
+    f.errorAt = hit.f ? hit.f.loadedAt : S.focus.key;
   } else if (m.type === 'navigate') {
     const target = resolvePath(hit.path, String(m.href || ''));
     if (target && canvas().boards[target]) openFocus(target);
@@ -520,7 +532,8 @@ async function openTextEditor(path, f, m) {
   closeTextEditor();
   // Only the latest pick may open an editor: a slower earlier request, or
   // one answered after edit mode ended, is dropped.
-  const ticket = (S.pickTicket = (S.pickTicket || 0) + 1);
+  S.pickTicket = (S.pickTicket || 0) + 1;
+  const ticket = S.pickTicket;
   let node;
   try { node = await api(`/_design/api/node?path=${encodeURIComponent(path)}&node=${m.node}&gen=${Number(m.gen) || 0}`); }
   catch (err) {
@@ -577,10 +590,10 @@ function resolvePath(from, href) {
 
 // ---- focus / play ----
 function openFocus(path) {
-  closeFocus();
   const c = canvas();
   const b = c.boards[path];
-  if (!b) return;
+  if (!b) { closeFocus(); return; }
+  removeFocus();
   S.focus = { path, key: hashOf(path) + '|' + assetSignature() };
   const order = c.order || Object.keys(c.boards);
   const i = order.indexOf(path);
@@ -620,11 +633,17 @@ function refreshFocus() {
   else S.focus.key = key;
 }
 
-function closeFocus() {
+function removeFocus() {
   const box = $('.focus');
   if (box) box.remove();
+}
+
+// closeFocus returns to the canvas, which then loads the boards in view.
+function closeFocus() {
+  removeFocus();
   if (S.focus) history.replaceState(null, '', location.pathname);
   S.focus = null;
+  loadVisible();
 }
 
 // ---- panels ----
@@ -730,7 +749,7 @@ function ago(ts) {
   if (s < 86400) return Math.floor(s / 3600) + ' h ago';
   return new Date(ts).toLocaleString();
 }
-function revItem(r, revs) {
+function revItem(r, _revs) {
   const who = { agent: 'Agent', person: 'Person', rollback: 'Rollback', created: 'Created' }[r.kind] || r.kind;
   const authors = (r.authors || []).filter((a) => a && a !== who).join(', ');
   const current = r.number === S.state.revision && !S.state.pending;
@@ -881,10 +900,12 @@ async function boot() {
     S.cap = await session();
     await refresh();
   } catch (err) { document.body.replaceChildren(h('p', { style: { padding: '24px' }, text: 'Could not load this design: ' + err.message })); return; }
-  fit();
   const c = canvas();
-  const hash = decodeURIComponent(location.hash.slice(1));
+  let hash = '';
+  try { hash = decodeURIComponent(location.hash.slice(1)); } catch { /* a malformed fragment names no artboard */ }
   if (hash && c.boards[hash]) openFocus(hash);
   else if (c.launch && c.launch.view === 'focused' && c.boards[c.launch.board]) openFocus(c.launch.board);
+  S.booted = true;
+  fit();
 }
 boot();

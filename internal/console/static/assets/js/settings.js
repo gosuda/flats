@@ -3,6 +3,7 @@
 // that also holds its key. Every setting, provider, key, address and fact is
 // the same row; fields stage changes for one save bar per page, while buttons
 // such as Turn on, Add, Replace and Delete act at once.
+'use strict';
 
 import { h, dateTime, relTime, plural } from './dom.js';
 import { api } from './api.js';
@@ -17,7 +18,7 @@ const FIELDS = [
   { key: 'upload_max_bytes', group: 'storage', label: 'Upload size', unit: 'MB', factor: 1 << 20, bytes: true, help: 'Total uncompressed size of one saved version.' },
   { key: 'disk_quota_bytes', group: 'storage', label: 'Disk per flat', perFlat: true, unit: 'GB', factor: 1 << 30, bytes: true, help: 'A change that would exceed it is refused; nothing is deleted. 0 means no quota.' },
   { key: 'version_quota', group: 'history', label: 'Versions', perFlat: true, unit: 'versions', factor: 1, step: 1, whole: true, help: 'For websites and pages. Never deleted automatically; a full quota refuses new versions. Lowering it keeps existing versions. 0 is unlimited.' },
-  { key: 'revision_quota', group: 'history', label: 'Revisions', perFlat: true, unit: 'revisions', factor: 1, step: 1, whole: true, help: 'Unpinned revisions each document, design or board keeps. Older ones are deleted at once when lowered. 0 keeps all.' },
+  { key: 'revision_quota', group: 'history', label: 'Revisions', perFlat: true, unit: 'revisions', factor: 1, step: 1, whole: true, help: 'Unpinned revisions each document, design, board or notebook keeps. Older ones are deleted at once when lowered. 0 keeps all.' },
   { key: 'pin_quota', group: 'history', label: 'Pinned revisions', perFlat: true, unit: 'pins', factor: 1, step: 1, whole: true, help: 'Pinned revisions are never deleted automatically. A full quota refuses new pins. 0 is unlimited.' },
   { key: 'events_keep', group: 'history', label: 'Log events', unit: 'events', factor: 1, step: 1, min: 1, whole: true, help: 'Kept per flat. Older events are deleted.' },
   { key: 'rate_limit_rps', group: 'traffic', label: 'Rate limit', unit: 'req/s', factor: 1, step: 1, min: 1, help: 'Requests per second per flat. Bursts up to twice this are allowed.' },
@@ -28,7 +29,7 @@ const FIELDS = [
 
 const LIMIT_GROUPS = [
   ['storage', 'Storage', ''],
-  ['history', 'History', 'Versions for websites and pages; revisions for documents, designs and boards.'],
+  ['history', 'History', 'Versions for websites and pages; revisions for documents, designs, boards and notebooks.'],
   ['traffic', 'Traffic and addresses', ''],
 ];
 
@@ -125,7 +126,7 @@ export function mount(main, [section, sub], ctx) {
     else if (active === 'networks') run = networksPage(page, saved, load);
     else if (active === 'console') run = consolePage(page, saved, load);
     else if (active === 'limits') run = limitsPage(page, saved, load);
-    else if (active === 'experiments') run = experimentsPage(page, load);
+    else if (active === 'experiments') run = experimentsPage(page);
     else run = agentsPage(page);
     return Promise.resolve(run).then(done);
   };
@@ -358,7 +359,7 @@ function defaultsForm(data, providers, saved, reload, notice, page) {
       { key: DEFAULT_KEYS.private, kind: 'select', label: 'Private network', options: choices('private'), initial: effectiveDefault('private', data),
         help: 'New flats are reachable here. Local is always included.' },
       { key: DEFAULT_KEYS.public, kind: 'select', label: 'Public network', options: choices('public'), initial: effectiveDefault('public', data),
-        help: 'Used once you approve making a flat public. New flats always start Private.' },
+        help: 'Used once you approve making a flat public. New flats start Private, except in public instance mode (Settings › Experiments).' },
     ]]],
   });
 }
@@ -797,7 +798,7 @@ const isProxy = (id) => PROXY_KINDS.includes(id);
 const PROXY_STALE = 'Every pending approval becomes stale and has to be requested again, including version deployments and visibility changes: an approval shows the addresses it was granted for.';
 
 // PROXY_PRIVATE_ACCESS is the warning for the Private kind.
-const PROXY_PRIVATE_ACCESS = 'Whoever your proxy lets through has Private access: they can open Drafts through previews and edit documents, designs and boards, as on this device. Flats does not check who they are. Your proxy’s authentication or network restrictions are the only access control.';
+const PROXY_PRIVATE_ACCESS = 'Whoever your proxy lets through has Private access: they can open Drafts through previews and edit documents, designs, boards and notebooks, as on this device. Flats does not check who they are. Your proxy’s authentication or network restrictions are the only access control.';
 
 // proxySection holds the reverse proxy settings, the same on the pages of
 // both kinds: the address template, the listener address and the kind. The
@@ -1002,7 +1003,7 @@ function parseOrigins(text) {
     const defaultPort = origin.startsWith('https:') ? '443' : '80';
     const keys = !port || port === defaultPort ? [host, host + ':' + defaultPort] : [authority];
     if (keys.some((key) => authorities.has(key))) return { error: `Address ${i + 1}: this host and port are already listed. Use one scheme per address.` };
-    keys.forEach((key) => authorities.add(key));
+    for (const key of keys) authorities.add(key);
   }
   return { values };
 }
@@ -1250,7 +1251,7 @@ export function toBase(text, factor, whole) {
 }
 
 // Only destructive retention settings use isDecrease. Version quotas keep all existing versions.
-export function isDecrease(key, current, next) {
+export function isDecrease(_key, current, next) {
   const cur = Number(current);
   const n = Number(next);
   return n < cur;
@@ -1701,7 +1702,7 @@ export function impactPanel(impact, onConfirm, onCancel) {
     }),
     impact.revision_quota ? h('div', null, h('p', null,
       h('strong', { text: `Revisions: ${impact.revision_quota.current === '0' ? 'all' : impact.revision_quota.current} → ${impact.revision_quota.candidate} revisions.` }), ' ',
-      'Every document, design and board that uses this default deletes its older unpinned revisions beyond the new limit at once. Pinned revisions and flats with their own limit are kept. The number deleted cannot be shown in advance.')) : null,
+      'Every document, design, board and notebook that uses this default deletes its older unpinned revisions beyond the new limit at once. Pinned revisions and flats with their own limit are kept. The number deleted cannot be shown in advance.')) : null,
     h('div', { class: 'actions' }, cancel, confirm));
   queueMicrotask(() => heading.focus());
   return panel;
@@ -1895,26 +1896,77 @@ function experimentsHead() {
   ];
 }
 
-// experimentsPage holds Autopilot: on or off, the operations agents may
-// decide and the operation guide. Every control acts at once except the
-// guide, which has its own Save button.
-async function experimentsPage(page, reload) {
+// Each experiment reloads only its own box, keeping unsaved input in the other.
+async function experimentsPage(page) {
   page.ctx.setTitle('Experiments · Settings');
   const token = page.token;
-  let view;
-  let error;
-  try {
-    view = (await api.autopilot()).autopilot;
-  } catch (err) {
-    error = err;
-  }
-  if (!page.ctx.alive() || page.token !== token) return;
-  if (token) token.drawn = true;
-  if (error) fill(page.content, experimentsHead(), errorPanel(error, 'Cannot load Autopilot'));
-  else drawAutopilot(page, view, reload);
+  const apBox = h('div', null, loading());
+  const piBox = h('div', null, loading());
+  fill(page.content, experimentsHead(), apBox, piBox);
+  const current = () => page.ctx.alive() && page.token === token;
+  const sections = [
+    { box: apBox, load: () => api.autopilot(), key: 'autopilot', name: 'Autopilot', draw: drawAutopilot },
+    { box: piBox, load: () => api.publicInstance(), key: 'public_instance', name: 'Public instance', draw: drawPublicInstance },
+  ];
+  const draw = (section, result) => {
+    if (!current()) return;
+    const reload = async () => {
+      const [next] = await Promise.allSettled([section.load()]);
+      draw(section, next);
+    };
+    if (result.status === 'rejected') fill(section.box, errorPanel(result.reason, 'Cannot load ' + section.name));
+    else section.draw(section.box, page, result.value[section.key], reload);
+  };
+  const results = await Promise.allSettled(sections.map((section) => section.load()));
+  if (!current()) return;
+  token.drawn = true;
+  sections.forEach((section, i) => draw(section, results[i]));
 }
 
-function drawAutopilot(page, view, reload) {
+function drawPublicInstance(box, page, view, reload) {
+  const on = view.enabled;
+  const network = view.network ? infoOf(view.network).label : 'None';
+  const toggle = h('button', { type: 'button', class: 'btn btn-small' + (on ? ' btn-danger-text' : ' btn-primary'),
+    disabled: !on && !view.usable, text: on ? 'Turn off' : 'Turn on',
+    'aria-label': `${on ? 'Turn off' : 'Turn on'} Public instance` });
+  toggle.addEventListener('click', () => busy(toggle, async () => {
+    if (!on) {
+      if (!view.usable) return;
+      const count = view.private_flats;
+      const ok = await confirmDialog({
+        title: 'Turn on Public instance?',
+        body: [
+          h('p', { text: `Every new flat, including flats agents create, will be Public on ${network}. Anyone on the internet can open it. Documents, designs and boards run at once. Each save of a new website or page is published without an approval.` }),
+          h('p', { text: 'Private links stop working, on the Flats machine too, including Draft and version previews. People can no longer preview a Draft, edit a design or open the history of a document, design or board in a browser. Agents keep these through MCP.' }),
+          h('p', { class: 'alert alert-warn', text: `${plural(count, 'flat')} ${count === 1 ? 'is' : 'are'} Private now. ${count === 1 ? 'It will have' : 'They will have'} no working link until ${count === 1 ? 'it is' : 'they are'} made Public or the mode is turned off.` }),
+        ],
+        confirmLabel: 'Turn on', danger: true,
+      });
+      if (!ok) return;
+    }
+    let res;
+    try {
+      res = await api.setPublicInstance(!on, view.network);
+    } catch (err) {
+      await infoDialog(err.status === 409 ? 'The default public network changed' : `Cannot turn ${on ? 'off' : 'on'} Public instance`, errorPanel(err));
+      if (page.ctx.alive()) reload();
+      return;
+    }
+    if (!page.ctx.alive()) return;
+    toast(`Public instance is ${on ? 'off' : 'on'}.`, 'success');
+    drawPublicInstance(box, page, res.public_instance, reload);
+  }));
+  fill(box, group('public-instance', 'Public instance', '', list(
+    row({ id: 'public-instance-state', title: ['Public instance', ' ', on ? pill('On', 'on') : pill('Off', 'off')],
+      desc: 'New flats are created Public on the default public network, and private links are turned off.',
+      meta: ['Default public network: ' + network], ctl: toggle })),
+    !view.usable ? callout(on ? 'warn' : 'info',
+      on ? h('p', { text: 'New flats cannot be created until the default public network is turned on again.' }) : null,
+      h('p', { text: view.reason }),
+      h('a', { href: '/settings/networks', 'data-nav': true, text: 'Settings › Networks' })) : null));
+}
+
+function drawAutopilot(box, page, view, reload) {
   const allowed = () => view.allowed || [];
   const on = view.enabled;
   const toggle = h('button', { type: 'button', class: 'btn btn-small' + (on ? ' btn-danger-text' : ' btn-primary'),
@@ -1934,7 +1986,7 @@ function drawAutopilot(page, view, reload) {
     }
     if (!page.ctx.alive()) return;
     toast(done, 'success');
-    drawAutopilot(page, res.autopilot, reload);
+    drawAutopilot(box, page, res.autopilot, reload);
   }
   async function turnOn() {
     // confirmed_allowed is sent as the server listed it; only the display is sorted.
@@ -1967,7 +2019,7 @@ function drawAutopilot(page, view, reload) {
         h('span', { text: 'They see a change when they reconnect' })),
       ctl: toggle })));
   if (!on) {
-    fill(page.content, experimentsHead(), autopilot);
+    fill(box, autopilot);
     return;
   }
 
@@ -1982,7 +2034,7 @@ function drawAutopilot(page, view, reload) {
   let queue = Promise.resolve();
   const update = (next) => {
     view = next;
-    if (!view.enabled) { drawAutopilot(page, view, reload); return; }
+    if (!view.enabled) { drawAutopilot(box, page, view, reload); return; }
     for (const [id, input] of switches) if (!pending.has(id)) input.checked = allowed().includes(id);
   };
   const reread = () => api.autopilot()
@@ -2020,7 +2072,7 @@ function drawAutopilot(page, view, reload) {
   const subgroups = [...new Set(OPERATIONS.map((op) => op.group))].map((name) =>
     h('div', { class: 's-sub' }, h('h4', { text: name }), list(...OPERATIONS.filter((op) => op.group === name).map(opRow))));
 
-  fill(page.content, experimentsHead(), autopilot,
+  fill(box, autopilot,
     group('autopilot-ops', 'Operations agents may decide', 'Each switch applies as soon as you change it.', subgroups),
     group('autopilot-guide', 'Operation guide', 'Agents read it while Autopilot is on.', list(guideRow(view))));
 }

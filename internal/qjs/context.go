@@ -154,7 +154,7 @@ func (c *Context) NewUndefined() *Value {
 
 // NewDate creates a new JavaScript Date object from the given time.
 func (c *Context) NewDate(t *time.Time) *Value {
-	epochMs := float64(t.UnixNano()) / NanosToMillis // Nanoseconds to milliseconds
+	epochMs := float64(t.UnixNano()) / NanosToMillis
 
 	return c.Call("JS_NewDate", c.Raw(), math.Float64bits(epochMs))
 }

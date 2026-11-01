@@ -10,6 +10,14 @@ import (
 	"github.com/gosuda/flats/internal/store"
 )
 
+// addingHosts holds the host names whose addition is in progress: console
+// domains whose addition is under way and preview hosts chosen but not yet
+// registered. Guarded by Service.mu.
+type addingHosts struct {
+	console map[string]bool
+	preview map[string]bool
+}
+
 // consoleNameReserved reports whether name belongs to the console: a fixed
 // reserved name, a console domain or node, or a domain being added.
 func (s *Service) consoleNameReserved(name string) bool {
@@ -30,7 +38,7 @@ func (s *Service) consoleNameInUse(name string) bool {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.consoleAdding[name]
+	return s.adding.console[name]
 }
 
 // previewHost returns a new random preview host for slugName that is not a
@@ -42,18 +50,18 @@ func (s *Service) previewHost(slugName string) (string, func()) {
 		// Checked and reserved under one lock: a console addition reserves its
 		// name under s.mu too and keeps it until the list holds it.
 		s.mu.Lock()
-		if s.consoleAdding[host] || s.previewAdding[host] || s.consoleNameListed(host) {
+		if s.adding.console[host] || s.adding.preview[host] || s.consoleNameListed(host) {
 			s.mu.Unlock()
 			continue
 		}
-		if s.previewAdding == nil {
-			s.previewAdding = map[string]bool{}
+		if s.adding.preview == nil {
+			s.adding.preview = map[string]bool{}
 		}
-		s.previewAdding[host] = true
+		s.adding.preview[host] = true
 		s.mu.Unlock()
 		return host, func() {
 			s.mu.Lock()
-			delete(s.previewAdding, host)
+			delete(s.adding.preview, host)
 			s.mu.Unlock()
 		}
 	}
@@ -105,7 +113,7 @@ func (s *Service) ServeConsoleName(ctx context.Context, name string, serve func(
 		// registers itself before it releases its own reservation.
 		s.mu.Lock()
 		_, isPreview := s.prevs[name]
-		opening := s.previewAdding[name]
+		opening := s.adding.preview[name]
 		s.mu.Unlock()
 		if isPreview || opening {
 			holder = "a preview"
@@ -148,18 +156,18 @@ func (s *Service) reserveConsoleName(ctx context.Context, name string, shared bo
 	// it releases its own reservation, so one of the two always shows.
 	s.mu.Lock()
 	_, isPreview := s.prevs[name]
-	if isPreview || s.previewAdding[name] || s.consoleAdding[name] {
+	if isPreview || s.adding.preview[name] || s.adding.console[name] {
 		s.mu.Unlock()
 		return fmt.Errorf("%w: %q is being used by a preview or another console domain; choose another name", ErrConflict, name)
 	}
-	if s.consoleAdding == nil {
-		s.consoleAdding = map[string]bool{}
+	if s.adding.console == nil {
+		s.adding.console = map[string]bool{}
 	}
-	s.consoleAdding[name] = true
+	s.adding.console[name] = true
 	s.mu.Unlock()
 	defer func() {
 		s.mu.Lock()
-		delete(s.consoleAdding, name)
+		delete(s.adding.console, name)
 		s.mu.Unlock()
 	}()
 	return commit()

@@ -12,7 +12,7 @@ them.
 | | Version model | Revision model |
 |---|---|---|
 | For | content an agent prepares and an operator releases | content people and agents edit live |
-| Types | websites (`flat`, static or server), pages (`page`) | documents (`docs`), designs (`design`) |
+| Types | websites (`flat`, static or server), pages (`page`) | documents (`docs`), designs (`design`), boards (`board`), notebooks (`notebook`) |
 | Working copy | a Private Draft | the live content itself |
 | History unit | a numbered version (v1, v2, v3, ...) | a revision of the whole flat per edit unit |
 | Needs operator approval | creating or deleting a version, every deployment, rollback | no content change; visibility changes and deleting the flat do |
@@ -35,17 +35,28 @@ them.
 
 Applies to websites (the `flat` type, static and server) and pages.
 
+[Public instance mode](public-instance.md#new-flats) is the exception to rules
+1, 2, 3, 5 and 10 below. While it is on, each save of a Public website or
+page created by the mode saves its Draft, creates the next numbered version
+and deploys it without approval. The first such save counts as publication.
+A failed publication keeps the saved Draft and previous live version, leaves
+no new version and reports the cause and saved revision. Earlier flats,
+marked flats made Private and saves while the mode is off keep the usual
+steps. Explicit version creation and deployment still request approvals.
+
 1. **Draft changes need no approval.** Saving the Draft changes only the
    Private Draft and never the live content. Draft previews stay Private.
 2. **Creating a version is its own step and needs explicit approval.** The
    request names the Draft state it freezes (revision and content hash). If the
    Draft changes before the decision, the request fails as stale and nothing is
-   created. On approval the Draft is stored as the next number.
+   created. On approval the Draft is stored as the next number. Publication
+   on save in public instance mode is the exception described above.
 3. **Deployment is a separate step and needs explicit approval, including the
    first deployment.** The order is always: create a version, then, when
    wanted, deploy that version. No request creates and deploys in one step,
    and creating a version never deploys it. A version can therefore exist
-   without ever being deployed.
+   without ever being deployed. Public instance publication on save combines
+   both steps without approvals, as described above.
 4. **Deploy and roll back by version.** Rollback is a deployment of an earlier
    version and needs approval. A server flat's data is a separate axis: data
    restore keeps its own explicit request and approval, as today. A data
@@ -62,8 +73,12 @@ Applies to websites (the `flat` type, static and server) and pages.
    is applied. The live version cannot be deleted.
 7. **Published means deployed at least once.** A flat with no successful
    deployment is Unpublished, even if it holds versions, and an Unpublished
-   flat cannot become Public. Otherwise visibility (`private`/`public`) stays
-   independent, and every change in either direction needs approval.
+   flat cannot become Public through an approval. While
+   [public instance mode](public-instance.md) is on, a website or page is
+   created Public and Unpublished, without a visibility approval. It has no
+   public link until its first published save or approved deployment. Visibility
+   (`private`/`public`) stays independent, and every later change in either
+   direction still needs approval.
 8. **The console manages versions.** Operators list versions, approve their
    creation, and deploy or roll back there.
 9. **Deleting a version needs the operator.** The operator deletes a version
@@ -86,8 +101,8 @@ Applies to websites (the `flat` type, static and server) and pages.
 
 ## Revision model
 
-Applies to documents (`docs`), designs (`design`) and any later type that
-people and agents edit live.
+Applies to documents (`docs`), designs (`design`), boards (`board`),
+notebooks (`notebook`) and any later type that people and agents edit live.
 
 1. **No Draft, versions or publish.** The content is always live, and the
    console has no version or deployment management for these types. Deleting
@@ -215,6 +230,8 @@ These rules apply to the version, revision and pin quotas alike.
 | page (`page`) | Version | as for websites |
 | document (`docs`) | Revision | implemented |
 | design | Revision | implemented |
+| board | Revision | implemented |
+| notebook | Revision | partly implemented ([notebook.md](notebook.md)) |
 
 A flat keeps its first save's type, so its model never changes.
 

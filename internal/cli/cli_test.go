@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	flatsapp "github.com/gosuda/flats/internal/app"
 	"golang.org/x/sys/unix"
 	"io"
@@ -299,6 +300,17 @@ func TestDeletePending(t *testing.T) {
 	}
 }
 
+func TestDeletePrintsCleanupPendingFromStatusOnly(t *testing.T) {
+	api, srv := newFakeAPI(t)
+	// Hosts older than #112 report cleanup pending only through the status
+	// string, without the result_data bool.
+	api.handle("DELETE /api/flats/blog", 200, `{"status": "cleanup_pending", "message": "deletion applied"}`)
+	r := run(t, srv.URL, "", "delete", "blog")
+	if r.code != 0 || !strings.Contains(r.stdout, "Status: cleanup_pending") {
+		t.Fatalf("exit %d: %s", r.code, r.stdout)
+	}
+}
+
 func TestSecretSetNeverPrintsValue(t *testing.T) {
 	api, srv := newFakeAPI(t)
 	api.handle("PUT /api/flats/blog/secrets/API_TOKEN", 200, `{"name": "API_TOKEN", "status": "stored; redeploy to apply"}`)
@@ -390,6 +402,103 @@ func TestListInfoVersionsApprovals(t *testing.T) {
 	r = run(t, srv.URL, "", "info", "nope")
 	if r.code != ExitError || !strings.Contains(r.stderr, "not found") {
 		t.Errorf("missing flat: %d %s", r.code, r.stderr)
+	}
+}
+
+func TestApprovalsWait(t *testing.T) {
+	api, srv := newFakeAPI(t)
+	var mu sync.Mutex
+	counts := map[string]int{}
+	// serveState registers the canned receipt sequence for one approval and
+	// counts how often the CLI polled it.
+	serveState := func(id string, queue ...string) {
+		api.routes["GET /api/approvals/"+id] = func(w http.ResponseWriter, _ *http.Request, _ []byte) {
+			mu.Lock()
+			defer mu.Unlock()
+			state := queue[0]
+			if len(queue) > 1 {
+				queue = queue[1:]
+			}
+			counts[id]++
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"id": %q, "status": %q, "result": "version 2 is live", "result_data": {"version": 2}}`, id, state)
+		}
+	}
+	polls := func(id string) int {
+		mu.Lock()
+		defer mu.Unlock()
+		return counts[id]
+	}
+	wait := func(args ...string) result {
+		return runEnv(t, Env{PollInterval: time.Millisecond}, srv.URL, args...)
+	}
+
+	serveState("apr-ok", "approved")
+	r := wait("approvals", "wait", "apr-ok")
+	if r.code != ExitOK || !strings.Contains(r.stdout, "Approval apr-ok approved: version 2 is live") || strings.Contains(r.stdout, "result_data") {
+		t.Errorf("plain wait: %d %q %q", r.code, r.stdout, r.stderr)
+	}
+	if polls("apr-ok") != 1 {
+		t.Errorf("a decided receipt should end the wait: %d polls", polls("apr-ok"))
+	}
+	r = wait("--json", "approvals", "wait", "apr-ok", "--timeout", "5")
+	if r.code != ExitOK || !strings.Contains(r.stdout, `"status": "approved"`) || strings.Contains(r.stdout, "approved:") {
+		t.Errorf("json wait: %d %q", r.code, r.stdout)
+	}
+	if p := api.last("GET /api/approvals/apr-ok").path; p != "/api/approvals/apr-ok" {
+		t.Errorf("wait path = %q", p)
+	}
+
+	// A refused approval ends the wait without polling again.
+	serveState("apr-no", "rejected")
+	r = wait("approvals", "wait", "apr-no")
+	if r.code != ExitError || !strings.Contains(r.stderr, "Approval apr-no ended rejected") || r.stdout != "" {
+		t.Errorf("refused: %d %q %q", r.code, r.stdout, r.stderr)
+	}
+	if polls("apr-no") != 1 {
+		t.Errorf("refusal should not be re-polled: %d", polls("apr-no"))
+	}
+
+	// Pending then approved polls until the decision lands.
+	serveState("apr-later", "pending", "pending", "approved")
+	r = wait("approvals", "wait", "apr-later")
+	if r.code != ExitOK || !strings.Contains(r.stdout, "Approval apr-later approved") || polls("apr-later") != 3 {
+		t.Errorf("pending then approved: %d %q %d", r.code, r.stdout, polls("apr-later"))
+	}
+
+	// An approval that leaves storage cleanup pending is not success.
+	api.handle("GET /api/approvals/apr-mess", 200, `{"id": "apr-mess", "status": "approved", "result_data": {"cleanup_pending": true}}`)
+	r = wait("approvals", "wait", "apr-mess")
+	if r.code != ExitError || !strings.Contains(r.stderr, "Do not repeat deletion") || !strings.Contains(r.stderr, "apr-mess") || r.stdout != "" {
+		t.Errorf("cleanup pending: %d %q %q", r.code, r.stdout, r.stderr)
+	}
+
+	// Unknown states and timeouts fail instead of waiting forever.
+	serveState("apr-odd", "weird")
+	r = wait("approvals", "wait", "apr-odd")
+	if r.code != ExitError || !strings.Contains(r.stderr, "Unknown approval state") {
+		t.Errorf("unknown state: %d %q %q", r.code, r.stdout, r.stderr)
+	}
+	serveState("apr-slow", "pending")
+	start := time.Now()
+	r = wait("approvals", "wait", "apr-slow", "--timeout", "1")
+	if r.code != ExitError || !strings.Contains(r.stderr, "Timed out waiting for operator decision for apr-slow") {
+		t.Errorf("timeout: %d %q %q", r.code, r.stdout, r.stderr)
+	}
+	if elapsed := time.Since(start); elapsed > 5*time.Second {
+		t.Errorf("timeout waited %s", elapsed)
+	}
+
+	// Usage problems stay usage problems.
+	if r := wait("approvals", "wait"); r.code != ExitUsage {
+		t.Errorf("missing id: %d %q", r.code, r.stderr)
+	}
+	if r := wait("approvals", "wait", "apr-ok", "--timeout", "0"); r.code != ExitUsage {
+		t.Errorf("bad timeout: %d %q", r.code, r.stderr)
+	}
+	api.handle("GET /api/approvals", 200, `{"approvals": []}`)
+	if r := wait("approvals"); r.code != ExitOK || !strings.Contains(r.stdout, "No approval requests.") {
+		t.Errorf("list routing broke: %d %q", r.code, r.stdout)
 	}
 }
 
@@ -842,6 +951,52 @@ func TestPublicURLsAlwaysCarryTheNotice(t *testing.T) {
 	}
 }
 
+func TestFlatLinksWithoutPrivateURL(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		fields string
+		link   string
+		notice string
+	}{
+		{"public", `"private_url":"","public_url":"https://notes.example","public_notice":"Anyone can open this flat."`, "https://notes.example", "Anyone can open this flat."},
+		{"public notice fallback", `"public_url":"https://notes.example"`, "https://notes.example", publicURLNotice},
+		{"unpublished", `"private_links_off":true,"connection_state":"unavailable"`, "no link yet (unavailable)", ""},
+		{"provider error", `"private_links_off":true,"connection_state":"error"`, "no link yet (error)", ""},
+		{"private unchanged", `"private_url":"https://notes.ts","private_state":"starting","private_detail":"connecting"`, "https://notes.ts", ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			api, srv := newFakeAPI(t)
+			flat := `{"slug":"notes","visibility":"public",` + tt.fields + `}`
+			api.handle("GET /api/flats", 200, `{"flats":[`+flat+`]}`)
+			api.handle("GET /api/flats/notes", 200, flat)
+			api.handle("POST /api/flats/notes/deploy", 200, `{"flat":`+flat+`,"version":1}`)
+			api.handle("POST /api/flats/notes/rollback", 200, `{"flat":`+flat+`,"version":1}`)
+			api.handle("POST /api/flats/old-notes/rename", 200, flat)
+			for _, args := range [][]string{
+				{"list"}, {"info", "notes"}, {"deploy", "--flat", "notes", "--version", "1"},
+				{"rollback", "notes"}, {"rename", "old-notes", "notes"},
+			} {
+				t.Run(args[0], func(t *testing.T) {
+					r := run(t, srv.URL, "", args...)
+					if r.code != ExitOK || r.stderr != "" || !strings.Contains(r.stdout, tt.link) {
+						t.Fatalf("link: %+v", r)
+					}
+					if tt.notice != "" {
+						if !strings.Contains(r.stdout, tt.notice) || strings.Contains(r.stdout, "private:") || strings.Contains(r.stdout, "no link yet") {
+							t.Fatalf("public link: %s", r.stdout)
+						}
+					} else if strings.Contains(r.stdout, publicURLNotice) || strings.Contains(r.stdout, "public:") || strings.Contains(r.stdout, "(*)") {
+						t.Fatalf("unexpected public link notice: %s", r.stdout)
+					}
+					if tt.name == "private unchanged" && args[0] != "list" && !strings.Contains(r.stdout, "  private: https://notes.ts\n  starting: connecting (`flats info` shows when it is ready)\n") {
+						t.Fatalf("private link changed: %s", r.stdout)
+					}
+				})
+			}
+		})
+	}
+}
+
 func TestUnknownFlatIsAnError(t *testing.T) {
 	api, srv := newFakeAPI(t)
 	// Older servers answer the events and versions lists of a missing flat
@@ -927,6 +1082,36 @@ func TestDeployDocumentRunsAtOnce(t *testing.T) {
 	}
 	if want := "Saved document notes; it is running now (private) at http://notes.localhost:7878. Documents have no publish step."; !strings.Contains(r.stdout, want) || strings.Contains(r.stdout, "Draft") || strings.Contains(r.stdout, "publish`") {
 		t.Fatalf("stdout:\n%s", r.stdout)
+	}
+}
+
+func TestSaveDocumentWithoutPrivateURL(t *testing.T) {
+	for _, tt := range []struct {
+		name   string
+		fields string
+		link   string
+		notice string
+	}{
+		{"public", `"private_url":"","public_url":"https://notes.example","public_notice":"Anyone can open this flat."`, "at https://notes.example", "Anyone can open this flat."},
+		{"public notice fallback", `"public_url":"https://notes.example"`, "at https://notes.example", publicURLNotice},
+		{"no link", `"connection_state":"unavailable"`, "with no link yet (unavailable)", ""},
+		{"provider error", `"connection_state":"error"`, "with no link yet (error)", ""},
+		{"private preferred", `"private_url":"http://notes.localhost:7878","public_url":"https://notes.example"`, "at http://notes.localhost:7878", ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			api, srv := newFakeAPI(t)
+			api.handle("POST /api/flats/notes/document", 201, `{"flat":{"slug":"notes","type":"docs","visibility":"public","running":true,`+tt.fields+`}}`)
+			dir := t.TempDir()
+			writeTree(t, dir, map[string]string{"index.md": "# Notes"})
+			r := run(t, srv.URL, "", "save-document", "notes", dir)
+			want := "Saved document notes; it is running now (public) " + tt.link + ". Documents have no publish step.\n"
+			if tt.notice != "" {
+				want += "  note: " + tt.notice + "\n"
+			}
+			if r.code != ExitOK || r.stderr != "" || r.stdout != want {
+				t.Fatalf("save-document: %+v; want stdout %q", r, want)
+			}
+		})
 	}
 }
 

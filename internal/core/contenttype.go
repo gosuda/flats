@@ -11,12 +11,20 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 
 	"github.com/gosuda/flats/internal/board"
 	"github.com/gosuda/flats/internal/bundle"
 	"github.com/gosuda/flats/internal/site"
 	"github.com/gosuda/flats/internal/store"
 )
+
+// docsRefcounts counts the live references of each materialized docs runtime
+// directory; the last release removes the directory and its state.
+type docsRefcounts struct {
+	mu   sync.Mutex
+	refs map[string]int // runtime directory -> live references
+}
 
 // DocsApp is the immutable module tree injected by app wiring (or tests).
 type DocsApp struct {
@@ -211,8 +219,8 @@ func (s *Service) docsRuntime(v store.Version, versionDir string) (string, strin
 	}
 	dir := filepath.Join(s.cfg.DataDir, "runtime", "docs", app.Hash[:12]+"-"+v.Hash[:16])
 	// Materialization and reference acquisition are serialized against final release.
-	s.docsMu.Lock()
-	defer s.docsMu.Unlock()
+	s.docRefs.mu.Lock()
+	defer s.docRefs.mu.Unlock()
 	if _, err := os.Stat(dir); os.IsNotExist(err) {
 		if err := os.MkdirAll(filepath.Dir(dir), 0o700); err != nil {
 			return "", "", nil, nil, err
@@ -263,17 +271,17 @@ func (s *Service) docsRuntime(v store.Version, versionDir string) (string, strin
 	// With no reference no worker of this directory runs, so leftovers of an
 	// interrupted image write are stale. Without a state directory the
 	// document simply starts without an image.
-	if err := prepareDocsState(state, s.docsRefs[dir] == 0); err != nil {
+	if err := prepareDocsState(state, s.docRefs.refs[dir] == 0); err != nil {
 		s.logf("docs runtime %s: image directory: %v", filepath.Base(dir), err)
 		image = ""
 	}
-	s.docsRefs[dir]++
+	s.docRefs.refs[dir]++
 	release := func() {
-		s.docsMu.Lock()
-		defer s.docsMu.Unlock()
-		s.docsRefs[dir]--
-		if s.docsRefs[dir] == 0 {
-			delete(s.docsRefs, dir)
+		s.docRefs.mu.Lock()
+		defer s.docRefs.mu.Unlock()
+		s.docRefs.refs[dir]--
+		if s.docRefs.refs[dir] == 0 {
+			delete(s.docRefs.refs, dir)
 			_ = os.RemoveAll(state)
 			_ = os.RemoveAll(dir)
 		}
@@ -313,14 +321,14 @@ func prepareDocsState(state string, clear bool) error {
 
 // cleanupDocs removes crash leftovers while holding the same lock as acquisition.
 func (s *Service) cleanupDocs() {
-	s.docsMu.Lock()
-	defer s.docsMu.Unlock()
+	s.docRefs.mu.Lock()
+	defer s.docRefs.mu.Unlock()
 	parent := filepath.Join(s.cfg.DataDir, "runtime", "docs")
 	entries, _ := os.ReadDir(parent)
 	for _, e := range entries {
 		dir := filepath.Join(parent, e.Name())
 		// A state directory belongs to its runtime directory.
-		if s.docsRefs[strings.TrimSuffix(dir, docsStateSuffix)] == 0 {
+		if s.docRefs.refs[strings.TrimSuffix(dir, docsStateSuffix)] == 0 {
 			_ = os.RemoveAll(dir)
 		}
 	}

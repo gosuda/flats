@@ -217,39 +217,94 @@ func FromArchive(r io.Reader, lim Limits) ([]File, error) {
 func fromArchive(r io.Reader, lim Limits, overhead int64) ([]File, error) {
 	// Bound the compressed body too: a well-formed archive of MaxBytes is never
 	// much larger than MaxBytes plus headers.
-	raw, err := io.ReadAll(io.LimitReader(r, lim.MaxBytes+lim.MaxBytes/4+1<<20))
-	if err != nil {
-		return nil, err
+	capacity := lim.MaxBytes + lim.MaxBytes/4 + 1<<20
+	// Sniff the format from a short prefix, so tar and tar.gz are decompressed
+	// once straight into the collector and never buffered whole. Only zip
+	// needs the entire archive in memory, because zip.NewReader reads entries
+	// by offset into a single buffer. No buffered reader sits on the body: it
+	// would hold back a read error that comes with the last bytes read. The
+	// tar paths never ask the body for more than capacity.
+	body := &uploadBody{r: r}
+	var head [4]byte
+	n, _ := io.ReadFull(body, head[:])
+	if body.err != nil {
+		return nil, body.err
 	}
-	if int64(len(raw)) > lim.MaxBytes+lim.MaxBytes/4+1<<20 {
-		return nil, &ValidationError{Problems: []Problem{{Message: "archive is larger than the upload limit", Fix: "shrink the build output or raise the upload limit in system settings"}}}
-	}
+	magic := head[:n]
+	br := io.MultiReader(bytes.NewReader(magic), body)
+	tarBody := io.LimitReader(br, capacity)
+	var err error
 	c := newCollector(lim)
 	switch {
-	case bytes.HasPrefix(raw, []byte("PK\x03\x04")) || bytes.HasPrefix(raw, []byte("PK\x05\x06")):
+	case bytes.HasPrefix(magic, []byte("PK\x03\x04")) || bytes.HasPrefix(magic, []byte("PK\x05\x06")):
+		raw, rerr := io.ReadAll(io.LimitReader(br, capacity+1))
+		if rerr != nil {
+			return nil, rerr
+		}
+		if int64(len(raw)) > capacity {
+			return nil, &ValidationError{Problems: []Problem{{Message: "archive is larger than the upload limit", Fix: "shrink the build output or raise the upload limit in system settings"}}}
+		}
 		err = c.readZip(raw)
-	case bytes.HasPrefix(raw, []byte{0x1f, 0x8b}):
-		gz, gerr := gzip.NewReader(bytes.NewReader(raw))
+	case bytes.HasPrefix(magic, []byte{0x1f, 0x8b}):
+		gz, gerr := gzip.NewReader(tarBody)
 		if gerr != nil {
-			return nil, &ValidationError{Problems: []Problem{{Message: "invalid gzip data: " + gerr.Error(), Fix: "send a valid .tar.gz, .tar or .zip archive"}}}
+			return nil, body.finish(tarBody, &ValidationError{Problems: []Problem{{Message: "invalid gzip data: " + gerr.Error(), Fix: "send a valid .tar.gz, .tar or .zip archive"}}})
 		}
 		defer gz.Close()
 		// The tar reader decompresses every byte it passes over, including
 		// skipped bodies and PAX records the collector never sees, so bound
-		// the whole stream rather than only the files kept.
+		// the whole stream rather than only the files kept. The compressed
+		// input stays capped too: decompression never reads past the upload
+		// budget.
 		budget := lim.MaxBytes + overhead
 		stream := &io.LimitedReader{R: gz, N: budget + 1}
 		err = c.readTar(stream)
 		if stream.N == 0 {
-			return nil, expansionError(budget)
+			err = expansionError(budget)
 		}
+		err = body.finish(tarBody, err)
 	default:
-		err = c.readTar(bytes.NewReader(raw))
+		err = body.finish(tarBody, c.readTar(tarBody))
 	}
 	if err != nil {
 		return nil, err
 	}
 	return c.result()
+}
+
+// uploadBody reads the upload and keeps its first read error other than
+// io.EOF. The tar and gzip readers turn such an error into an archive
+// problem; fromArchive reports it as itself instead. After an error it does
+// not read the body again.
+type uploadBody struct {
+	r   io.Reader
+	err error
+}
+
+func (b *uploadBody) Read(p []byte) (int, error) {
+	if b.err != nil {
+		return 0, b.err
+	}
+	n, err := b.r.Read(p)
+	if err != nil && err != io.EOF {
+		b.err = err
+	}
+	return n, err
+}
+
+// finish settles an archive read from rest, the capped body. The tar reader
+// stops at the end-of-archive marker or at a failure, so finish reads and
+// discards the remainder of rest: the upload succeeds only if the whole body
+// up to the limit reads cleanly. A read error wins over err, the archive
+// result.
+func (b *uploadBody) finish(rest io.Reader, err error) error {
+	if b.err == nil {
+		io.Copy(io.Discard, rest)
+	}
+	if b.err != nil {
+		return b.err
+	}
+	return err
 }
 
 func (c *collector) readTar(r io.Reader) error {
@@ -450,12 +505,12 @@ func parseManifest(files []File, historical bool) (Manifest, error) {
 	}
 	if m.Type == "" {
 		if _, explicit := fields["type"]; explicit && !bad["type"] {
-			verr.add(ManifestName, "type must be flat, docs, page, design or board", `use "flat", "docs", "page", "design" or "board", or omit type`)
+			verr.add(ManifestName, "type must be flat, docs, page, design, board or notebook", `use "flat", "docs", "page", "design", "board" or "notebook", or omit type`)
 		}
 		m.Type = contenttype.Flat
 	}
-	if m.Type != contenttype.Flat && m.Type != contenttype.Docs && m.Type != contenttype.Page && m.Type != contenttype.Design && m.Type != contenttype.Board {
-		verr.add(ManifestName, fmt.Sprintf("unknown type %q", m.Type), `use "flat", "docs", "page", "design" or "board"`)
+	if m.Type != contenttype.Flat && m.Type != contenttype.Docs && m.Type != contenttype.Page && m.Type != contenttype.Design && m.Type != contenttype.Board && m.Type != contenttype.Notebook {
+		verr.add(ManifestName, fmt.Sprintf("unknown type %q", m.Type), `use "flat", "docs", "page", "design", "board" or "notebook"`)
 	}
 	switch m.Type {
 	case contenttype.Docs:
@@ -466,6 +521,8 @@ func parseManifest(files []File, historical bool) (Manifest, error) {
 		return parseShell(files, fields, m, &verr, "design", "write design files with save_design")
 	case contenttype.Board:
 		return parseShell(files, fields, m, &verr, "board", "write board elements with update_board")
+	case contenttype.Notebook:
+		return parseShell(files, fields, m, &verr, "notebook", "write notebook pages, blocks and rows with update_notebook")
 	}
 	if (bad["*"] || bad["kind"]) && m.Kind == "" && !index["index.html"] {
 		// Guess the kind so the entry checks below stay useful.
@@ -887,10 +944,9 @@ func parsePage(files []File, index map[string]bool, fields map[string]json.RawMe
 	return m, nil
 }
 
-// parseShell validates the shell bundle of a design or a board (noun): only
-// flats.json with type and name. Their content lives in the revision store
-// (a board's current state in its board.db); core writes this shell itself
-// and refuses their manifests on every public bundle path.
+// parseShell validates internal Revision-model shells: only flats.json with
+// type and name. Core writes these shells and refuses their manifests on
+// every public bundle path; content is written through the type's editor.
 func parseShell(files []File, fields map[string]json.RawMessage, m Manifest, verr *ValidationError, noun, fix string) (Manifest, error) {
 	for k := range fields {
 		if k != "type" && k != "name" {

@@ -1,6 +1,8 @@
 // Zoom bar and menu, frame list, locked elements list, Find and Send to
 // agent (rules 8, 9, 26; TECH 6.2, 11.2).
 
+'use strict';
+
 import { $, h, icon, menu, popover, toast, announce, plural, replace } from './ui.js';
 import { KIND_NAMES } from './schema.js';
 import { elementCenter, center } from './geom.js';

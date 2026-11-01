@@ -53,11 +53,6 @@ func (tracker *Tracker[T]) GoStructToJs(
 	rval reflect.Value,
 ) (*Value, error) {
 	return withJSObject(c, func(obj *Value) error {
-		// obj.SetPropertyStr("__go_type", c.NewString(GetGoTypeName(rtype)))
-
-		// Determine the struct type and value for field processing:
-		// - pointer to struct: dereference for field processing.
-		// - direct struct: use as-is.
 		var (
 			structType reflect.Type
 			structVal  reflect.Value
@@ -134,7 +129,6 @@ func GoNumberToJs[T NumberType](c *Context, i T) *Value {
 	case float32:
 		return c.NewFloat64(float64(v))
 	default:
-		// Convert other integer types to int64, floats to float64
 		switch any(i).(type) {
 		case int, int8, int16:
 			return c.NewInt64(int64(i))
@@ -355,12 +349,10 @@ func (tracker *Tracker[T]) addStructFieldsToObject(
 	rtype reflect.Type,
 	rval reflect.Value,
 ) error {
-	// Process embedded fields first to enable field overriding
 	if err := tracker.processEmbeddedFields(c, obj, rtype, rval); err != nil {
 		return err
 	}
 
-	// Process regular fields (can override embedded fields)
 	return tracker.processRegularFields(c, obj, rtype, rval)
 }
 
@@ -414,11 +406,9 @@ func (tracker *Tracker[T]) processEmbeddedPointer(
 ) error {
 	elem := fieldValue.Elem()
 	if elem.Kind() == reflect.Struct {
-		// Embedded pointer to struct: recursively process struct fields
 		return tracker.addStructFieldsToObject(c, obj, fieldType.Elem(), elem)
 	}
 
-	// Embedded pointer to primitive: add the dereferenced value as field
 	return tracker.addEmbeddedPrimitive(c, obj, fieldName, elem)
 }
 

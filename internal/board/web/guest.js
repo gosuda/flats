@@ -2,6 +2,8 @@
 // viewer labels, the guest badge and the messages for guest refusals and
 // fatal codes. Guest names are only ever drawn as text.
 
+'use strict';
+
 import { h } from './ui.js';
 import { utf8Length } from './net.js';
 
@@ -21,6 +23,7 @@ const JOINED_KEY = 'flats-board-joined';
 
 // Control (C0, DEL, C1) and Unicode format characters are removed from a
 // name, as the server does (TECH 3.1, cleanGuestName).
+// biome-ignore lint/suspicious/noControlCharactersInRegex: cleanGuestName strips control characters matching server-side validation
 const UNWANTED = /[\u0000-\u001f\u007f-\u009f\p{Cf}]/gu;
 
 export const runeCount = (s) => [...s].length;
@@ -75,8 +78,8 @@ export function randomNick(pick = (list) => list[Math.floor(Math.random() * list
 }
 
 // pageNick is the nickname guests see for this page's person (hello.nick,
-// docs-public-edit-TECH 5.2): the typed name when there is one, cut to a
-// guest name's length, else the generated name this browser keeps, made
+// docs-public-edit-technical-design 5.2): the typed name when there is one, cut
+// to a guest name's length, else the generated name this browser keeps, made
 // once.
 export function pageNick(typed, nick = randomNick) {
   const clean = [...cleanGuestName(typed)].slice(0, GUEST_NAME_MAX).join('').trim();

@@ -48,15 +48,11 @@ runtime) need internal/runtime && exec go test "$@" -skip "$runtime_soak|$runtim
 docs-soak) need internal/apps/docs && exec go test "$@" -run "$docs_soak" ./internal/apps/docs ;;
 docs-budget)
 	need internal/apps/docs
-	# The budgets measure the docs engine, not the disk. Each edit commits to
-	# the worker's SQLite WAL under t.TempDir; on a GitHub runner's disk one
-	# edit in five took 20-300 ms before its ACK, while on tmpfs in the same
-	# job none took over 6.2 ms. So, where /dev/shm is writable, only the
-	# test binary gets it as TMPDIR and GOTMPDIR (t.TempDir prefers
-	# GOTMPDIR). The go command keeps its build directory where it was:
-	# /dev/shm can be small or mounted noexec (as in Docker), and the test
-	# binary has to run. Without /dev/shm (macOS), the environment is
-	# unchanged.
+	# Budgets measure the docs engine, not the disk (docs/gates.md has the
+	# numbers), so the test binary's t.TempDir alone moves to /dev/shm:
+	# t.TempDir prefers GOTMPDIR, while the go command's own build
+	# directory stays put (/dev/shm can be small or noexec, as in Docker).
+	# Without /dev/shm (macOS), nothing changes.
 	if [ -d /dev/shm ] && [ -w /dev/shm ]; then
 		exec go test -exec 'env TMPDIR=/dev/shm GOTMPDIR=/dev/shm' "$@" -run "$docs_budget" ./internal/apps/docs
 	fi
@@ -69,8 +65,6 @@ other)
 	# testing no packages. Older source has another module path.
 	module=$(go list -m)
 	all=$(go list ./...)
-	# Fixed strings: the runtime and docs packages exactly, and the board
-	# package with everything below it.
 	packages=$(printf '%s\n' "$all" | awk -v m="$module" '
 		$0 != m "/internal/runtime" && $0 != m "/internal/apps/docs" &&
 		$0 != m "/internal/board" && index($0, m "/internal/board/") != 1')

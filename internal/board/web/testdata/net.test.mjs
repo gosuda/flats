@@ -1,3 +1,5 @@
+'use strict';
+
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { batchFrames, batchFits, queueBatch, utf8Length, FRAME_MAX, PART_DATA_MAX, TooLargeError, Net } from '../net.js';
@@ -240,7 +242,7 @@ test('a withdrawal check answered after a reconnect is stale', async (t) => {
   let d = deferred();
   let check = net.withdrawn(d.head);
   t.mock.timers.tick(1200);
-  let sock = FakeSocket.last;
+  const sock = FakeSocket.last;
   sock.onopen();
   sock.recv(welcome);
   assert.equal(net.connected, true);

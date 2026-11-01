@@ -26,18 +26,6 @@ func (s *Service) isDocs(ctx context.Context, f store.Flat) (bool, error) {
 	return t == contenttype.Docs, err
 }
 
-// refuseDocs returns ErrDocsUnversioned for a docs flat.
-func (s *Service) refuseDocs(ctx context.Context, f store.Flat) error {
-	docs, err := s.isDocs(ctx, f)
-	if err != nil {
-		return err
-	}
-	if docs {
-		return ErrDocsUnversioned
-	}
-	return nil
-}
-
 // applyDocsLocked makes a just saved docs Draft revision the running
 // document without approval. Unchanged content leaves the running document
 // as it is. The caller holds s.lock(slugName).

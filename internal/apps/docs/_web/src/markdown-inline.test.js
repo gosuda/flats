@@ -1,3 +1,5 @@
+'use strict';
+
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { markdownLanguage } from "@codemirror/lang-markdown";
@@ -238,7 +240,7 @@ function best(text) {
 // browser display test.
 const paragraph = (n, item) => {
   let text = "";
-  for (let i = 0; i < n; i++) text += item(i) + (i % 10 == 9 ? "\n" : " ");
+  for (let i = 0; i < n; i++) text += item(i) + (i % 10 === 9 ? "\n" : " ");
   return text;
 };
 // A paragraph of items typed without spaces or line breaks.
@@ -290,7 +292,7 @@ for (const [name, item, layout = paragraph] of [
 // whose paragraph text is exactly n characters.
 function sized(n) {
   const unit = "a *b* [c](https://d/) <i>e</i> [f][g] `h` ";
-  let text = unit.repeat(Math.ceil(n / unit.length)).slice(0, n - 1);
+  const text = unit.repeat(Math.ceil(n / unit.length)).slice(0, n - 1);
   return text + "x";
 }
 

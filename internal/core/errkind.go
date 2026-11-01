@@ -29,7 +29,3 @@ func invalidf(format string, args ...any) error { return invalid(fmt.Errorf(form
 func forbiddenf(format string, args ...any) error {
 	return withKind(ErrForbidden, fmt.Errorf(format, args...))
 }
-
-func unavailablef(format string, args ...any) error {
-	return withKind(ErrUnavailable, fmt.Errorf(format, args...))
-}

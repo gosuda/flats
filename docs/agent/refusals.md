@@ -18,10 +18,16 @@ encoding, negative number, unknown visibility, or a docs rule. A version,
 Draft, preview, publish or rollback call on a document is also `invalid`:
 documents have none of them; use `save_document` or `update_document`. The same
 call on a board is `invalid` too: use `update_board` and the revision tools.
-A board write over a board limit or with a bad element is `invalid`. Upload
+A board write over a board limit or with a bad element is `invalid`. On a
+notebook the same calls are `invalid`: use `update_notebook` and the
+revision tools. A notebook write with an unknown field, a bad value, an
+unknown asset path, a move that breaks the page or block tree, or a kind
+change Flats cannot make is `invalid`; the error names the operation and
+field. Upload
 validation lists every problem with its `path` and `fix` at once. Nothing was
 saved. Fix every listed problem and send the complete request again. Rules:
-`topic.static`, `topic.manifest`, `topic.docs`, `topic.board`, `topic.env-secrets`.
+`topic.static`, `topic.manifest`, `topic.docs`, `topic.board`, `topic.notebook`,
+`topic.env-secrets`.
 
 ## not_found
 
@@ -84,6 +90,31 @@ refused, deletions included. Tell the user: the operator can raise the disk
 quota, or free space by lowering the revision quota or unpinning revisions.
 A `rollback_revision` is never refused for the disk quota.
 
+## not_notebook
+
+The tool (`get_notebook` or `update_notebook`) needs a notebook
+(`type: "notebook"`), and this flat is another type. Check `get_flat`. Create
+a notebook with `create_flat {type: "notebook"}` or `update_notebook` on a
+new slug. A flat never changes its type.
+
+## notebook_capacity
+
+The notebook write did not fit, and nothing changed. The reason says which
+limit:
+
+* `item_limit`: an item would go over a notebook limit (pages, blocks per
+  page, rows, properties, options, views, text length or data per page or
+  database). The detail names the item, the limit and its current and
+  proposed values. Split the content, for example across pages or
+  databases, or remove some first. An item already over a lowered limit
+  accepts edits that do not make it larger.
+* `disk_quota`: the edit and the revision that records it would put the
+  flat over its disk quota, or the flat is already over it. While over,
+  every edit is refused, deletions included. Tell the user: the operator can
+  raise the disk quota, or free space by lowering the revision quota or
+  unpinning revisions. A `rollback_revision` is never refused for the disk
+  quota.
+
 ## public_edit_blocked
 
 A board or document cannot become editable by anyone yet, so the
@@ -96,8 +127,8 @@ a revision quota, or a free pin), then request the change again.
 
 ## no_revisions
 
-The revision tools work on documents, designs and boards, and this flat is a
-website or a page: those keep numbered versions instead (`list_versions`, `rollback`).
+The revision tools work on documents, designs, boards and notebooks, and this
+flat is a website or a page: those keep numbered versions instead (`list_versions`, `rollback`).
 A document that never ran has no revisions yet; save it with `save_document`
 first.
 
@@ -125,6 +156,16 @@ is locked and the call did not unlock it, or the same `op_id` came with a
 different request. An expired `get_board` cursor is `conflict` too. Nothing in
 the call applied. Read `get_board` again (from the first page for a cursor),
 rebuild the call against what people wrote, and retry with a new `op_id`.
+
+On a notebook, `update_notebook` is refused with `conflict` when a guard
+(`guards.state` or `guards.items`) no longer matches, a target item was
+deleted or came back with another `inc`, or the same `op_id` came with a
+different request. An expired `get_notebook` cursor is `conflict` with reason
+`read_expired`; an expired write-result mapping is `conflict` with reason
+`result_expired`, and its temporary-name correlations cannot be recovered
+from current content. Nothing in the call applied. Read `get_notebook` again
+(from the first page for a cursor), rebuild the call against what people
+wrote, and retry with a new `op_id`.
 
 While anyone can edit a board or document, unpinning its safe point is
 `conflict`; it stays pinned until the operator stops guest editing.
@@ -200,6 +241,11 @@ For `update_document` the error says which case applies:
 * It did not apply: retry.
 * The outcome is unknown: read `get_document` first, so an insert is not applied twice.
 * Too many live edits: wait a second.
+
+For `get_notebook` and `update_notebook`, retry only when the error says
+`retry` is true, with the same `op_id` and request. A notebook read can be
+`unavailable` while the host is busy with other large reads; retry after the
+hint's delay.
 
 ## provider_not_permitted
 

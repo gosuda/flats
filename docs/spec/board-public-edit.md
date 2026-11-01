@@ -8,7 +8,7 @@ every changed rule is listed in
 is in scope.
 
 This page sets what to build, why, and the rules it must keep. The technical
-design is in [board-public-edit-TECH.md](board-public-edit-TECH.md).
+design is in [board-public-edit-technical-design.md](board-public-edit-technical-design.md).
 
 ## Summary
 
@@ -161,7 +161,7 @@ an approval.
 
 14. **A third projection.** Guests are neither Private editors nor Public
     viewers: they write, so they need more than the public projection of
-    [TECH 7.3](board-TECH.md#73-public-projection), and they must not receive
+    [TECH 7.3](board-technical-design.md#73-public-projection), and they must not receive
     what Private editors receive. A **guest projection** is rebuilt from an
     allow-list, in the same way as the public one, for snapshots, deltas,
     acknowledgements, refusals, undo notices and presence. Exports use the
@@ -206,7 +206,7 @@ an approval.
     commit of every edit, never from what the client claims. A `view`
     connection cannot edit by sending an edit; a guest cannot use a
     Private-only operation by sending it. Writes keep the same-origin
-    rules of [TECH 7.1](board-TECH.md#71-common-rules).
+    rules of [TECH 7.1](board-technical-design.md#71-common-rules).
 21. **A lock is not a permission.** A guest can unlock a locked element
     ([board rule 3](board.md#content)).
 
@@ -374,7 +374,7 @@ Board spec ([board.md](board.md)):
 - Success criterion "Refusal": reads "On Public routes at level `view`".
 - Agent topic `topic.board`: the untrusted-input rule 28.
 
-Technical design ([board-TECH.md](board-TECH.md), updated when this ships):
+Technical design ([board-technical-design.md](board-technical-design.md), updated when this ships):
 sections 3.1 and 5.2 (a per-text authorship field in board.db and in
 revision snapshots; a member who edits part of a guest's text replaces the
 whole text, so the element becomes member-written, which `topic.board`

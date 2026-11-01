@@ -6,6 +6,8 @@
 // with the latest text. The gap is measured from the end of the previous
 // render, so the main thread stays free for at least that long between
 // renders however large the document is. Local interactions call run().
+'use strict';
+
 export const REMOTE_RENDER_GAP_MS = 150;
 
 export function coalescedRefresh(refresh, gap = REMOTE_RENDER_GAP_MS) {

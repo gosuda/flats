@@ -17,6 +17,7 @@
 // usage: node judge.mjs --url http://127.0.0.1:17940 --slug feedback-1 \
 //          --baseline baseline.json [--measure auto|chrome|approx] [--json out.json]
 // Exit status: 0 when every check passes, 1 when one fails, 2 on errors.
+'use strict';
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { args, readBoard } from './lib.mjs';
@@ -25,7 +26,6 @@ import { connectorPoints } from '../../internal/board/web/geom.js';
 
 const MIN_TEXT = 12;     // px at 100% zoom (board.md success criteria)
 const EPS = 0.5;         // px; the host stores coordinates to 0.1 px
-const LINE = 1.38;       // render.js line height factor
 const FRAME_LABEL = 13;  // render.js draws frame names at 13 / zoom px
 const FONT = '-apple-system, BlinkMacSystemFont, "Segoe UI", "Apple SD Gothic Neo", "Noto Sans KR", sans-serif';
 

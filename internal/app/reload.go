@@ -70,7 +70,6 @@ func (h *Host) reloadContext(parent context.Context) (context.Context, func()) {
 	}
 }
 
-// logReload logs a successful reload's outcome by key name.
 func (h *Host) logReload(rep *core.ConfigReload) {
 	h.logf("config.json reloaded")
 	if len(rep.Applied) > 0 {
@@ -231,7 +230,6 @@ func (h *Host) reconcileConsoleDomains(ctx context.Context) {
 	}
 }
 
-// sighupAction is what `flats serve` does on SIGHUP.
 type sighupAction int
 
 const (

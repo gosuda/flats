@@ -48,7 +48,7 @@ func groupsOf(t *testing.T, b *tb) map[string]editGroup {
 // TestQuotaRefusalInsideOneGroupCommit: batches of two editors that one
 // group commit collects are checked one by one against the quota; the one
 // that fits applies and is seen, the one over the quota is refused with no
-// delta and no edit group (board-TECH 5.4, 14 Quota).
+// delta and no edit group (board-technical-design 5.4, 14 Quota).
 func TestQuotaRefusalInsideOneGroupCommit(t *testing.T) {
 	b := newTB(t)
 	a := connect(t, b.priv, map[string]any{"editor": "alice"}, nil)
@@ -136,8 +136,8 @@ func TestQuotaRefusalInsideOneGroupCommit(t *testing.T) {
 
 // TestRefusedAgentWriteLeavesGroupsUnchanged: an agent write closes the
 // open person groups before it applies; refused over the quota, it leaves
-// those groups, the outbox and the board as they were (board-TECH 5.4,
-// 14 Quota).
+// those groups, the outbox and the board as they were (board-technical-design
+// 5.4, 14 Quota).
 func TestRefusedAgentWriteLeavesGroupsUnchanged(t *testing.T) {
 	ctx := context.Background()
 	b := newTB(t)

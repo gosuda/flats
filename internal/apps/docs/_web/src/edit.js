@@ -1,6 +1,8 @@
 // Guarded live edits for host management clients (MCP update_document).
 // planEdit is pure: it resolves every operation against the committed text,
 // in order, and either returns splices or throws without changing anything.
+'use strict';
+
 export const EDIT_LIMITS = Object.freeze({
   ops: 32,
   body: 512 * 1024,
@@ -166,7 +168,9 @@ function hashInto(list, text, digest) {
       need.map((b) => text.slice(b.start, b.end)),
       digest,
     );
-  need.forEach((b, i) => (b.hash = hashes[i]));
+  need.forEach((b, i) => {
+    b.hash = hashes[i];
+  });
 }
 function addHash(map, b) {
   const bucket = map.get(b.hash);

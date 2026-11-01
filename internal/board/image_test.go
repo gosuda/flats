@@ -15,8 +15,8 @@ import (
 
 // TestImageChecksEveryFormat extends TestImageChecks to the forged
 // signatures, truncations and pixel bombs of each accepted format
-// (board-TECH 10, 14 Images and zip). Every case is refused as invalid
-// before any decoder allocation the walk did not bound.
+// (board-technical-design 10, 14 Images and zip). Every case is refused as
+// invalid before any decoder allocation the walk did not bound.
 func TestImageChecksEveryFormat(t *testing.T) {
 	var jb bytes.Buffer
 	_ = jpeg.Encode(&jb, image.NewRGBA(image.Rect(0, 0, 40, 30)), nil)
@@ -114,7 +114,8 @@ func webpVP8X(w, h int) []byte {
 }
 
 // TestArchiveTruncatedAndForged: a truncated data file and one whose
-// image entry is not an image are refused as invalid (board-TECH 9.2, 14).
+// image entry is not an image are refused as invalid (board-technical-design
+// 9.2, 14).
 func TestArchiveTruncatedAndForged(t *testing.T) {
 	img := pngBytes(t, 4, 4)
 	hash := sha256Hex(img)

@@ -5,6 +5,7 @@ go 1.27.1
 require (
 	github.com/go-openapi/runtime v0.29.0
 	github.com/go-openapi/strfmt v0.24.0
+	github.com/google/jsonschema-go v0.4.3
 	github.com/gosuda/portal-tunnel/v2 v2.6.3
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/oesni/libtunnel v0.0.0-20261011195643-61501adfbebe
@@ -50,9 +51,10 @@ require (
 	github.com/fsnotify/fsnotify v1.10.1 // indirect
 	github.com/fullsailor/pkcs7 v0.0.0-20190404230743-d7302db945fa // indirect
 	github.com/fxamacker/cbor/v2 v2.9.3 // indirect
+	github.com/fzipp/gocyclo v0.6.0 // indirect
 	github.com/gaissmai/bart v0.29.0 // indirect
 	github.com/getsentry/sentry-go v0.43.0 // indirect
-	github.com/go-chi/chi/v5 v5.2.4 // indirect
+	github.com/go-chi/chi/v5 v5.4.0 // indirect
 	github.com/go-chi/cors v1.2.1 // indirect
 	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
 	github.com/go-json-experiment/json v0.0.0-20260820222146-c27c302e5fc3 // indirect
@@ -91,7 +93,6 @@ require (
 	github.com/google/btree v1.1.3 // indirect
 	github.com/google/go-cmp v0.7.0 // indirect
 	github.com/google/gopacket v1.1.19 // indirect
-	github.com/google/jsonschema-go v0.4.3 // indirect
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gorilla/mux v1.8.1 // indirect
 	github.com/gorilla/securecookie v1.1.2 // indirect
@@ -168,7 +169,7 @@ require (
 	github.com/zitadel/logging v0.6.2 // indirect
 	github.com/zitadel/oidc/v3 v3.45.0 // indirect
 	github.com/zitadel/schema v1.3.1 // indirect
-	go.mongodb.org/mongo-driver v1.17.4 // indirect
+	go.mongodb.org/mongo-driver v1.17.7 // indirect
 	go.mozilla.org/pkcs7 v0.9.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.2.1 // indirect
 	go.opentelemetry.io/contrib/propagators/jaeger v1.47.0 // indirect
@@ -201,3 +202,5 @@ require (
 	nhooyr.io/websocket v1.8.17 // indirect
 	zombiezen.com/go/capnproto2 v2.18.0+incompatible // indirect
 )
+
+tool github.com/fzipp/gocyclo/cmd/gocyclo

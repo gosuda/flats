@@ -230,7 +230,7 @@ type Element struct {
 	At      int64
 	Grid    bool // board metadata only
 	// TA records who last wrote each text bundle and LK the kind of the
-	// last write of any bundle (board-public-edit-TECH.md 7). Neither is a
+	// last write of any bundle (board-public-edit-technical-design.md 7). Neither is a
 	// bundle; old elements have neither. TA is replaced, never changed in
 	// place, so clones share it.
 	TA map[string]TextAuthor

@@ -676,7 +676,6 @@ func (w logWriter) Write(p []byte) (int, error) {
 
 var _ io.Writer = logWriter{}
 
-// recordPath is slug's record file.
 func recordPath(dir, slug string) string { return filepath.Join(dir, slug+".json") }
 
 func (n *Net) loadRecord(slug string) (string, error) {

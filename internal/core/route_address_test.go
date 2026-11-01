@@ -328,7 +328,7 @@ func TestRedirectFollowsArrivalProvider(t *testing.T) {
 	zrok := routeEndpoint(ProviderZrok, "site", AudienceCurrent, "starting")
 	h := newAddressHost(t, "local", []string{"tailscale", "netbird", "portal", "zrok"}, "tailscale", "portal", "zrok")
 	h.net.set("site", local, tail, portal, zrok)
-	redirect := h.s.redirectHandler(func(p ProviderID, public bool) string { return h.s.redirectTarget("site", p, public) })
+	redirect := h.s.redirectHandler(false, func(p ProviderID, public bool) string { return h.s.redirectTarget("site", p, public) })
 	location := func(p ProviderID, tag bool) (int, string) {
 		t.Helper()
 		r := httptest.NewRequest(http.MethodGet, "/a?b=1", nil)

@@ -2,6 +2,8 @@
 // element list (role="tree") that shows itself while it has focus. Frames are
 // branches, elements leaves, in reading order per frame.
 
+'use strict';
+
 import { $, h, announce } from './ui.js';
 import { KIND_NAMES, SHAPE_NAMES, style, authorOf } from './schema.js';
 import * as ops from './ops.js';
@@ -15,7 +17,7 @@ export class A11yTree {
     this.tree = $('#element-tree');
     this.stale = true;
     this.timer = 0;
-    this.current = null;     // focused element id
+    this.current = null;
     this.collapsed = new Set();
     this.tree.addEventListener('keydown', (e) => this.key(e));
     this.tree.addEventListener('focusin', (e) => {

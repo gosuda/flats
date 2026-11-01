@@ -24,8 +24,8 @@ func init() {
 
 func main() {
 	args := os.Args[1:]
-	// serve and worker install their own signal handling.
-	if len(args) > 0 && (args[0] == "serve" || args[0] == "worker") {
+	hasOwnSignalHandling := len(args) > 0 && (args[0] == "serve" || args[0] == "worker")
+	if hasOwnSignalHandling {
 		os.Exit(cli.Run(context.Background(), args, cli.OSEnv()))
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)

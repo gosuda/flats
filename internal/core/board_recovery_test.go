@@ -292,9 +292,9 @@ func TestBoardImportFailures(t *testing.T) {
 	unlock()
 
 	// The ticker tries a failing board again only after a delay.
-	s.boardPending.Store("plan", true)
+	s.outbox.pending.Store("plan", true)
 	s.TickBoards(ctx)
-	v, ok := s.boardRetry.Load("plan")
+	v, ok := s.outbox.retry.Load("plan")
 	if !ok {
 		t.Fatal("no backoff after a failed background import")
 	}
@@ -303,10 +303,10 @@ func TestBoardImportFailures(t *testing.T) {
 		t.Fatalf("backoff = %+v", first)
 	}
 	s.TickBoards(ctx)
-	if v, _ := s.boardRetry.Load("plan"); v.(boardBackoff) != first {
+	if v, _ := s.outbox.retry.Load("plan"); v.(boardBackoff) != first {
 		t.Fatalf("the ticker retried during the backoff: %+v", v)
 	}
-	if _, ok := s.boardPending.Load("plan"); !ok {
+	if _, ok := s.outbox.pending.Load("plan"); !ok {
 		t.Fatal("a failing board left the pending set")
 	}
 
@@ -337,10 +337,10 @@ func TestBoardImportFailures(t *testing.T) {
 	if holds, _ := s.st.Holds(ctx, "plan"); len(holds) != 0 {
 		t.Fatalf("holds after the import = %v", holds)
 	}
-	s.boardRetry.Store("plan", boardBackoff{next: time.Now().Add(-time.Second), delay: boardRetryMin})
-	s.boardPending.Store("plan", true)
+	s.outbox.retry.Store("plan", boardBackoff{next: time.Now().Add(-time.Second), delay: boardRetryMin})
+	s.outbox.pending.Store("plan", true)
 	s.TickBoards(ctx)
-	if _, ok := s.boardRetry.Load("plan"); ok {
+	if _, ok := s.outbox.retry.Load("plan"); ok {
 		t.Fatal("backoff kept after a successful import")
 	}
 

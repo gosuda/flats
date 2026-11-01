@@ -242,17 +242,21 @@ func (s *Service) RenameSlug(ctx context.Context, from, to string, via Via) (Fla
 // (307): it ends with the redirect window, so browsers must not cache it.
 // While the new address is not known yet (a Portal exposure that is still
 // starting), it answers 503 instead of redirecting to itself.
-func (s *Service) redirectHandler(target func(p ProviderID, public bool) string) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		p, _ := RouteProvider(r.Context())
-		base := strings.TrimSuffix(target(p, PublicProvider(p)), "/")
+func (s *Service) redirectHandler(public bool, target func(p ProviderID, public bool) string) http.Handler {
+	return s.linkGate(public, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		p, marked := RouteProvider(r.Context())
+		arrivalPublic := public
+		if marked {
+			arrivalPublic = PublicProvider(p)
+		}
+		base := strings.TrimSuffix(target(p, arrivalPublic), "/")
 		if base == "" {
 			w.Header().Set("Retry-After", "30")
 			http.Error(w, "this flat moved; its new address is not ready yet, try again shortly", http.StatusServiceUnavailable)
 			return
 		}
 		http.Redirect(w, r, base+r.URL.RequestURI(), http.StatusTemporaryRedirect)
-	})
+	}))
 }
 
 // redirectTarget is the base URL a redirect to cur sends a visitor who
@@ -289,13 +293,13 @@ func (s *Service) serveRedirect(ctx context.Context, old, cur string) {
 		if err != nil {
 			return
 		}
-		h := s.redirectHandler(func(p ProviderID, public bool) string { return s.redirectTarget(cur, p, public) })
+		h := s.redirectHandler(false, func(p ProviderID, public bool) string { return s.redirectTarget(cur, p, public) })
 		_, err = n.ServeExposure(ctx, ExposureRequest{Slug: old, Host: old, Visibility: "private", Audience: AudienceCurrent, Handler: h, Permitted: privateProviders(ids)})
 		if err != nil {
 			s.Event(ctx, cur, "error", "rename", err.Error(), nil)
 		}
 		public := false
-		if f.Visibility.Public() {
+		if f.Visibility.Public() && (!f.CreatedPublicInstance || f.LiveVersion > 0) {
 			res, err := n.ServeExposure(ctx, ExposureRequest{Slug: old, Host: old, Visibility: "public", Audience: AudienceCurrent, Handler: h, PrivateHandler: h, Permitted: ids, Hidden: true})
 			for _, ep := range res.Endpoints {
 				if PublicProvider(ep.Provider) {
@@ -311,15 +315,15 @@ func (s *Service) serveRedirect(ctx context.Context, old, cur string) {
 		s.mu.Unlock()
 		return
 	}
-	if _, err := s.cfg.Private.Serve(ctx, old, s.redirectHandler(func(ProviderID, bool) string { return s.cfg.Private.URL(cur) }), false); err != nil {
+	if _, err := s.cfg.Private.Serve(ctx, old, s.redirectHandler(false, func(ProviderID, bool) string { return s.cfg.Private.URL(cur) }), false); err != nil {
 		s.Event(ctx, cur, "error", "rename", "could not serve private redirect from "+old+": "+err.Error(), nil)
 	}
 	s.mu.Lock()
 	prev := s.redir[old]
 	s.mu.Unlock()
 	public := prev != nil && prev.public
-	if f.Visibility.Public() && s.cfg.Public != nil {
-		if _, err := s.cfg.Public.Serve(ctx, old, s.redirectHandler(func(ProviderID, bool) string { return s.cfg.Public.URL(cur) }), true); err != nil {
+	if f.Visibility.Public() && (!f.CreatedPublicInstance || f.LiveVersion > 0) && s.cfg.Public != nil {
+		if _, err := s.cfg.Public.Serve(ctx, old, s.redirectHandler(true, func(ProviderID, bool) string { return s.cfg.Public.URL(cur) }), true); err != nil {
 			s.Event(ctx, cur, "error", "rename", "could not serve public redirect from "+old+": "+err.Error(), nil)
 		} else {
 			public = true

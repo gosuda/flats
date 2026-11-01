@@ -6,6 +6,7 @@
 // intended end targets of each connector.
 //
 // usage: node seed.mjs --url http://127.0.0.1:17940 --slug feedback-1 --out baseline.json [--seed 1]
+'use strict';
 
 import { writeFileSync } from 'node:fs';
 import { args, post, readBoard } from './lib.mjs';
@@ -69,7 +70,7 @@ const rnd = () => ((state = (Math.imul(state, 1664525) + 1013904223) >>> 0) / 2 
 
 const COLORS = ['yellow', 'orange', 'pink', 'blue', 'green', 'gray'];
 const order = [];
-for (const [topic, texts] of Object.entries(TOPICS)) texts.forEach((t, i) => order.push({ topic, i, text: t }));
+for (const [topic, texts] of Object.entries(TOPICS)) texts.forEach((t, i) => { order.push({ topic, i, text: t }); });
 // Shuffle so topics are interleaved on the canvas.
 for (let i = order.length - 1; i > 0; i--) {
   const j = Math.floor(rnd() * (i + 1));

@@ -2,6 +2,8 @@
 // element attaches to it (rule 4), on its outline (TECH 4.4); Alt keeps it
 // free.
 
+'use strict';
+
 import { outlineAt, defaultAt, endpointWorld } from '../geom.js';
 import { clampPoint } from '../schema.js';
 import * as ops from '../ops.js';

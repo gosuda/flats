@@ -1,10 +1,11 @@
 // Tests of the e2e helpers that need no browser or host:
 // node --test scripts/board-e2e/lib/lib.test.mjs
+'use strict';
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import zlib from 'node:zlib';
-import { ownedProcesses } from './cdp.mjs';
+import { ownedProcesses } from '../../lib/cdp.mjs';
 import { makePNG, decodePNG } from './files.mjs';
 
 test('ownedProcesses picks only this browser with exactly this profile', () => {

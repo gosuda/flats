@@ -4,6 +4,7 @@
 // violation applied to that correct board must fail exactly its check.
 //
 // usage: node selftest.mjs --url http://127.0.0.1:17940 --dir <scratch dir>
+'use strict';
 
 import { execFileSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';

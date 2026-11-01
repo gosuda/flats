@@ -156,7 +156,8 @@ rendered in the client; assets in `content.assets` are still the host's responsi
   text and emoji remain Markdown source. The client uses CodeMirror 6,
   `y-codemirror.next`, and a `Y.UndoManager` that tracks only its local binding
   origin (including its own undo/redo), never remote or activation changes.
-* The editor keeps up with remote changes (spec rule 21b, TECH 3.11):
+* The editor keeps up with remote changes (spec rule 21b,
+  [technical design 3.11](../spec/docs-public-edit-technical-design.md#311-editor-parse-cost)):
   * Its Markdown language (`_web/src/markdown-inline.js`,
     `editorMarkdown()`) is `@lezer/markdown` 1.7.2 GFM with linear-time
     replacements for link closing, emphasis resolution, unclosed inline HTML
@@ -307,7 +308,7 @@ rendered in the client; assets in `content.assets` are still the host's responsi
 
 A Public document at level `edit` lets anyone with the link edit after
 typing a name ([docs-public-edit.md](../spec/docs-public-edit.md); design in
-[docs-public-edit-TECH.md](../spec/docs-public-edit-TECH.md)). Core stores
+[docs-public-edit-technical-design.md](../spec/docs-public-edit-technical-design.md)). Core stores
 the level and its epoch (`flats.access_seq`); this section is the worker
 and runtime side.
 

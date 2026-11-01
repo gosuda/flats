@@ -1,3 +1,5 @@
+'use strict';
+
 import { diffChars, diffArrays } from "diff";
 import { utf8Bytes, LIMITS } from "./protocol.js";
 // Preserve line endings, including the absence of a final newline.

@@ -43,10 +43,15 @@ var (
 	descBoardConns    = desc("flats_board_connections", "Open board WebSocket connections, Private and Public.")
 	descBoardImport   = desc("flats_board_import_seconds", "Time to import board revisions from a board's outbox into the revision store.")
 
+	descNotebookBatches = desc("flats_notebook_batches_total", "People's edit batches on notebooks by result: applied, rejected or retry (a transient refusal the editor resends).", "result")
+	descNotebookConns   = desc("flats_notebook_connections", "Open notebook WebSocket connections, Private and Public.")
+	descNotebookImport  = desc("flats_notebook_import_seconds", "Time to import notebook revisions from a notebook's outbox into the revision store.")
+
 	allDescs = []*prometheus.Desc{descBuildInfo, descDBBytes, descFlats, descRequests, descRateLimited, descRespBytes,
 		descOpenStreams, descDuration, descWorkerCPU, descWorkerMem, descWorkerMemAt, descWorkerState, descWorkerExits,
 		descDiskBytes, descDiskAt, descEndpoints, descApprovals, descSnapshotAt, descManagementReq,
-		descBoardBatches, descBoardConns, descBoardImport}
+		descBoardBatches, descBoardConns, descBoardImport,
+		descNotebookBatches, descNotebookConns, descNotebookImport}
 )
 
 // Label values reach the exposition only from fixed enums, slugs, provider
@@ -151,6 +156,21 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 		buckets[bound] = cum
 	}
 	ch <- prometheus.MustNewConstHistogram(descBoardImport, b.ImportCount, b.ImportSum, buckets)
+
+	n := snap.Notebook
+	for _, result := range []string{"applied", "rejected", "retry"} {
+		counter(descNotebookBatches, float64(n.Batches[result]), result)
+	}
+	gauge(descNotebookConns, float64(n.Connections))
+	notebookBuckets := make(map[float64]uint64, len(core.NotebookImportBuckets))
+	cum = 0
+	for i, bound := range core.NotebookImportBuckets {
+		if i < len(n.ImportCounts) {
+			cum += n.ImportCounts[i]
+		}
+		notebookBuckets[bound] = cum
+	}
+	ch <- prometheus.MustNewConstHistogram(descNotebookImport, n.ImportCount, n.ImportSum, notebookBuckets)
 
 	type countKey struct{ typ, vis, running string }
 	counts := map[countKey]int{}

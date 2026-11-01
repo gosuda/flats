@@ -3,6 +3,8 @@
 // list with the guest badge and the viewer entries, and the dialogs for a
 // full document. guest.js decides; this module only draws. Names are only
 // ever drawn as text.
+'use strict';
+
 import {
   GUEST_NAME_MAX,
   NAME_INVALID,

@@ -12,9 +12,14 @@ import (
 	"github.com/gosuda/flats/internal/board"
 )
 
+func leased(s *Service, slugName, hash string) bool {
+	d := s.designs()
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.leases[slugName+"\x00"+hash] > 0
+}
+
 // TestBoardHeldRevisionContentAndLease keeps a revision's files leased
-// until the caller releases them, and a blob leased through the backend
-// survives a sweep that would otherwise remove it (board-TECH 5.5).
 func TestBoardHeldRevisionContentAndLease(t *testing.T) {
 	ctx := context.Background()
 	s, _ := newTestService(t)
@@ -38,14 +43,14 @@ func TestBoardHeldRevisionContentAndLease(t *testing.T) {
 		t.Fatalf("revision %d content has no image: %+v", rev, c.Assets)
 	}
 	for _, f := range files {
-		if !s.leased("plan", f.Hash) {
+		if !leased(s, "plan", f.Hash) {
 			t.Fatalf("%s is not leased while held", f.Path)
 		}
 	}
 	release()
 	release()
 	for _, f := range files {
-		if s.leased("plan", f.Hash) {
+		if leased(s, "plan", f.Hash) {
 			t.Fatalf("%s is still leased after release", f.Path)
 		}
 	}
@@ -82,11 +87,11 @@ func TestBoardForegroundImportEndsRetryBackoff(t *testing.T) {
 	s, _ := newTestService(t)
 	newBoard(t, s, "plan")
 	failed := func() {
-		s.boardRetry.Store("plan", boardBackoff{next: time.Now().Add(time.Hour), delay: boardRetryMax})
+		s.outbox.retry.Store("plan", boardBackoff{next: time.Now().Add(time.Hour), delay: boardRetryMax})
 	}
 	cleared := func(path string) {
 		t.Helper()
-		if _, ok := s.boardRetry.Load("plan"); ok {
+		if _, ok := s.outbox.retry.Load("plan"); ok {
 			t.Fatalf("a successful %s import left the ticker's backoff in place", path)
 		}
 	}
@@ -108,7 +113,7 @@ func TestBoardForegroundImportEndsRetryBackoff(t *testing.T) {
 // TestBoardPutBlobReuseAgainstSweep: an upload that reuses an old,
 // unreferenced blob and the sweep's removal are ordered by the lease, so an
 // upload that reports the blob as already stored never loses it
-// (board-TECH 5.5).
+// (board-technical-design 5.5).
 func TestBoardPutBlobReuseAgainstSweep(t *testing.T) {
 	ctx := context.Background()
 	s, _ := newTestService(t)

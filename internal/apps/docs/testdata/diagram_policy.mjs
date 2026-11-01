@@ -1,10 +1,12 @@
-// When diagrams render (docs-public-edit-TECH.md 3.10): a member page of a
+// When diagrams render (docs-public-edit-technical-design.md 3.10): a member page of a
 // flat that is Public view only draws a diagram automatically; after the
 // level becomes edit, a diagram written afterwards shows its source with
 // Show diagram and does not draw, before any guest wrote and for a guest's
 // diagram too, until the member clicks.
 //
 //	node diagram_policy.mjs <url> <evidence dir>
+'use strict';
+
 import assert from "node:assert/strict";
 import path from "node:path";
 import { pathToFileURL } from "node:url";

@@ -1,4 +1,4 @@
-// Display latency between two member pages (docs/spec/docs-public-edit-TECH.md
+// Display latency between two member pages (docs/spec/docs-public-edit-technical-design.md
 // 8, row "Limits"): page A inserts a marked line every 250 ms through its
 // CodeMirror view, and page B records when each marker first appears in its
 // .cm-content DOM. Both times come from the same machine clock.
@@ -18,6 +18,8 @@
 // a round trip into page B's main thread ("probe"). With
 // FLATS_DOCS_DISPLAY_PROFILE=1 it records a CPU profile of page B during the
 // edits into the evidence directory and prints its top functions.
+'use strict';
+
 import fs from "node:fs";
 import readline from "node:readline";
 import path from "node:path";

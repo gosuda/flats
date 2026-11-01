@@ -8,6 +8,8 @@
 // rendered, the next waits at least as long as that batch took (and at most
 // maxWait), so the main thread is idle at least half the time. Local typing
 // does not pass through here and is applied at once.
+'use strict';
+
 export const MAX_WAIT = 1000;
 
 // A pause shorter than this is not measurable with timers: the next batch is

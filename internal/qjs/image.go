@@ -12,7 +12,6 @@ import (
 	"io/fs"
 	"math"
 	"sort"
-	"sync"
 	"sync/atomic"
 
 	"github.com/tetratelabs/wazero"
@@ -135,33 +134,17 @@ func imageKey(opt Option, wasm []byte) [sha256.Size]byte {
 	return k
 }
 
-var (
-	baseMu  sync.Mutex
-	baseMem = map[*byte][]byte{}
-)
-
-// recordBaseMemory keeps, once per module, the linear memory of a freshly
-// instantiated module (its data segments): the reference an image's pages
-// differ from.
+// recordBaseMemory keeps the linear memory of a freshly instantiated module
+// (its data segments): the reference an image's pages differ from.
 func (r *Runtime) recordBaseMemory() {
-	baseMu.Lock()
-	defer baseMu.Unlock()
-	if _, ok := baseMem[&r.wasm[0]]; ok {
-		return
-	}
 	m := r.module.Memory()
 	b, ok := m.Read(0, m.Size())
-	if !ok {
-		return
+	if ok {
+		r.base = bytes.Clone(b)
 	}
-	baseMem[&r.wasm[0]] = bytes.Clone(b)
 }
 
-func (r *Runtime) baseMemory() []byte {
-	baseMu.Lock()
-	defer baseMu.Unlock()
-	return baseMem[&r.wasm[0]]
-}
+func (r *Runtime) baseMemory() []byte { return r.base }
 
 // findRandomState locates JSContext.random_state from the clock readings
 // New_QJS handed to the guest: the 8-byte aligned slot within imageScan

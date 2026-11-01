@@ -1,5 +1,6 @@
 // Shared UI pieces: confirm dialogs, popup menus, toasts, error panels and
 // copyable snippets.
+'use strict';
 
 import { h, clear, icon, linkTargets } from './dom.js';
 
@@ -74,10 +75,7 @@ export function slideConfirm({ text, name, busyText, busyAnnouncement, onEnd }) 
   const setState = (s) => el.setAttribute('data-state', s);
   const settled = () => state() === 'busy' || state() === 'locked';
   // travel is how far the handle moves, in pixels, from start to end.
-  const travel = () => {
-    const t = el.clientWidth - handle.offsetWidth - 2 * handle.offsetLeft;
-    return t > 0 ? t : 0;
-  };
+  const travel = () => Math.max(0, el.clientWidth - handle.offsetWidth - 2 * handle.offsetLeft);
   function show(value) {
     p = Math.min(1, Math.max(0, value));
     el.style.setProperty('--p', String(p));
@@ -562,6 +560,7 @@ export function openTargets(f) {
 // privateURL is the flat's private_url, or, when that is a Local address
 // this device cannot open, the first private address that it can.
 export function privateURL(f) {
+  if (f?.private_links_off) return '';
   if (!f?.private_url || !serverOnly(f.private_url)) return f?.private_url;
   return openTargets(f).private[0]?.url || f.private_url;
 }

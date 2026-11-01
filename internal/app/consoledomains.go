@@ -34,13 +34,11 @@ var consoleProviders = []string{providerTailscale, providerNetbird}
 
 var providerLabel = map[string]string{providerTailscale: "Tailscale", providerNetbird: "NetBird"}
 
-// cdKey names one console domain: its network and name.
 type cdKey struct{ prov, name string }
 
 // consoleDomainKey marks a request that came through a console domain.
 type consoleDomainKey struct{}
 
-// consoleDomainOf returns the console domain a request came through.
 func consoleDomainOf(ctx context.Context) (cdKey, bool) {
 	k, ok := ctx.Value(consoleDomainKey{}).(cdKey)
 	return k, ok

@@ -2,7 +2,7 @@
 
 `run.mjs` verifies the board canvas app in headless Chrome over the Chrome
 DevTools Protocol, as the "Browser automation" row of the
-[board validation plan](../../docs/spec/board-TECH.md#14-validation-plan)
+[board validation plan](../../docs/spec/board-technical-design.md#14-validation-plan)
 asks. It needs Node 22 or later (global `WebSocket`, `zlib.crc32`), Google
 Chrome and the `flats` CLI. It has no npm dependencies.
 
@@ -104,7 +104,7 @@ Limits:
   own Cmd/Ctrl+C and Cmd/Ctrl+V handling is not exercised.
 - Keyboard shortcuts are sent with Ctrl, which the app treats like Cmd.
 - IME input uses `Input.imeSetComposition`; a real Korean IME, Safari, iPad
-  touch and pen, and VoiceOver remain manual checks (board-TECH.md section
+  touch and pen, and VoiceOver remain manual checks (board-technical-design.md section
   14, "Real devices").
 - Checks use the app's state (`window.board`) to find on-screen targets
   and to wait for results. The server cross-check confirms the saved

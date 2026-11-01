@@ -62,15 +62,16 @@ func (v Visibility) Rank() int {
 
 // Flat is one hosted site.
 type Flat struct {
-	VersionQuota *int       `json:"version_quota"`
-	Slug         string     `json:"slug"`
-	Name         string     `json:"name"`
-	Visibility   Visibility `json:"visibility"`
-	LiveVersion  int        `json:"live_version"` // 0 when never deployed
-	CreatedAt    time.Time  `json:"created_at"`
-	UpdatedAt    time.Time  `json:"updated_at"`
-	OldSlug      string     `json:"old_slug,omitempty"`
-	OldSlugTill  *time.Time `json:"old_slug_until,omitempty"`
+	CreatedPublicInstance bool       `json:"created_public_instance,omitempty"`
+	VersionQuota          *int       `json:"version_quota"`
+	Slug                  string     `json:"slug"`
+	Name                  string     `json:"name"`
+	Visibility            Visibility `json:"visibility"`
+	LiveVersion           int        `json:"live_version"` // 0 when never deployed
+	CreatedAt             time.Time  `json:"created_at"`
+	UpdatedAt             time.Time  `json:"updated_at"`
+	OldSlug               string     `json:"old_slug,omitempty"`
+	OldSlugTill           *time.Time `json:"old_slug_until,omitempty"`
 	// ID identifies this flat for its whole life: it is random, set when
 	// the flat is created and kept by renames, so a flat deleted and created
 	// again under the same slug has another ID. Requests that must not apply
@@ -168,7 +169,8 @@ CREATE TABLE IF NOT EXISTS flats (
   version_quota INTEGER CHECK(version_quota IS NULL OR version_quota >= 0),
   uid TEXT,
   public_access TEXT NOT NULL DEFAULT '',
-  access_seq INTEGER NOT NULL DEFAULT 0
+  access_seq INTEGER NOT NULL DEFAULT 0,
+  created_public_instance INTEGER NOT NULL DEFAULT 0 CHECK(created_public_instance IN (0,1))
 );
 CREATE TABLE IF NOT EXISTS versions (
   flat TEXT NOT NULL REFERENCES flats(slug) ON DELETE CASCADE ON UPDATE CASCADE,
@@ -381,8 +383,8 @@ func (s *Store) CreateFlatRecorded(ctx context.Context, f Flat, providers []stri
 	if f.Visibility.Public() && f.PublicAccess == AccessNone {
 		f.PublicAccess = AccessView
 	}
-	_, err = tx.ExecContext(ctx, `INSERT INTO flats(slug,name,visibility,live_version,created_at,updated_at,uid,public_access) VALUES(?,?,?,?,?,?,?,?)`,
-		f.Slug, f.Name, string(f.Visibility), f.LiveVersion, unix(f.CreatedAt), unix(f.UpdatedAt), f.ID, f.PublicAccess)
+	_, err = tx.ExecContext(ctx, `INSERT INTO flats(slug,name,visibility,live_version,created_at,updated_at,uid,public_access,created_public_instance) VALUES(?,?,?,?,?,?,?,?,?)`,
+		f.Slug, f.Name, string(f.Visibility), f.LiveVersion, unix(f.CreatedAt), unix(f.UpdatedAt), f.ID, f.PublicAccess, f.CreatedPublicInstance)
 	if err != nil && strings.Contains(err.Error(), "UNIQUE") {
 		return fmt.Errorf("flat %q %w", f.Slug, ErrExists)
 	}
@@ -411,7 +413,7 @@ func (s *Store) CreateFlatRecorded(ctx context.Context, f Flat, providers []stri
 	return tx.Commit()
 }
 
-const flatCols = `slug,name,visibility,live_version,created_at,updated_at,old_slug,old_slug_until,version_quota,uid,public_access,access_seq`
+const flatCols = `slug,name,visibility,live_version,created_at,updated_at,old_slug,old_slug_until,version_quota,uid,public_access,access_seq,created_public_instance`
 
 // newFlatID returns a random flat ID.
 func newFlatID() string {
@@ -426,7 +428,7 @@ func scanFlat(sc interface{ Scan(...any) error }) (Flat, error) {
 	var created, updated int64
 	var old, id sql.NullString
 	var till, quota sql.NullInt64
-	if err := sc.Scan(&f.Slug, &f.Name, &vis, &f.LiveVersion, &created, &updated, &old, &till, &quota, &id, &f.PublicAccess, &f.AccessSeq); err != nil {
+	if err := sc.Scan(&f.Slug, &f.Name, &vis, &f.LiveVersion, &created, &updated, &old, &till, &quota, &id, &f.PublicAccess, &f.AccessSeq, &f.CreatedPublicInstance); err != nil {
 		return f, err
 	}
 	f.ID = id.String

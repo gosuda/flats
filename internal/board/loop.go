@@ -725,7 +725,6 @@ func newSide() *side {
 	}
 }
 
-// load reads board.db into the engine and the side tables.
 func (in *Instance) load() error {
 	ctx := context.Background()
 	rows, meta, err := in.db.loadRows(ctx)

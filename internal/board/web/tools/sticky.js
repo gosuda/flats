@@ -1,3 +1,5 @@
+'use strict';
+
 import { PlaceTool } from './place.js';
 
 // Sticky tool (S).

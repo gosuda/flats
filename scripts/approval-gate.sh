@@ -32,7 +32,9 @@ gate_request() {
   timeout=${FLATS_GATE_APPROVAL_TIMEOUT:-600}
   case "$timeout" in ''|*[!0-9]*) echo "Approval timeout must be seconds" >&2; return 1;; esac
   deadline=$(( $(date +%s) + timeout ))
-  while [ "$(date +%s)" -le "$deadline" ]; do
+  # Check before comparing the clock, so every timeout, 0 included, reads the
+  # approval at least once.
+  while :; do
     receipt=$(curl -fsS --max-time 30 "$FLATS_URL/api/approvals/$id") || return 1
     state=$(gate_json status <<<"$receipt") || return 1
     case "$state" in
@@ -44,9 +46,11 @@ gate_request() {
         fi
         printf '%s\n' "$receipt"; return 0;;
       failed|rejected) echo "Approval $id ended $state: $receipt" >&2; return 1;;
-      pending|applying) sleep 1;;
+      pending|applying) ;;
       *) echo "Unknown approval state: $receipt" >&2; return 1;;
     esac
+    [ "$(date +%s)" -lt "$deadline" ] || break
+    sleep 1
   done
   echo "Timed out waiting for operator decision for $id; request remains pending at $link" >&2
   return 1

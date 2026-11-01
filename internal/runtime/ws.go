@@ -23,7 +23,7 @@ const (
 )
 
 // Public connections of a worker whose module asks for separate Public
-// pools (the built-in docs app, docs/spec/docs-public-edit-TECH.md 3.3):
+// pools (the built-in docs app, docs/spec/docs-public-edit-technical-design.md 3.3):
 // their own slots, send budget and event queue, so Public visitors never
 // take what Private connections use.
 const (
@@ -41,8 +41,6 @@ var (
 	wsPublicConnBytes, wsPublicConnBytesB = 256.0 * 1024, 512.0 * 1024
 	wsPublicFrames, wsPublicBytes         = 400.0, 4.0 * 1024 * 1024
 )
-
-// --- hub: connections and the dedicated websocket VM ---
 
 type wsEvent struct {
 	Type    string            `json:"type"`

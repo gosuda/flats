@@ -165,6 +165,7 @@ type flatView struct {
 	OldSlug         string         `json:"old_slug,omitempty"`
 	OldSlugTill     *time.Time     `json:"old_slug_until,omitempty"`
 	PrivateURL      string         `json:"private_url"`
+	PrivateLinksOff bool           `json:"private_links_off,omitempty"`
 	PrivateState    string         `json:"private_state,omitempty"`
 	PrivateDetail   string         `json:"private_detail,omitempty"`
 	PublicURL       string         `json:"public_url,omitempty"`
@@ -204,6 +205,9 @@ type problem struct {
 type errorBody struct {
 	Category string    `json:"category,omitempty"`
 	Error    string    `json:"error"`
+	Reason   string    `json:"reason,omitempty"`
+	Retry    *bool     `json:"retry,omitempty"`
+	Detail   string    `json:"detail,omitempty"`
 	Problems []problem `json:"problems,omitempty"`
 	Health   *health   `json:"health,omitempty"`
 }

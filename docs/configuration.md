@@ -10,8 +10,8 @@ The question "who decides this value?" picks the place:
 | Decided by | Stored in | Examples |
 | --- | --- | --- |
 | The operator | `config.json` | addresses, system policies, permitted networks, console domains, provider settings |
-| Flats while running | `flats.db` | flats, drafts, versions, deployments, document and design revisions, approvals, per-flat provider permission, events, analytics (page views, and per-day usage in `usagedays`), ordinary app environment variables, encrypted secrets, encrypted operator keys, console node records, [Autopilot settings](#autopilot-settings) |
-| The flat | `flats/<slug>/` | uploaded code, revision contents, the flat's SQLite database and FILES |
+| Flats while running | `flats.db` | flats, drafts, versions, deployments, revision metadata of documents, designs, boards and notebooks, approvals, per-flat provider permission, events, analytics (page views, and per-day usage in `usagedays`), ordinary app environment variables, encrypted secrets, encrypted operator keys, console node records, [Autopilot settings](#autopilot-settings), [public instance settings](#public-instance-settings) |
+| The flat | `flats/<slug>/` | uploaded code, revision contents, the flat's SQLite database and FILES, a board's or notebook's current content |
 | Nobody may read it in plain text | separate files | `secret.key` |
 | A client machine's user | `flats-client/connection.json` | which Flats host the CLI and `flats mcp` use, saved by `flats connect` |
 
@@ -42,8 +42,11 @@ OS user configuration directory under `flats-client/`, only the CLI and
     snapshots/                DB+FILES snapshots taken before a version goes
                               live and before a data restore (not for documents)
     previews/                 preview data, paired with preview rows in flats.db
-    revisions/                a document's revision contents (blobs/, by SHA-256)
+    revisions/                revision contents of a document, board or notebook
+                              (blobs/, by SHA-256)
     design/                   a design's revision contents (blobs/, by SHA-256)
+    notebook/notebook.db      a notebook's current content, receipts, undo and
+                              unimported revisions (+ -wal, -shm)
     restore-journal.json      present only while a data restore is unfinished
     health-check/ restore-trial/  temporary copies
   flats/.lifecycle/           unfinished rename/delete journals, deleted storage
@@ -96,7 +99,9 @@ Required:
   same moment: the flat secrets and operator keys in `flats.db` need it;
 - `flats/<slug>/` except the temporary copies, with `restore-journal.json`,
   revision contents and snapshots, and `flats/.lifecycle/` and
-  `network-retirements/` when present;
+  `network-retirements/` when present. A notebook's `notebook/notebook.db` is
+  a live SQLite database: copy it while the host is stopped, or with SQLite's
+  backup API or `VACUUM INTO`, never as a plain copy;
 - `tsnet/` and `portal/`: without them new node names and certificates are
   issued;
 - `zrok/` and `zrok-environment/`: without them a deleted flat no longer
@@ -123,7 +128,7 @@ and an empty guide:
 | Table | Holds |
 | --- | --- |
 | `autopilot` | One row (`id` 1): `enabled` (0 or 1), `ops` (the bit set of operations agents may decide, below 512; the bits are listed in [Autopilot](design.md#autopilot)), `guide` (the operation guide as the operator saved it; the host refuses more than 4,000 code points) and `updated_at` (Unix milliseconds of the last change, 0 when never changed) |
-| `autopilot_changes` | The host log line of each committed change (`seq`, `at` in Unix milliseconds, `line`, `logged`) until it is logged; the newest 100 logged lines stay |
+| `autopilot_changes` | The shared Experiments change log, including public instance changes from step 22: the host log line of each committed change (`seq`, `at` in Unix milliseconds, `line`, `logged`) until it is logged; the newest 100 logged lines stay |
 
 Nothing in them is secret, so they are not encrypted. Because every database
 from step 21 on has the `autopilot` row, that row does not count when Flats
@@ -131,6 +136,46 @@ checks whether a database already holds data. A release older than step 21
 refuses the database; going back means restoring the backup taken before the
 migration, which loses the agent decisions made since. To stop Autopilot
 without going back, turn it off in the console, or stop Flats.
+
+### Public instance settings
+
+[Public instance mode](spec/public-instance.md) lives only in `flats.db`,
+independently of Autopilot. It has no `config.json` key, environment variable,
+`flats serve` flag, CLI command or MCP tool. Only Settings › Experiments
+changes it, through the [console routes](surfaces.md#experiments-routes).
+Changes apply without a restart.
+
+Database step 22 creates `public_instance` on new and upgraded hosts, with
+one row, `id` 1. Its `enabled` is 0 or 1 and starts at 0; `updated_at` is the
+Unix-millisecond time of the last change, or 0 when never changed. The row is
+not encrypted and does not count when Flats checks whether a database already
+holds data. A change writes the row and a `public instance:` line to the
+shared `autopilot_changes` table in one transaction. The existing Experiments
+log sync writes and marks both kinds of lines, with the same retention.
+
+Turn on requires `network.default_public` to name a public provider in
+`network.permitted`, and confirms that provider's current ID. This checks
+permission, not route readiness. The mode grants no provider the host has not
+already permitted. While on, a new flat gets only that public grant besides
+implicit Local, starts Public with view-only access and needs no visibility
+approval. Every private link, Local included, is disabled. If the default is
+later cleared or no longer permitted, the mode stays on, the console warns
+and new creation is refused without a fallback. Existing flats keep their
+visibility and grants. Turn off restores retained private links without
+changing visibility.
+
+Database step 23 adds `flats.created_public_instance`, a 0-or-1 mark with a
+default of 0 for existing flats. Creation while the mode is on sets it to 1
+in the same transaction as visibility and grants. Rename and restart keep
+it, and turning the mode off does not clear it. While the mode is on and a
+marked website or page is Public, each save stores and deploys the next
+version without approval. Older flats, marked Private flats and saves while
+the mode is off keep the separate approved version/deploy steps. The page
+starter Draft from `create_flat` is not published.
+
+A binary older than database step 23 refuses this database. To run it,
+restore the backup from before migration, losing changes made since. To stop
+the mode without restoring a backup, turn it off in the console or stop Flats.
 
 ## config.json
 
@@ -179,9 +224,9 @@ written; `flats config unset KEY` removes it.
 | `tailscale.console_hosts` | `[]` (console on loopback only) | immediately from the console; a SIGHUP reload or restart from the file |
 | `system.upload_max_bytes` | `20971520` (20 MiB) | immediately |
 | `system.version_quota` | `20` per flat, `0` = unlimited | immediately; existing versions are kept |
-| `system.revision_quota` | `100` unpinned revisions per document or design, `0` = keep all | immediately; lowering it deletes the oldest unpinned revisions at once |
-| `system.pin_quota` | `20` pinned revisions per document or design, `0` = unlimited | immediately; existing pins are kept and new pins are refused while full |
-| `system.disk_quota_bytes` | `32212254720` (30 GiB) per flat, `0` = off | immediately |
+| `system.revision_quota` | `100` unpinned revisions per document, design, board or notebook, `0` = keep all | immediately; lowering it deletes the oldest unpinned revisions at once |
+| `system.pin_quota` | `20` pinned revisions per document, design, board or notebook, `0` = unlimited | immediately; existing pins are kept and new pins are refused while full |
+| `system.disk_quota_bytes` | `32212254720` (30 GiB) per flat, `0` = off | immediately; running boards and notebooks measure their flat again |
 | `system.preview_ttl_seconds` | `86400` | next sweep |
 | `system.rate_limit_rps` | `50` per flat | immediately |
 | `system.redirect_days` | `7` | new renames |
@@ -218,7 +263,8 @@ does not permit Funnel, and Local needs no entry. `private_backend:
 "tailscale"` requires `tailscale` in `permitted`. While `default_private` is
 empty, it also makes every new flat allowed on Tailscale when it is created
 (the operator can turn that off per flat); a non-empty `default_private`
-decides instead. Flats that already exist keep their providers.
+decides instead. This private grant is skipped while public instance mode is
+on. Flats that already exist keep their providers.
 
 `default_private` (`local`, `tailscale`, `netbird` or `proxy`) and `default_public`
 (`tailscale-funnel`, `portal`, `zrok`, `cloudflare-quick`, `netbird-expose` or
@@ -226,9 +272,13 @@ decides instead. Flats that already exist keep their providers.
 a new flat is allowed on when it is created, besides Local. Each must be in
 `permitted`; other permitted providers are not granted to new flats. An empty
 `default_private` follows `private_backend`, and an empty `default_public`
-grants no public provider. A new flat is always Private: a public default is a
-permission only and opens nothing until the operator approves making the flat
-public. Turning a provider off in the console clears a default that names it.
+grants no public provider. With public instance mode off, a new flat is
+Private: a public default is a permission only and opens nothing until an
+approved change to Public. While [public instance mode](#public-instance-settings)
+is on, only the public default is granted besides Local, and a new flat starts
+Public without a visibility approval. Saving a Public website or page
+created by the mode publishes it without approval; older flats keep approved
+version creation and deployment. Turning a provider off in the console clears a default that names it.
 The console's Settings → Networks turns a
 provider on or off while the host runs: turning one on saves the file and
 starts its backend at once (a backend contacts nothing until a flat allows the
@@ -488,9 +538,9 @@ authentication and do not change the endpoint path or port.
 
 `per_flat: false` omits every per-flat Prometheus series, including request,
 worker, preview/check CPU and storage series. Host process figures, aggregate
-flat and network counts, management requests and host-wide board metrics
-remain. By default, or with explicit `per_flat: true`, metrics export the
-existing series with flat slugs, including Private and unpublished flats.
+flat and network counts, management requests and host-wide board and
+notebook metrics remain. By default, or with explicit `per_flat: true`,
+metrics export the existing series with flat slugs, including Private and unpublished flats.
 Only allow trusted scrapers to reach the endpoint. Analytics, its stats API
 and usage collection continue with either setting, even when Prometheus
 metrics are disabled.
@@ -630,13 +680,14 @@ synced temporary file, renames it into place and syncs the directory.
 
 ## Versions
 
-Three versions are independent:
+These versions are independent:
 
 | Version | Where | Bumped when | Migration |
 | --- | --- | --- | --- |
 | `schema_version` | `config.json` | the format changes incompatibly | automatic at start |
 | `user_version` | `flats.db` | any table, column or data-meaning change | automatic at start, after a backup |
 | a flat's database | `flats/<slug>/data/` | the flat decides | Flats never touches it |
+| a notebook's `user_version` | `flats/<slug>/notebook/notebook.db` | the notebook schema changes | by the notebook when it opens; a newer version is refused without writes |
 
 ### config.json schema rules
 

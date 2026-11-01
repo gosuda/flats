@@ -2,6 +2,8 @@
 // per session; the client sends {op:"undo"} or {op:"redo"} and reports what
 // the server skipped.
 
+'use strict';
+
 import { toast, plural } from './ui.js';
 import { who } from './guest.js';
 
@@ -20,7 +22,7 @@ export class Undo {
   }
 
   ack(m, batch) {
-    if (!batch || !batch.undo) return;
+    if (!batch?.undo) return;
     const r = Array.isArray(m.results) ? m.results[0] : m.results;
     if (!r || typeof r !== 'object') return;
     const sk = r.skipped || {};

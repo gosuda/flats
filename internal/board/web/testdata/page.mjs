@@ -3,6 +3,8 @@
 // storage, WebSocket, media queries) and gives the test the socket so it can
 // play the server.
 
+'use strict';
+
 import { readFileSync } from 'node:fs';
 import { installDOM } from './dom.mjs';
 
@@ -56,7 +58,7 @@ export class FakeSocket {
   // open runs the app's onopen, which sends hello; it returns that hello.
   open() { this.onopen(); return this.sent.at(-1); }
   recv(m) { this.onmessage({ data: JSON.stringify(m) }); }
-  drop() { this.closed = true; this.onclose && this.onclose(); }
+  drop() { this.closed = true; this.onclose?.(); }
 }
 
 const ctx2d = new Proxy({}, {
@@ -86,7 +88,7 @@ export async function startApp({ local = {}, session = {} } = {}) {
   g.ResizeObserver = class { observe() {} disconnect() {} };
   g.WebSocket = FakeSocket;
   const downloads = [];
-  g.URL.createObjectURL = (blob) => { downloads.push(blob); return 'blob:board.test/' + downloads.length; };
+  g.URL.createObjectURL = (blob) => { downloads.push(blob); return `blob:board.test/${downloads.length}`; };
   g.URL.revokeObjectURL = () => {};
   g.CSS = { escape: (s) => String(s).replace(/["\\]/g, '\\$&') };
   Object.defineProperty(g, 'navigator', { value: { maxTouchPoints: 0, userAgent: 'node' }, configurable: true });

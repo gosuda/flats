@@ -18,6 +18,7 @@ import (
 	"github.com/gosuda/flats/internal/bundle"
 	"github.com/gosuda/flats/internal/contenttype"
 	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/notebook"
 	"github.com/gosuda/flats/internal/slug"
 	"github.com/gosuda/flats/internal/store"
 )
@@ -177,17 +178,19 @@ func (s *Server) Handler() http.Handler {
 			h("PUT /experiments/autopilot", s.setAutopilotEnabled)
 			h("PUT /experiments/autopilot/operations/{op}", s.setAutopilotOp)
 			h("PUT /experiments/autopilot/guide", s.setAutopilotGuide)
+			h("GET /experiments/public-instance", s.getPublicInstance)
+			h("PUT /experiments/public-instance", s.setPublicInstance)
 		} else {
 			h("POST /flats", s.createFlat)
 			h("GET /flats/{slug}/board", s.getBoard)
 			h("POST /flats/{slug}/board", s.updateBoard)
 			h("POST /flats/{slug}/board/import", s.importBoard)
+			h("GET /flats/{slug}/notebook", s.getNotebook)
+			h("POST /flats/{slug}/notebook", s.updateNotebook)
 		}
 	}
 	return mux
 }
-
-// --- helpers ---
 
 // ErrorBody is the JSON error shape.
 type ErrorBody struct {
@@ -215,6 +218,17 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 	_ = enc.Encode(v)
 }
 
+// writeActionResult writes a core.ActionResult: 202 while the action waits
+// for the operator's approval, 200 once it applied (cleanup pending still
+// counts as applied: the metadata change is durable).
+func writeActionResult(w http.ResponseWriter, res core.ActionResult) {
+	code := http.StatusOK
+	if res.Status == "pending_approval" {
+		code = http.StatusAccepted
+	}
+	writeJSON(w, code, res)
+}
+
 // DecisionError retains the persisted approval and its typed execution cause.
 type DecisionError struct {
 	ErrorBody
@@ -224,6 +238,12 @@ type DecisionError struct {
 func errorBody(err error) ErrorBody {
 	body := ErrorBody{Error: err.Error()}
 	body.Category = core.ErrorCategory(err)
+	var notebookError *notebook.WriteError
+	if errors.As(err, &notebookError) {
+		body.Category = notebookError.Code
+	} else if errors.Is(err, core.ErrNotNotebook) {
+		body.Category = "not_notebook"
+	}
 
 	if v, ok := bundle.IsValidation(err); ok {
 		for _, p := range v.Problems {
@@ -258,6 +278,9 @@ func writeErr(w http.ResponseWriter, code int, err error) {
 // statusOf maps errors to HTTP codes: typed errors first, then a small
 // fallback for messages of errors that are not typed yet.
 func statusOf(err error) int {
+	if code := notebookStatus(err); code != 0 {
+		return code
+	}
 	var de *core.DeployError
 	switch {
 	case errors.Is(err, store.ErrNotFound):
@@ -333,8 +356,6 @@ func isLoopback(r *http.Request) bool {
 	return ip != nil && ip.IsLoopback()
 }
 
-// --- handlers ---
-
 func (s *Server) status(w http.ResponseWriter, r *http.Request, _ core.Via) {
 	var sys any
 	if s.System != nil {
@@ -391,11 +412,11 @@ func (s *Server) createFlat(w http.ResponseWriter, r *http.Request, via core.Via
 	writeJSON(w, 201, f)
 }
 
-// SaveResponse describes a Private Draft or a live document.
-// Saving never creates a numbered version or requests approval.
+// SaveResponse describes an exact Draft save, a published save, or a live document.
 type SaveResponse struct {
-	Draft *SavedDraft    `json:"draft,omitempty"`
-	Flat  *core.FlatView `json:"flat,omitempty"`
+	Draft   *SavedDraft    `json:"draft,omitempty"`
+	Flat    *core.FlatView `json:"flat,omitempty"`
+	Version int            `json:"version,omitempty"`
 }
 
 // SavedDraft is metadata of this exact save, captured under the core storage
@@ -459,12 +480,19 @@ func (s *Server) saveContent(w http.ResponseWriter, r *http.Request, via core.Vi
 		fail(w, err)
 		return
 	}
-	if f, err := s.Svc.GetFlat(r.Context(), r.PathValue("slug")); err == nil && f.Type == contenttype.Docs {
+	f, ferr := s.Svc.GetFlat(r.Context(), r.PathValue("slug"))
+	if ferr == nil && f.Type == contenttype.Docs {
 		writeJSON(w, http.StatusCreated, SaveResponse{Flat: &f})
 		return
 	}
 	draft := SavedDraftFrom(saved)
 	out := SaveResponse{Draft: &draft}
+	if saved.Published {
+		out.Version = saved.Number
+		if ferr == nil {
+			out.Flat = &f
+		}
+	}
 	writeJSON(w, http.StatusCreated, out)
 }
 
@@ -728,11 +756,7 @@ func (s *Server) visibility(w http.ResponseWriter, r *http.Request, via core.Via
 		fail(w, err)
 		return
 	}
-	code := 200
-	if res.Status == "pending_approval" {
-		code = 202
-	}
-	writeJSON(w, code, res)
+	writeActionResult(w, res)
 }
 
 // publicEdit reports whether a board or document can become editable by
@@ -784,11 +808,7 @@ func (s *Server) deleteFlat(w http.ResponseWriter, r *http.Request, via core.Via
 		fail(w, err)
 		return
 	}
-	code := 200
-	if res.Status == "pending_approval" {
-		code = 202
-	}
-	writeJSON(w, code, res)
+	writeActionResult(w, res)
 }
 
 func (s *Server) logs(w http.ResponseWriter, r *http.Request, _ core.Via) {
@@ -995,7 +1015,6 @@ func (s *Server) zrokAccountAdmin(w http.ResponseWriter) (ZrokAccountAdmin, Prov
 	return z, p, true
 }
 
-// connectZrok enables a zrok environment with the operator's account token.
 func (s *Server) connectZrok(w http.ResponseWriter, r *http.Request, _ core.Via) {
 	z, p, ok := s.zrokAccountAdmin(w)
 	if !ok {
@@ -1015,7 +1034,6 @@ func (s *Server) connectZrok(w http.ResponseWriter, r *http.Request, _ core.Via)
 	writeJSON(w, 200, map[string]any{"providers": p.NetworkProviders(r.Context())})
 }
 
-// disconnectZrok unregisters the host's zrok environment.
 func (s *Server) disconnectZrok(w http.ResponseWriter, r *http.Request, _ core.Via) {
 	z, p, ok := s.zrokAccountAdmin(w)
 	if !ok {
@@ -1072,7 +1090,6 @@ func (s *Server) setTailscaleKey(w http.ResponseWriter, r *http.Request, _ core.
 	s.writeKeys(w, r, k)
 }
 
-// deleteTailscaleKey removes the stored Tailscale auth key.
 func (s *Server) deleteTailscaleKey(w http.ResponseWriter, r *http.Request, _ core.Via) {
 	s.keyAction(w, r, KeyAdmin.DeleteTailscaleKey)
 }
@@ -1097,12 +1114,10 @@ func (s *Server) setNetbirdKey(w http.ResponseWriter, r *http.Request, _ core.Vi
 	s.writeKeys(w, r, k)
 }
 
-// deleteNetbirdKey removes the stored NetBird setup key.
 func (s *Server) deleteNetbirdKey(w http.ResponseWriter, r *http.Request, _ core.Via) {
 	s.keyAction(w, r, KeyAdmin.DeleteNetbirdKey)
 }
 
-// dismissNetbirdLegacyPeer hides the notice about the old shared peer.
 func (s *Server) dismissNetbirdLegacyPeer(w http.ResponseWriter, r *http.Request, _ core.Via) {
 	s.keyAction(w, r, KeyAdmin.DismissNetbirdLegacyPeer)
 }
@@ -1323,11 +1338,7 @@ func (s *Server) deleteVersion(w http.ResponseWriter, r *http.Request, via core.
 		fail(w, err)
 		return
 	}
-	code := http.StatusOK
-	if out.Status == "pending_approval" {
-		code = http.StatusAccepted
-	}
-	writeJSON(w, code, out)
+	writeActionResult(w, out)
 }
 func (s *Server) putVersionQuota(w http.ResponseWriter, r *http.Request, via core.Via) {
 	var in struct {

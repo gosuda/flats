@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/gosuda/flats/internal/egress"
 	"github.com/gosuda/flats/internal/wsconn"
@@ -250,6 +251,107 @@ type respPayload struct {
 	Raw     json.RawMessage `json:"-"`
 }
 
+// requestHead is the engine request without the body field: the body is
+// spliced in after marshaling so it is escaped straight into the final buffer
+// instead of living on as a string and a JSON copy, which would hold a body
+// three times at once (up to 10 MiB each).
+type requestHead struct {
+	Method  string            `json:"method"`
+	URL     string            `json:"url"`
+	Headers map[string]string `json:"headers"`
+}
+
+// requestJSON builds the engine request. A request without a body marshals
+// like a reqPayload with Body unset; with a body, the body field is appended
+// to the marshaled head, which for any marshaled JSON object ends in a
+// closing brace. json.Marshal(requestHead) plus the body field is byte for
+// byte json.Marshal of the same reqPayload with Body set.
+func requestJSON(p reqPayload, body []byte) []byte {
+	if len(body) == 0 {
+		out, _ := json.Marshal(p)
+		return out
+	}
+	head, _ := json.Marshal(requestHead{Method: p.Method, URL: p.URL, Headers: p.Headers})
+	// readBody caps bodies at MaxRequestBody before this point, keeping the
+	// copy path small; an oversize body is a caller bug.
+	if len(body) > MaxRequestBody {
+		panic(fmt.Sprintf("requestJSON body %d exceeds MaxRequestBody %d", len(body), MaxRequestBody))
+	}
+	out := bytes.Clone(head[:len(head)-1])
+	out = append(out, `,"body":`...)
+	out = appendJSONQuoted(out, body)
+	return append(out, '}')
+}
+
+// appendJSONQuoted writes body as a JSON string using json.Marshal's exact
+// escaping — HTML-safe <, > and &, U+2028 and U+2029, and a raw U+FFFD per
+// undecodable byte — so a spliced body is indistinguishable from a
+// marshaled one.
+
+// jsonQuoteSafe marks the bytes json.Marshal leaves raw in a string; the
+// escaped bytes' length comes from the switches below.
+var jsonQuoteSafe [utf8.RuneSelf]bool
+
+func init() {
+	for b := range jsonQuoteSafe {
+		jsonQuoteSafe[b] = b >= 0x20 && b != '"' && b != '\\' && b != '<' && b != '>' && b != '&'
+	}
+}
+
+func appendJSONQuoted(dst []byte, body []byte) []byte {
+	const hexdigits = "0123456789abcdef"
+	dst = append(dst, '"')
+	start := 0
+	for i := 0; i < len(body); {
+		if b := body[i]; b < utf8.RuneSelf {
+			if jsonQuoteSafe[b] {
+				i++
+				continue
+			}
+			dst = append(dst, body[start:i]...)
+			i++
+			switch b {
+			case '"', '\\':
+				dst = append(dst, '\\', b)
+			case '\b':
+				dst = append(dst, '\\', 'b')
+			case '\f':
+				dst = append(dst, '\\', 'f')
+			case '\n':
+				dst = append(dst, '\\', 'n')
+			case '\r':
+				dst = append(dst, '\\', 'r')
+			case '\t':
+				dst = append(dst, '\\', 't')
+			default:
+				// The remaining bytes below 0x20 and the HTML-safe escapes,
+				// like json.Marshal.
+				dst = append(dst, '\\', 'u', '0', '0', hexdigits[b>>4], hexdigits[b&0xf])
+			}
+			start = i
+			continue
+		}
+		r, size := utf8.DecodeRune(body[i:])
+		if r == utf8.RuneError && size == 1 {
+			dst = append(dst, body[start:i]...)
+			dst = append(dst, 0xef, 0xbf, 0xbd)
+			i += size
+			start = i
+			continue
+		}
+		if r == '\u2028' || r == '\u2029' {
+			dst = append(dst, body[start:i]...)
+			dst = append(dst, '\\', 'u', '2', '0', '2', hexdigits[byte(r)&0xf])
+			i += size
+			start = i
+			continue
+		}
+		i += size
+	}
+	dst = append(dst, body[start:]...)
+	return append(dst, '"')
+}
+
 func requestURL(r *http.Request) string {
 	scheme := "http"
 	if p := r.Header.Get("X-Forwarded-Proto"); p == "https" || p == "http" {
@@ -425,11 +527,7 @@ func (w *worker) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 		return
 	}
 	p := reqPayload{Method: r.Method, URL: requestURL(r), Headers: requestHeaders(r)}
-	if len(body) > 0 {
-		s := string(body)
-		p.Body = &s
-	}
-	reqJSON, _ := json.Marshal(p)
+	reqJSON := requestJSON(p, body)
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), w.spec.timeout())
 	defer cancel()
 	// Visitor disconnects cancel outbound I/O without destroying the shared VM
@@ -440,7 +538,7 @@ func (w *worker) ServeHTTP(rw http.ResponseWriter, r *http.Request) {
 	// The body is not needed once the handler returns. Writing the response
 	// can block on a visitor who stops reading; that must not hold the
 	// flat's body budget.
-	body, p.Body, reqJSON = nil, nil, nil
+	body, reqJSON = nil, nil
 	release()
 	if err == nil {
 		var resp respPayload
@@ -488,8 +586,12 @@ func (w *worker) writeResponse(rw http.ResponseWriter, r *http.Request, resp *re
 		w.fail(rw, r, fmt.Errorf("handler returned invalid status %d", resp.Status), 0)
 		return
 	}
-	body := []byte(resp.Body)
-	if resp.B64 || resp.Base64 {
+	// A plain body is written from its string without a []byte copy; only a
+	// base64 body is decoded into bytes. Invalid and oversize bodies fail
+	// before any of the flat's response headers are set.
+	b64 := resp.B64 || resp.Base64
+	var body []byte
+	if b64 {
 		b, err := base64.StdEncoding.DecodeString(resp.Body)
 		if err != nil {
 			w.fail(rw, r, fmt.Errorf("handler returned invalid base64 body: %v", err), 0)
@@ -497,7 +599,11 @@ func (w *worker) writeResponse(rw http.ResponseWriter, r *http.Request, resp *re
 		}
 		body = b
 	}
-	if len(body) > MaxResponseBody {
+	size := int64(len(resp.Body))
+	if b64 {
+		size = int64(len(body))
+	}
+	if size > MaxResponseBody {
 		w.fail(rw, r, fmt.Errorf("response body larger than %d MiB", MaxResponseBody>>20), 0)
 		return
 	}
@@ -521,7 +627,11 @@ func (w *worker) writeResponse(rw http.ResponseWriter, r *http.Request, resp *re
 	}
 	rw.WriteHeader(status)
 	if r.Method != http.MethodHead {
-		rw.Write(body)
+		if b64 {
+			rw.Write(body)
+		} else {
+			io.WriteString(rw, resp.Body)
+		}
 	}
 }
 

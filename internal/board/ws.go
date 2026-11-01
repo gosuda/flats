@@ -988,8 +988,6 @@ func (c *conn) pump() {
 	}
 }
 
-// setHanded records that the client's board reaches seq with what the
-// socket was handed.
 func (c *conn) setHanded(seq int64) {
 	c.mu.Lock()
 	c.handed = max(c.handed, seq)
@@ -1245,7 +1243,7 @@ type helloMsg struct {
 	// ViewerToken is a viewer's reconnect token (spec rule 9).
 	ViewerToken string `json:"viewer_token"`
 	// Nick is the page's collaborator name; guests see a member under it
-	// (docs-public-edit-TECH 5.1).
+	// (docs-public-edit-technical-design 5.1).
 	Nick string `json:"nick"`
 }
 

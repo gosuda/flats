@@ -2,6 +2,8 @@
 // names; this table maps them to light and dark values. The CSS custom
 // properties in app.css hold the same UI tokens for the DOM.
 
+'use strict';
+
 export const THEMES = {
   light: {
     paper: '#ffffff', canvas: '#f4f4f0', ink: '#242924', muted: '#566056', line: '#dce0d8', by: '#454d45',
@@ -44,7 +46,7 @@ function parse(hex) {
   const h = hex.replace('#', '');
   return [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16));
 }
-const toHex = (rgb) => '#' + rgb.map((v) => Math.round(v).toString(16).padStart(2, '0')).join('');
+const toHex = (rgb) => `#${rgb.map((v) => Math.round(v).toString(16).padStart(2, '0')).join('')}`;
 
 export function blend(fg, bg, alpha) {
   const a = parse(fg), b = parse(bg);

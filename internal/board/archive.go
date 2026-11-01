@@ -41,7 +41,6 @@ const (
 
 var assetPathRE = regexp.MustCompile(`^assets/([0-9a-f]{64})\.(png|jpg|gif|webp)$`)
 
-// boardFile is board.json.
 type boardFile struct {
 	Format int    `json:"format"`
 	Title  string `json:"title"`

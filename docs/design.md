@@ -81,6 +81,10 @@ first save, so its model never changes.
 
 **Version model** (websites and pages):
 
+The usual approval steps below have one exception: [public instance
+mode](#public-instance-mode) publishes each save of a Public website or page
+created by the mode while it is on.
+
 * **Draft.** Every save validates the bundle and stores an immutable Draft
   revision; the Draft is always Private and never touches live content.
 * **Version.** Only an approved `create_version` freezes the Draft as `vN`: the
@@ -129,9 +133,10 @@ in the [lifecycle core contract](lifecycle-core-contract.md).
 ```
 
 * `type`: `flat` (website, the default), `page` (one static HTML page),
-  `docs` (Markdown documents), `design` (canvas of HTML artboards) or `board`
-  (whiteboard); only core writes a design or board manifest, see
-  [Designs](#designs) and [Boards](#boards). A bundle without `type`,
+  `docs` (Markdown documents), `design` (canvas of HTML artboards), `board`
+  (whiteboard) or `notebook` (tree of pages with blocks and inline
+  databases); only core writes a design, board or notebook manifest, see
+  [Designs](#designs), [Boards](#boards) and [Notebooks](#notebooks). A bundle without `type`,
   `kind`, `index.html` or a server entry that holds a Markdown entry is a
   `docs` bundle.
 * `kind`: `static` (default) or `server`.
@@ -167,11 +172,12 @@ time and again when the approval applies, against the live (else latest
 saved) version, so content of another type that an earlier release stored
 can never go live.
 
-**Revision-model refusals.** Documents, designs and boards refuse Deploy, Rollback,
-CreateVersion, DeleteVersion, version quota overrides, previews,
-ListVersions and GetDraft (`invalid`, with a message naming the type's own
-tools). Revision tools refuse websites and pages (`no_revisions`), and board
-tools refuse every other type (`not_board`).
+**Revision-model refusals.** Documents, designs, boards and notebooks refuse
+Deploy, Rollback, CreateVersion, DeleteVersion, version quota overrides,
+previews, ListVersions and GetDraft (`invalid`, with a message naming the
+type's own tools). Revision tools refuse websites and pages (`no_revisions`),
+board tools refuse every other type (`not_board`), and notebook tools refuse
+every other type (`not_notebook`).
 
 ### Pages
 
@@ -319,6 +325,15 @@ itself, and edits in its own `contenteditable` box: keystrokes and
 confirmation never reach the artboard, so every write needs input the person
 made in the canvas app.
 
+**Frame loading.** The canvas loads an artboard only when it comes near the
+viewport, and never loads one for the first time while an artboard is open
+full window, including a design that launches focused. Every frame is a
+document in the browser's memory, and phones end the page when there are too
+many. An artboard that is already loaded still reloads when its file, the
+shared files or its capability change. An error that the full-window artboard
+reports marks its canvas board. The marker stays until the board's file or the
+shared files change.
+
 **Events and teardown.** A write publishes `change` after its transaction
 commits; a stream starts with `hello {seq}` and sends a heartbeat every 25 s.
 At most 32 streams per flat; each queue holds 16 events, and a full queue is
@@ -331,7 +346,7 @@ writes, and waits up to 5 s for handlers to return.
 
 A board is an infinite-canvas whiteboard of stickies, shapes, connectors, text,
 pen strokes, images and frames that people and agents edit live
-([product spec](spec/board.md), [technical design](spec/board-TECH.md)). Like
+([product spec](spec/board.md), [technical design](spec/board-technical-design.md)). Like
 a design it runs in the host process behind a shell `flats.json` that core
 writes once at creation, and every public bundle path refuses a board
 manifest. `internal/board` runs one `board.Instance` per board: a single apply
@@ -360,13 +375,53 @@ no build step, no third-party code), one same-origin WebSocket
   delete stop the instance and tell open canvases why (`renamed`,
   `deleted`); host shutdown stops it silently.
 
+### Notebooks
+
+A notebook is a tree of pages whose blocks (paragraphs, headings, lists,
+to-dos, toggles, quotes, callouts, code, dividers, images, page links and
+inline databases) people and agents edit live
+([product spec](spec/notebook.md), [technical design](spec/notebook-technical-design.md)).
+Like a board it runs in the host process behind a shell `flats.json` that core
+writes once at creation. It needs no worker and works with the server runtime
+disabled. `internal/notebook` runs one `notebook.Instance` per notebook: a
+single writer queue that changes `flats/<slug>/notebook/notebook.db`, the
+notebook's only source of current state (content, receipts, undo and the
+outbox), the editor embedded from `internal/notebook/web` (plain JavaScript,
+no build step), one same-origin WebSocket (`/_notebook/ws`) and HTTP routes
+under `/_notebook/` ([Surfaces](surfaces.md)).
+
+- **Editing.** Every write replaces one whole value group, such as a block's
+  content, one cell or a view's definition, so edits to different groups all
+  apply and the later write to the same group wins. Agent calls
+  (`update_notebook`) apply whole or not at all, with guards on the notebook
+  state or on single items. Edits are durable before they are acknowledged.
+- **History.** The writer records revision boundaries in an outbox in the
+  same `notebook.db` transaction as the edit. Core imports the outbox into the
+  [revision store](revision-store.md#notebooks) under the flat lock: it
+  validates the entries, writes new files to the shared blobs, commits the
+  revisions and their changed-page summaries in one `flats.db` transaction,
+  and only then acknowledges the import to the notebook. A crash between
+  these steps replays without a second revision.
+- **Core's part.** Core orders storage-journal admission, the flat lock and
+  the notebook writer in that order, and gives the instance a backend: limits,
+  the flat directory measurement for the disk quota, blob storage in
+  `flats/<slug>/revisions/blobs`, history, pins and rollbacks. Rename,
+  deletion and stop refuse new work and close sockets before moving or
+  removing storage.
+- **Access.** The notebook trusts only the `X-Flats-Access` core sets, and
+  writes need the Private value. A Public route gets a read-only projection of
+  the current content: no sessions, presence, History or images that only a
+  revision still references. Public guest editing never applies to notebooks.
+  Withdrawing Public access cancels the route epoch, which closes every open
+  Public socket and stops its reads.
+
 ## Exposure
 
 Each flat and each preview is its own host and origin (`<slug>` and
 `<slug>-<8 random>`), so cookies and storage never mix. Under one parent
 domain, such as the reverse proxy's, sibling flats share a registrable domain
 and can set each other's cookies unless that domain is on the Public Suffix
-List. Local always serves the Private route on loopback. Tailscale, NetBird
+List. Local always registers the Private route on loopback. Tailscale, NetBird
 and the Private reverse proxy (`proxy`) add Private routes only for flats that
 hold their grant. A Public flat is also served by its permitted public
 providers (Tailscale Funnel, Portal, zrok, a Cloudflare quick tunnel, NetBird
@@ -382,6 +437,8 @@ and a rename redirect keeps a visitor on the network they arrived on
 ([Providers](networking.md#providers)). The
 operator guide is [Private and public access](networking.md); the provider
 manager's contract is [Network provider lifecycle](network-provider-lifecycle.md).
+While [public instance mode](#public-instance-mode) is on, every private link
+answers 403, including Local and previews; the routes stay registered.
 
 Implementation notes that the provider docs do not repeat:
 
@@ -754,6 +811,124 @@ text: bounded, quoted in events, inserted as text in the console and never
 written to the host log. The operation guide reaches agents fenced in
 `topic.autopilot`; Flats does not log or enforce it.
 
+### Public instance mode
+
+[Public instance mode](spec/public-instance.md) is the second experiment,
+after Autopilot. It is off by default and changed only in the console. While
+on, every new flat starts Public with view-only access on
+`network.default_public`, without a visibility approval, and every private
+link is disabled. Saving a Public website or page created by the mode also
+publishes it without approval. Older flats keep approved version creation
+and deployment. Autopilot is independent; publishing on save needs none of
+its operation switches. Other approvals keep their rules, including later
+visibility changes, public editing, rollback, data restore and deletion.
+Turning either experiment on does not turn the other on.
+
+**Settings and ordering.** The `public_instance` row is the source of truth
+([storage](configuration.md#public-instance-settings)). Core keeps the last
+committed `PublicInstance` in an atomic pointer. Only startup and
+`SetPublicInstance` write it, under one mode mutex. Startup loads it before
+restoring routes and aborts if the read fails. Later status reads and the
+Experiments log sync never replace this cache, so a stale or failed read
+cannot turn the mode off.
+
+`SetPublicInstance` holds the mutex through a `BEGIN IMMEDIATE` transaction
+and cache update. Turning on requires a default public network that the host
+permits, and `confirmed_network` must equal that network's current ID. A
+missing, disabled or changed network is `conflict` and changes nothing.
+Usable here means configured and permitted, not that its routes are ready.
+Turning off needs no network. A call matching the stored state writes and
+logs nothing. A cancelled request does not stop a started change.
+
+The setter commits the row and its change line together, stores the committed
+row in the cache and, when turning on, rotates the private request epoch and
+cancels the previous one. It then releases the mutex and syncs the host log
+through the existing Autopilot sync. The shared `autopilot_changes` table is
+the Experiments change log; these lines start with `public instance:` and
+record who changed the mode and when. Log failure delays the line, not the
+mode change. The sync's marking, retention and at-least-once delivery are the
+same as for Autopilot.
+
+**Creation.** All creation paths reach `createFlatLocked`. Under the mode
+mutex, `newFlatPolicy` reads the mode and one network-settings snapshot and
+chooses visibility, access, grants and events together. While on it grants
+only the default public provider, in addition to implicit Local, and never
+the private default. The flat, its lifetime `created_public_instance` mark,
+grants and events commit together. The creation event names public instance mode and the network. If that default
+is missing or no longer permitted, creation is refused as `conflict` before
+anything is created. There is no Private or provider fallback. A creation
+already in progress may finish under the policy it read.
+
+Documents, designs and boards start at creation. An exposure failure does not
+undo the saved content or Public state and does not make creation fail. The
+flat's endpoint and `connection_state` report the public provider's state or
+error, and its event log records the exposure failure. Granting the provider
+again, restarting or changing its key can recover it. Websites and pages
+start Public and Unpublished with `live_version` 0, no public URL and
+`connection_state: "unavailable"` until their first published save. The page
+starter Draft from `create_flat` is not published. Exposure and public rename
+redirects wait for live content; restart keeps the Public and Unpublished states. A missing runtime with a
+positive live version still reports `not_deployed`.
+
+**Publication on save.** Under the flat lock, a website or page save stores
+its Draft and checks its creation mark, current Public visibility and the mode.
+If all hold, it publishes exactly that revision as the next numbered
+version through the approved-deployment path. Health checks, server data
+snapshots, start and deployment events follow the same rules, including a
+snapshot failure stopping deployment. The deployment records public instance
+mode, with no approval ID. Saves of one flat publish in saved order; an
+applied Make Private prevents later saves from publishing. A save already
+publishing when Turn off returns may finish, but a save started afterward
+only changes the Draft.
+
+Bundle validation, upload limits, expected revision and Draft disk quota
+checks still run before saving. A publication failure keeps that Draft
+revision, the previous live version and the previous version list. Its typed
+error names the cause and says the Draft was saved but not published. The
+version quota and disk quota apply before publication, and a failed server
+start retains today's warning that live data may have changed. Public route
+readiness is separate: a successful deployment with a failed public route
+still succeeds and reports that its link is not open yet. Explicit version
+creation and deployment still use approvals. The mark survives rename and
+restart; while the mode is off or the flat is Private, saves only change the
+Draft.
+
+**Private-link gate.** `linkGate` wraps the site, preview and rename-redirect
+handlers. It reads the provider ID from the request context; legacy unmarked
+routes use the constructor's public/private flag. Public requests pass
+through. A private request reads the epoch before the mode. While on it
+answers 403 with `Cache-Control: no-store` and the page "Private links are
+turned off on this host." This runs before a preview records a visit, so a
+refused visit does not extend its life.
+
+While off, the gate binds the request context to the epoch. Turning on
+cancels it, closing board WebSockets and design event streams. For WebSocket
+upgrades only, a response-writer wrapper also closes a hijacked connection
+when the epoch ends, since runtime document WebSockets do not follow the
+request context. Ordinary writers keep their flushing, streaming and deadline
+behavior. Plain responses already being written may finish; later private
+requests receive 403. Tailscale's port-80 listener still redirects to the
+same host over HTTPS before the gate; that redirect serves no content and
+the HTTPS route answers 403.
+
+No routes, grants, previews or redirects are deleted by the mode. Preview
+expiry still runs. Turning off lets the retained private routes serve again
+without changing any flat's visibility. Internal health checks, snapshots,
+agent edits and revision operations call handlers directly and bypass the
+link gate. Console addresses, MCP and approval links are not flat links and
+do not change.
+
+**Results and console.** Core's `view` clears private URL, state and detail,
+filters private endpoints and sets `private_links_off` only while on. A
+Public flat's connection state uses public endpoints only; a Private flat's
+is `unavailable`. `previewView` clears preview URLs. `OpenPreview` refuses
+calls with a conflict that wraps `ErrPublicInstanceOn`. Old event entries
+keep their text, even when it names a now-disabled private link. The console
+hides private open, preview and history actions, and explains that a Private
+flat has no working link. Making it Private still needs approval and remains
+possible to take it off the internet. MCP's request-specific texts and public
+link results are described in [Public instance texts](surfaces.md#public-instance-texts).
+
 ## Server flats (handler ABI)
 
 The authoritative [runtime API v1 reference](runtime-api-v1.md) is embedded
@@ -836,9 +1011,10 @@ documents, the CPU time and peak memory of the workers serving the live route.
 Previews are not usage. A request counts on the day its status is sent. A
 `5xx` is an error; a request whose visitor left before the response was sent
 counts as `closed`, not as an error. WebSocket connections and event streams
-count with their status but are left out of response times. Websites, pages
-and designs run inside the host process, so their CPU and memory are reported
-as not measured separately, never as zero.
+count with their status but are left out of response times. Websites, pages,
+designs, boards and notebooks run inside the host process, so their CPU and
+memory are reported as not measured separately (`not_separate`), never as
+zero.
 
 Counting happens in memory on the request path; the 30-second host sweep
 writes every flat's day counts to `usagedays` in `flats.db` in one
@@ -899,7 +1075,8 @@ types, provider IDs and fixed enums (plus the build strings of
 agents, tailnet or NetBird identities, URLs or domain names. Per-flat series
 carry `flat` (the slug) and `type` and are included by default. Explicit
 `metrics.per_flat: false` omits them. This includes traffic, workers,
-preview/check CPU and storage; host-wide board metrics remain available.
+preview/check CPU and storage; host-wide board and notebook metrics remain
+available.
 
 | Metric | Type | Extra labels |
 | --- | --- | --- |
@@ -925,6 +1102,9 @@ preview/check CPU and storage; host-wide board metrics remain available.
 | `flats_board_batches_total` | counter (host) | `result` (`applied`, `rejected`, `retry`) |
 | `flats_board_connections` | gauge (host) | |
 | `flats_board_import_seconds` | histogram (host) | |
+| `flats_notebook_batches_total` | counter (host) | `result` (`applied`, `rejected`, `retry`) |
+| `flats_notebook_connections` | gauge (host) | |
+| `flats_notebook_import_seconds` | histogram (host) | |
 
 `running` in `flats_flats` keeps its console meaning: a live document is
 running even while its worker sleeps. `flats_worker_state` is the diagnostic
@@ -939,7 +1119,9 @@ counted by `1xx` … `5xx` only.
 `flats_board_batches_total` counts people's edit batches on every board:
 acknowledged, refused for good, or refused as transient for the canvas to
 resend. `flats_board_import_seconds` times the outbox imports that recorded
-revisions, with buckets from 5 ms to 10 s.
+revisions, with buckets from 5 ms to 10 s. The `flats_notebook_*` metrics
+count the same things for notebooks, with the same buckets, and carry no page
+ids or names.
 
 Worker CPU is user plus system time from the worker itself and, after it
 exits, from its process state, so it includes workers that later stopped,

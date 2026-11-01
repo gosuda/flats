@@ -158,7 +158,6 @@ func readKeyInputs(o Options, legacy bool, deprecatedFile string) (keyInputs, er
 	return in, nil
 }
 
-// keyLabel names a stored key in messages.
 var keyLabel = map[string]string{core.HostKeyTailscale: "Tailscale auth key", core.HostKeyNetbird: "NetBird setup key"}
 
 // resolveTailscaleKey applies the seed rule to the Tailscale auth key.

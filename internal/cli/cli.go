@@ -70,7 +70,7 @@ type Env struct {
 	Launchd          launchd.Runner         // nil: the real launchctl
 	Home             string                 // launchd home; "" = os.UserHomeDir
 	GOOS             string                 // "" = runtime.GOOS
-	PollInterval     time.Duration          // logs --follow; 0 = 2s
+	PollInterval     time.Duration          // logs --follow and approvals wait; 0 = 2s (wait: 1s)
 	InstallWait      time.Duration          // how long install waits for the server; 0 = 10s
 	Executable       func() (string, error) // nil: os.Executable
 	ReleaseTransport http.RoundTripper      // release downloads only
@@ -125,10 +125,11 @@ func init() {
 		{"delete", "request deletion of a flat", "delete <slug> [--reason r]", (*app).delete},
 		{"logs", "show a flat's events", "logs <slug> [--follow] [--kind k] [--limit n]", (*app).logs},
 		{"board", "read, write or import a board", "board get <slug> [--outline] [--revision n]\n       flats board apply <slug> <ops.json> [--message m]\n       flats board import <slug> <file.zip> [--replace] [--op-id id]", (*app).board},
+		{"notebook", "read or atomically update a notebook", "notebook get <slug> [--page id|--database id] [--view id|--sort json --filter json] [--format structured|markdown] [--limit n] [--revision n]\n       flats notebook get <slug> --cursor cursor [--op-id id]\n       flats notebook apply <slug> <ops.json> [--message m] [--op-id id] [--max-input-bytes n]\n       get follows every continuation; --json returns an array of unchanged response pages\n       apply bounds input before decoding: default 8 MiB + 4 * ceil(20 MiB / 3) bytes\n       for larger host upload limits, set --max-input-bytes to 8 MiB + 4 * ceil(upload_max_bytes / 3)\n       this local limit does not raise the host's upload or operation limits", (*app).notebook},
 		{"env", "manage ordinary server environment variables", "env set <slug> <NAME> <VALUE>\n       flats env rm <slug> <NAME>\n       flats env ls <slug>", (*app).envVars},
 		{"network", "manage server HTTP(S) origin permissions", "network ls <slug>\n       flats network set <slug> <origin>...\n       flats network clear <slug>", (*app).network},
 		{"secret", "manage server-flat secrets", "secret set <slug> <NAME>   (value from stdin)\n       flats secret rm <slug> <NAME>\n       flats secret ls <slug>", (*app).secret},
-		{"approvals", "list approval requests", "approvals [--status pending|approved|rejected|failed]", (*app).approvals},
+		{"approvals", "list approval requests, or wait for one to be decided", "approvals [--status pending|approved|rejected|failed]\n       flats approvals wait <id> [--timeout seconds]", (*app).approvals},
 		{"status", "show server and service status", "status", (*app).status},
 		{"install", "run `flats serve` at login (launchd/systemd)", "install [--config path] [--data dir] [--executable path] [-- legacy serve flags...]", (*app).install},
 		{"uninstall", "remove the launchd agent", "uninstall", (*app).uninstall},
@@ -358,6 +359,15 @@ func printAPIError(w io.Writer, e *apiError) {
 		msg, _, _ = strings.Cut(msg, "\n")
 	}
 	fmt.Fprintf(w, "error: %s\n", msg)
+	if e.Body.Reason != "" {
+		fmt.Fprintf(w, "  reason: %s\n", e.Body.Reason)
+	}
+	if e.Body.Detail != "" {
+		fmt.Fprintf(w, "  detail: %s\n", e.Body.Detail)
+	}
+	if e.Body.Retry != nil {
+		fmt.Fprintf(w, "  retry: %t\n", *e.Body.Retry)
+	}
 	printProblems(w, e.Body.Problems)
 	if h := e.Body.Health; h != nil {
 		printHealth(w, *h)

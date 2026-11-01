@@ -1,3 +1,5 @@
+'use strict';
+
 import * as Y from "yjs";
 import { randomUUID } from "./uuid.js";
 import {

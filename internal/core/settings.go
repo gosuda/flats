@@ -811,6 +811,7 @@ func (s *Service) applySettingChanges(ctx context.Context, changed []string) {
 	if slices.Contains(changed, SetDiskQuotaBytes) {
 		s.pushAllDocsBudgets(ctx)
 		s.remeasureBoards()
+		s.remeasureNotebooks()
 	}
 }
 

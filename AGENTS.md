@@ -9,6 +9,22 @@ Each stage includes review by a different model and correction before acceptance
 Agents without skill discovery must read these same linked instructions directly,
 including the change-type playbooks and cleanup skills the workflow links.
 
+JavaScript: every `.js` and `.mjs` file declares `'use strict';` in its
+directive prologue, after any shebang or leading comment. New files carry it
+from the start; `.mjs` is strict implicitly, and the declaration is still
+required so the rule stays uniform and grep-checkable. A script that agents
+run through browser tools as one expression (`docs/agent/scripts/`) declares
+it as the first statement of its outer function instead, so the file stays a
+single expression.
+
+Memory: allocate on hot paths only when ownership escapes. Reuse
+short-lived buffers through `sync.Pool`, stream with `io.Copy` or
+`io.CopyBuffer` rather than `io.ReadAll` of a whole body when a streaming
+form exists, and prefer `json.Encoder`/`json.RawMessage` over an
+intermediate `[]byte` or `string` copy. Reserve only the bytes a request
+actually consumed; a speculative reservation sized to a limit starves
+concurrent work.
+
 Read the [documentation index](docs/README.md) and relevant
 [specifications](docs/spec/README.md) before changing behavior. Keep specifications
 and implementation consistent; disclose existing gaps rather than silently

@@ -20,12 +20,9 @@ func (m *Mem) Size() uint32 {
 	return m.mem.Size()
 }
 
-// UnpackPtr extracts address and size from a packed 64-bit value in memory.
-// It reads 8 bytes from the memory address specified by packedPtr, reconstructs
-// the original uint64 value, and then extracts the 32-bit address from the high bits
-// and the 32-bit size from the low bits.
-//
-// Maintains original signature for backward compatibility - panics on error.
+// UnpackPtr reads the 8-byte packed pointer record at packedPtr in WebAssembly
+// memory and returns its address (high 32 bits) and size (low 32 bits).
+// Panics if the record cannot be read.
 func (m *Mem) UnpackPtr(packedPtr uint64) (uint32, uint32) {
 	if packedPtr == 0 {
 		return 0, 0
@@ -45,7 +42,6 @@ func (m *Mem) UnpackPtr(packedPtr uint64) (uint32, uint32) {
 		packed |= uint64(packedBytes[i]) << (i * 8)
 	}
 
-	// Extract address (high 32 bits) and size (low 32 bits)
 	addr := uint32(packed >> 32)
 	size := uint32(packed)
 
@@ -89,7 +85,6 @@ func (m *Mem) MustRead(addr uint32, size uint64) []byte {
 func (m *Mem) Write(addr uint32, b []byte) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	// Validates address and bounds through Read call
 	buf, err := m.Read(addr, uint64(len(b)))
 	if err != nil {
 		return err
@@ -229,7 +224,6 @@ func (m *Mem) ReadString(addr, maxlen uint32) (string, error) {
 		return "", ErrIndexOutOfRange
 	}
 
-	// Find null terminator
 	nullIndex := bytes.IndexByte(buf, StringTerminator)
 	if nullIndex < 0 {
 		return "", ErrNoNullTerminator
@@ -243,7 +237,6 @@ func (m *Mem) ReadString(addr, maxlen uint32) (string, error) {
 func (m *Mem) WriteString(ptr uint32, s string) error {
 	size := uint64(len(s) + 1) // +1 for null terminator
 
-	// Validates address and bounds through Read call
 	buf, err := m.Read(ptr, size)
 	if err != nil {
 		return err
@@ -256,7 +249,7 @@ func (m *Mem) WriteString(ptr uint32, s string) error {
 }
 
 // StringFromPackedPtr reads a string from a packed pointer containing address and size.
-// Maintains original signature for backward compatibility - panics on error.
+// Panics if the string cannot be read.
 func (m *Mem) StringFromPackedPtr(ptr uint64) string {
 	addr, size := m.UnpackPtr(ptr)
 

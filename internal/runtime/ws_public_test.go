@@ -191,7 +191,7 @@ func publicHub(t *testing.T, hooks *wsHooks) (*wsHub, func(ctx context.Context, 
 // While Public connections fill their slots and flood frames at the
 // ingress limits, a Private connection is admitted and each of its events
 // is handled with at most one Public event ahead of it
-// (docs-public-edit-TECH.md 3.3).
+// (docs-public-edit-technical-design.md 3.3).
 func TestWSPublicFloodKeepsPrivateFirst(t *testing.T) {
 	t.Parallel()
 	var publicStarted atomic.Int64

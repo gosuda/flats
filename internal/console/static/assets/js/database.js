@@ -1,3 +1,5 @@
+'use strict';
+
 import { h, icon } from './dom.js';
 import { api } from './api.js';
 import { fill, loading, errorPanel } from './ui.js';

@@ -2,6 +2,8 @@
 // recovery files (TECH 9). No compression library: the reader inflates with
 // the platform DecompressionStream when an entry is deflated.
 
+'use strict';
+
 const enc = new TextEncoder();
 
 let table = null;
@@ -32,8 +34,8 @@ export function writeZip(files, date = new Date()) {
     const local = new DataView(new ArrayBuffer(30));
     local.setUint32(0, 0x04034b50, true);
     local.setUint16(4, 20, true);
-    local.setUint16(6, 0x0800, true); // UTF-8 names
-    local.setUint16(8, 0, true);      // stored
+    local.setUint16(6, 0x0800, true);
+    local.setUint16(8, 0, true);
     local.setUint16(10, dosTime, true);
     local.setUint16(12, dosDate, true);
     local.setUint32(14, crc, true);
@@ -102,6 +104,31 @@ export async function readZipEntry(bytes, entry) {
   const raw = bytes.subarray(start, start + entry.csize);
   if (entry.method === 0) return raw;
   if (entry.method !== 8) throw new Error('unsupported zip compression');
+  // Inflate in bounded chunks: the declared entry.size is the protocol limit
+  // and 512 MiB is a hard ceiling, so a small csize cannot expand into
+  // renderer memory without end.
+  const limit = 512 * 1024 * 1024;
   const stream = new Blob([raw]).stream().pipeThrough(new DecompressionStream('deflate-raw'));
-  return new Uint8Array(await new Response(stream).arrayBuffer());
+  const reader = stream.getReader();
+  const chunks = [];
+  let total = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      total += value.length;
+      if (total > entry.size) throw new Error('zip entry exceeds declared size');
+      if (total > limit) throw new Error('zip entry exceeds size limit');
+      chunks.push(value);
+    }
+  } catch (e) {
+    // Shed the pipeline: an over-limit or corrupt entry must not keep
+    // inflating in the background until GC.
+    await reader.cancel().catch(() => {});
+    throw e;
+  }
+  const out = new Uint8Array(total);
+  let p = 0;
+  for (const c of chunks) { out.set(c, p); p += c.length; }
+  return out;
 }

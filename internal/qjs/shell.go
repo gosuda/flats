@@ -1,6 +1,7 @@
 package qjs
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"errors"
@@ -53,8 +54,6 @@ func NewShell(opt Option) (s *Shell, err error) {
 	if err != nil {
 		return nil, err
 	}
-	// Hash the module now: a later image key needs it.
-	wasmSum(s.wasm)
 	return s, nil
 }
 
@@ -155,26 +154,16 @@ func (s *Shell) Close() {
 	}
 }
 
+// sameBytes compares byte-for-byte: a caller that clones
+// QuickJSWasmBytes must still be judged compatible with the shell.
 func sameBytes(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	return len(a) == 0 || &a[0] == &b[0]
+	return bytes.Equal(a, b)
 }
 
-var (
-	sumMu   sync.Mutex
-	sumMemo = map[*byte][sha256.Size]byte{}
-)
-
-// wasmSum is the SHA-256 of patched module bytes (computed once per slice).
+// wasmSum is the SHA-256 of the module bytes. It is a pure function of the
+// content: a caller that clones the slice gets the same digest, and one that
+// mutates the slice between calls gets a fresh one. Empty input hashes to
+// the SHA-256 of the empty string.
 func wasmSum(wasm []byte) [sha256.Size]byte {
-	sumMu.Lock()
-	defer sumMu.Unlock()
-	if s, ok := sumMemo[&wasm[0]]; ok {
-		return s
-	}
-	s := sha256.Sum256(wasm)
-	sumMemo[&wasm[0]] = s
-	return s
+	return sha256.Sum256(wasm)
 }

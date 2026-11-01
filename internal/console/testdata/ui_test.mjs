@@ -1,5 +1,6 @@
 // Renders console pages against a minimal fake DOM and a stubbed fetch.
 // Run by TestConsoleUI (console_ui_test.go) next to copies of assets/js.
+'use strict';
 
 import assert from 'node:assert/strict';
 
@@ -50,7 +51,10 @@ class Element extends Node {
   removeAttribute(k) { delete this.attributes[k]; }
   addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); }
   removeEventListener() {}
-  dispatch(type) { for (const fn of this.listeners[type] || []) fn({ type, preventDefault() {}, target: this }); }
+  dispatch(type) {
+    const event = { type, preventDefault() {}, target: this };
+    for (const fn of this.listeners[type] || []) fn(event);
+  }
   append(...cs) { for (const c of cs) this.appendChild(typeof c === 'string' ? new Text(c) : c); }
   prepend(c) { this.appendChild(c); this.childNodes.unshift(this.childNodes.pop()); }
   replaceWith(n) {
@@ -319,14 +323,14 @@ document.getElementById = origGetElementById;
 assert.deepEqual(JSON.parse(calls.find((c) => c.key === 'POST /console/api/flats/blog/versions').body), { revision: 3, hash: 'c' });
 assert.ok(calls.some((c) => c.key === 'POST /console/api/approvals/apr-publish/approve'));
 assert.ok(pubToastBox.textContent.includes('Saved version 3. It is not live yet: publish it when ready.'), pubToastBox.textContent);
-all(document.body, (e) => e.tagName === 'DIALOG').forEach((d) => d.close('ok'));
+all(document.body, (e) => e.tagName === 'DIALOG').forEach((d) => { d.close('ok'); });
 await tick();
 
 // The operator deletes one non-live version directly, after an explicit
 // destructive confirmation. The live version and old pruned records cannot
 // be selected for deletion.
 assert.equal(byText(liveRow, 'Delete').length, 0);
-let oldRow = all(flatMain, (e) => e.tagName === 'TR' && e.textContent.startsWith('v1'))[0];
+const oldRow = all(flatMain, (e) => e.tagName === 'TR' && e.textContent.startsWith('v1'))[0];
 assert.equal(byText(oldRow, 'Delete').length, 1);
 const deletedBefore = calls.filter((c) => c.key === 'DELETE /console/api/flats/blog/versions/1').length;
 byText(oldRow, 'Delete')[0].dispatch('click');
@@ -573,6 +577,70 @@ assert.equal(all(boardSettings, (e) => e.getAttribute('id') === 'revisions').len
 assert.ok(boardSettings.textContent.includes('People and agents manage revisions on the board itself'));
 assert.equal(calls.some((c) => /\/flats\/sketch\/(env|secrets|network)$/.test(c.key)), false, 'a board loads no server settings');
 stopBoardSettings();
+// A notebook is a Revision-model flat with its own label and icon (not the
+// board's), an open link, Overview, revision quotas and no versions,
+// previews, Database or server settings. Its pages request none of them.
+const wiki = { ...notes, type: 'notebook', slug: 'wiki', name: 'Wiki', private_url: 'https://wiki.tail.ts.net' };
+routes['GET /console/api/flats/wiki'] = wiki;
+routes['GET /console/api/flats/wiki/revision-quota'] = { revision_quota: 50, pin_quota: null, default_revision_quota: 100, default_pin_quota: 20, pins: 2 };
+const wikiCallsFrom = calls.length;
+routes['GET /console/api/flats'] = { flats: [wiki] };
+const notebookList = new Element('main');
+const stopNotebookList = list.mount(notebookList, [], ctx);
+await tick();
+const notebookRow = all(notebookList, (e) => e.tagName === 'LI' && e.className === 'flat')[0];
+assert.deepEqual(typeLabel(notebookRow), [['img', 'Notebook', 'Notebook', '0']]);
+const notebookIcon = all(notebookRow, (e) => e.className.startsWith('type-icon'))[0];
+assert.ok(notebookIcon.className.includes('type-notebook'), notebookIcon.className);
+const notebookGlyph = all(notebookIcon, (e) => e.tagName === 'PATH')[0]?.getAttribute('d');
+assert.ok(notebookGlyph && notebookGlyph !== 'M3 4h18v16H3zM6 7h5v5H6zM13 16l5-5M15 11h3v3', 'a notebook has its own glyph');
+assert.ok(notebookRow.textContent.includes('Running') && !notebookRow.textContent.includes('Live v'), 'a notebook row shows no version: ' + notebookRow.textContent);
+assert.equal(startsWith(notebookRow, 'Save as').length + startsWith(notebookRow, 'Publish').length, 0);
+assert.equal(all(notebookRow, (e) => (e.getAttribute('class') || '').includes('open-private')).length, 1, 'a running notebook links to itself');
+assert.equal(byText(notebookRow, 'Overview').length, 1);
+for (const label of ['Deployments', 'Database']) assert.equal(byText(notebookRow, label).length, 0, `a notebook row offers ${label}`);
+stopNotebookList();
+routes['GET /console/api/flats'] = { flats: [{ ...wiki, running: false }] };
+const stoppedList = new Element('main');
+const stopStoppedList = list.mount(stoppedList, [], ctx);
+await tick();
+assert.ok(all(stoppedList, (e) => e.tagName === 'LI' && e.className === 'flat')[0].textContent.includes('Not running'));
+stopStoppedList();
+routes['GET /console/api/flats'] = listedFlats;
+const notebookMain = new Element('main');
+const stopNotebook = flat.mount(notebookMain, ['wiki'], ctx);
+await tick();
+assert.deepEqual(typeLabel(notebookMain), [['img', 'Notebook', 'Notebook', '0']]);
+assert.deepEqual(tabLinks(notebookMain).map((a) => a.textContent), ['Overview', 'Analytics', 'Settings']);
+for (const id of ['versions', 'previews']) {
+  assert.equal(all(notebookMain, (e) => e.getAttribute('id') === id).length, 0, `notebook page shows ${id}`);
+}
+for (const id of ['status', 'logs']) {
+  assert.equal(all(notebookMain, (e) => e.tagName === 'SECTION' && e.getAttribute('id') === id).length, 1, `notebook page lacks ${id}`);
+}
+assert.equal(all(notebookMain, (e) => e.tagName === 'DT' && e.textContent === 'Notebook').length, 1, 'notebook status names the type');
+assert.ok(notebookMain.textContent.includes('Running') && !notebookMain.textContent.includes('Not published'));
+for (const prefix of ['Save as', 'Publish', 'Roll back', 'Redeploy']) {
+  assert.equal(startsWith(notebookMain, prefix).length, 0, `notebook page offers ${prefix}`);
+}
+stopNotebook();
+const notebookSettings = new Element('main');
+const stopNotebookSettings = flat.mountSettings(notebookSettings, ['wiki'], ctx);
+await tick();
+for (const id of ['env', 'secrets', 'network', 'version-history']) {
+  assert.equal(all(notebookSettings, (e) => e.getAttribute('id') === id).length, 0, `notebook settings show ${id}`);
+}
+assert.equal(all(notebookSettings, (e) => e.getAttribute('id') === 'revisions').length, 1, 'notebook settings lack revision quotas');
+assert.equal(all(notebookSettings, (e) => e.getAttribute('id') === 'rev-quota')[0].value, '50');
+assert.ok(notebookSettings.textContent.includes('People and agents manage revisions on the notebook itself'));
+assert.ok(notebookSettings.textContent.includes('2 in use'));
+assert.ok(notebookSettings.textContent.includes('Who can view your site'), 'a notebook has no guest-edit wording');
+assert.equal(all(notebookSettings, (e) => e.getAttribute('id') === 'delete').length, 1);
+stopNotebookSettings();
+const wikiCalls = calls.slice(wikiCallsFrom).map((c) => c.key).filter((k) => k.includes('/flats/wiki'));
+assert.ok(wikiCalls.includes('GET /console/api/flats/wiki/revision-quota'), wikiCalls.join(', '));
+assert.deepEqual(wikiCalls.filter((k) => /\/flats\/wiki\/(versions|previews|deployments|version-quota|env|secrets|network|snapshots|database|public-edit)/.test(k)), [],
+  'a notebook requests no versions, previews, database, server or guest-edit settings');
 // The Settings tab holds every setting once, and still offers the redeploy
 // that applies environment changes.
 const management = new Element('main');
@@ -655,7 +723,7 @@ assert.deepEqual(JSON.parse(envPut.body), { value: '' }, 'saving an empty value 
 // Deleting is confirmed, and does not send the value or mutate secrets.
 byText(envPanel, 'Delete')[0].dispatch('click');
 await tick();
-let envDelete = all(document.body, (e) => e.tagName === 'DIALOG')[0];
+const envDelete = all(document.body, (e) => e.tagName === 'DIALOG')[0];
 assert.ok(envDelete.textContent.includes('Delete variable APP_MODE?'));
 assert.ok(envDelete.textContent.includes('next approved activation or Flats host restart'));
 assert.equal(calls.some((c) => c.key === 'DELETE /console/api/flats/blog/env/APP_MODE'), false);
@@ -760,7 +828,7 @@ await tick();
 quietShare.close();
 // Designs and boards run without published versions (live_version 0), so
 // widening them reaches the confirm; a versioned flat still publishes first.
-for (const type of ['design', 'board']) {
+for (const type of ['design', 'board', 'notebook']) {
   const live = { ...quiet, type, slug: 'live-' + type, name: 'Live ' + type, running: true, live_version: 0, versions: 0, draft: null, providers: ['portal'] };
   const widened = versionActions.setVisibility(live, 'public');
   await tick();
@@ -923,9 +991,9 @@ assert.ok(cursorSnippet.includes('Then install Flats from the Cursor plugin list
 for (const i of [0, 1, 2, 3]) {
   agentTabs[i].dispatch('click');
   const blocks = all(byId(page, 'agent-snippet'), (e) => e.tagName === 'PRE').map((pre) => pre.textContent);
-  blocks.forEach((text, b) => assert.ok(!text.includes("'"), `tab ${i} block ${b} has no apostrophe`));
+  blocks.forEach((text, b) => { assert.ok(!text.includes("'"), `tab ${i} block ${b} has no apostrophe`); });
   const shell = i === 3 ? blocks : blocks.slice(0, 1);
-  shell.forEach((text) => assert.ok(!text.split('\n').some((line) => line.trim().startsWith('#')), `tab ${i} shell block has no # line`));
+  shell.forEach((text) => { assert.ok(!text.split('\n').some((line) => line.trim().startsWith('#')), `tab ${i} shell block has no # line`); });
 }
 const cliSnippet = snippetOf(agentTabs, 3);
 // The plugin and the direct registration are alternatives, so each client tab
@@ -1095,7 +1163,7 @@ let put = puts().at(-1);
 assert.equal(put.headers['If-Match'], '"etag-1"');
 assert.deepEqual(JSON.parse(put.body), { upload_max_bytes: String(30 * 1048576) });
 assert.equal(byId(page, 'set-upload_max_bytes').value, '30');
-let alert = all(page, (e) => e.getAttribute('role') === 'alert' && e.textContent.includes('Settings not saved'))[0];
+const alert = all(page, (e) => e.getAttribute('role') === 'alert' && e.textContent.includes('Settings not saved'))[0];
 assert.ok(alert && alert.textContent.includes('restart Flats') && alert.textContent.includes('still in the form'));
 assert.ok(page.textContent.includes('config.json changed on disk'), 'the notice must appear after a 412');
 
@@ -1115,12 +1183,12 @@ routes['PUT /console/api/settings'] = { settings: SETTINGS, applied: ['version_q
 page = await mountSettings(['limits']);
 form = byId(page, 'limits-form');
 byId(page, 'set-version_quota').value = '1.5';
-let quotaPutCount = puts().length;
+const quotaPutCount = puts().length;
 form.dispatch('submit'); await tick();
 assert.equal(puts().length, quotaPutCount);
 assert.equal(byId(page, 'set-version_quota').getAttribute('aria-invalid'), 'true');
 byId(page, 'set-version_quota').value = '1';
-let quotaImpactCount = calls.filter((c) => c.key === 'POST /console/api/settings/impact').length;
+const quotaImpactCount = calls.filter((c) => c.key === 'POST /console/api/settings/impact').length;
 form.dispatch('submit'); await tick();
 assert.equal(puts().length, quotaPutCount + 1);
 assert.deepEqual(JSON.parse(puts().at(-1).body), { version_quota: '1' });
@@ -1254,7 +1322,7 @@ routes['PUT /console/api/settings'] = { settings: SETTINGS, applied: ['revision_
 page = await mountSettings(['limits']);
 byId(page, 'set-revision_quota').value = '40';
 putCount = puts().length;
-let impactCalls = calls.filter((c) => c.key === 'POST /console/api/settings/impact').length;
+const impactCalls = calls.filter((c) => c.key === 'POST /console/api/settings/impact').length;
 byId(page, 'limits-form').dispatch('submit');
 await tick();
 assert.equal(puts().length, putCount, 'a revision quota drop must not save before the confirmation');
@@ -2330,7 +2398,7 @@ localShare.close();
 globalThis.location = shareLocation;
 assert.ok(shareRoute({ ...shareFixture, private_url: '', private_state: '' }).message.includes('No link'));
 assert.ok(shareRoute({ ...shareFixture, live_version: 0 }).message.includes('not been published'));
-for (const type of ['docs', 'design', 'board']) {
+for (const type of ['docs', 'design', 'board', 'notebook']) {
   const message = shareRoute({ ...shareFixture, type, running: false }).message;
   assert.ok(message.includes('not running') && !message.includes('publish'));
 }
@@ -2389,6 +2457,9 @@ assert.equal(observedChanges, 1, 'parent refreshes after an observed change');
   assert.equal(dom.accessOf({ type: 'board', visibility: 'public' }), 'view', 'a Public board without a level is view only');
   assert.equal(dom.accessOf({ type: 'flat', visibility: 'public' }), 'public');
   assert.equal(dom.accessOf({ type: 'board', visibility: 'public', public_access: 'edit' }), 'edit');
+  // A notebook has no public edit level: it is plain Public.
+  assert.equal(dom.publicEditOf({ type: 'notebook' }), null);
+  assert.equal(dom.accessOf({ type: 'notebook', visibility: 'public' }), 'public');
 }
 const retro = { ...notes, type: 'board', slug: 'retro', name: 'Retro', visibility: 'public', public_access: 'view', running: true, live_version: 0,
   providers: ['portal'], private_url: 'https://retro.tail.ts.net', public_url: 'https://retro.portal.example', public_notice: PUBLIC,
@@ -2408,6 +2479,19 @@ const retroEdit = { ...retro, public_access: 'edit', public_presence: { guests: 
 }
 const visCalls = () => calls.filter((c) => c.key === 'POST /console/api/flats/retro/visibility').map((c) => JSON.parse(c.body));
 const openDialogs = () => all(document.body, (e) => e.tagName === 'DIALOG' && e.open);
+{
+  // A Public notebook offers only Private and Public: guests never edit it.
+  const atlas = { ...retro, type: 'notebook', slug: 'atlas', name: 'Atlas', public_access: undefined, public_presence: undefined };
+  const before = calls.length;
+  shareDialog(atlas);
+  const dlg = openDialogs().pop();
+  assert.deepEqual(radios(dlg).map((r) => r.value), ['private', 'public']);
+  assert.equal(radios(dlg).find((r) => r.checked).value, 'public');
+  assert.ok(!dlg.textContent.includes('anyone can edit') && dlg.textContent.includes('Can open'));
+  assert.equal(byText(dlg, 'Stop guest editing')[0].parentNode.hidden, true);
+  assert.equal(calls.slice(before).some((c) => c.key.includes('/public-edit')), false, 'a notebook has no guest-edit preflight');
+  dlg.close();
+}
 {
   // A board at view only: three choices, viewer count, no Stop guest editing.
   routes['GET /console/api/flats/retro'] = retro;
@@ -2778,7 +2862,7 @@ const minutesEdit = { ...minutes, public_access: 'edit', public_presence: { gues
   byId(px, 'proxy-template-form').dispatch('input');
   byId(px, 'proxy-template-form').dispatch('submit');
   await tick();
-  let confirmTemplate = openDialogs().pop();
+  const confirmTemplate = openDialogs().pop();
   assert.ok(confirmTemplate.textContent.includes('Change the address template?'));
   assert.ok(confirmTemplate.textContent.includes('Every pending approval becomes stale'), confirmTemplate.textContent);
   assert.ok(confirmTemplate.textContent.includes('version deployments and visibility changes'));
@@ -3012,6 +3096,195 @@ const minutesEdit = { ...minutes, public_access: 'edit', public_presence: { gues
   routes['GET /console/api/providers'] = PROVIDERS;
   document.getElementById = savedGet;
   globalThis.location = savedLocation;
+}
+
+{
+  const savedFlat = routes['GET /console/api/flats/blog'];
+  const notice = 'Each save publishes the next version without an approval while public instance mode is on and visibility stays Public.';
+  try {
+    for (const type of ['flat', 'page', 'docs', 'design', 'board']) {
+      for (const marked of [true, undefined]) {
+        for (const on of [true, undefined]) {
+          for (const visibility of ['public', 'private']) {
+            routes['GET /console/api/flats/blog'] = { ...blog, type, visibility,
+              created_public_instance: marked, private_links_off: on };
+            const main = new Element('main');
+            const stop = flat.mount(main, ['blog'], ctx);
+            try {
+              await tick();
+              assert.equal(main.textContent.includes(notice), !!marked && !!on && visibility === 'public' && ['flat', 'page'].includes(type),
+                `${type}: marked=${marked}, mode=${on}, visibility=${visibility}`);
+            } finally { stop(); }
+          }
+        }
+      }
+    }
+    for (const live of [0, 2]) {
+      for (const on of [true, undefined]) {
+        routes['GET /console/api/flats/blog'] = { ...blog, created_public_instance: true, private_links_off: on,
+          live_version: live, live: live ? blog.live : null };
+        const main = new Element('main');
+        const stop = flat.mountSettings(main, ['blog'], ctx);
+        try {
+          await tick();
+          const env = byId(main, 'env').textContent;
+          const secrets = byId(main, 'secrets').textContent;
+          assert.equal(env.includes('next published save'), !!on);
+          assert.equal(secrets.includes('next published save'), !!on);
+          if (!on && !live) {
+            assert.ok(env.includes('Changes apply when a deployment is approved.'));
+            assert.ok(secrets.includes('Secrets apply when a deployment is approved.'));
+          }
+        } finally { stop(); }
+      }
+    }
+  } finally { routes['GET /console/api/flats/blog'] = savedFlat; }
+}
+
+// Public instance mode hides private links even if an older response left
+// private addresses in the object. Without the flag, the same links remain.
+{
+  const { linkTargets } = await import('./dom.js');
+  const { setVisibility, previewVersion } = await import('./actions.js');
+  const warning = 'The public address goes offline. While public instance mode is on, the flat will have no working link.';
+  const noLink = 'This flat has no working link until it is made Public or public instance mode is turned off.';
+  const offNote = 'Private links are turned off on this host (public instance mode).';
+  const base = { ...blog, private_url: 'http://blog.localhost:7879/', private_state: 'ready', running: true,
+    endpoints: [ep('local', 'http://blog.localhost:7879/'),
+      { ...ep('tailscale', 'https://blog.tail.ts.net/'), ready: true },
+      { ...ep('portal', blog.public_url), ready: true }] };
+  const savedRoutes = { ...routes };
+  const savedLocation = globalThis.location;
+  const savedNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  const copied = [];
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { clipboard: { writeText: async (text) => copied.push(text) } } });
+  const stops = [];
+  try {
+    for (const origin of ['http://127.0.0.1:7878', 'https://console.example.com']) {
+      globalThis.location = { origin, hostname: new URL(origin).hostname };
+      for (const flag of [true, undefined]) {
+        const f = { ...base, ...(flag ? { private_links_off: true } : {}) };
+        const targets = linkTargets(f);
+        assert.equal(targets.private.length, flag ? 0 : 2);
+        assert.deepEqual(targets.public.map((t) => t.url), [blog.public_url]);
+        assert.equal(ui.privateURL(f), flag ? '' : origin.startsWith('http:') ? base.private_url : 'https://blog.tail.ts.net/');
+        const fallback = linkTargets({ ...f, endpoints: null });
+        assert.deepEqual(fallback.private.map((t) => t.url), flag ? [] : [base.private_url]);
+        assert.deepEqual(fallback.public.map((t) => t.url), [blog.public_url]);
+        assert.equal(ui.openTargets(f).local === null, !!flag || origin.startsWith('http:'));
+        assert.equal(ui.openMenuItems(f).some((i) => i.label.startsWith('Open privately')), !flag);
+        const header = siteHeader(f, 'deployments');
+        assert.equal(all(header, (e) => e.className === 'site-address muted').length, flag ? 1 : 2);
+        if (flag) assert.ok(!header.textContent.includes('localhost') && !header.textContent.includes('server only'));
+        const onlyLocal = { ...f, visibility: 'private', endpoints: [f.endpoints[0]] };
+        assert.equal(ui.openLinks(onlyLocal) === null, !!flag);
+        assert.equal(siteHeader(onlyLocal, 'deployments').textContent.includes('server only'), !flag && !origin.startsWith('http:'));
+
+        routes['GET /console/api/flats/blog'] = f;
+        routes['GET /console/api/flats/blog/previews'] = { previews: [{ host: 'preview-blog', url: 'https://preview-blog.tail.ts.net', version: 1 }] };
+        const main = new Element('main');
+        const beforePreviews = calls.filter((c) => c.key === 'GET /console/api/flats/blog/previews').length;
+        const stop = flat.mount(main, ['blog'], ctx);
+        stops.push(stop);
+        await tick();
+        assert.equal(main.textContent.includes('Private URL'), !flag);
+        assert.equal(main.textContent.includes(offNote), !!flag);
+        assert.equal(byText(main, 'Preview').length, flag ? 0 : 3, 'draft and both saved versions');
+        assert.equal(!!byId(main, 'previews'), !flag);
+        assert.equal(calls.filter((c) => c.key === 'GET /console/api/flats/blog/previews').length - beforePreviews, flag ? 0 : 1);
+        assert.equal(byText(main, 'Save as v3').length, 1, 'saving is still available');
+        if (flag) {
+          assert.ok(!main.textContent.includes('localhost') && !main.textContent.includes('server only'));
+          assert.ok(!all(main, (e) => e.tagName === 'A').some((e) => /localhost|tail\.ts\.net/.test(e.getAttribute('href'))));
+        }
+        stop();
+        stops.pop();
+
+        for (const vis of ['public', 'private']) {
+          const state = { ...f, visibility: vis };
+          assert.equal(shareRoute(state).usable, !flag || vis === 'public');
+          assert.equal(shareRoute(state).url, flag && vis === 'private' ? '' : vis === 'public' ? blog.public_url : 'https://blog.tail.ts.net/');
+          shareDialog(state);
+          const dlg = all(document.body, (e) => e.tagName === 'DIALOG').pop();
+          const people = all(dlg, (e) => e.className === 'share-person' && e.textContent.includes('People on your networks'))[0];
+          assert.equal(people.textContent.includes('Private links are turned off'), !!flag);
+          assert.equal(people.textContent.includes('Can open'), !flag);
+          const visit = all(dlg, (e) => e.tagName === 'A' && e.textContent === 'Visit')[0];
+          const copy = all(dlg, (e) => e.tagName === 'BUTTON' && e.textContent.includes('Copy link'))[0];
+          assert.equal(!!visit, !flag || vis === 'public');
+          assert.equal(copy.disabled, !!flag && vis === 'private');
+          if (flag && vis === 'public') {
+            assert.equal(visit.getAttribute('href'), new URL(blog.public_url).href);
+            copy.dispatch('click');
+            await tick();
+            assert.equal(copied.at(-1), blog.public_url);
+          }
+          if (flag && vis === 'private') assert.ok(dlg.textContent.includes(noLink));
+          dlg.close();
+        }
+      }
+    }
+
+    for (const flag of [true, undefined]) {
+      const f = { ...base, ...(flag ? { private_links_off: true } : {}) };
+      shareDialog({ ...f, type: 'docs', public_access: 'view' });
+      const docShare = all(document.body, (e) => e.tagName === 'DIALOG').pop();
+      const docPeople = all(docShare, (e) => e.className === 'share-person' && e.textContent.includes('People on your networks'))[0];
+      assert.equal(docPeople.textContent.includes('Can edit'), !flag);
+      assert.equal(docPeople.textContent.includes('Private links are turned off'), !!flag);
+      docShare.close();
+      const pendingChange = setVisibility(f, 'private');
+      const dlg = all(document.body, (e) => e.tagName === 'DIALOG').pop();
+      assert.equal(dlg.textContent.includes(warning), !!flag);
+      assert.equal(dlg.textContent.includes('The private address keeps working.'), !flag);
+      dlg.close('cancel');
+      assert.equal(await pendingChange, null);
+      if (flag) {
+        const before = calls.length;
+        assert.equal(await previewVersion(f, 0), false);
+        assert.equal(calls.length, before, 'no preview request while private links are off');
+      }
+
+      routes['GET /console/api/flats/blog'] = f;
+      routes['GET /console/api/approvals/public-instance-private'] = { id: 'public-instance-private', flat: 'blog',
+        action: 'set_visibility', params: { from: 'public', visibility: 'private' }, status: 'pending', via: 'mcp' };
+      const approvalMain = new Element('main');
+      approvalsPage.mount(approvalMain, ['public-instance-private'], ctx);
+      await tick();
+      assert.equal(approvalMain.textContent.includes(warning), !!flag);
+      byText(approvalMain, 'Approve…')[0].dispatch('click');
+      const confirm = all(document.body, (e) => e.tagName === 'DIALOG').pop();
+      assert.equal(confirm.textContent.includes(warning), !!flag);
+      confirm.close('cancel');
+      await tick();
+
+      routes['GET /console/api/flats/blog'] = { ...f, type: 'docs', visibility: 'private', public_url: '', public_access: '' };
+      const privateMain = new Element('main');
+      const stopPrivate = flat.mount(privateMain, ['blog'], ctx);
+      stops.push(stopPrivate);
+      await tick();
+      assert.equal(privateMain.textContent.includes(noLink), !!flag);
+      stopPrivate();
+      stops.pop();
+
+      routes['GET /console/api/flats/blog/public-edit'] = { safe_point: 2, safe_point_pinned: true };
+      const settingsMain = new Element('main');
+      const stopSettings = flat.mountSettings(settingsMain, ['blog'], ctx);
+      stops.push(stopSettings);
+      await tick();
+      assert.equal(all(settingsMain, (e) => e.tagName === 'A' && e.textContent === 'Open History').length, flag ? 0 : 1);
+      stopSettings();
+      stops.pop();
+    }
+  } finally {
+    for (const stop of stops) stop();
+    for (const dlg of all(document.body, (e) => e.tagName === 'DIALOG')) dlg.close('cancel');
+    for (const key of Object.keys(routes)) delete routes[key];
+    Object.assign(routes, savedRoutes);
+    globalThis.location = savedLocation;
+    if (savedNavigator) Object.defineProperty(globalThis, 'navigator', savedNavigator);
+    else delete globalThis.navigator;
+  }
 }
 
 console.log('ok');

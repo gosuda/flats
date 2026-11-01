@@ -2,6 +2,8 @@
 // screen pixels, otherwise to the 8px grid while the grid shows. Alt turns
 // it off.
 
+'use strict';
+
 export function snapMove(app, box, dx, dy, exclude, off) {
   if (off || !box) return { dx, dy, guides: [] };
   const tol = 6 / app.cam.z;

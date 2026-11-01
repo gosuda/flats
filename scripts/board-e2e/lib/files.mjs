@@ -1,5 +1,6 @@
 // PNG and zip helpers for fixtures and for checking downloaded results.
 // Synthetic data only.
+'use strict';
 
 import zlib from 'node:zlib';
 
