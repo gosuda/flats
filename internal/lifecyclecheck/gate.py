@@ -590,6 +590,10 @@ def version_quota_deletion(h):
     require(h.ok('GET', '/api/flats/quota/snapshots') == snapshots_before, 'restart removed snapshots')
 
 
+# The smallest valid update_notebook operation (notebook-TECH Appendix A).
+NOTEBOOK_PAGE = {"op": "create_page", "ref": "p1", "parent": None, "before": None, "title": "Notes"}
+
+
 def approval_boundary(h):
     h.activate("boundary", static("BOUNDARY-EARLIER"))
     h.activate("boundary", static("BOUNDARY-CURRENT-V1"))
@@ -645,10 +649,13 @@ def approval_boundary(h):
         "list_env": {"slug": "boundary"},
         "set_env": {"slug": "boundary", "name": "MODE", "value": "census"},
         "delete_env": {"slug": "boundary", "name": "MODE"},
+        "get_notebook": {"slug": "boundary"},
+        "update_notebook": {"slug": "boundary", "op_id": "lc-1", "ops": [NOTEBOOK_PAGE]},
     }
     refusals = {"get_document": "not_docs", "update_document": "not_docs", "get_design": "not_design",
                 "list_revisions": "no_revisions", "get_revision": "no_revisions",
-                "pin_revision": "no_revisions", "rollback_revision": "no_revisions"}
+                "pin_revision": "no_revisions", "rollback_revision": "no_revisions",
+                "get_notebook": "not_notebook", "update_notebook": "not_notebook"}
     census = []
     for tool in tools:
         name = tool['name']
@@ -683,6 +690,8 @@ def approval_boundary(h):
                 and "BOUNDARY-CURRENT-V1" in h.traffic("boundary"),
                 f"MCP tool changed approved current/policy/history: {tool['name']}")
         census.append({"name": tool["name"], "is_error": result.get("isError", False)})
+    if any(tool['name'] == 'update_notebook' for tool in tools):
+        notebook_writes_need_no_approval(h, pending)
     # Console decisions are authorized by the console transport (same-origin
     # browser requests). A local agent that forges those headers can decide;
     # a separate operator credential is a known open design item.
@@ -704,6 +713,16 @@ def approval_boundary(h):
             'rejection changed current/policy or allocated a version')
     h.trace.append({"kind": "human-approval-known-risk", "mcp_census": census,
                     "boundary": "console transport only; no separate operator credential"})
+
+
+def notebook_writes_need_no_approval(h, pending):
+    h.mcp('create_flat', slug='boundary-notebook', type='notebook')
+    require(h.flat('boundary-notebook')['type'] == 'notebook', 'MCP create_flat did not create a notebook')
+    h.mcp('get_notebook', slug='boundary-notebook')
+    written = h.mcp('update_notebook', slug='boundary-notebook', op_id='lc-2', ops=[NOTEBOOK_PAGE])
+    require(not written.get('approval') and not written.get('deploy'), f"notebook write requested an approval: {written}")
+    require(h.versions('boundary-notebook') == [], 'notebook write allocated a website version')
+    require(h.ok('GET', f'/api/approvals/{pending}')['status'] == 'pending', 'notebook write decided existing approval')
 
 
 def denied_visibility(h, slug):

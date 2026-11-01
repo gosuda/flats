@@ -54,7 +54,7 @@ func publicInstanceDescription(name, desc string) string {
 		}
 	}
 	switch name {
-	case "create_flat", "save_draft", "save_draft_from_dir", "save_page", "save_document", "save_design", "update_board", "import_board":
+	case "create_flat", "save_draft", "save_draft_from_dir", "save_page", "save_document", "save_design", "update_board", "import_board", "update_notebook":
 		desc += publicCreationNote
 	}
 	return desc

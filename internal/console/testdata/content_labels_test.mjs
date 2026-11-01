@@ -27,7 +27,8 @@ globalThis.fetch = async (url, opts = {}) => {
   else body = {};
   return { ok: true, json: async () => body };
 };
-for (const type of ['flat', 'page', 'docs', 'design', 'board', undefined, 'future']) {
+const REVISION_MODEL = ['docs', 'design', 'board', 'notebook'];
+for (const type of ['flat', 'page', 'docs', 'design', 'board', 'notebook', undefined, 'future']) {
   for (views of [0, 7]) {
     flat = { slug: 'sample', name: 'Sample', type, disk_bytes: 1024, versions: 9, visibility: 'private', endpoints: [] };
     const main = document.createElement('main');
@@ -36,9 +37,9 @@ for (const type of ['flat', 'page', 'docs', 'design', 'board', undefined, 'futur
     assert.equal(element(main, 'DT', 'Unique Visitors'), undefined);
     assert.ok(element(main, 'DT', 'Page Views'));
     assert.ok(main.textContent.includes('Unique visitors are not tracked.'));
-    assert.equal(!!element(main, 'DT', 'Versions'), !['docs', 'design', 'board'].includes(type));
-    assert.equal(main.textContent.includes('(versions, data and previews)'), !['docs', 'design', 'board'].includes(type));
-    if (['docs', 'design', 'board'].includes(type)) assert.ok(element(main, 'DD', '1.0 KB'));
+    assert.equal(!!element(main, 'DT', 'Versions'), !REVISION_MODEL.includes(type));
+    assert.equal(main.textContent.includes('(versions, data and previews)'), !REVISION_MODEL.includes(type));
+    if (REVISION_MODEL.includes(type)) assert.ok(element(main, 'DD', '1.0 KB'));
     assert.equal(main.textContent.includes('No page views in this period.'), views === 0);
     element(main, 'BUTTON', '7d').dispatch('click');
     await tick();
@@ -53,7 +54,8 @@ settings(main, ['limits'], ctx);
 await tick();
 assert.ok(element(main, 'LABEL', 'Revisions'));
 assert.ok(element(main, 'LABEL', 'Pinned revisions'));
-assert.ok(main.textContent.includes('each document, design or board keeps'));
+assert.ok(main.textContent.includes('each document, design, board or notebook keeps'));
+assert.ok(main.textContent.includes('revisions for documents, designs, boards and notebooks'));
 assert.ok(main.textContent.includes('Pinned revisions are never deleted automatically'));
 assert.ok(main.textContent.includes('For websites and pages.'));
 assert.ok(element(main, 'LABEL', 'Versions'));

@@ -221,7 +221,7 @@ func isFilepathCall(call *ast.CallExpr, name string) bool {
 	return ok && x.Name == "filepath"
 }
 
-// checkPure fails the test if fn calls anything but validBlobHash,
+// checkPure fails the test if fn calls anything but the hash validators,
 // filepath.Join and len: blobPath must not touch the filesystem before it
 // validates, nor after.
 func checkPure(t *testing.T, fset *token.FileSet, fn *ast.FuncDecl) {
@@ -233,6 +233,11 @@ func checkPure(t *testing.T, fset *token.FileSet, fn *ast.FuncDecl) {
 		}
 		if id, ok := call.Fun.(*ast.Ident); ok && (id.Name == "validBlobHash" || id.Name == "len") {
 			return true
+		}
+		if sel, ok := call.Fun.(*ast.SelectorExpr); ok && sel.Sel.Name == "MatchString" {
+			if id, ok := sel.X.(*ast.Ident); ok && id.Name == "blobHashPattern" {
+				return true
+			}
 		}
 		if isFilepathCall(call, "Join") {
 			return true

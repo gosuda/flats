@@ -5,8 +5,8 @@ import { extLink, openTargets } from './ui.js';
 import { hasServer, isLive, typeIcon } from './list.js';
 
 // The management tabs of a flat; Deployments is the flat's own address. A
-// document, design or board has no deployments, so its first tab is its
-// Overview.
+// document, design, board or notebook has no deployments, so its first tab is
+// its Overview.
 const TABS = [['deployments', ''], ['analytics', '/analytics'], ['database', '/database'], ['settings', '/settings']];
 const tabLabel = (flat, tab) => (tab === 'deployments' && isLive(flat) ? 'Overview' : tab[0].toUpperCase() + tab.slice(1));
 
@@ -17,7 +17,7 @@ export function siteHeader(flat, active) {
       h('div', { class: 'site-head-main' }, h('h1', { text: flat.name || flat.slug }),
         siteLinks(flat))),
     h('nav', { class: 'site-tabs', 'aria-label': 'Site management' },
-      // Documents and pages have no database, so no Database tab.
+      // Only a flat that runs server code has a Database tab.
       TABS.filter(([tab]) => tab !== 'database' || hasServer(flat)).map(([tab, path]) => h('a', {
         href: base + path, 'data-nav': true, 'aria-current': active === tab ? 'page' : undefined,
         text: tabLabel(flat, tab),

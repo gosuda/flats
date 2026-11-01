@@ -53,6 +53,14 @@ func piCreationPaths() []piCreationPath {
 			_, err := s.CreateBoard(t.Context(), slug, "Board", ViaMCP)
 			return err
 		}},
+		{"CreateFlatType/notebook", "notebook", func(t *testing.T, s *Service, slug string) error {
+			_, err := s.CreateNotebook(t.Context(), slug, "Notebook", ViaMCP)
+			return err
+		}},
+		{"UpdateNotebook", "notebook", func(t *testing.T, s *Service, slug string) error {
+			_, err := s.UpdateNotebook(t.Context(), slug, notebookPayload("creation-update", notebookCreatePage), ViaMCP)
+			return err
+		}},
 		{"SaveDraft", "flat", func(t *testing.T, s *Service, slug string) error {
 			_, err := s.SaveDraft(t.Context(), slug, piCreationWebsite(), SaveMeta{}, 0, ViaMCP)
 			return err
@@ -171,7 +179,7 @@ func TestPublicInstanceCreationPaths(t *testing.T) {
 				if err != nil || len(approvals) != 0 {
 					t.Errorf("creation requested approvals: %+v, %v", approvals, err)
 				}
-				if path.typ == "docs" || path.typ == "design" || path.typ == "board" {
+				if path.typ == "docs" || path.typ == "design" || path.typ == "board" || path.typ == "notebook" {
 					if !f.Running {
 						t.Fatal("revision-model flat did not start at creation")
 					}
@@ -419,7 +427,7 @@ func piCreationAssertUnpublished(t *testing.T, s *Service, slug string) {
 
 func TestPublicInstanceCreationExposureFailureRegrant(t *testing.T) {
 	for _, path := range piCreationPaths() {
-		if path.typ != "docs" && path.typ != "design" && path.typ != "board" {
+		if path.typ != "docs" && path.typ != "design" && path.typ != "board" && path.typ != "notebook" {
 			continue
 		}
 		t.Run(path.name, func(t *testing.T) {
@@ -460,6 +468,14 @@ func TestPublicInstanceCreationExposureFailureRegrant(t *testing.T) {
 				b, _, err := s.DesignFileContent(t.Context(), "recover", file)
 				if err != nil || len(b) == 0 || path.name == "SaveDesign" && string(b) != artboard {
 					t.Fatalf("design content lost: %q, %v", b, err)
+				}
+			case "notebook":
+				want := 1
+				if path.name == "UpdateNotebook" {
+					want = 2
+				}
+				if got := notebookCount(t, s.liveNotebook("recover"), `SELECT count(*) FROM items WHERE kind='page' AND alive=1`); got != want {
+					t.Fatalf("notebook pages after exposure failure = %d, want %d", got, want)
 				}
 			case "board":
 				page, err := s.GetBoard(t.Context(), "recover", 0, board.Query{})

@@ -20,6 +20,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 )
 
 // Frame opcodes.
@@ -574,6 +575,13 @@ func (ws *Conn) Send(text string) error {
 // never blocks, since the writer may be stuck on a peer that stopped
 // reading. Done is closed when the connection is closed.
 func (ws *Conn) Close(code int, reason string) {
+	if len(reason) > 123 {
+		end := 123
+		for end > 0 && !utf8.RuneStart(reason[end]) {
+			end--
+		}
+		reason = reason[:end]
+	}
 	ws.onceEnd.Do(func() {
 		ws.qmu.Lock()
 		ws.endCode, ws.endWhy = code, reason
@@ -586,7 +594,7 @@ func (ws *Conn) Close(code int, reason string) {
 			defer t.Stop()
 			if code != 1006 {
 				<-ws.writerDone
-				p := make([]byte, 2, 2+len(reason))
+				p := make([]byte, 2, 125)
 				binary.BigEndian.PutUint16(p, uint16(code))
 				p = append(p, reason...)
 				ws.WriteFrame(OpClose, p)
@@ -594,6 +602,13 @@ func (ws *Conn) Close(code int, reason string) {
 			ws.c.Close()
 		}()
 	})
+}
+
+// Abort closes the transport immediately, discarding queued messages. Unlike
+// Close it also interrupts a graceful close already in progress.
+func (ws *Conn) Abort() {
+	ws.c.Close()
+	ws.Close(1006, "")
 }
 
 // CloseStatus returns the code and reason this side closed with; code 0

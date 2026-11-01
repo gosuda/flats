@@ -1,0 +1,66 @@
+[
+  {
+    "type": "title",
+    "value": "한글"
+  },
+  {
+    "type": "text",
+    "value": ""
+  },
+  {
+    "type": "number",
+    "value": "+001.2300e2"
+  },
+  {
+    "type": "number",
+    "value": null
+  },
+  {
+    "type": "select",
+    "value": "o_aaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  {
+    "type": "select",
+    "value": null
+  },
+  {
+    "type": "multi_select",
+    "value": [
+      "o_aaaaaaaaaaaaaaaaaaaaaaaaai",
+      "o_aaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "o_aaaaaaaaaaaaaaaaaaaaaaaaai"
+    ]
+  },
+  {
+    "type": "multi_select",
+    "value": []
+  },
+  {
+    "type": "date",
+    "value": "2024-02-29"
+  },
+  {
+    "type": "date",
+    "value": "2024-02-29T23:59:59"
+  },
+  {
+    "type": "date",
+    "value": null
+  },
+  {
+    "type": "checkbox",
+    "value": true
+  },
+  {
+    "type": "checkbox",
+    "value": false
+  },
+  {
+    "type": "url",
+    "value": "https://example.com/a?q=%20"
+  },
+  {
+    "type": "url",
+    "value": null
+  }
+]

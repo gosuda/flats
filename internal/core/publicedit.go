@@ -750,6 +750,10 @@ func withPublicAccess(r *http.Request, d *deployed, access string, epoch int64) 
 	} else if contenttype.FromManifest(d.version.Manifest) == contenttype.Docs {
 		r.Header.Set(board.PublicAccessHeader, access)
 		r.Header.Set(AccessEpochHeader, strconv.FormatInt(epoch, 10))
+	} else if contenttype.FromManifest(d.version.Manifest) == contenttype.Notebook {
+		if e, ok := r.Context().Value(routeEpochKey{}).(*routeEpoch); ok {
+			r.Header.Set(AccessEpochHeader, e.id)
+		}
 	}
 	return r
 }

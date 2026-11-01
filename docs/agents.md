@@ -174,6 +174,9 @@ static check can see; `topic.preview-check` gives agents with a browser tool a
 script that checks a Draft preview in a real browser before publishing.
 `topic.board` covers boards: when to choose one, the element model, the
 `update_board` operations, guards and layout help, and readability.
+`topic.notebook` covers notebooks: when to choose one, page, block and
+database references, the `update_notebook` operations, guards, paged reads,
+Markdown conversion and history.
 
 `topic.server.types` serves
 [`flats-runtime-v1.d.ts`](agent/types/flats-runtime-v1.d.ts), the TypeScript
@@ -188,7 +191,7 @@ without an installed skill or source checkout:
 | Reference | MCP resource | Read-only tool |
 | --- | --- | --- |
 | [Runtime API v1](runtime-api-v1.md): FILES/DB signatures, text/binary semantics, limits, handler examples and approvals | `flats://docs/runtime-api/v1` | `get_runtime_reference` with `{}` |
-| [Content types](content-types.md): websites, HTML pages, Markdown documents, designs and boards | `flats://docs/content-types/v1` | `get_content_types` |
+| [Content types](content-types.md): websites, HTML pages, Markdown documents, designs, boards and notebooks | `flats://docs/content-types/v1` | `get_content_types` |
 
 ## A first MCP deploy
 

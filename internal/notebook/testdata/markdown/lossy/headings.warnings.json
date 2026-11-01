@@ -1,0 +1,17 @@
+[
+  {
+    "code": "heading_clamped",
+    "line": 1,
+    "message": "Headings deeper than three become heading three."
+  },
+  {
+    "code": "heading_clamped",
+    "line": 3,
+    "message": "Headings deeper than three become heading three."
+  },
+  {
+    "code": "heading_clamped",
+    "line": 5,
+    "message": "Headings deeper than three become heading three."
+  }
+]

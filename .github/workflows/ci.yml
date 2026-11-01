@@ -137,9 +137,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        lane: [core, services, board-1, board-2]
+        lane: [core, services, notebook, notebook-large-reader, notebook-large-markdown, notebook-large-source, board-1, board-2]
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: ${{ startsWith(matrix.lane, 'notebook-large') && 30 || 20 }}
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-go

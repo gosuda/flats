@@ -65,7 +65,7 @@ func TestPublicInstanceOffBaseline(t *testing.T) {
 				t.Fatal(err)
 			}
 			if string(want) != string(append(b, '\n')) {
-				t.Fatalf("off surface changed from unit base 96dca11:\n%s", b)
+				t.Fatalf("off surface differs from the recorded baseline:\n%s", b)
 			}
 		})
 	}

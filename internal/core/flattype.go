@@ -12,7 +12,7 @@ import (
 
 // ErrTypeChange refuses content whose type differs from the flat's: a slug
 // keeps the type it was first saved with.
-var ErrTypeChange = fmt.Errorf("%w: a flat cannot change its content type (website, page, document, design or board)", ErrConflict)
+var ErrTypeChange = fmt.Errorf("%w: a flat cannot change its content type (website, page, document, design, board or notebook)", ErrConflict)
 
 // flatType is the content type of a flat: that of its live version, or,
 // while nothing runs, its latest saved version or Draft. It is "" for a flat
@@ -32,7 +32,7 @@ func (s *Service) flatType(ctx context.Context, f store.Flat) (string, error) {
 	}
 	d, err := s.st.GetDraft(ctx, f.Slug)
 	if errors.Is(err, store.ErrNotFound) {
-		// A design or board is marked before its first publication.
+		// A design, board or notebook is marked before its first publication.
 		if st, err := s.st.ContentState(ctx, f.Slug); err == nil {
 			return st.Type, nil
 		} else if !errors.Is(err, store.ErrNotFound) {
@@ -91,6 +91,8 @@ func typeChangeError(slugName, cur, typ, what string) error {
 		fix = "write its files with save_design, or use another slug"
 	case contenttype.Board:
 		fix = "write it with update_board, or use another slug"
+	case contenttype.Notebook:
+		fix = "write it with update_notebook, or use another slug"
 	}
 	return fmt.Errorf("%w: flat %s is a %s and %s is a %s; %s", ErrTypeChange, slugName, typeNoun(cur), what, typeNoun(typ), fix)
 }
@@ -106,6 +108,8 @@ func typeNoun(t string) string {
 		return "design"
 	case contenttype.Board:
 		return "board"
+	case contenttype.Notebook:
+		return "notebook"
 	}
 	return "website"
 }

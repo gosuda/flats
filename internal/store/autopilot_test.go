@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"path/filepath"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -47,12 +48,7 @@ func TestMigrationAutopilot(t *testing.T) {
 	t.Run("schema 20", func(t *testing.T) {
 		path := filepath.Join(t.TempDir(), "f.db")
 		saved := migrations
-		for i, m := range saved {
-			if m.version > 20 {
-				migrations = saved[:i]
-				break
-			}
-		}
+		migrations = saved[:slices.IndexFunc(saved, func(m migration) bool { return m.version == 21 })]
 		s, err := Open(path)
 		migrations = saved
 		if err != nil {

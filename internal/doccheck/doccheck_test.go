@@ -47,6 +47,20 @@ func errorStrings(r *Report) []string {
 	return out
 }
 
+func TestNotebookCorpusIsData(t *testing.T) {
+	t.Parallel()
+	r := check(t, map[string]string{
+		"README.md":                   "# Docs\n[package](internal/notebook/README.md)\n",
+		"internal/notebook/README.md": "# Notebook\n[missing](missing.md)\n",
+		"internal/notebook/testdata/markdown/lossless/links.md":          "[Page](#p_aaaaaaaaaaaaaaaaaaaaaaaaaa)\n",
+		"internal/notebook/testdata/markdown/lossy/unsupported-links.md": "[local](notes/one.md)\n",
+	})
+	want := []string{`internal/notebook/README.md:2: broken link "missing.md" (file not found)`}
+	if r.Markdown != 2 || !slices.Equal(errorStrings(r), want) {
+		t.Fatalf("corpus/doc distinction: markdown=%d errors=%v", r.Markdown, errorStrings(r))
+	}
+}
+
 func TestLinksAndAnchors(t *testing.T) {
 	r := check(t, map[string]string{
 		"README.md": `# Flats
