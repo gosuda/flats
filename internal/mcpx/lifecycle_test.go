@@ -33,19 +33,12 @@ func publishedFixture(t *testing.T, e *env) {
 }
 
 func TestEveryMCPToolPreservesPendingApproval(t *testing.T) {
-	testMCPToolsPreservePendingApproval(t, false)
-}
-
-func testMCPToolsPreservePendingApproval(t *testing.T, onlyNotebook bool) {
 	inventory := newEnv(t)
 	listed, err := inventory.local.ListTools(context.Background(), nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, tool := range listed.Tools {
-		if onlyNotebook && !strings.Contains(tool.Name, "notebook") {
-			continue
-		}
 		t.Run(tool.Name, func(t *testing.T) {
 			e := newEnvRuntime(t)
 			publishedFixture(t, e)

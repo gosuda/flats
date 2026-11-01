@@ -262,12 +262,3 @@ func TestNotebookGuidanceParity(t *testing.T) {
 		})
 	}
 }
-
-func TestNotebookCreateEnumRegression(t *testing.T) { TestCreateAndSavePage(t) }
-
-func TestNotebookToolCensus(t *testing.T)            { TestListTools(t) }
-func TestNotebookPendingApprovalCensus(t *testing.T) { testMCPToolsPreservePendingApproval(t, true) }
-func TestNotebookAutopilotCensus(t *testing.T) {
-	t.Run("off-on-off", TestAutopilotOffIdentity)
-	t.Run("texts", TestAutopilotOnTextsCensus)
-}
