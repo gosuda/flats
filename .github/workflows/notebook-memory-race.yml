@@ -1,0 +1,31 @@
+name: Notebook memory races
+
+on:
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: notebook-memory-race-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  race:
+    name: race (${{ matrix.lane }})
+    strategy:
+      fail-fast: false
+      matrix:
+        lane: [notebook-large-reader, notebook-large-markdown, notebook-large-source]
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-go
+        with:
+          cache-key: race-${{ matrix.lane }}
+          restore-fallback: race
+      - name: Races
+        run: scripts/ci-race.sh "${{ matrix.lane }}"

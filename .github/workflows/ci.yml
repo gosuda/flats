@@ -137,9 +137,9 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        lane: [core, services, notebook, notebook-large-reader, notebook-large-markdown, notebook-large-source, board-1, board-2]
+        lane: [core, services, notebook, board-1, board-2]
     runs-on: ubuntu-latest
-    timeout-minutes: ${{ startsWith(matrix.lane, 'notebook-large') && 30 || 20 }}
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-go
@@ -151,6 +151,23 @@ jobs:
           restore-fallback: race
       - name: Races
         run: scripts/ci-race.sh "${{ matrix.lane }}"
+
+  notebook-memory:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-go
+        with:
+          cache-key: test-notebook-memory
+          restore-fallback: test-other
+      - name: Large notebook memory tests
+        run: |
+          failed=0
+          for group in reader markdown source; do
+            scripts/ci-memory.sh "$group" || failed=1
+          done
+          exit "$failed"
 
   # Native macOS: launchd service install smoke and its release archive.
   # The Linux install smoke runs in the container job, on its archives.
@@ -195,7 +212,7 @@ jobs:
         run: FLATS_RELEASE_TARGETS="linux/amd64 linux/arm64" scripts/build-release.sh v0.0.0-ci dist
       - name: Lint
         run: |
-          shellcheck -s sh install.sh scripts/ci-test.sh scripts/ci-race.sh scripts/build-release.sh scripts/install-smoke.sh scripts/container-smoke.sh scripts/build-commit-image.sh scripts/build-commit-images.sh scripts/lib-gate.sh
+          shellcheck -s sh install.sh scripts/ci-test.sh scripts/ci-race.sh scripts/ci-memory.sh scripts/build-release.sh scripts/install-smoke.sh scripts/container-smoke.sh scripts/build-commit-image.sh scripts/build-commit-images.sh scripts/lib-gate.sh
           shellcheck -s bash scripts/approval-gate.sh scripts/server-flat-gate.sh scripts/tailnet-gate.sh scripts/agent-gate.sh scripts/lifecycle-gate.sh
       - name: Approval gate helper regressions
         timeout-minutes: 2
