@@ -44,10 +44,10 @@ shift
 
 runtime_concurrency='TestConcurrentFiles|TestWASIRejectsJSHostABI|TestWebSocket(AdmissionCeiling|RejectedUpgrade|PostFailureReleasesSlot|DefaultByteLimits|MessageLimit)$'
 engine_seeds=16
-# The longest board tests under -race: about half of the package's time.
 # About half of each package's race time, by test name prefix.
 notebook_1='^Test(Live|Markdown|Reader|History)'
 core_1='^Test(Docs|Public|Notebook|Board|Usage)'
+# The longest board tests under -race: about half of the package's time.
 board_1='^(TestTwentyGuestsHourOfRevisions|TestLargeFrameMoveDeltaArrivesInParts|TestGuestGroupWindows|TestGuestIdentityEveryFrame|TestStalledGuestsStayInTheirShare)$'
 
 failed=0
