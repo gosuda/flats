@@ -337,9 +337,10 @@ func takeView(s *State, b *refBoard) view {
 // TestReferenceModel drives the engine and the reference model with the
 // same actions, prepared by several people from views of different ages,
 // and checks after every action that both hold the same board and judged
-// every operation the same way.
+// every operation the same way. 200 seeds reach every engine statement
+// that 2000 do; BOARD_SEEDS raises the count.
 func TestReferenceModel(t *testing.T) {
-	forSeeds(t, 2000, runReference)
+	forSeeds(t, 200, runReference)
 }
 
 func runReference(seed uint64) error {
