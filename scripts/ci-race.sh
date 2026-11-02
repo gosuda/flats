@@ -21,7 +21,7 @@
 #
 # The notebook lanes run the whole package between them with its default
 # model seed count; -notebook-model-seeds=200 is a separate stress run.
-# notebook-1 takes the Markdown tests, about half of the package's time;
+# notebook-1 takes the Markdown and reader tests, about half of the package's time;
 # notebook-2 everything else. The package took about
 # nine minutes under -race in one lane, so both lanes keep the 18-minute
 # test timeout inside their 20-minute jobs. A caller's own -timeout comes
@@ -45,7 +45,7 @@ shift
 runtime_concurrency='TestConcurrentFiles|TestWASIRejectsJSHostABI|TestWebSocket(AdmissionCeiling|RejectedUpgrade|PostFailureReleasesSlot|DefaultByteLimits|MessageLimit)$'
 engine_seeds=16
 # About half of each package's race time, by test name prefix.
-notebook_1='^TestMarkdown'
+notebook_1='^Test(Markdown|Reader)'
 core_1='^Test(Docs|Public|Notebook|Board|Usage)'
 # The longest board tests under -race: about half of the package's time.
 board_1='^(TestTwentyGuestsHourOfRevisions|TestLargeFrameMoveDeltaArrivesInParts|TestGuestGroupWindows|TestGuestIdentityEveryFrame|TestStalledGuestsStayInTheirShare)$'
