@@ -68,7 +68,12 @@ is split by test name like the runtime and docs shards: the first lane runs
 a `-run` pattern, the second `-skip`s the same pattern. These jobs retain
 their 20-minute limit. The `notebook-1` and `notebook-2` lanes set an
 18-minute test timeout; the whole package took about nine minutes in one
-lane, close to `go test`'s default of 10 minutes. The default Markdown retained-memory test covers all six payload kinds at 1 MiB and keeps the option-schema cases
+lane, close to `go test`'s default of 10 minutes. `notebook-1` runs the
+`TestMarkdown` tests, about half of the package's race time; `notebook-2`
+runs the rest. The slowest subtests of the services lane
+(`TestEveryMCPToolPreservesPendingApproval`, `TestHistoryAdapterTraversal`
+and the metrics host tests) each build their own host, so they run in
+parallel. The default Markdown retained-memory test covers all six payload kinds at 1 MiB and keeps the option-schema cases
 at 1.5 and 16 MiB as well. Its default-only `bounded_growth` subtest permits
 at most 1 MiB more sampled heap at 16 MiB than at 1 MiB, in addition to the
 unchanged 4 MiB ceiling for each read. This rejects retaining every option id

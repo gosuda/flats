@@ -196,6 +196,8 @@ func (tr *notebookHistoryTransport) RoundTrip(r *http.Request) (*http.Response, 
 func TestHistoryAdapterTraversal(t *testing.T) {
 	for _, adapter := range []string{"API", "CLI", "MCP"} {
 		t.Run(adapter, func(t *testing.T) {
+			// Each adapter reads its own fixture host.
+			t.Parallel()
 			f := newNotebookHistoryFixture(t)
 			for _, scope := range []string{"tree", "page", "database", "markdown"} {
 				t.Run(scope, func(t *testing.T) {

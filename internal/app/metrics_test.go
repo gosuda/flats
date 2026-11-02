@@ -164,6 +164,7 @@ func TestMetricsExposureSelection(t *testing.T) {
 		}
 		for _, enabled := range []bool{false, true} {
 			t.Run(strconv.Itoa(mask)+"/"+strconv.FormatBool(enabled), func(t *testing.T) {
+				t.Parallel()
 				h, client := metricsHost(t, map[string]string{
 					"metrics.enabled": strconv.FormatBool(enabled), "metrics.expose_on": strings.Join(selected, ","),
 				})
@@ -284,6 +285,8 @@ func TestMetricsControlsKeepAnalyticsUsage(t *testing.T) {
 		{name: "disabled per-flat off", explicitOff: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// Each case starts its own host and data directory.
+			t.Parallel()
 			settings := map[string]string{"host.server_runtime": "true", "metrics.enabled": strconv.FormatBool(tc.enabled)}
 			if tc.explicitOff {
 				settings["metrics.per_flat"] = "false"
