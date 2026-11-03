@@ -81,20 +81,21 @@ func allocJSVM(w *worker, ws wsSink) *jsVM {
 func (vm *jsVM) engineSpec() jsengine.Spec {
 	w := vm.w
 	return jsengine.Spec{
-		Dir:             w.spec.Dir,
-		Entry:           w.spec.Entry,
-		TimeoutMS:       int(w.spec.timeout().Milliseconds()),
-		MaxInputBytes:   MaxRequestBody,
-		MaxOutputBytes:  MaxResponseBody,
-		MaxHostArgBytes: MaxRequestBody,
-		CacheDir:        w.spec.CacheDir,
-		MemoryPages:     int(w.spec.pages()),
-		Stdout:          &lineWriter{log: w.log, level: "info"},
-		Stderr:          &lineWriter{log: w.log, level: "error"},
-		Prelude:         preludeJS,
-		BootSource:      bootSource(w.spec.Entry),
-		RawCodec:        vm.docsCodec,
-		Host:            vm.hostCall,
+		Dir:                w.spec.Dir,
+		Entry:              w.spec.Entry,
+		TimeoutMS:          int(w.spec.timeout().Milliseconds()),
+		MaxInputBytes:      maxRequestEnvelope,
+		MaxOutputBytes:     MaxResponseBody,
+		MaxHostArgBytes:    maxHostPayload,
+		MaxHostResultBytes: maxHostPayload,
+		CacheDir:           w.spec.CacheDir,
+		MemoryPages:        int(w.spec.pages()),
+		Stdout:             &lineWriter{log: w.log, level: "info"},
+		Stderr:             &lineWriter{log: w.log, level: "error"},
+		Prelude:            preludeJS,
+		BootSource:         bootSource(w.spec.Entry),
+		RawCodec:           vm.docsCodec,
+		Host:               vm.hostCall,
 	}
 }
 
