@@ -69,7 +69,8 @@ a `-run` pattern, the second `-skip`s the same pattern. These jobs retain
 their 20-minute limit. The `notebook-1` and `notebook-2` lanes set an
 18-minute test timeout; the whole package took about nine minutes in one
 lane, close to `go test`'s default of 10 minutes. `notebook-1` runs the
-`TestMarkdown` and `TestReader` tests, about half of the package's race time; `notebook-2`
+`TestMarkdown` and `TestReader` tests except
+`TestReaderOversizedRowReadReferences`, about half of the package's race time; `notebook-2`
 runs the rest. The slowest subtests of the services lane
 (`TestEveryMCPToolPreservesPendingApproval`, `TestHistoryAdapterTraversal`
 and the metrics host tests) each build their own host, so they run in
