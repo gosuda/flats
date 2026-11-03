@@ -3,9 +3,7 @@ package jsengine
 import (
 	"cmp"
 	"context"
-	"crypto/sha256"
 	"encoding/binary"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -20,16 +18,16 @@ import (
 	"github.com/gosuda/flats/internal/qjs"
 )
 
-//go:linkname qjsWasmBytes github.com/gosuda/flats/internal/qjs.wasmBytes
-var qjsWasmBytes []byte
+var wasmSHA256 = qjs.WasmSHA256
 
 const (
-	DefaultTimeoutMS       = 10000
-	DefaultMemoryPages     = 1024
-	DefaultMaxInputBytes   = 10 << 20
-	DefaultMaxOutputBytes  = 32 << 20
-	DefaultMaxHostArgBytes = 2 << 20
-	maxLogLine             = 64 << 10
+	DefaultTimeoutMS          = 10000
+	DefaultMemoryPages        = 1024
+	DefaultMaxInputBytes      = 10 << 20
+	DefaultMaxOutputBytes     = 32 << 20
+	DefaultMaxHostArgBytes    = 2 << 20
+	DefaultMaxHostResultBytes = 2 << 20
+	maxLogLine                = 64 << 10
 
 	pinnedWasmSHA256 = "79284a9282ad8471573a4d52401362e27d149f1d70b4175cb5affc960a8dc9a9"
 )
@@ -173,12 +171,13 @@ func toQjsCensus(c *Census) *qjs.Census {
 }
 
 type Spec struct {
-	Dir             string
-	Entry           string
-	TimeoutMS       int
-	MaxInputBytes   int
-	MaxOutputBytes  int
-	MaxHostArgBytes int
+	Dir                string
+	Entry              string
+	TimeoutMS          int
+	MaxInputBytes      int
+	MaxOutputBytes     int
+	MaxHostArgBytes    int
+	MaxHostResultBytes int
 
 	CacheDir     string
 	MemoryPages  int
@@ -299,10 +298,7 @@ func (img Image) Compatible(spec Spec) bool {
 	if img.raw == nil {
 		return false
 	}
-	pages := spec.MemoryPages
-	if pages <= 0 {
-		pages = DefaultMemoryPages
-	}
+	pages := cmp.Or(spec.MemoryPages, DefaultMemoryPages)
 	opt := qjs.Option{
 		ReadOnlyDir:        spec.Dir,
 		CacheDir:           spec.CacheDir,
@@ -336,6 +332,7 @@ type Engine struct {
 
 	liveHandles  atomic.Int64
 	hostPanicked atomic.Bool
+	hostTooLarge atomic.Bool
 	hostTainted  atomic.Bool
 	userTainted  atomic.Bool
 	bootRan      atomic.Bool
@@ -344,14 +341,14 @@ type Engine struct {
 	callMu       sync.Mutex
 	callGoid     atomic.Int64
 	inClose      atomic.Bool
+	restored     bool
 
 	testHookLeakHandle       atomic.Bool
 	testHookPendingException atomic.Bool
 }
 
 func Open(spec Spec) (*Engine, error) {
-	sum := sha256.Sum256(qjsWasmBytes)
-	if hex.EncodeToString(sum[:]) != pinnedWasmSHA256 {
+	if wasmSHA256() != pinnedWasmSHA256 {
 		return nil, ErrWasmMismatch
 	}
 
@@ -361,6 +358,7 @@ func Open(spec Spec) (*Engine, error) {
 	spec.MaxInputBytes = cmp.Or(spec.MaxInputBytes, DefaultMaxInputBytes)
 	spec.MaxOutputBytes = cmp.Or(spec.MaxOutputBytes, DefaultMaxOutputBytes)
 	spec.MaxHostArgBytes = cmp.Or(spec.MaxHostArgBytes, DefaultMaxHostArgBytes)
+	spec.MaxHostResultBytes = cmp.Or(spec.MaxHostResultBytes, DefaultMaxHostResultBytes)
 
 	eng := &Engine{
 		spec:    spec,
@@ -414,6 +412,7 @@ func Open(spec Spec) (*Engine, error) {
 		return nil, fmt.Errorf("start JavaScript runtime: %w", err)
 	}
 	eng.rt = rt
+	eng.restored = rt.Restored()
 
 	c := rt.Context()
 	if spec.Image == nil || spec.Image.raw == nil {
@@ -500,11 +499,7 @@ func (e *Engine) isFatal(err error, ctx context.Context) bool {
 	if e.rt != nil && !e.rt.StackIntact() {
 		return true
 	}
-	se := parseScriptError(err)
-	if se != nil && se.Name == "InternalError" {
-		return true
-	}
-	return false
+	return qjs.IsInternalError(err)
 }
 
 func (e *Engine) fatal(cause error) error {
@@ -595,9 +590,6 @@ func (e *Engine) postCallChecks(c *qjs.Context, out string) error {
 	if e.hostPanicked.Load() {
 		return e.fatal(errors.New("host function panicked"))
 	}
-	if len(out) > e.spec.MaxOutputBytes {
-		return ErrTooLarge
-	}
 	if c.HasException() {
 		return e.fatal(c.Exception())
 	}
@@ -609,6 +601,12 @@ func (e *Engine) postCallChecks(c *qjs.Context, out string) error {
 	}
 	if err := e.collectCycles(c); err != nil {
 		return err
+	}
+	if e.hostTooLarge.Load() {
+		return ErrTooLarge
+	}
+	if len(out) > e.spec.MaxOutputBytes {
+		return ErrTooLarge
 	}
 	return nil
 }
@@ -683,6 +681,7 @@ func (e *Engine) enter(ctx context.Context) (context.Context, func(), error) {
 		e.swapCtx.set(cCtx)
 	}
 	e.hostPanicked.Store(false)
+	e.hostTooLarge.Store(false)
 	leave := func() {
 		if cCtx != nil {
 			e.swapCtx.set(context.Background())
@@ -709,9 +708,6 @@ func (e *Engine) imageEligibleLocked() error {
 	}
 	if e.userTainted.Load() {
 		return fmt.Errorf("%w: user code executed", ErrTainted)
-	}
-	if e.rt == nil {
-		return ErrClosed
 	}
 	return e.rt.ImageEligible()
 }
@@ -872,7 +868,7 @@ func (e *Engine) Snapshot() (snap []byte, retErr error) {
 	if e.state.Load() == statePoisoned {
 		return nil, ErrPoisoned
 	}
-	if e.state.Load() == stateClosed || e.rt == nil {
+	if e.state.Load() == stateClosed {
 		return nil, ErrClosed
 	}
 	if e.spec.ImagePath == "" {
@@ -904,19 +900,18 @@ func (e *Engine) Snapshot() (snap []byte, retErr error) {
 }
 
 func (e *Engine) Restored() bool {
-	return e.rt != nil && e.rt.Restored()
+	return e.restored
 }
 
 func (e *Engine) ImageEligible() error {
 	if e == nil {
 		return ErrClosed
 	}
-	if e.state.Load() == statePoisoned {
-		return ErrPoisoned
+	_, leave, err := e.enter(nil)
+	if err != nil {
+		return err
 	}
-	if e.state.Load() == stateClosed {
-		return ErrClosed
-	}
+	defer leave()
 	return e.imageEligibleLocked()
 }
 

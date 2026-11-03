@@ -98,6 +98,7 @@ func (e *Engine) hostCall(this *qjs.This) (*qjs.Value, error) {
 	op := args[0].String()
 	raw := args[1].String()
 	if len(op) > maxHost || len(raw) > maxHost {
+		e.hostTooLarge.Store(true)
 		return nil, ErrTooLarge
 	}
 
@@ -125,7 +126,8 @@ func (e *Engine) hostCall(this *qjs.This) (*qjs.Value, error) {
 		return nil, err
 	}
 
-	if len(res) > maxHost {
+	if len(res) > e.spec.MaxHostResultBytes {
+		e.hostTooLarge.Store(true)
 		return nil, ErrTooLarge
 	}
 

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -802,6 +803,44 @@ func TestSnapshotExclusion(t *testing.T) {
 	}
 }
 
+func TestSnapshotCloseRace(t *testing.T) {
+	eng, err := Open(Spec{ImagePath: "/tmp/fake-image"})
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+
+	deadline := time.Now().Add(2 * time.Second)
+	snapDone := make(chan struct{})
+	go func() {
+		defer close(snapDone)
+		for time.Now().Before(deadline) {
+			if _, err := eng.Snapshot(); errors.Is(err, ErrClosed) {
+				return
+			}
+		}
+	}()
+
+	time.Sleep(10 * time.Millisecond)
+	if err := eng.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	<-snapDone
+
+	if _, err := eng.Snapshot(); !errors.Is(err, ErrClosed) {
+		t.Fatalf("Snapshot after Close: got %v, want ErrClosed", err)
+	}
+}
+
+func TestOpenWasmMismatch(t *testing.T) {
+	orig := wasmSHA256
+	wasmSHA256 = func() string { return strings.Repeat("0", 64) }
+	defer func() { wasmSHA256 = orig }()
+
+	if _, err := Open(Spec{}); !errors.Is(err, ErrWasmMismatch) {
+		t.Fatalf("Open with mismatched wasm hash: got %v, want ErrWasmMismatch", err)
+	}
+}
+
 func TestCloseWaitsForInFlightCall(t *testing.T) {
 	started := make(chan struct{})
 	unblock := make(chan struct{})
@@ -936,32 +975,82 @@ func TestCountImageFuncs(t *testing.T) {
 }
 
 func TestHostResultOverLimit(t *testing.T) {
-	maxHost := 64
-	host := func(ctx context.Context, op string, args []byte) ([]byte, error) {
-		return bytes.Repeat([]byte("a"), maxHost+1), nil
-	}
-	eng, err := Open(Spec{MaxHostArgBytes: maxHost, Host: host})
-	if err != nil {
-		t.Fatalf("Open: %v", err)
-	}
-	defer eng.Close()
-
-	ctx := validContext(t)
-	_, err = eng.Eval(ctx, "t.js", `__flats_host("op", "x")`, false)
-	if err == nil {
-		t.Fatal("expected error for host result over limit")
-	}
-	if errors.Is(err, ErrPoisoned) {
-		t.Fatalf("host result over limit poisoned engine: %v", err)
-	}
-	if _, ok := errors.AsType[*ScriptError](err); !ok {
-		t.Fatalf("got %T, want *ScriptError", err)
+	resultHost := func(ctx context.Context, op string, args []byte) ([]byte, error) {
+		n, err := strconv.Atoi(strings.TrimPrefix(op, "ret"))
+		if err != nil {
+			return nil, fmt.Errorf("bad op %q", op)
+		}
+		return bytes.Repeat([]byte("a"), n), nil
 	}
 
-	out, errAfter := eng.Eval(ctx, "t.js", "1 + 1", false)
-	if errAfter != nil || out != "2" {
-		t.Fatalf("engine not reusable after host limit: %v", errAfter)
-	}
+	t.Run("ResultBoundaries", func(t *testing.T) {
+		const resultLimit = 64
+		eng, err := Open(Spec{MaxHostArgBytes: 8, MaxHostResultBytes: resultLimit, Host: resultHost})
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		defer eng.Close()
+
+		ctx := validContext(t)
+		for _, n := range []int{resultLimit - 1, resultLimit} {
+			out, err := eng.Eval(ctx, "t.js", fmt.Sprintf(`__flats_host("ret%d", "x")`, n), false)
+			if err != nil || len(out) != n {
+				t.Fatalf("result len %d failed: %v", n, err)
+			}
+		}
+
+		_, err = eng.Eval(ctx, "t.js", fmt.Sprintf(`__flats_host("ret%d", "x")`, resultLimit+1), false)
+		if !errors.Is(err, ErrTooLarge) {
+			t.Fatalf("result len %d uncaught: got %v, want ErrTooLarge", resultLimit+1, err)
+		}
+		if errors.Is(err, ErrPoisoned) {
+			t.Fatalf("host result over limit poisoned engine: %v", err)
+		}
+
+		_, err = eng.Eval(ctx, "t.js", fmt.Sprintf(`try { __flats_host("ret%d", "x") } catch (e) { 'caught' }`, resultLimit+1), false)
+		if !errors.Is(err, ErrTooLarge) {
+			t.Fatalf("caught result len %d: got %v, want ErrTooLarge", resultLimit+1, err)
+		}
+		if errors.Is(err, ErrPoisoned) {
+			t.Fatalf("caught result over limit poisoned engine: %v", err)
+		}
+
+		out, errAfter := eng.Eval(ctx, "t.js", "1 + 1", false)
+		if errAfter != nil || out != "2" {
+			t.Fatalf("engine not reusable after host limit: %v", errAfter)
+		}
+	})
+
+	t.Run("SmallArgLimitLargeResultAllowed", func(t *testing.T) {
+		eng, err := Open(Spec{MaxHostArgBytes: 8, MaxHostResultBytes: 128, Host: resultHost})
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		defer eng.Close()
+
+		ctx := validContext(t)
+		out, err := eng.Eval(ctx, "t.js", `__flats_host("ret100", "x")`, false)
+		if err != nil || len(out) != 100 {
+			t.Fatalf("arg limit must not cap result: len %d, err %v", len(out), err)
+		}
+	})
+
+	t.Run("LargeArgLimitSmallResultFails", func(t *testing.T) {
+		eng, err := Open(Spec{MaxHostArgBytes: 128, MaxHostResultBytes: 8, Host: resultHost})
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		defer eng.Close()
+
+		ctx := validContext(t)
+		_, err = eng.Eval(ctx, "t.js", `__flats_host("ret9", "x")`, false)
+		if !errors.Is(err, ErrTooLarge) {
+			t.Fatalf("result over its own limit: got %v, want ErrTooLarge", err)
+		}
+		if errors.Is(err, ErrPoisoned) {
+			t.Fatalf("result limit poisoned engine: %v", err)
+		}
+	})
 }
 
 func TestImageEligiblePoisoned(t *testing.T) {
@@ -1116,11 +1205,19 @@ func TestMaxHostArgBytesBoundaries(t *testing.T) {
 
 	argOver := strings.Repeat("x", limit+1)
 	_, err = eng.Eval(ctx, "t.js", fmt.Sprintf(`__flats_host("echo", %q)`, argOver), false)
-	if err == nil {
-		t.Fatalf("arg len %d succeeded, want ErrTooLarge", limit+1)
+	if !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("arg len %d uncaught: got %v, want ErrTooLarge", limit+1, err)
 	}
 	if errors.Is(err, ErrPoisoned) {
 		t.Fatalf("arg limit poisoned engine: %v", err)
+	}
+
+	_, err = eng.Eval(ctx, "t.js", fmt.Sprintf(`try { __flats_host("echo", %q) } catch (e) { 'caught' }`, argOver), false)
+	if !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("arg len %d caught: got %v, want ErrTooLarge", limit+1, err)
+	}
+	if errors.Is(err, ErrPoisoned) {
+		t.Fatalf("caught arg limit poisoned engine: %v", err)
 	}
 
 	for _, n := range []int{limit - 1, limit} {
@@ -1133,8 +1230,8 @@ func TestMaxHostArgBytesBoundaries(t *testing.T) {
 
 	argRetOver := strings.Repeat("y", limit+1)
 	_, err = eng.Eval(ctx, "t.js", fmt.Sprintf(`__flats_host("ret", %q)`, argRetOver), false)
-	if err == nil {
-		t.Fatalf("ret len %d succeeded, want ErrTooLarge", limit+1)
+	if !errors.Is(err, ErrTooLarge) {
+		t.Fatalf("ret len %d uncaught: got %v, want ErrTooLarge", limit+1, err)
 	}
 	if errors.Is(err, ErrPoisoned) {
 		t.Fatalf("ret limit poisoned engine: %v", err)
@@ -1187,17 +1284,22 @@ func TestDeadlineClamping(t *testing.T) {
 }
 
 func TestGuestExceptionSubstringDoesNotPoison(t *testing.T) {
-	cases := []string{
-		"throw new Error('unreachable')",
-		"throw new Error('out of memory')",
-		"throw new Error('InternalError')",
-		"throw new Error('stack overflow')",
-		"throw new Error('context canceled')",
-		"throw new Error('module is closed')",
+	cases := []struct {
+		src  string
+		name string
+	}{
+		{"throw new Error('unreachable')", "Error"},
+		{"throw new Error('out of memory')", "Error"},
+		{"throw new Error('InternalError')", "Error"},
+		{"throw new Error('stack overflow')", "Error"},
+		{"throw new Error('context canceled')", "Error"},
+		{"throw new Error('module is closed')", "Error"},
+		{"const e = new Error('renamed'); e.name = 'InternalError'; throw e", "InternalError"},
+		{"throw 'InternalError: y'", "InternalError"},
 	}
 
 	for _, tc := range cases {
-		t.Run(tc, func(t *testing.T) {
+		t.Run(tc.src, func(t *testing.T) {
 			eng, err := Open(Spec{})
 			if err != nil {
 				t.Fatalf("Open: %v", err)
@@ -1205,7 +1307,7 @@ func TestGuestExceptionSubstringDoesNotPoison(t *testing.T) {
 			defer eng.Close()
 
 			ctx := validContext(t)
-			_, err = eng.Eval(ctx, "sub.js", tc, false)
+			_, err = eng.Eval(ctx, "sub.js", tc.src, false)
 			if err == nil {
 				t.Fatal("expected error, got nil")
 			}
@@ -1216,8 +1318,8 @@ func TestGuestExceptionSubstringDoesNotPoison(t *testing.T) {
 			if !ok {
 				t.Fatalf("expected *ScriptError, got %T: %v", err, err)
 			}
-			if se.Name != "Error" {
-				t.Fatalf("se.Name = %q, want Error", se.Name)
+			if se.Name != tc.name {
+				t.Fatalf("se.Name = %q, want %q", se.Name, tc.name)
 			}
 
 			out, err := eng.Eval(ctx, "recover.js", "'ok'", false)
@@ -1238,6 +1340,23 @@ func TestGuestExceptionSubstringDoesNotPoison(t *testing.T) {
 		_, err = eng.Eval(ctx, "internal.js", "throw new InternalError('real fatal')", false)
 		if !errors.Is(err, ErrPoisoned) {
 			t.Fatalf("InternalError must poison engine: got %v, want ErrPoisoned", err)
+		}
+		if _, ok := errors.AsType[*Fatal](err); !ok {
+			t.Fatalf("expected *Fatal, got %T", err)
+		}
+	})
+
+	t.Run("RealInternalErrorRejectionPoisons", func(t *testing.T) {
+		eng, err := Open(Spec{})
+		if err != nil {
+			t.Fatalf("Open: %v", err)
+		}
+		defer eng.Close()
+
+		ctx := validContext(t)
+		_, err = eng.Eval(ctx, "reject.js", "Promise.reject(new InternalError('real fatal'))", false)
+		if !errors.Is(err, ErrPoisoned) {
+			t.Fatalf("InternalError rejection must poison engine: got %v, want ErrPoisoned", err)
 		}
 		if _, ok := errors.AsType[*Fatal](err); !ok {
 			t.Fatalf("expected *Fatal, got %T", err)

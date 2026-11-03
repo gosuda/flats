@@ -3,7 +3,9 @@ package qjs
 import (
 	"context"
 	crand "crypto/rand"
+	"crypto/sha256"
 	_ "embed"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math"
@@ -19,6 +21,16 @@ import (
 
 //go:embed qjs.wasm
 var wasmBytes []byte
+
+var wasmSHA256 = sync.OnceValue(func() string {
+	sum := sha256.Sum256(wasmBytes)
+	return hex.EncodeToString(sum[:])
+})
+
+// WasmSHA256 returns the hex SHA-256 of the embedded qjs.wasm.
+func WasmSHA256() string {
+	return wasmSHA256()
+}
 
 // FORK (flats): wazero >= 1.12 binds function type IDs to one runtime's
 // store, so a module compiled in a throwaway runtime cannot be instantiated in

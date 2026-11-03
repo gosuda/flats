@@ -1,6 +1,6 @@
 # Guarded JavaScript engine
 
-Status: proposed
+Status: implemented
 
 ## Summary
 
@@ -22,7 +22,8 @@ Observable behavior of flats does not change.
    be carried by byte slices. It is exposed as an opaque `Value` type and
    `RawCodec CodecFunc` on `Spec`.
 3. Spec carries the whole construction surface: `Dir`, `Entry`, `TimeoutMS`,
-   `MaxInputBytes`, `MaxOutputBytes`, `MaxHostArgBytes`, `CacheDir`,
+   `MaxInputBytes`, `MaxOutputBytes`, `MaxHostArgBytes`,
+   `MaxHostResultBytes`, `CacheDir`,
    `MemoryPages` (0 = default), `Stdout`, `Stderr`, `Prelude` and `BootSource` startup
    sources, `ImagePath` (empty = no image support), `ImageBinding`, `Census` and the host function.
 4. An engine runs at most one call at a time. A call that starts while
@@ -39,10 +40,14 @@ Observable behavior of flats does not change.
 7. Every call MUST take a context with a deadline. A call without a deadline
    MUST fail with `ErrNoDeadline`. The deadline MUST NOT exceed the worker's
    configured timeout.
-8. The engine MUST check these limits before any byte crosses into the wasm
-   module: the size of a call argument, the size of a call result, the number
-   and size of host-call arguments, and the size of one log line. A call over
-   a limit MUST fail with `ErrTooLarge` and MUST NOT poison the engine.
+8. The engine MUST check every limit before bytes cross into the wasm
+   module. The limits for a call are the size of the call argument and the
+   size of the call result. The limits for a host call are the size of the
+   host-call arguments and the size of the host-call result. Host-call
+   arguments and host-call results MUST have separate limits. A call over a
+   limit MUST fail with `ErrTooLarge`. A host call over its limit MUST fail
+   the call with `ErrTooLarge` even when the guest catches the JavaScript
+   exception. A limit failure MUST NOT poison the engine.
 9. The engine owns the memory policy: the wasm page cap, the QuickJS heap
    limit and the collection of reference cycles. The rules in the playbook
    "QuickJS and wazero" stay in force. Callers MUST NOT call `gc` directly.
@@ -78,7 +83,9 @@ Observable behavior of flats does not change.
 - One test per fatal class in requirement 6 that is reachable in-process
   shows the Poisoned state.
 - Boundary tests use the sizes N-1, N and N+1 for each limit in
-  requirement 8.
+  requirement 8. One test shows that the host-call argument limit and the
+  host-call result limit are independent: a small argument limit passes a
+  large result, and a large argument limit fails a small result.
 - A test calls `Close` twice and calls the engine after `Close`.
 - The existing `internal/runtime` suites pass without change to their
   expectations.

@@ -434,10 +434,29 @@ func (v *Value) ToByteArray() []byte {
 	return append([]byte(nil), v.context.MemRead(addr, uint64(size))...)
 }
 
+type jsException struct {
+	text     string
+	internal bool
+}
+
+func (e *jsException) Error() string {
+	return e.text
+}
+
+// IsInternalError reports whether err is a QuickJS exception whose thrown
+// value is an instance of the global InternalError constructor.
+func IsInternalError(err error) bool {
+	je, ok := errors.AsType[*jsException](err)
+	return ok && je.internal
+}
+
 func (v *Value) Exception() error {
+	internal := v.IsObject() && v.IsGlobalInstanceOf("InternalError")
+	v.context.clearException()
+
 	cause := v.exceptionText()
 	if !v.IsObject() {
-		return errors.New(cause)
+		return &jsException{text: cause, internal: internal}
 	}
 
 	stack := v.GetPropertyStr("stack")
@@ -446,10 +465,10 @@ func (v *Value) Exception() error {
 	v.context.clearException()
 
 	if !stack.IsString() {
-		return errors.New(cause)
+		return &jsException{text: cause, internal: internal}
 	}
 
-	return errors.New(cause + "\n" + stack.String())
+	return &jsException{text: cause + "\n" + stack.String(), internal: internal}
 }
 
 func (v *Value) exceptionText() string {
