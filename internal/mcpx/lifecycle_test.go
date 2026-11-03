@@ -40,6 +40,8 @@ func TestEveryMCPToolPreservesPendingApproval(t *testing.T) {
 	}
 	for _, tool := range listed.Tools {
 		t.Run(tool.Name, func(t *testing.T) {
+			// Every subtest builds its own host, store and listeners.
+			t.Parallel()
 			e := newEnvRuntime(t)
 			publishedFixture(t, e)
 			if code, _ := e.operatorCall(t, "POST", "/flats/census/providers", `{"provider":"portal","permitted":true}`); code != 200 {
