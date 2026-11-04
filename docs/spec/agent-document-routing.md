@@ -34,8 +34,8 @@ the file it changed, so `--undo` works from the files alone.
    the current directory and the plan says that no repository was found. The
    plan always names the project directory. A project that is the user's home
    directory is refused, whatever path spells either of them, with a message to run the command inside a repository
-   or to use user scope. The command runs on macOS and Linux, like the rest of
-   the CLI. Its output is text, and `--json` is a usage error. Ctrl-C at the
+   or to use user scope. The command runs on macOS, Linux and Windows, like the
+   rest of the CLI. Its output is text, and `--json` is a usage error. Ctrl-C at the
    question ends the command without writing.
 
 2. **Targets.** Each target is one file or one printed text:
@@ -341,4 +341,3 @@ which were not checked. Registering the Flats MCP server with an agent, which
 `flats mcp-config` and the plugin do. Checking that the host answers. A record
 of what earlier runs changed, which is why undo cannot tell added entries from
 identical ones already there. Console blocks that show the routing text itself.
-Windows, where the CLI is not built.

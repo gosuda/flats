@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/gosuda/flats/internal/bundle"
+	"github.com/gosuda/flats/internal/ostest"
 	"github.com/gosuda/flats/internal/store"
 )
 
@@ -652,6 +653,7 @@ func roleCPU(s *Service, slug, role string) float64 {
 // trials the check sink, previews the preview sink, and live builds the
 // flat's live sink, including host restore, restarts and both rename paths.
 func TestUsageSinkOfEveryBuild(t *testing.T) {
+	ostest.SkipPOSIXModes(t)
 	ctx := context.Background()
 	dir := t.TempDir()
 	open := func() (*Service, *store.Store, *usageRuntime) {
@@ -1477,6 +1479,7 @@ func TestWorkerMemoryKeepsTheLastSample(t *testing.T) {
 // figure keeps its value and time, from the background walk and from the
 // quota check alike.
 func TestDiskFigureKeepsTheLastCompleteWalk(t *testing.T) {
+	ostest.SkipPOSIXModes(t)
 	if os.Geteuid() == 0 {
 		t.Skip("root reads unreadable directories")
 	}

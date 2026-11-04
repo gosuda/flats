@@ -92,6 +92,9 @@ func spillExternalOptions(t *testing.T, in *Instance, property ID, ids []ID, nam
 	t.Helper()
 	dir := t.TempDir()
 	binary := filepath.Join(dir, "option-fixture")
+	if runtime.GOOS == "windows" {
+		binary += ".exe"
+	}
 	// Make the test cache observe source otherwise read only by the child build.
 	if _, err := os.ReadFile(filepath.Join("testdata", "reader-options", "main.go")); err != nil {
 		return fmt.Errorf("fixture source: %w", err)

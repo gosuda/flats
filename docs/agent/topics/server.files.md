@@ -41,6 +41,10 @@ returns the spelling stored by the filesystem (on default APFS, the first-create
 spelling), and matches its prefix literally: get("CASE/a") can find "case/a"
 while list("CASE/") is empty. For portable apps use canonical names such as
 lowercase ASCII IDs; do not distinguish keys by case or normalization alone.
+On a Windows host a key must also be a name Windows can store: it has no device
+name such as `NUL`, no `:<>"|?*`, no segment that ends in a dot or a space, and no
+segment in the form of a short name such as `LONGFI~1.TXT`. Two keys that differ
+only in case name one value there, and the last write sets the spelling.
 The 512-byte check is a whole-key validation limit, not a guarantee that the
 host filesystem accepts the filename. Each path segment also obeys the host's
 name limits: ext4 typically allows **255 UTF-8 bytes** per segment, while APFS

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"maps"
 	"math"
-	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -187,7 +186,7 @@ func NewSettingsSource(doc *config.Document, file *SettingsFile) (*SettingsSourc
 }
 
 func memorySettings() *SettingsSource {
-	doc, err := config.New(config.NewInstanceID(), string(filepath.Separator))
+	doc, err := config.New(config.NewInstanceID(), config.ScratchDataDir())
 	if err == nil {
 		var src *SettingsSource
 		if src, err = NewSettingsSource(doc, nil); err == nil {
@@ -295,7 +294,7 @@ func (s *SettingsSource) commit(ifMatch string, apply func(*config.Document) err
 				if ifMatch != "" {
 					return errChangedOnDisk()
 				}
-				return withKind(ErrConflict, fmt.Errorf("config.json changed on disk since Flats loaded it; send SIGHUP or restart `flats serve` to load the file, then retry: %w", err))
+				return withKind(ErrConflict, fmt.Errorf("config.json changed on disk since Flats loaded it; "+reloadServeAdvice+" to load the file, then retry: %w", err))
 			}
 			var fe *config.FieldError
 			if errors.As(err, &fe) {
@@ -601,7 +600,7 @@ func (s *Service) SettingsETag() string {
 }
 
 func errChangedOnDisk() error {
-	return withKind(ErrConfigChanged, errors.New("config.json changed on disk since Flats loaded it; send SIGHUP or restart Flats to load the file, then retry"))
+	return withKind(ErrConfigChanged, errors.New("config.json changed on disk since Flats loaded it; "+reloadAdvice+" to load the file, then retry"))
 }
 
 // changedOnDisk reports whether the file on disk is not the one the host
@@ -847,7 +846,7 @@ func cleanSettings(in map[string]string) (map[string]string, error) {
 func normalizeSetting(k, v string) (string, error) {
 	switch k {
 	case SetExternalOrigins, SetProxyTemplate:
-		d, err := config.New(config.NewInstanceID(), string(filepath.Separator))
+		d, err := config.New(config.NewInstanceID(), config.ScratchDataDir())
 		if err != nil {
 			return "", err
 		}

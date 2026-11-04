@@ -47,6 +47,7 @@ func TestServeFlagsDoNotGrantByDefault(t *testing.T) {
 
 func TestStartDoesNotInferGrantsFromOldDirectories(t *testing.T) {
 	dir := t.TempDir()
+	markDataDir(t, dir)
 	if err := os.MkdirAll(filepath.Join(dir, "tsnet", "notes"), 0o700); err != nil {
 		t.Fatal(err)
 	}

@@ -43,6 +43,7 @@ import (
 	"tailscale.com/types/nettype"
 
 	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/ostest"
 )
 
 const testDomain = "tail-scale.ts.net"
@@ -667,7 +668,7 @@ func TestNodeStateSymlinkFailsClosed(t *testing.T) {
 	if err := os.WriteFile(sentinel, []byte("keep"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(outside, filepath.Join(root, "linked")); err != nil {
+	if err := ostest.Symlink(t, outside, filepath.Join(root, "linked")); err != nil {
 		t.Fatal(err)
 	}
 	n, err := New(Config{Dir: root, Logf: t.Logf})
@@ -955,7 +956,7 @@ func TestSharedACMEKey(t *testing.T) {
 		if got := read(keyOf(filepath.Join(n.cfg.Dir, d))); got != shared {
 			t.Errorf("node %s has a different account key", d)
 		}
-		if fi, err := os.Stat(keyOf(filepath.Join(n.cfg.Dir, d))); err != nil || fi.Mode().Perm() != 0o600 {
+		if fi, err := os.Stat(keyOf(filepath.Join(n.cfg.Dir, d))); err != nil || ostest.WrongMode(fi, 0o600) {
 			t.Errorf("node %s key mode: %v %v", d, fi.Mode(), err)
 		}
 	}

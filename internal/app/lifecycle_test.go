@@ -18,6 +18,7 @@ import (
 	"github.com/gosuda/flats/internal/core"
 	"github.com/gosuda/flats/internal/expose/local"
 	"github.com/gosuda/flats/internal/expose/provider"
+	"github.com/gosuda/flats/internal/ostest"
 )
 
 // localOptions starts a legacy-mode host in dir on free loopback ports,
@@ -38,7 +39,7 @@ func TestDataDirectoryLockSubprocess(t *testing.T) {
 		}
 		return
 	}
-	dir, err := os.MkdirTemp("/tmp", "flats-lock-")
+	dir, err := os.MkdirTemp(ostest.TempRoot(), "flats-lock-")
 	if err != nil {
 		t.Fatal(err)
 	}

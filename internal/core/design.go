@@ -23,6 +23,7 @@ import (
 	"github.com/gosuda/flats/internal/bundle"
 	"github.com/gosuda/flats/internal/contenttype"
 	"github.com/gosuda/flats/internal/design"
+	"github.com/gosuda/flats/internal/durable"
 	"github.com/gosuda/flats/internal/slug"
 	"github.com/gosuda/flats/internal/store"
 )
@@ -178,14 +179,14 @@ func putBlob(root string, data []byte) (string, error) {
 		return "", err
 	}
 	_ = os.Chmod(name, 0o444)
-	if err := os.Rename(name, dst); err != nil {
+	if err := durable.Rename(name, dst); err != nil {
 		os.Remove(name)
+		if _, serr := os.Stat(dst); serr == nil { // Windows: another writer stored it first
+			return h, nil
+		}
 		return "", err
 	}
-	if d, err := os.Open(filepath.Dir(dst)); err == nil {
-		_ = d.Sync()
-		d.Close()
-	}
+	_ = durable.SyncDir(filepath.Dir(dst))
 	return h, nil
 }
 
@@ -204,10 +205,7 @@ func mkdirDurable(dir string) error {
 	if err := os.Mkdir(dir, 0o755); err != nil && !errors.Is(err, os.ErrExist) {
 		return err
 	}
-	if d, err := os.Open(parent); err == nil {
-		_ = d.Sync()
-		d.Close()
-	}
+	_ = durable.SyncDir(parent)
 	return nil
 }
 

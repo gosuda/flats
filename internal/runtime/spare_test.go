@@ -9,11 +9,11 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
 	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/ostest"
 )
 
 const spareTestScript = `export default { fetch() { return new Response("ok"); } }`
@@ -52,7 +52,7 @@ func waitSpare(t *testing.T, m *Manager, not int) *spare {
 	return nil
 }
 
-func processAlive(pid int) bool { return pid > 0 && syscall.Kill(pid, 0) == nil }
+func processAlive(pid int) bool { return ostest.Alive(pid) }
 
 func waitGone(t *testing.T, pid int) {
 	t.Helper()
@@ -114,7 +114,7 @@ func TestSpareAdoption(t *testing.T) {
 		t.Fatal("adopted worker is still the spare")
 	}
 	// A crash after adoption restarts the instance as before.
-	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+	if err := ostest.Kill(pid); err != nil {
 		t.Fatal(err)
 	}
 	f.logs.waitFor(t, "worker exited unexpectedly")
@@ -374,7 +374,7 @@ func TestSpareKilledDuringWarmUp(t *testing.T) {
 				if err := os.Mkdir(long, 0o700); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.Symlink(filepath.Join(cacheRoot, "cache"), filepath.Join(long, "cache")); err != nil {
+				if err := ostest.Symlink(t, filepath.Join(cacheRoot, "cache"), filepath.Join(long, "cache")); err != nil {
 					t.Fatal(err)
 				}
 				m.DataDir = long
@@ -402,7 +402,7 @@ func TestSpareKilledDuringWarmUp(t *testing.T) {
 			if left, err := os.ReadDir(sp.p.warmDir); err != nil || len(left) == 0 {
 				t.Fatalf("warm-up directory during the warm-up: %v %v", left, err)
 			}
-			if err := syscall.Kill(sp.p.cmd.Process.Pid, syscall.SIGKILL); err != nil {
+			if err := ostest.Kill(sp.p.cmd.Process.Pid); err != nil {
 				t.Fatal(err)
 			}
 			<-sp.p.done
@@ -669,7 +669,7 @@ func TestSpareReplacedAfterExit(t *testing.T) {
 	mustStart(t, m, "first", spareTestFiles(), "index.js", nil)
 	sp := waitSpare(t, m, 0)
 	pid := sp.p.cmd.Process.Pid
-	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+	if err := ostest.Kill(pid); err != nil {
 		t.Fatal(err)
 	}
 	mlog.waitFor(t, "replacing it in "+spareRetryMin.String())
@@ -677,7 +677,7 @@ func TestSpareReplacedAfterExit(t *testing.T) {
 		t.Fatalf("exited spare's socket remains: %v", err)
 	}
 	next := waitSpare(t, m, pid)
-	if err := syscall.Kill(next.p.cmd.Process.Pid, syscall.SIGKILL); err != nil {
+	if err := ostest.Kill(next.p.cmd.Process.Pid); err != nil {
 		t.Fatal(err)
 	}
 	mlog.waitFor(t, "replacing it in "+(2*spareRetryMin).String())

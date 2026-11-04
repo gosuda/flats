@@ -15,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gosuda/flats/internal/durable"
 )
 
 const (
@@ -125,7 +127,7 @@ func Create(path string, doc *Document) (string, error) {
 		}
 		return "", err
 	}
-	if err := syncDir(dir); err != nil {
+	if err := durable.SyncDir(dir); err != nil {
 		return "", err
 	}
 	return Hash(data), nil
@@ -196,7 +198,7 @@ func (w *Writer) Save(expectedHash string, mutate func(*Document) error) (string
 		os.Remove(tmp)
 		return "", err
 	}
-	if err := syncDir(dir); err != nil {
+	if err := durable.SyncDir(dir); err != nil {
 		return "", err
 	}
 	_ = pruneHistory(filepath.Join(dir, historyDir), historyKeep)
@@ -234,18 +236,6 @@ func writeTemp(dir string, data []byte) (string, error) {
 	return f.Name(), nil
 }
 
-func syncDir(dir string) error {
-	d, err := os.Open(dir)
-	if err != nil {
-		return err
-	}
-	err = d.Sync()
-	if cerr := d.Close(); err == nil {
-		err = cerr
-	}
-	return err
-}
-
 // keepHistory copies the previous file bytes into config-history/.
 func keepHistory(dir string, data []byte, version int) error {
 	hdir := filepath.Join(dir, historyDir)
@@ -277,7 +267,7 @@ func keepHistory(dir string, data []byte, version int) error {
 			os.Remove(path)
 			return err
 		}
-		return syncDir(hdir)
+		return durable.SyncDir(hdir)
 	}
 	return errors.New("too many copies with the same timestamp")
 }

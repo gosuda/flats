@@ -54,6 +54,8 @@ import (
 type Options struct {
 	ConfigPath  string
 	DataDir     string // legacy mode: the directory holding config.json
+	LogFile     string // Windows service: where the log goes
+	WatchParent bool   // Windows service: shut down when the parent process ends
 	Listen      string // loopback management address
 	Network     string // tailscale | local; legacy private path
 	LocalAddr   string // local network address
@@ -88,7 +90,7 @@ func DefaultDataDir() string {
 	d := os.Getenv("FLATS_DATA")
 	if d == "" {
 		d = ".flats"
-		if c, err := os.UserConfigDir(); err == nil {
+		if c, err := config.UserDataRoot(); err == nil {
 			d = filepath.Join(c, "Flats")
 		}
 	}
@@ -119,6 +121,7 @@ func ParseServeFlags(args []string) (Options, error) {
 	fs.BoolVar(&o.Runtime, "runtime", true, "enable server flats (wazero runtime)")
 	fs.BoolVar(&o.OperatorCredentialStdin, "operator-credential-stdin", false, "ignored: the operator credential is no longer used")
 	fs.StringVar(&o.OperatorCredentialFile, "operator-credential-file", "", "ignored: the operator credential is no longer used")
+	serviceFlags(fs, &o)
 	if err := fs.Parse(args); err != nil {
 		return o, err
 	}
@@ -188,6 +191,11 @@ func Serve(args []string) error {
 			return actionf("FLATS_CONFIG must be an absolute path, not %q", o.ConfigPath)
 		}
 	}
+	if o.LogFile != "" {
+		if err := redirectLog(o.LogFile); err != nil {
+			return fmt.Errorf("--log-file: %w", err)
+		}
+	}
 	shutdown := []os.Signal{os.Interrupt, syscall.SIGTERM}
 	var hup chan os.Signal
 	switch sighupActionFor(signal.Ignored(syscall.SIGHUP), term.IsTerminal(int(os.Stdin.Fd()))) {
@@ -202,6 +210,11 @@ func Serve(args []string) error {
 	}
 	ctx, stop := signal.NotifyContext(context.Background(), shutdown...)
 	defer stop()
+	if o.WatchParent {
+		if err := watchParent(ctx, stop); err != nil {
+			return fmt.Errorf("--watch-parent: %w", err)
+		}
+	}
 	h, err := Start(ctx, o)
 	if err != nil {
 		return err
@@ -346,6 +359,7 @@ func (o Options) setup(logf func(string, ...any)) (setup, error) {
 	for _, name := range slices.Sorted(maps.Keys(o.Set)) {
 		key, ok := configModeFlags[name]
 		switch {
+		case name == "log-file" || name == "watch-parent": // how this process runs, no host configuration
 		case !ok:
 			rejected = append(rejected, "--"+name)
 		case key != "":

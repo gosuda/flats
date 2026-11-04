@@ -11,6 +11,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/gosuda/flats/internal/qjs"
 	"github.com/tetratelabs/wazero"
 	"github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 	"github.com/tetratelabs/wazero/sys"
@@ -46,7 +47,7 @@ func newWASIEngine(w *worker) (*wasiEngine, error) {
 		rt.Close(ctx)
 		return nil, err
 	}
-	cm, err := rt.CompileModule(ctx, src)
+	cm, err := qjs.CompileModule(ctx, rt, src)
 	if err != nil {
 		rt.Close(ctx)
 		return nil, fmt.Errorf("%s is not a valid WebAssembly module: %w", w.spec.Entry, err)

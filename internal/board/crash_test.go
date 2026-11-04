@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"errors"
 	"maps"
-	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -15,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gosuda/flats/internal/board/engine"
+	"github.com/gosuda/flats/internal/sqliteuri"
 )
 
 // coreImage is what the fake core holds at a crash moment: its blobs,
@@ -357,8 +357,8 @@ func TestWALBusyIsRetriedAndSurvivesACrash(t *testing.T) {
 		t.Fatal(m)
 	}
 	path := filepath.Join(b.dir, "board", dbName)
-	u := url.URL{Scheme: "file", Path: path}
-	reader, err := sql.Open("sqlite", u.String()+"?_pragma=busy_timeout(1)")
+	uri := sqliteuri.File(path)
+	reader, err := sql.Open("sqlite", uri+"?_pragma=busy_timeout(1)")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -481,8 +481,8 @@ func TestWALTimeoutRestoreFailure(t *testing.T) {
 	a := connect(t, b.priv, map[string]any{"editor": "alice"}, nil)
 	a.snapshot()
 	path := filepath.Join(b.dir, "board", dbName)
-	u := url.URL{Scheme: "file", Path: path}
-	reader, err := sql.Open("sqlite", u.String()+"?_pragma=busy_timeout(1)")
+	uri := sqliteuri.File(path)
+	reader, err := sql.Open("sqlite", uri+"?_pragma=busy_timeout(1)")
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -28,8 +28,10 @@ runtime_soak='^(TestOutboundFetchLoopOwnershipCycleCollection|TestNearCapCycleCo
 runtime_codec='^(TestLargeHostAndCodecOwnership)$'
 docs_soak='^(TestConflictPrivacyAndRollbackStorageBudgets|TestPublicDocumentReadSoak|TestDocumentOwnershipSoak)$'
 # The docs tests that stay serial because they check a wall-clock budget or a
-# rate limit that refills over time.
-docs_budget='^(TestMaximumRewriteActivationBudget|TestLargeDocumentEditAndPingBudgets|TestLargeDisjointActivation|TestFullRewriteActivation|TestAgentEditManyBlocksWithinDeadline|TestVisitorHealthIsCheapAndCannotBlockCommit|Test100KiBDocumentTimings|TestUnauthorizedUpdatesPreserveWriterBudget|TestConnectionInputLimitPreservesOtherWriter|TestAuthorizedUpdatesConsumeWriterBudget|TestGuestBusyResendKeepsOrder)$'
+# rate limit that refills over time. TestGuestUpdateLimits is serial for the
+# same reason and stays out of this list on purpose: the Windows job leaves out
+# this shard and must run a test of the guest limit.
+docs_budget='^(TestGuestRoomsLeaveMemberRoomMemory|TestMaximumRewriteActivationBudget|TestLargeDocumentEditAndPingBudgets|TestLargeDisjointActivation|TestFullRewriteActivation|TestAgentEditManyBlocksWithinDeadline|TestVisitorHealthIsCheapAndCannotBlockCommit|Test100KiBDocumentTimings|TestUnauthorizedUpdatesPreserveWriterBudget|TestConnectionInputLimitPreservesOtherWriter|TestAuthorizedUpdatesConsumeWriterBudget|TestGuestBusyResendKeepsOrder)$'
 
 # The release and commit image workflows run this script from main against
 # older source, which may predate a package. Its shards then have nothing to

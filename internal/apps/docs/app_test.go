@@ -16,11 +16,11 @@ import (
 	"strconv"
 	"strings"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
 	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/ostest"
 	_ "modernc.org/sqlite"
 )
 
@@ -497,7 +497,7 @@ func TestAcknowledgedEditSurvivesKilledWorker(t *testing.T) {
 	if a.pid <= 0 {
 		t.Fatal("test worker PID unavailable")
 	}
-	if err := syscall.Kill(a.pid, syscall.SIGKILL); err != nil {
+	if err := ostest.Kill(a.pid); err != nil {
 		t.Fatal(err)
 	}
 	a.stop()

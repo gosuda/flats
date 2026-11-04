@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/gosuda/flats/internal/ostest"
 )
 
 // Exercise only the installer's URL reader; never install or touch a service.
@@ -54,6 +56,7 @@ func TestInstallerConfigURL(t *testing.T) {
 	})
 
 	t.Run("unreadable file", func(t *testing.T) {
+		ostest.SkipPOSIXModes(t)
 		if os.Geteuid() == 0 {
 			t.Skip("root bypasses file permission checks")
 		}

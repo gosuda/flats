@@ -14,12 +14,12 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
 	"github.com/gosuda/flats/internal/bundle"
 	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/ostest"
 	flatsruntime "github.com/gosuda/flats/internal/runtime"
 	"github.com/gosuda/flats/internal/store"
 )
@@ -112,7 +112,7 @@ func (r *idleRuntime) pid(slug string) int {
 	}
 	return p[len(p)-1]
 }
-func alive(pid int) bool { return pid > 0 && syscall.Kill(pid, 0) == nil }
+func alive(pid int) bool { return ostest.Alive(pid) }
 
 type idleHost struct {
 	s      *core.Service
@@ -135,7 +135,7 @@ func newIdleHost(t *testing.T) *idleHost {
 	if err != nil {
 		t.Fatal(err)
 	}
-	runtimeDir, err := os.MkdirTemp("/tmp", "flats-idle-host-")
+	runtimeDir, err := os.MkdirTemp(ostest.TempRoot(), "flats-idle-host-")
 	if err != nil {
 		h.st.Close()
 		t.Fatal(err)
@@ -529,6 +529,9 @@ type idleResources struct{ fds, goroutines, sockets int }
 
 func idleResourceSnapshot(t *testing.T, h *idleHost) idleResources {
 	t.Helper()
+	if ostest.Windows { // no list of open handles
+		return idleResources{goroutines: runtime.NumGoroutine()}
+	}
 	fdpath := "/proc/self/fd"
 	if runtime.GOOS == "darwin" {
 		fdpath = "/dev/fd"

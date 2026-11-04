@@ -6,11 +6,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"strings"
 
 	"modernc.org/sqlite"
+
+	"github.com/gosuda/flats/internal/sqliteuri"
 )
 
 type fixtureState struct {
@@ -36,8 +37,7 @@ func seed() (fixtureState, error) {
 	}); err != nil {
 		return state, err
 	}
-	u := url.URL{Scheme: "file", Path: os.Args[1]}
-	db, err := sql.Open("sqlite", u.String()+"?mode=rw&_pragma=foreign_keys(ON)&_pragma=busy_timeout(5000)&_pragma=synchronous(FULL)&_txlock=immediate")
+	db, err := sql.Open("sqlite", sqliteuri.File(os.Args[1])+"?mode=rw&_pragma=foreign_keys(ON)&_pragma=busy_timeout(5000)&_pragma=synchronous(FULL)&_txlock=immediate")
 	if err != nil {
 		return state, err
 	}

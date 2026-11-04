@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"runtime"
 	"testing"
+
+	"github.com/gosuda/flats/internal/ostest"
 )
 
 func writeTestFile(t *testing.T, name, content string) {
@@ -65,7 +67,7 @@ func TestOpenRegularRejectsReplacements(t *testing.T) {
 				if err := os.Remove(file); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.Symlink(outside, file); err != nil {
+				if err := ostest.Symlink(t, outside, file); err != nil {
 					t.Fatal(err)
 				}
 			},
@@ -78,7 +80,7 @@ func TestOpenRegularRejectsReplacements(t *testing.T) {
 				if err := os.Rename(file, saved); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.Symlink("saved.html", file); err != nil {
+				if err := ostest.Symlink(t, "saved.html", file); err != nil {
 					t.Fatal(err)
 				}
 			},
@@ -91,7 +93,7 @@ func TestOpenRegularRejectsReplacements(t *testing.T) {
 				if err := os.Remove(file); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.Symlink("other.html", file); err != nil {
+				if err := ostest.Symlink(t, "other.html", file); err != nil {
 					t.Fatal(err)
 				}
 			},
@@ -104,7 +106,7 @@ func TestOpenRegularRejectsReplacements(t *testing.T) {
 				if err := os.Rename(parent, parent+".old"); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.Symlink(filepath.Dir(outside), parent); err != nil {
+				if err := ostest.Symlink(t, filepath.Dir(outside), parent); err != nil {
 					t.Fatal(err)
 				}
 			},
@@ -161,7 +163,7 @@ func TestOpenRegularKeepsRootAfterRename(t *testing.T) {
 	}
 	outside := t.TempDir()
 	writeTestFile(t, filepath.Join(outside, "index.html"), "evil")
-	if err := os.Symlink(outside, dir); err != nil {
+	if err := ostest.Symlink(t, outside, dir); err != nil {
 		t.Fatal(err)
 	}
 	f, _, err := OpenRegular(root, "index.html", seen)

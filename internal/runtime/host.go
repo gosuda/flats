@@ -13,6 +13,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	goruntime "runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -21,6 +22,8 @@ import (
 	"unicode/utf8"
 
 	"modernc.org/sqlite"
+
+	"github.com/gosuda/flats/internal/winname"
 )
 
 // dataStore backs env.DB and env.FILES for one worker.
@@ -520,6 +523,11 @@ func checkKey(k string) error {
 		}
 		if strings.HasPrefix(seg, tmpPrefix) {
 			return bad("reserved name")
+		}
+		if goruntime.GOOS == "windows" {
+			if err := winname.CheckSegment(seg); err != nil {
+				return bad(err.Error())
+			}
 		}
 	}
 	return nil
