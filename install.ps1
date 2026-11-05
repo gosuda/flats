@@ -49,6 +49,20 @@ function Invoke-FlatsInstall {
 	function Warn([string]$Message) { Write-Warning "flats-install: $Message" }
 	function Die([string]$Message) { throw "flats-install: $Message" }
 
+	# A scanner can hold a binary for a moment after it ran, and the move then
+	# fails as a sharing violation. It ends within 10 s, or the error is real.
+	function Move-Binary([string]$From, [string]$To) {
+		for ($attempt = 1; ; $attempt++) {
+			try {
+				Move-Item -LiteralPath $From -Destination $To -ErrorAction Stop
+				return
+			} catch [System.IO.IOException] {
+				if ($attempt -ge 40) { throw }
+				Start-Sleep -Milliseconds 250
+			}
+		}
+	}
+
 	function Test-Api([string]$Url) {
 		try {
 			Invoke-WebRequest -UseBasicParsing -TimeoutSec 3 -Uri "$Url/api/status" | Out-Null
@@ -256,15 +270,15 @@ public static extern IntPtr SendMessageTimeout(IntPtr hWnd, uint msg, UIntPtr wP
 		# service keeps the old file open until the restart below.
 		if (Test-Path -LiteralPath $binary) {
 			$aside = "$binary.old-$([DateTime]::UtcNow.Ticks)"
-			Move-Item -LiteralPath $binary -Destination $aside
+			Move-Binary $binary $aside
 			try {
-				Move-Item -LiteralPath $staged -Destination $binary
+				Move-Binary $staged $binary
 			} catch {
-				Move-Item -LiteralPath $aside -Destination $binary
+				Move-Binary $aside $binary
 				throw
 			}
 		} else {
-			Move-Item -LiteralPath $staged -Destination $binary
+			Move-Binary $staged $binary
 		}
 		$staged = $null
 		Say "installed ${binary}: $newVersion"
