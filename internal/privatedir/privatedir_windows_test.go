@@ -175,6 +175,26 @@ func TestRestrictLeavesOnlyTheUserAndSystemWithoutASignOfFlats(t *testing.T) {
 	}
 }
 
+// The system stores an account with an alias by that alias. The built-in
+// Administrator is LA, which only that account can show, and SYSTEM is SY.
+func TestUpToDateReadsAnAccountByItsAlias(t *testing.T) {
+	dir := t.TempDir()
+	want, err := wanted()
+	if err != nil {
+		t.Fatal(err)
+	}
+	full := strings.Replace(want, ";SY)", ";S-1-5-18)", 1)
+	if full == want {
+		t.Fatalf("no SYSTEM entry in %s", want)
+	}
+	if err := setList(dir, full); err != nil {
+		t.Fatal(err)
+	}
+	if !upToDate(dir, full) {
+		t.Fatalf("%s does not match %s", dacl(t, dir), full)
+	}
+}
+
 // The owner of a directory can change its list, so another user's directory is
 // refused and left as it is.
 func TestRestrictRefusesADirectoryOfAnotherOwner(t *testing.T) {

@@ -215,6 +215,9 @@ func TestUpdateRefusesSymlinkAndManagedPaths(t *testing.T) {
 	if _, _, e := Update(t.Context(), o); Code(e) != "invalid_target" {
 		t.Fatal(e)
 	}
+	if ostest.Windows {
+		return // the package managers below exist on macOS and Linux
+	}
 	o.Path = filepath.Join(filepath.Dir(real), "Cellar/flats/1/flats")
 	os.MkdirAll(filepath.Dir(o.Path), 0755)
 	os.WriteFile(o.Path, []byte("old"), 0755)

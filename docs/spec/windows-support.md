@@ -12,8 +12,9 @@ from login, and the console opens at `http://127.0.0.1:7878`.
 
 ## Scope
 
-Windows 11 and Windows Server 2022 or newer, on amd64: these are the versions
-that the measurements and CI cover. Windows 10 22H2 should work and is not tested.
+Windows 11 and Windows Server 2022 or newer, on amd64. The measurements ran on
+Windows 11, and CI runs on Windows Server 2025. Windows Server 2022 and Windows 10
+22H2 should work and are not tested.
 Windows on arm64 can run the amd64 build through its emulation; a native arm64
 archive is a later step.
 
@@ -165,7 +166,6 @@ measurements. These differ from the target:
   and a wake makes several.
 - No provider other than Local has run on Windows, so rule 23 is a build-time
   statement for now. NetBird and Tailscale need an account to measure.
-- Windows Server 2022 has no measurement until the CI job runs.
 - On the machine of the measurements, `TestGuestRoomsLeaveMemberRoomMemory` reaches
   the 10 s limit of one guest call at a first `hello` on a 0.9 MiB document: on
   Windows in each run, and on Linux in 7 of 24 runs at `main` and in 7 of 24 on

@@ -968,17 +968,6 @@ func (d *Document) Effective(overrides map[string]string) (*Config, error) {
 // isAbs is filepath.IsAbs; tests on Windows also accept Unix fixture paths.
 var isAbs = filepath.IsAbs
 
-// cleanDataDir returns host.data_dir in clean form. The key is validated as an
-// absolute path, so on Unix the leading "/" changes nothing;
-// filepath.Clean("/" + p) is also the form static analysis accepts as free of
-// ".." traversal for the paths Flats builds under the directory.
-func cleanDataDir(p string) string {
-	if filepath.VolumeName(p) != "" { // a Windows path starts with its volume
-		return filepath.Clean(p)
-	}
-	return filepath.Clean("/" + p)
-}
-
 // UserDataRoot is the parent of the default data directory: the user config
 // directory, and on Windows %LocalAppData%. The roaming folder would copy
 // databases, sockets and caches at every logon on a domain machine.

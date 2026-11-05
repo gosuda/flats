@@ -238,3 +238,5 @@ if (Test-TaskExists) { Fail '-NoService installed a task' }
 if ((Get-UserPath) -cne $pathBefore) { Fail '-NoPath changed the Path' }
 
 Write-Host "`ninstall-smoke: PASS"
+# A last schtasks query for a missing task leaves 1 in $LASTEXITCODE, and CI reads that.
+exit 0

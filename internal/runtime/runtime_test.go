@@ -150,7 +150,7 @@ func newManager(t *testing.T) *Manager {
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := ostest.Symlink(t, filepath.Join(cacheRoot, "cache"), filepath.Join(dir, "cache")); err != nil {
+	if err := ostest.LinkDir(t, filepath.Join(cacheRoot, "cache"), filepath.Join(dir, "cache")); err != nil {
 		t.Fatal(err)
 	}
 	m := &Manager{DataDir: dir, Exe: exe, Env: append([]string{testWorkerEnv + "=1"}, testImageEnv()...), Logf: t.Logf, Timeout: 60 * time.Second}
@@ -916,6 +916,9 @@ export default {
 	for _, kv := range wantEnv {
 		k, _, _ := strings.Cut(kv, "=")
 		wantKeys = append(wantKeys, k)
+	}
+	if ostest.Windows {
+		wantKeys = append(wantKeys, "SYSTEMROOT") // os/exec adds it to every child
 	}
 	sort.Strings(wantKeys)
 	f.logs.waitFor(t, "test-env-keys: ")

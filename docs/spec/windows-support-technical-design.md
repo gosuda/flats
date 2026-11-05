@@ -36,7 +36,8 @@ inherit a listening socket, so:
   its spec. An empty value means the inherited socket, so Unix stays unchanged.
 - `listenFile` returns no file and removes a stale path.
 - `moveWorkerSocket` does nothing: a pre-started worker has no socket before it
-  gets its spec. Adoption therefore needs no rename.
+  gets its spec. Adoption therefore needs no rename, and it removes what an unclean
+  exit left at the worker's socket path.
 - `workerConn` hides `CloseWrite` from the proxy. When a visitor's WebSocket ends,
   `ReverseProxy` half-closes its side to the worker and waits for the worker to
   close. The worker can miss that end, so the lease of a document lasted until the

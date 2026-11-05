@@ -573,10 +573,9 @@ func (d *dataStore) fileGet(key string) (*string, error) {
 	}
 	b, err := r.ReadFile(key)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
+		return nil, keyUnderFile(r, key)
 	} else if err != nil {
-		var pe *fs.PathError
-		if errors.As(err, &pe) && strings.Contains(err.Error(), "is a directory") {
+		if fi, serr := r.Stat(key); serr == nil && fi.IsDir() {
 			return nil, nil
 		}
 		return nil, err
@@ -739,7 +738,7 @@ func (d *dataStore) fileDelete(key string) (bool, error) {
 	}
 	info, err := r.Stat(key)
 	if errors.Is(err, fs.ErrNotExist) {
-		return false, nil
+		return false, keyUnderFile(r, key)
 	} else if err != nil {
 		return false, err
 	}

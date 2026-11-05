@@ -9,6 +9,9 @@ import (
 	"syscall"
 )
 
+// keyUnderFile has nothing to add: the open already reports a key below a file.
+func keyUnderFile(*os.Root, string) error { return nil }
+
 // workerServerIdle is the idle timeout of a worker's HTTP server. The socket here
 // reports every close, so the host alone ends an idle connection.
 const workerServerIdle = 0

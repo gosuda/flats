@@ -94,14 +94,20 @@ func entries(sddl string) ([]string, bool) {
 	return list, strings.Contains(flags, "P")
 }
 
-// upToDate reports whether dir has exactly the wanted list.
+// upToDate reports whether dir has exactly the wanted list. The system writes an
+// account that has an alias by that alias, such as the built-in Administrator, so
+// the wanted list goes through the system too.
 func upToDate(dir, want string) bool {
 	sd, err := windows.GetNamedSecurityInfo(dir, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
 	if err != nil {
 		return false
 	}
+	parsed, err := windows.SecurityDescriptorFromString(want)
+	if err != nil {
+		return false
+	}
 	have, protected := entries(sd.String())
-	wanted, _ := entries(want)
+	wanted, _ := entries(parsed.String())
 	return protected && slices.Equal(have, wanted)
 }
 

@@ -3,7 +3,9 @@ package ostest
 
 import (
 	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"runtime"
 	"testing"
 )
@@ -55,6 +57,19 @@ func SkipOnWindows(t testing.TB, why string) {
 func SkipPOSIXModes(t testing.TB) {
 	t.Helper()
 	SkipOnWindows(t, "no POSIX file modes")
+}
+
+// LinkDir links the directory target at link. It needs no privilege: on Windows
+// it makes a junction, for a test that does not depend on a symlink.
+func LinkDir(t testing.TB, target, link string) error {
+	t.Helper()
+	if !Windows {
+		return os.Symlink(target, link)
+	}
+	if out, err := exec.Command("cmd", "/c", "mklink", "/J", link, target).CombinedOutput(); err != nil {
+		return fmt.Errorf("mklink: %w: %s", err, out)
+	}
+	return nil
 }
 
 // Symlink creates a link, and skips the test where the user may not: Windows
