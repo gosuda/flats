@@ -84,8 +84,8 @@ type Options struct {
 	Overrides map[string]string
 }
 
-// DefaultDataDir returns $FLATS_DATA or ~/Library/Application Support/Flats,
-// as an absolute path.
+// DefaultDataDir returns $FLATS_DATA or Flats in config.UserDataRoot, as an
+// absolute path.
 func DefaultDataDir() string {
 	d := os.Getenv("FLATS_DATA")
 	if d == "" {

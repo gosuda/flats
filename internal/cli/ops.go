@@ -86,7 +86,7 @@ func (a *app) key(args []string) error {
 func (a *app) install(args []string) error {
 	fs := a.flags("install")
 	configPath := fs.String("config", "", "config.json for the service (default: on Windows the one of the installed service; else FLATS_CONFIG, else <data>/config.json)")
-	data := fs.String("data", "", "data directory for a new host (default: FLATS_DATA or ~/Library/Application Support/Flats)")
+	data := fs.String("data", "", "data directory for a new host (default: FLATS_DATA, else Flats in the user data directory)")
 	exe := fs.String("executable", "", "flats binary to run (default: this executable)")
 	extra, err := a.parse(fs, args, 0, -1)
 	if err != nil {

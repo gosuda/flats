@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"sort"
 	"strings"
@@ -181,8 +182,12 @@ func putBlob(root string, data []byte) (string, error) {
 	_ = os.Chmod(name, 0o444)
 	if err := durable.Rename(name, dst); err != nil {
 		os.Remove(name)
-		if _, serr := os.Stat(dst); serr == nil { // Windows: another writer stored it first
-			return h, nil
+		if runtime.GOOS == "windows" {
+			// A rename here does not replace a read-only file, so this writer
+			// lost to another one that stored the same content.
+			if _, serr := os.Stat(dst); serr == nil {
+				return h, nil
+			}
 		}
 		return "", err
 	}

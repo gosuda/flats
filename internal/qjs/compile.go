@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"runtime"
 	"time"
 
 	"github.com/tetratelabs/wazero"
@@ -32,8 +33,12 @@ func CompileModule(ctx context.Context, rt wazero.Runtime, wasm []byte) (wazero.
 	}
 }
 
-// cacheRace reports a failed read or write of a cache entry.
+// cacheRace reports a failed read or write of a cache entry on Windows. Elsewhere
+// a rename replaces an open file, so such an error is real and returns at once.
 func cacheRace(err error) bool {
+	if runtime.GOOS != "windows" {
+		return false
+	}
 	var store *os.LinkError
 	var read *os.PathError
 	return errors.As(err, &store) && store.Op == "rename" ||
