@@ -3,6 +3,7 @@ package selfupdate
 import (
 	"archive/zip"
 	"bytes"
+	"errors"
 	"testing"
 )
 
@@ -33,6 +34,18 @@ func TestExtractZipTakesTheExecutable(t *testing.T) {
 	}
 	if out.String() != "binary" {
 		t.Fatalf("got %q", out.String())
+	}
+}
+
+type failingWriter struct{}
+
+func (failingWriter) Write([]byte) (int, error) { return 0, errors.New("no space left on device") }
+
+// A failed write is the disk's fault, so it must not read as a bad archive.
+func TestExtractZipReportsWriteFailureAsFilesystem(t *testing.T) {
+	raw := zipArchive(t, map[string]string{"flats.exe": "binary"})
+	if err := extractZipTo(failingWriter{}, raw); Code(err) != "filesystem" {
+		t.Fatalf("code = %q (%v), want filesystem", Code(err), err)
 	}
 }
 

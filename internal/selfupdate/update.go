@@ -187,9 +187,13 @@ func extractZipTo(w io.Writer, raw []byte) error {
 		if e != nil {
 			return failure("assets_unavailable", "invalid release archive: %w", e)
 		}
-		_, e = io.Copy(w, io.LimitReader(rc, executableLimit+1))
+		rec := &writeRecorder{w: w}
+		_, e = io.Copy(rec, io.LimitReader(rc, executableLimit+1))
 		if ce := rc.Close(); e == nil {
 			e = ce
+		}
+		if rec.err != nil {
+			return failure("filesystem", "write candidate executable: %w", rec.err)
 		}
 		if e != nil {
 			return failure("assets_unavailable", "invalid compressed archive: %w", e)
