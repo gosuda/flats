@@ -12,7 +12,6 @@ import (
 	"path/filepath"
 	goruntime "runtime"
 	"sync"
-	"syscall"
 
 	"github.com/gosuda/flats/internal/buildinfo"
 	"github.com/gosuda/flats/internal/jsengine"
@@ -349,11 +348,7 @@ var executableIdentity = sync.OnceValue(func() string {
 	if err != nil {
 		return "unknown: " + err.Error()
 	}
-	var ino uint64
-	if st, ok := fi.Sys().(*syscall.Stat_t); ok {
-		ino = uint64(st.Ino)
-	}
-	return fmt.Sprintf("%d %d %d", fi.Size(), fi.ModTime().UnixNano(), ino)
+	return fmt.Sprintf("%d %d %d", fi.Size(), fi.ModTime().UnixNano(), fileInode(fi))
 })
 
 // fingerprintFile adds the regular file p of the version directory dir to

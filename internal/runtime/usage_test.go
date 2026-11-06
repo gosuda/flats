@@ -11,12 +11,12 @@ import (
 	goruntime "runtime"
 	"strings"
 	"sync"
-	"syscall"
 	"testing"
 	"time"
 
 	"github.com/gosuda/flats/internal/bundle"
 	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/ostest"
 	"github.com/gosuda/flats/internal/store"
 	"github.com/gosuda/flats/internal/wsconn"
 )
@@ -291,7 +291,7 @@ func TestWorkerCrashAndRestartUsage(t *testing.T) {
 		t.Fatalf("state %q", st)
 	}
 	first, _ := sink.last("started")
-	if err := syscall.Kill(in.pid(), syscall.SIGKILL); err != nil {
+	if err := ostest.Kill(in.pid()); err != nil {
 		t.Fatal(err)
 	}
 	exit := sink.wait(t, "exit of the killed worker", func(e usageEvent) bool { return e.kind == "exited" && e.id == first.id })

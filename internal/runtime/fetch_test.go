@@ -11,7 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
 
@@ -19,6 +18,7 @@ import (
 	"github.com/gosuda/flats/internal/core"
 	"github.com/gosuda/flats/internal/egress"
 	"github.com/gosuda/flats/internal/jsengine"
+	"github.com/gosuda/flats/internal/ostest"
 )
 
 // Exercise the real embedded QuickJS prelude with a test-only host stub. This
@@ -326,7 +326,7 @@ func TestOutboundFetchWorkerPermissions(t *testing.T) {
 	check()
 	in := inst.(*instance)
 	pid := in.pid()
-	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+	if err := ostest.Kill(pid); err != nil {
 		t.Fatal(err)
 	}
 	log.waitFor(t, "worker exited unexpectedly")

@@ -672,8 +672,9 @@ func (a *app) guestDocument(t *testing.T) map[string]any {
 	return d
 }
 
+// Serial: a socket's frames refill over time, so the busy answers depend on the
+// worker keeping up with the wall clock.
 func TestGuestUpdateLimits(t *testing.T) {
-	t.Parallel()
 	a := startApp(t, t.TempDir(), initialText, "v1")
 	a.setAccess(t, "edit", 1)
 	g, _ := a.guest(t, "index.md", "Mina", "", 1)
@@ -682,13 +683,17 @@ func TestGuestUpdateLimits(t *testing.T) {
 	expectCode(t, g.update(t, "gc", yGC(901, 0, 5)), "guest_room")
 	// More than 16 updates at once from one guest are slowed, not refused
 	// (spec rule 22): the ones over its rate are answered busy, the socket
-	// stays open, and a retry later commits.
+	// stays open, and a retry later commits. A socket has 16 frames and gets 8
+	// more each second, so 64 updates pass the limit while a commit takes under
+	// 90 ms.
+	const updates = 64
 	g, _ = a.guest(t, "index.md", "Mina", "", 1)
-	for i := 0; i < 20; i++ {
+	began := time.Now()
+	for i := 0; i < updates; i++ {
 		g.send(t, map[string]any{"t": "update", "id": fmt.Sprint("fast-", i), "u": yInsert(uint64(910+i), "f")})
 	}
 	acks, busy := 0, 0
-	for acks+busy < 20 {
+	for acks+busy < updates {
 		m, err := g.read()
 		if err != nil {
 			t.Fatal("socket closed", err)
@@ -702,11 +707,12 @@ func TestGuestUpdateLimits(t *testing.T) {
 			busy++
 		}
 	}
+	t.Logf("%d acks and %d busy in %v", acks, busy, time.Since(began).Round(time.Millisecond))
 	if busy == 0 || acks == 0 {
 		t.Fatal(acks, busy)
 	}
 	time.Sleep(2 * time.Second)
-	g.send(t, map[string]any{"t": "update", "id": "fast-retry", "retry": true, "u": yInsert(940, "r")})
+	g.send(t, map[string]any{"t": "update", "id": "fast-retry", "retry": true, "u": yInsert(980, "r")})
 	for {
 		m, err := g.read()
 		if err != nil {
@@ -721,7 +727,7 @@ func TestGuestUpdateLimits(t *testing.T) {
 	}
 	// A member is not limited by guests' limits.
 	m, _ := a.member(t, "index.md", "", nil)
-	acked(t, m.update(t, "member-big", yInsert(950, strings.Repeat("m", 100*1024))))
+	acked(t, m.update(t, "member-big", yInsert(990, strings.Repeat("m", 100*1024))))
 }
 
 // When all guests together reach the flat's limit, updates are answered

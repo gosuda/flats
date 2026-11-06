@@ -12,6 +12,7 @@ Every `v*` tag on `main` produces a GitHub release with:
   tag stamped into `flats version`), `LICENSE` and `README.md`. The binary
   includes NetBird, which `go install` builds do not (see
   [Serving through NetBird](networking.md#serving-through-netbird)).
+- `flats_windows_amd64.zip`, with `flats.exe`, `LICENSE` and `README.md`.
 - `checksums.txt`: SHA-256 of every archive, in `sha256sum` format.
 - A GitHub build provenance attestation for every archive.
 - A multi-platform container image, `ghcr.io/gosuda/flats` for `linux/amd64`
@@ -56,7 +57,8 @@ clean development build to its commit.
 
 1. Land every change through a reviewed PR. Wait until CI on `main` passes,
    including the service install smoke on Linux (systemd, in the `container`
-   job) and macOS (launchd, in the `install-macos` job).
+   job), macOS (launchd, in the `install-macos` job) and Windows (a scheduled
+   task, in the `windows` job).
 2. Pick the version with semantic versioning. Call out data or flag changes
    that operators must act on.
 3. Read the live `main` ref (`git ls-remote origin refs/heads/main`), then tag
@@ -85,7 +87,10 @@ clean development build to its commit.
 
    On a disposable macOS and Linux machine, run the installer and confirm
    that `flats version` prints the tag and `flats status` reports a running
-   host. Check the image as well:
+   host. Do the same on Windows as a standard user, in a terminal without
+   administrator rights: CI runners are administrators, so only this run shows
+   that the installer needs none. Check `flats status` again after you log out
+   and in. Check the image as well:
 
    ```sh
    gh attestation verify oci://ghcr.io/gosuda/flats:1.2.3 --repo gosuda/flats
@@ -262,6 +267,9 @@ toolchain skips the bad version.
 curl -fsSL https://raw.githubusercontent.com/gosuda/flats/main/install.sh | sh
 ```
 
+Windows has its own installer, described in
+[Installing on Windows](#installing-on-windows).
+
 The installer uses tools that macOS and common Linux distributions include:
 `sh`, `curl` (or `wget`), `tar`, `awk`, `sha256sum` or `shasum`, and
 `launchctl` or `systemctl --user` for the service. It needs no Go toolchain.
@@ -326,6 +334,61 @@ console). Key flags are not kept in the service definition:
 downloaded yourself, run
 `gh attestation verify flats_<os>_<arch>.tar.gz --repo gosuda/flats`.
 
+## Installing on Windows
+
+In PowerShell, as your own user:
+
+```powershell
+irm https://raw.githubusercontent.com/gosuda/flats/main/install.ps1 | iex
+```
+
+The installer needs no administrator rights. It works in Windows PowerShell 5.1
+and in PowerShell 7, on Windows 11 and Windows Server 2022 or newer. It:
+
+1. Resolves the latest release, downloads `flats_windows_amd64.zip` and
+   `checksums.txt`, and refuses a checksum mismatch.
+2. Checks that the binary runs, then installs it to
+   `%LOCALAPPDATA%\Programs\Flats\flats.exe`. A binary that is running moves
+   aside first, because Windows does not replace a running file.
+3. Adds that directory to the user's `Path` when it is missing. Existing entries
+   stay as they are written.
+4. Registers the service with `flats install`: a scheduled task named `Flats`
+   for the current user. It starts at login, and a trigger that repeats every
+   minute starts it again if it exits. It runs in a console without a window.
+   A session without a desktop, such as SSH, registers the task, and the service
+   starts at the next login.
+5. Waits up to 30 seconds until the console answers.
+
+The log is `<data>\logs\serve.log`, and it rotates at 10 MiB. The first release
+is unsigned, so a browser or SmartScreen can warn about `flats.exe` if you download
+the archive by hand.
+
+A piped `iex` takes no parameters. To pass options:
+
+```powershell
+& ([scriptblock]::Create((irm https://raw.githubusercontent.com/gosuda/flats/main/install.ps1))) -Version v1.2.3
+```
+
+| Option | Effect |
+| --- | --- |
+| `-Dir DIR` | Install directory (`FLATS_INSTALL_DIR`) |
+| `-Version TAG` | The release to install (`FLATS_VERSION`) |
+| `-NoService` | Install only the binary (`FLATS_NO_SERVICE=1`) |
+| `-NoPath` | Leave the user's `Path` alone |
+| `-ServeArgs ...` | Reinstall the service with these `flats serve` flags |
+
+`FLATS_DATA` selects the service data directory, and `FLATS_DOWNLOAD_BASE` replaces
+the release download location, as for `install.sh`.
+
+Run the installer again to upgrade. It restarts a running service and leaves a
+stopped one stopped. `flats install` restarts the service, and it also starts a
+stopped one. `flats uninstall` stops the service and removes the task; it keeps
+your flats, your data, the binary and the `Path` entry.
+
+Ending the task in Task Scheduler stops the server in order, and the trigger starts
+it again within a minute. To keep it stopped, disable the task, or run
+`flats uninstall`.
+
 ## Upgrading a host
 
 Run the installer again. It replaces the binary and, when the service is
@@ -347,12 +410,13 @@ defaults; see
 The installer does not back up data. When the release notes mention data
 changes, back up first: stop the service (`launchctl bootout
 gui/$(id -u)/dev.flats.serve` on macOS, `systemctl --user stop
-flats.service` on Linux), copy the data directory as described in
+flats.service` on Linux, `flats uninstall` on Windows), copy the data directory as described in
 [What to back up](configuration.md#what-to-back-up), then run the installer
 and start the service with the command it prints. The data directory is
 `host.data_dir` in the service's `config.json`, or `FLATS_DATA` or the
 service's `--data` when set, otherwise `~/Library/Application Support/Flats`
-on macOS and `${XDG_CONFIG_HOME:-~/.config}/Flats` on Linux.
+on macOS, `${XDG_CONFIG_HOME:-~/.config}/Flats` on Linux and
+`%LOCALAPPDATA%\Flats` on Windows.
 
 Install a specific release with `--version v1.2.3`. Downgrading across a data
 migration is not supported; restore the backup taken before the upgrade.
@@ -416,11 +480,12 @@ false`, so check the host afterwards.
 
 The update downloads
 `https://github.com/gosuda/flats/releases/download/<tag>/flats_<os>_<arch>.tar.gz`
-and `checksums.txt` (macOS and Linux, amd64 and arm64), following only HTTPS
+(macOS and Linux, amd64 and arm64) or `flats_windows_amd64.zip` (Windows, amd64)
+and `checksums.txt`, following only HTTPS
 redirects, with limits of 1 MiB for the checksums, 128 MiB for the archive
 and 256 MiB for the executable. `checksums.txt` must hold exactly one
 well-formed line for the archive, and the archive exactly one regular file
-named `flats`; unsafe entry names are refused. The checksum proves
+named `flats` (`flats.exe` on Windows); unsafe entry names are refused. The checksum proves
 consistency with the gosuda/flats GitHub publisher, not an independent
 signature.
 
@@ -439,8 +504,8 @@ The update replaces only the executable it runs from, and refuses one that:
 - resolves through a symlink, is not a regular file or is not writable;
 - lies in Homebrew's `Cellar` or `Caskroom` or the Nix store
   (`package_managed`), or is a temporary `go build` executable;
-- is the executable of the installed Flats launchd agent or systemd user unit
-  (`service_binary`), or the service definition cannot be read.
+- is the executable of the installed Flats launchd agent, systemd user unit
+  or Windows scheduled task (`service_binary`), or the service definition cannot be read.
 
 Use the owning installation manager or a separate client installation. A
 server started by hand or by another supervisor cannot be detected: do not

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -60,7 +61,7 @@ func TestClientCheckResources(t *testing.T) {
 			}
 			r := runEnv(t, env, url, "client", "check", "--skill-file", skill, "--json")
 			var out map[string]any
-			if r.code != 0 || json.Unmarshal([]byte(r.stdout), &out) != nil || out["bootstrap_status"] != want || out["server_url"] != url || out["executable"] != "/standalone/flats" || out["cli_status"] != "compatible" {
+			if r.code != 0 || json.Unmarshal([]byte(r.stdout), &out) != nil || out["bootstrap_status"] != want || out["server_url"] != url || out["executable"] != standaloneExecutable(t) || out["cli_status"] != "compatible" {
 				t.Fatalf("%+v", r)
 			}
 		})
@@ -117,6 +118,17 @@ func TestSkillCommand(t *testing.T) {
 	}
 }
 
+// standaloneExecutable is the path the check reports for /standalone/flats:
+// absolute, with a volume on Windows.
+func standaloneExecutable(t *testing.T) string {
+	t.Helper()
+	p, err := filepath.Abs("/standalone/flats")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
 type updateTransport func(*http.Request) (*http.Response, error)
 
 func (f updateTransport) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
@@ -129,6 +141,9 @@ func cliUpdateEnv(t *testing.T) Env {
 		t.Fatal(e)
 	}
 	exe := filepath.Join(dir, "flats")
+	if runtime.GOOS == "windows" {
+		exe += ".exe"
+	}
 	os.WriteFile(exe, []byte("old"), 0755)
 	var b bytes.Buffer
 	gz := gzip.NewWriter(&b)
@@ -138,10 +153,23 @@ func cliUpdateEnv(t *testing.T) Env {
 	tw.Close()
 	gz.Close()
 	raw := b.Bytes()
+	asset := "tar.gz"
+	if runtime.GOOS == "windows" {
+		asset = "zip"
+		b.Reset()
+		zw := zip.NewWriter(&b)
+		w, err := zw.Create("flats.exe")
+		if err != nil {
+			t.Fatal(err)
+		}
+		w.Write([]byte("new"))
+		zw.Close()
+		raw = b.Bytes()
+	}
 	return Env{ConfigDir: filepath.Join(dir, "config"), Home: filepath.Join(dir, "home"), Executable: func() (string, error) { return exe, nil }, ReleaseTransport: updateTransport(func(r *http.Request) (*http.Response, error) {
 		body := raw
 		if strings.HasSuffix(r.URL.Path, "checksums.txt") {
-			body = []byte(fmt.Sprintf("%s  flats_%s_%s.tar.gz\n", selfupdate.Digest(raw), runtime.GOOS, runtime.GOARCH))
+			body = []byte(fmt.Sprintf("%s  flats_%s_%s.%s\n", selfupdate.Digest(raw), runtime.GOOS, runtime.GOARCH, asset))
 		}
 		return &http.Response{StatusCode: 200, Header: make(http.Header), Body: io.NopCloser(bytes.NewReader(body)), Request: r}, nil
 	}), CandidateProbe: func(context.Context, string) (selfupdate.Identity, error) {

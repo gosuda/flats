@@ -19,6 +19,7 @@ import (
 
 	"github.com/gosuda/flats/internal/config"
 	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/ostest"
 )
 
 // configHost serves a Service whose settings are saved to a real
@@ -39,10 +40,16 @@ func (h *configHost) advance(d time.Duration) {
 	h.mu.Unlock()
 }
 
-const (
-	operatorFile = "/private/operator-credential-path"
-	authKeyFile  = "/private/tailscale-authkey-path"
+var (
+	operatorFile = privatePath("operator-credential-path")
+	authKeyFile  = privatePath("tailscale-authkey-path")
 )
+
+// privatePath is an absolute path that no response may show.
+func privatePath(name string) string {
+	dir, _ := filepath.Abs(string(filepath.Separator))
+	return filepath.Join(dir, "private", name)
+}
 
 func setupConfig(t *testing.T, pin bool) *configHost {
 	t.Helper()
@@ -294,33 +301,36 @@ func TestSettingsSaveWithoutReadableFile(t *testing.T) {
 		}
 	}
 
-	// The directory cannot take the new file: a write failure.
-	if err := os.Chmod(h.dir, 0o500); err != nil {
-		t.Fatal(err)
-	}
-	code, _, raw := settingsCall(t, h, "PUT", "/settings", `{"version_quota":"4"}`, hdr)
-	os.Chmod(h.dir, 0o700)
-	if os.Geteuid() != 0 {
-		if b := decodeSettings(t, raw); code != 500 || b.Category != "" {
-			t.Fatalf("write failure: %d %s", code, raw)
+	// POSIX modes inject the next two failures.
+	if !ostest.Windows {
+		// The directory cannot take the new file: a write failure.
+		if err := os.Chmod(h.dir, 0o500); err != nil {
+			t.Fatal(err)
 		}
-		noPath(raw)
-	}
+		code, _, raw := settingsCall(t, h, "PUT", "/settings", `{"version_quota":"4"}`, hdr)
+		os.Chmod(h.dir, 0o700)
+		if os.Geteuid() != 0 {
+			if b := decodeSettings(t, raw); code != 500 || b.Category != "" {
+				t.Fatalf("write failure: %d %s", code, raw)
+			}
+			noPath(raw)
+		}
 
-	if err := os.Chmod(h.path, 0); err != nil {
-		t.Fatal(err)
-	}
-	code, _, raw = settingsCall(t, h, "PUT", "/settings", `{"version_quota":"4"}`, hdr)
-	if os.Geteuid() != 0 {
-		if b := decodeSettings(t, raw); code != 412 || b.Category != "config_changed" {
-			t.Fatalf("unreadable file: %d %s", code, raw)
+		if err := os.Chmod(h.path, 0); err != nil {
+			t.Fatal(err)
 		}
-		noPath(raw)
+		code, _, raw = settingsCall(t, h, "PUT", "/settings", `{"version_quota":"4"}`, hdr)
+		if os.Geteuid() != 0 {
+			if b := decodeSettings(t, raw); code != 412 || b.Category != "config_changed" {
+				t.Fatalf("unreadable file: %d %s", code, raw)
+			}
+			noPath(raw)
+		}
 	}
 	if err := os.Remove(h.path); err != nil {
 		t.Fatal(err)
 	}
-	code, _, raw = settingsCall(t, h, "PUT", "/settings", `{"version_quota":"4"}`, hdr)
+	code, _, raw := settingsCall(t, h, "PUT", "/settings", `{"version_quota":"4"}`, hdr)
 	if b := decodeSettings(t, raw); code != 412 || b.Category != "config_changed" || !strings.Contains(b.Error, "restart Flats") {
 		t.Fatalf("removed file: %d %s", code, raw)
 	}

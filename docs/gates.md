@@ -143,6 +143,13 @@ gates share; it never starts Flats or a provider) and run
 that archive, a rerun restarts it, it recovers from a crash, a stopped
 service stays stopped on upgrade, and uninstall removes it.
 
+The `windows` job runs the test shards on `windows-latest`, without the
+`docs-budget` shard, whose wall-clock budgets belong to the Linux job, and
+without `internal/devreview`, whose run command is Unix only. It then runs
+`scripts/install-smoke.ps1` on the Windows release archive. The job runs as an
+administrator, so the check that the install needs no administrator rights
+stays manual in [Releases](release.md).
+
 A `container` job builds the image for `linux/amd64` and `linux/arm64` from
 the Linux release archives and runs `scripts/container-smoke.sh` on the
 runner's image, once with host networking and once with ports published on

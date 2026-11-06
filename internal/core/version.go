@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/gosuda/flats/internal/config"
+	"github.com/gosuda/flats/internal/durable"
 	"github.com/gosuda/flats/internal/slug"
 	"github.com/gosuda/flats/internal/store"
 )
@@ -201,7 +202,7 @@ func (s *Service) deleteVersionLocked(ctx context.Context, f store.Flat, v store
 		moved = true
 	}
 	if moved {
-		if err := errors.Join(syncDirectory(filepath.Dir(dir)), syncDirectory(s.flatDir(f.Slug))); err != nil {
+		if err := errors.Join(durable.SyncDir(filepath.Dir(dir)), durable.SyncDir(s.flatDir(f.Slug))); err != nil {
 			return ActionResult{}, errors.Join(err, os.Rename(staged, dir))
 		}
 	}
@@ -219,7 +220,7 @@ func (s *Service) deleteVersionLocked(ctx context.Context, f store.Flat, v store
 		cleanupErr = os.RemoveAll(staged)
 	}
 	if cleanupErr == nil && moved {
-		cleanupErr = syncDirectory(s.flatDir(f.Slug))
+		cleanupErr = durable.SyncDir(s.flatDir(f.Slug))
 	}
 	status, message := "done", fmt.Sprintf("deleted version %d", v.Number)
 	pending := cleanupErr != nil
@@ -283,14 +284,14 @@ func (s *Service) recoverVersionDeletions(ctx context.Context) error {
 				if err := os.Rename(staged, dir); err != nil {
 					return err
 				}
-				if err := errors.Join(syncDirectory(filepath.Dir(dir)), syncDirectory(s.flatDir(f.Slug))); err != nil {
+				if err := errors.Join(durable.SyncDir(filepath.Dir(dir)), durable.SyncDir(s.flatDir(f.Slug))); err != nil {
 					return err
 				}
 			} else if errors.Is(err, store.ErrNotFound) {
 				if err := os.RemoveAll(staged); err != nil {
 					return err
 				}
-				if err := syncDirectory(s.flatDir(f.Slug)); err != nil {
+				if err := durable.SyncDir(s.flatDir(f.Slug)); err != nil {
 					return err
 				}
 			} else {

@@ -26,9 +26,11 @@ func closeSpillManager(m *SpillManager) {
 func TestSpillRunningOwnerSurvivesStartup(t *testing.T) {
 	dir := t.TempDir()
 	first := NewSpillManager(dir, 1, nil)
+	t.Cleanup(func() { first.Close() })
 	active := spillLease(t, first, 2, 1)
 	t.Cleanup(func() { first.CancelScope(func(Scope) bool { return true }) })
 	second := NewSpillManager(dir, 1, nil)
+	t.Cleanup(func() { second.Close() })
 	t.Cleanup(func() { second.CancelScope(func(Scope) bool { return true }) })
 	if second.initErr != nil {
 		t.Fatal(second.initErr)
@@ -56,6 +58,7 @@ func newSpillInstance(t *testing.T, manager *SpillManager, slug string) *Instanc
 
 func TestSpillNotebooksAndHistoryShareAdmission(t *testing.T) {
 	m := NewSpillManager(t.TempDir(), 1, nil)
+	t.Cleanup(func() { m.Close() })
 	first := newSpillInstance(t, m, "first")
 	second := newSpillInstance(t, m, "second")
 	active := spillLease(t, first.spills, 2, 1)
@@ -193,6 +196,7 @@ func TestSpillCrashOwnerHelper(t *testing.T) {
 		t.Skip("subprocess helper")
 	}
 	m := NewSpillManager(root, 1, nil)
+	t.Cleanup(func() { m.Close() })
 	s := spillLease(t, m, 2, 1)
 	if _, err := os.Stdout.WriteString(s.dir); err != nil {
 		t.Fatal(err)
@@ -203,6 +207,7 @@ func TestSpillCrashOwnerHelper(t *testing.T) {
 func TestSpillCrashCleanupPreservesLiveOwner(t *testing.T) {
 	root := t.TempDir()
 	live := NewSpillManager(root, 1, nil)
+	t.Cleanup(func() { live.Close() })
 	defer closeSpillManager(live)
 	capture := spillLease(t, live, 2, 1)
 	cmd := exec.Command(os.Args[0], "-test.run=^TestSpillCrashOwnerHelper$")
@@ -216,6 +221,7 @@ func TestSpillCrashCleanupPreservesLiveOwner(t *testing.T) {
 		t.Fatal(err)
 	}
 	restarted := NewSpillManager(root, 1, nil)
+	t.Cleanup(func() { restarted.Close() })
 	defer closeSpillManager(restarted)
 	if restarted.initErr != nil {
 		t.Fatal(restarted.initErr)
@@ -230,6 +236,7 @@ func TestSpillCrashCleanupPreservesLiveOwner(t *testing.T) {
 
 func TestSpillCurrentAndHistoricalCaptureContention(t *testing.T) {
 	m := NewSpillManager(t.TempDir(), 1, nil)
+	t.Cleanup(func() { m.Close() })
 	defer closeSpillManager(m)
 	first := newSpillInstance(t, m, "first")
 	second := newSpillInstance(t, m, "second")
@@ -267,6 +274,7 @@ func TestSpillCurrentAndHistoricalCaptureContention(t *testing.T) {
 func TestSpillRetryExpiryReleasesReservation(t *testing.T) {
 	clock := newSpillClock()
 	m := NewSpillManager(t.TempDir(), 1, clock.now)
+	t.Cleanup(func() { m.Close() })
 	defer closeSpillManager(m)
 	in := newSpillInstance(t, m, "notes")
 	active := spillLease(t, m, 2, 1)
@@ -297,6 +305,7 @@ func TestSpillRetryExpiryReleasesReservation(t *testing.T) {
 
 func TestSpillCaptureCleanupLeavesEmptyScratch(t *testing.T) {
 	m := NewSpillManager(t.TempDir(), 1, nil)
+	t.Cleanup(func() { m.Close() })
 	defer closeSpillManager(m)
 	in := newSpillInstance(t, m, "notes")
 	s, err := in.spills.Capture(t.Context(), in.ReadTx, Scope{Tree: true}, nil)
@@ -319,6 +328,7 @@ func TestSpillLegacyCrashRootCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 	m := NewSpillManager(dir, 1, nil)
+	t.Cleanup(func() { m.Close() })
 	t.Cleanup(func() { m.CancelScope(func(Scope) bool { return true }) })
 	if _, err := os.Stat(dead); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("abandoned legacy capture survived: %v", err)
@@ -329,6 +339,7 @@ func TestRetryReadContention(t *testing.T) {
 	var seconds atomic.Int64
 	now := func() time.Time { return time.Unix(1_000_000+seconds.Load(), 0) }
 	m := NewSpillManager(t.TempDir(), 1, now)
+	t.Cleanup(func() { m.Close() })
 	t.Cleanup(func() {
 		if err := m.Close(); err != nil {
 			t.Error(err)

@@ -165,8 +165,12 @@ jobs:
           COMMIT: ${{ needs.resolve.outputs.commit }}
         run: |
           FLATS_SOURCE_DIR="$PWD" .release-tools/scripts/build-release.sh "$TAG" "$RUNNER_TEMP/dist"
-          for archive in "$RUNNER_TEMP"/dist/*.tar.gz; do
-            info=$(tar -xzOf "$archive" flats >"$RUNNER_TEMP/flats.bin" && go version -m "$RUNNER_TEMP/flats.bin")
+          for archive in "$RUNNER_TEMP"/dist/flats_*; do
+            case "$archive" in
+            *.zip) unzip -p "$archive" flats.exe >"$RUNNER_TEMP/flats.bin" ;;
+            *) tar -xzOf "$archive" flats >"$RUNNER_TEMP/flats.bin" ;;
+            esac
+            info=$(go version -m "$RUNNER_TEMP/flats.bin")
             if ! printf '%s\n' "$info" | grep -q 'vcs.modified=false' ||
               ! printf '%s\n' "$info" | grep -q "vcs.revision=$COMMIT"; then
               echo "$archive was not built from clean source at $COMMIT"
@@ -204,7 +208,9 @@ jobs:
       - name: Attest build provenance
         uses: actions/attest-build-provenance@v2
         with:
-          subject-path: ${{ runner.temp }}/dist/*.tar.gz
+          subject-path: |
+            ${{ runner.temp }}/dist/*.tar.gz
+            ${{ runner.temp }}/dist/*.zip
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
@@ -213,7 +219,7 @@ jobs:
           if gh release view "$TAG" >/dev/null 2>&1; then
             # Backfill: upload fails rather than overwrite an existing asset.
             # Archives go first so checksums.txt never lists missing files.
-            gh release upload "$TAG" "$RUNNER_TEMP"/dist/*.tar.gz
+            gh release upload "$TAG" $(ls "$RUNNER_TEMP"/dist/flats_*.tar.gz "$RUNNER_TEMP"/dist/flats_*.zip 2>/dev/null)
             gh release upload "$TAG" "$RUNNER_TEMP/dist/checksums.txt"
             exit 0
           fi

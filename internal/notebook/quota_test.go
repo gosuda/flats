@@ -14,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gosuda/flats/internal/sqliteuri"
 )
 
 type writerQuotaBackend struct {
@@ -425,7 +427,7 @@ func TestWriterQuotaPinnedWAL(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	reader, err := sql.Open("sqlite", "file:"+in.db.path+"?mode=ro")
+	reader, err := sql.Open("sqlite", sqliteuri.File(in.db.path)+"?mode=ro")
 	if err != nil {
 		t.Fatal(err)
 	}

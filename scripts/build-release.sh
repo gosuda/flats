@@ -3,8 +3,9 @@
 #
 #   scripts/build-release.sh v1.2.3 dist
 #
-# Writes flats_<os>_<arch>.tar.gz for every supported platform and a
-# checksums.txt in sha256sum format to the output directory.
+# Writes flats_<os>_<arch>.tar.gz for every supported platform,
+# flats_windows_amd64.zip for Windows, and a checksums.txt in sha256sum format
+# to the output directory.
 # FLATS_RELEASE_TARGETS (space-separated os/arch) narrows the platforms.
 # FLATS_SOURCE_DIR builds another checkout (default: this script's repository).
 #
@@ -61,11 +62,20 @@ else
 	module=$root
 fi
 
-for target in ${FLATS_RELEASE_TARGETS:-darwin/amd64 darwin/arm64 linux/amd64 linux/arm64}; do
+for target in ${FLATS_RELEASE_TARGETS:-darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64}; do
 	os=${target%/*}
 	arch=${target#*/}
 	name=flats_${os}_${arch}
 	stage=$work/$name
+	binary=flats
+	if [ "$os" = windows ]; then
+		binary=flats.exe
+		# The release workflow also builds older tags with this script.
+		if [ ! -d "$root/internal/winservice" ]; then
+			echo "skipping $name: this source has no Windows support"
+			continue
+		fi
+	fi
 	mkdir -p "$stage"
 	echo "building $name"
 	# internal/buildinfo holds the version. The release workflow also builds
@@ -73,16 +83,26 @@ for target in ${FLATS_RELEASE_TARGETS:-darwin/amd64 darwin/arm64 linux/amd64 lin
 	# linker ignores -X for a variable a build does not have.
 	(cd "$module" && CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath \
 		-ldflags "-s -w -X github.com/gosuda/flats/internal/buildinfo.Version=$version -X github.com/gosuda/flats/internal/cli.Version=$version -X github.com/gosuda/flats/internal/app.Version=$version" \
-		-o "$stage/flats" ./cmd/flats)
-	if [ "$module" != "$root" ] && ! go version -m "$stage/flats" | grep -q 'github.com/netbirdio/netbird'; then
+		-o "$stage/$binary" ./cmd/flats)
+	if [ "$module" != "$root" ] && ! go version -m "$stage/$binary" | grep -q 'github.com/netbirdio/netbird'; then
 		echo "$name does not link NetBird" >&2
 		exit 1
 	fi
 	cp "$root/LICENSE" "$root/README.md" "$stage/"
+	if [ "$os" = windows ]; then
+		if command -v zip >/dev/null 2>&1; then
+			(cd "$stage" && zip -q -X "$out/$name.zip" "$binary" LICENSE README.md)
+		else # the bsdtar of a Windows machine; Git Bash puts GNU tar first on PATH
+			(cd "$stage" && "$SYSTEMROOT/System32/tar.exe" -a -cf "$name.zip" "$binary" LICENSE README.md)
+			mv "$stage/$name.zip" "$out/"
+		fi
+		continue
+	fi
 	# Record root ownership so archives do not carry the build user's name.
 	# shellcheck disable=SC2086 # owner_flags is a word list.
 	(cd "$stage" && tar -czf "$out/$name.tar.gz" $owner_flags flats LICENSE README.md)
 done
 
-(cd "$out" && sha256 flats_*.tar.gz >checksums.txt)
+# shellcheck disable=SC2046 # the names hold no spaces, and a set may be empty.
+(cd "$out" && sha256 $(ls flats_*.tar.gz flats_*.zip 2>/dev/null) >checksums.txt)
 cat "$out/checksums.txt"

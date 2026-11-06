@@ -54,9 +54,13 @@ func readKeyFile(path, from string) (string, error) {
 	if err != nil {
 		return "", actionf("%s: %v", from, err)
 	}
-	// Flats runs on Unix only, where abs already starts with "/"; this is the
-	// form static analysis accepts as free of ".." traversal.
-	path = filepath.Clean("/" + abs)
+	// On Unix abs already starts with "/"; this is the form static analysis
+	// accepts as free of ".." traversal. A Windows path starts with its volume.
+	if filepath.VolumeName(abs) != "" {
+		path = filepath.Clean(abs)
+	} else {
+		path = filepath.Clean("/" + abs)
+	}
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return "", actionf("%s: read the key file: %v", from, err)

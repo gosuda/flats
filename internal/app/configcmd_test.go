@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -26,7 +27,7 @@ func TestConfigShowValidateSetUnset(t *testing.T) {
 	path := initConfig(t, dir)
 	out, err := runConfig(t, "show", "--config", path)
 	if err != nil || !strings.Contains(out, `"schema_version": 5`) || !strings.Contains(out, `system.version_quota               20 (default)`) ||
-		!strings.Contains(out, `host.data_dir                      "`+dir+`" (file)`) {
+		!strings.Contains(out, `host.data_dir                      `+strconv.Quote(dir)+` (file)`) {
 		t.Fatalf("show: %v\n%s", err, out)
 	}
 	if out, err := runConfig(t, "validate", "--data", dir); err != nil || !strings.Contains(out, "is valid") {

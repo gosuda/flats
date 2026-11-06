@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/gosuda/flats/internal/bundle"
+	"github.com/gosuda/flats/internal/ostest"
 	"github.com/gosuda/flats/internal/store"
 )
 
@@ -772,7 +773,7 @@ func TestUsageSinkOfEveryBuild(t *testing.T) {
 
 	// A rename that fails after the worker stopped restarts it under the old
 	// slug, on the held state.
-	if os.Geteuid() != 0 { // permission-based failure injection does not apply to root
+	if !ostest.Windows && os.Geteuid() != 0 { // permission-based failure injection needs POSIX modes and a user that is not root
 		journals := s.storageJournalDir()
 		if err := os.Chmod(journals, 0o500); err != nil {
 			t.Fatal(err)
@@ -1477,6 +1478,7 @@ func TestWorkerMemoryKeepsTheLastSample(t *testing.T) {
 // figure keeps its value and time, from the background walk and from the
 // quota check alike.
 func TestDiskFigureKeepsTheLastCompleteWalk(t *testing.T) {
+	ostest.SkipPOSIXModes(t)
 	if os.Geteuid() == 0 {
 		t.Skip("root reads unreadable directories")
 	}

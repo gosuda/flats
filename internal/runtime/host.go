@@ -13,6 +13,7 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	goruntime "runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -21,6 +22,8 @@ import (
 	"unicode/utf8"
 
 	"modernc.org/sqlite"
+
+	"github.com/gosuda/flats/internal/winname"
 )
 
 // dataStore backs env.DB and env.FILES for one worker.
@@ -521,6 +524,11 @@ func checkKey(k string) error {
 		if strings.HasPrefix(seg, tmpPrefix) {
 			return bad("reserved name")
 		}
+		if goruntime.GOOS == "windows" {
+			if err := winname.CheckSegment(seg); err != nil {
+				return bad(err.Error())
+			}
+		}
 	}
 	return nil
 }
@@ -565,10 +573,9 @@ func (d *dataStore) fileGet(key string) (*string, error) {
 	}
 	b, err := r.ReadFile(key)
 	if errors.Is(err, fs.ErrNotExist) {
-		return nil, nil
+		return nil, keyUnderFile(r, key)
 	} else if err != nil {
-		var pe *fs.PathError
-		if errors.As(err, &pe) && strings.Contains(err.Error(), "is a directory") {
+		if fi, serr := r.Stat(key); serr == nil && fi.IsDir() {
 			return nil, nil
 		}
 		return nil, err
@@ -731,7 +738,7 @@ func (d *dataStore) fileDelete(key string) (bool, error) {
 	}
 	info, err := r.Stat(key)
 	if errors.Is(err, fs.ErrNotExist) {
-		return false, nil
+		return false, keyUnderFile(r, key)
 	} else if err != nil {
 		return false, err
 	}

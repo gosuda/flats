@@ -13,6 +13,8 @@ import (
 	"sort"
 	"strings"
 	"testing"
+
+	"github.com/gosuda/flats/internal/ostest"
 )
 
 func writeTree(t *testing.T, root string, files map[string]string) {
@@ -120,7 +122,7 @@ func TestPackDirRejectsLinksAndLimits(t *testing.T) {
 	if err := os.WriteFile(outside, []byte("private"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(outside, filepath.Join(root, "leak.txt")); err != nil {
+	if err := ostest.Symlink(t, outside, filepath.Join(root, "leak.txt")); err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := packDir(root, 0); err == nil || !strings.Contains(err.Error(), "leak.txt is a symbolic link") {
@@ -211,7 +213,7 @@ func TestPackDirSwapRaceNeverLeaks(t *testing.T) {
 				return
 			default:
 			}
-			_ = os.Symlink(secret, link)
+			_ = ostest.Symlink(t, secret, link)
 			_ = os.Rename(link, target)
 			_ = os.WriteFile(plain, []byte("public"), 0o644)
 			_ = os.Rename(plain, target)
@@ -238,7 +240,7 @@ func TestPackDirSymlinkedRoot(t *testing.T) {
 	build := filepath.Join(parent, "build")
 	writeTree(t, build, map[string]string{"index.html": "hello"})
 	dist := filepath.Join(parent, "dist")
-	if err := os.Symlink(build, dist); err != nil {
+	if err := ostest.Symlink(t, build, dist); err != nil {
 		t.Fatal(err)
 	}
 	b, _, err := packDir(dist, 0)

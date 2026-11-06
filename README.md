@@ -63,7 +63,7 @@ reference.
 
 | | Flats | Hosted AI artifacts and sites (for example Claude Artifacts) | App hosting (for example Vercel, Netlify) |
 | --- | --- | --- | --- |
-| Where it runs | Your own Mac or Linux machine, or your own server | Usually the provider's cloud | Usually the provider's cloud |
+| Where it runs | Your own Mac, Windows or Linux machine, or your own server | Usually the provider's cloud | Usually the provider's cloud |
 | Where your data lives | Files and SQLite databases on that machine | Usually your account with the provider | Usually your account with the provider and the services you add |
 | Which agents can use it | Any MCP client; a plugin for Claude Code, Codex and Cursor | Often the provider's own assistant | Usually any tool that can deploy there, such as a CLI or a Git push |
 | Server code and a database | JavaScript server apps with SQLite and persistent files ([details](#static-and-server-flats)) | Varies by product | Often available through the provider's functions and add-ons |
@@ -82,8 +82,16 @@ On macOS or Linux, with an amd64 or arm64 machine:
 curl -fsSL https://raw.githubusercontent.com/gosuda/flats/main/install.sh | sh
 ```
 
-The installer verifies the release, installs `flats` to `~/.local/bin` and
-starts it as a background service, without sudo. The console is at
+On Windows 11 or Windows Server 2022 or newer, with an amd64 machine, in
+PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/gosuda/flats/main/install.ps1 | iex
+```
+
+The installer verifies the release, installs `flats` to `~/.local/bin`
+(`%LOCALAPPDATA%\Programs\Flats` on Windows) and starts it as a background
+service, without sudo or administrator rights. The console is at
 [127.0.0.1:7878](http://127.0.0.1:7878). The default network is Local, so
 flats open only on this machine; other providers are off.
 
@@ -370,7 +378,7 @@ Read the [design and trust model](docs/design.md) for the details.
 
 ## Under the hood
 
-Flats is one Go binary built without CGO, for macOS and Linux. It serves a web
+Flats is one Go binary built without CGO, for macOS, Linux and Windows. It serves a web
 console, a CLI, an HTTP API and an MCP endpoint. There is no hosted Flats
 service. By default the console and the Local flat listener bind only to
 loopback (`127.0.0.1:7878` and `127.0.0.1:7879`), so other networks reach your

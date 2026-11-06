@@ -13,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/gosuda/flats/internal/ostest"
 )
 
 // accountController emulates the zrok v2 enable and disable endpoints with
@@ -99,7 +101,7 @@ func TestConnectAndDisconnect(t *testing.T) {
 		t.Fatalf("after connect: %v %v", ok, err)
 	}
 	info, err := os.Stat(filepath.Join(dir, "environment.json"))
-	if err != nil || info.Mode().Perm()&0o077 != 0 {
+	if err != nil || ostest.Exposed(info) {
 		t.Fatalf("environment file must be private: %v %v", info.Mode(), err)
 	}
 	if err := Connect(ctx, dir, "good-token", "flats@test"); !errors.Is(err, ErrConnected) {

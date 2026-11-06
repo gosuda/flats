@@ -13,6 +13,7 @@ import (
 
 	"github.com/gosuda/flats/internal/core"
 	"github.com/gosuda/flats/internal/expose/local"
+	"github.com/gosuda/flats/internal/ostest"
 )
 
 func TestHistoricalStateDoesNotGrant(t *testing.T) {
@@ -478,7 +479,7 @@ func TestRetirementMarkersAreRootConfinedAndLegacyCompatible(t *testing.T) {
 		if err := os.MkdirAll(root, 0o700); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.Symlink(outside, filepath.Join(root, "slug")); err != nil {
+		if err := ostest.Symlink(t, outside, filepath.Join(root, "slug")); err != nil {
 			t.Fatal(err)
 		}
 		m := newManager(root)
@@ -501,7 +502,7 @@ func TestRetirementMarkersAreRootConfinedAndLegacyCompatible(t *testing.T) {
 			t.Fatal(err)
 		}
 		root := filepath.Join(parent, "network-retirements")
-		if err := os.Symlink(outside, root); err != nil {
+		if err := ostest.Symlink(t, outside, root); err != nil {
 			t.Fatal(err)
 		}
 		m := newManager(root)
@@ -522,7 +523,7 @@ func TestRetirementMarkersAreRootConfinedAndLegacyCompatible(t *testing.T) {
 		if err := os.WriteFile(victim, []byte("keep"), 0o600); err != nil {
 			t.Fatal(err)
 		}
-		if err := os.Symlink(victim, filepath.Join(root, "slug", "host")); err != nil {
+		if err := ostest.Symlink(t, victim, filepath.Join(root, "slug", "host")); err != nil {
 			t.Fatal(err)
 		}
 		m := newManager(root)
