@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/gosuda/flats/internal/wasmcompile"
 	"github.com/tetratelabs/wazero"
 	wsp1 "github.com/tetratelabs/wazero/imports/wasi_snapshot_preview1"
 )
@@ -102,7 +103,7 @@ func newShell(option Option, registry *ProxyRegistry) (*Shell, error) {
 	if qjsBytes, err = exportStackPointer(qjsBytes); err != nil {
 		return nil, fmt.Errorf("failed to prepare qjs module: %w", err)
 	}
-	if s.compiled, err = CompileModule(option.Context, s.wrt, qjsBytes); err != nil {
+	if s.compiled, err = wasmcompile.Module(option.Context, s.wrt, qjsBytes); err != nil {
 		return nil, fmt.Errorf("failed to compile qjs module: %w", err)
 	}
 	s.wasm = qjsBytes

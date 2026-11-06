@@ -1,4 +1,6 @@
-package qjs
+// Package wasmcompile compiles wasm on a wazero runtime that shares a cache
+// directory with other worker processes.
+package wasmcompile
 
 import (
 	"context"
@@ -10,16 +12,16 @@ import (
 	"github.com/tetratelabs/wazero"
 )
 
-// compileAttempts bounds CompileModule. The workers that race for one cache
+// compileAttempts bounds Module. The workers that race for one cache
 // entry start together, so the race ends within milliseconds.
 const compileAttempts = 10
 
-// CompileModule compiles wasm on rt. wazero reads the compilation cache, then
+// Module compiles wasm on rt. wazero reads the compilation cache, then
 // compiles, keeps the result in memory and writes the cache. On Windows both
 // file steps fail while another worker has the entry open or is storing it,
 // which is routine while workers start on an empty cache. A later call reads
 // the stored entry or returns the result from memory.
-func CompileModule(ctx context.Context, rt wazero.Runtime, wasm []byte) (wazero.CompiledModule, error) {
+func Module(ctx context.Context, rt wazero.Runtime, wasm []byte) (wazero.CompiledModule, error) {
 	for attempt := 1; ; attempt++ {
 		compiled, err := rt.CompileModule(ctx, wasm)
 		if err == nil || attempt == compileAttempts || !cacheRace(err) {

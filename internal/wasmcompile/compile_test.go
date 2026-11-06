@@ -1,4 +1,4 @@
-package qjs
+package wasmcompile
 
 import (
 	"context"
@@ -32,7 +32,7 @@ func TestCacheRaceIsWindowsOnly(t *testing.T) {
 // and they meet only in the directory. On Windows about half of the plain
 // rt.CompileModule calls in this test fail on the cache rename, and with this
 // many workers some fail on the read of an entry that another one replaces.
-func TestCompileModuleOnEmptySharedCache(t *testing.T) {
+func TestModuleOnEmptySharedCache(t *testing.T) {
 	// A module with one empty function.
 	module := []byte{
 		0, 'a', 's', 'm', 1, 0, 0, 0,
@@ -56,7 +56,7 @@ func TestCompileModuleOnEmptySharedCache(t *testing.T) {
 				rt := wazero.NewRuntimeWithConfig(ctx, wazero.NewRuntimeConfig().WithCompilationCache(cache))
 				defer rt.Close(ctx)
 				<-start
-				if _, err := CompileModule(ctx, rt, module); err != nil {
+				if _, err := Module(ctx, rt, module); err != nil {
 					t.Error(err)
 				}
 			})
