@@ -1,6 +1,6 @@
 # Windows support
 
-Status: implemented on an unreleased branch; see [Current state](#current-state).
+Status: partly implemented; see [Current state](#current-state).
 The technical design is in
 [Windows support technical design](windows-support-technical-design.md).
 

@@ -1,6 +1,6 @@
 # Windows support technical design
 
-Status: implemented on an unreleased branch. The product rules are in
+Status: partly implemented. The product rules are in
 [Windows support](windows-support.md).
 
 The facts below were measured on Windows 11 Pro 10.0.26200 amd64, in a session
