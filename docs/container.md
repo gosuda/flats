@@ -276,7 +276,7 @@ docker run -d --name flats ...   # the same command as before
 
 Pin a version tag rather than `latest` when you want upgrades to happen only
 when you choose them. Back up before upgrades whose release notes mention data
-changes: stop the container, so `flats.db` is not copied while live, and copy
+changes: stop the container, so no database is copied while live, and copy
 the whole volume ([What to back up](configuration.md#what-to-back-up)):
 
 ```sh
