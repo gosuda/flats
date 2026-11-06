@@ -155,9 +155,9 @@ systems.
 
 ## Current state
 
-The branch that implements this spec has every rule above. Each content type was
-deployed and used in a browser on Windows. The technical design holds the
-measurements. These differ from the target:
+Every rule above is in the code. Each content type was deployed and used in a
+browser on Windows. The technical design holds the measurements. The status is
+`partly implemented` because these differ from the target:
 
 - A sleeping document misses [Fast worker cold start](worker-cold-start.md) on
   Windows: its first page took 74 to 76 ms and a collaboration hello 62 to 67 ms
@@ -176,6 +176,16 @@ measurements. These differ from the target:
   16 tests in parallel on Windows: its first `hello` reached the 10 s limit of one
   guest call after a slow worker start, 3.8 s in the last run. It passed 6 of 6 runs on
   four processors. The CI job is the first run of the docs tests on a Windows runner.
+- The `windows` CI job failed in one of its first five runs, on 2026-11-05, in
+  `TestDocumentOwnershipSoak/1MiBASCII` and
+  `TestConflictPrivacyAndRollbackStorageBudgets/bytes`. In each, the first call after
+  a worker start on a 1 MiB document reached the 10 s limit of one guest call, with
+  `failed to call QJS_FreeValue: module closed with context deadline exceeded`.
+  A third parallel subtest started a worker in 310 ms during those seconds, so the
+  runner did not stop. The cause is not identified. The evidence points at load on
+  the runner, not at a Windows code path, and the run after
+  [the guarded JS engine](guarded-js-engine.md) passed, which does not rule it out.
+  At that rate this job can also fail a pull request that did not cause it.
 - Beside CPU and disk load on four processors, `TestHostIdleRealWorkerCycles` saw a
   worker start stall in two events of 252 runs, with both copies of the test at the
   same moment: for more than 15 s, which failed those two runs, and for more than
@@ -197,7 +207,12 @@ measurements. These differ from the target:
 - If another program keeps a notebook spill file open for more than 2 s while Flats
   removes it, every later read that needs a spill answers `unavailable` until the
   server restarts. The code does that on every system after a failed removal, and
-  Windows refuses a removal more often. No run has shown it.
+  Windows refuses a removal more often. No run has shown it. The 2 s retry runs under
+  the lock of the spill manager, so a held file can pause spill admission for every
+  notebook on the host for that long.
+- The resource check of `TestHostIdleRealWorkerCycles` counts goroutines on Windows,
+  where Unix also counts open file descriptors, so it cannot catch a handle leak
+  across sleep and wake on Windows.
 - Rule 29 has no measurement as a separate standard user. The measurements ran
   without elevation, in an account of the administrators group.
 

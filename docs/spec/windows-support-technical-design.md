@@ -88,11 +88,14 @@ handle closes or the process ends, as with `flock`.
 - `putBlob` treats a failed rename as success when the blob exists, because
   Windows refuses a rename onto a read-only file, which is the race of two writers
   of one blob. The bytes are the same by their hash.
-- `qjs.CompileModule` calls wazero again after a failed read or rename of a cache
+- `wasmcompile.Module` calls wazero again after a failed read or rename of a cache
   entry, up to ten times with a short wait. wazero keeps a compiled module in memory
   and then stores it in the file cache, and that store fails while another worker
   has the entry open. A read fails while another worker replaces the entry. The next
   call finds the module in memory or in the file.
+- The self-update lock opens without a check for a reparse point, where Unix passes
+  `O_NOFOLLOW`. It lives in the user's own cache directory, so a link there already
+  needs that user's rights.
 - `internal/sqliteuri.File` builds `file:///C:/dir/name.db`. `url.URL` with a
   plain Windows path gives an invalid URI authority.
 - `cleanDataDir`, `readKeyFile` and the scratch `config.New` calls assumed a
