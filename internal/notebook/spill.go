@@ -146,7 +146,7 @@ func (m *SpillManager) openOwner(root string) error {
 	for _, entry := range entries {
 		path := filepath.Join(root, entry.Name())
 		if spillName(entry.Name(), "notebook-spill-") {
-			if err := os.RemoveAll(path); err != nil {
+			if err := durable.RemoveAll(path); err != nil {
 				return err
 			}
 			continue
@@ -164,7 +164,7 @@ func (m *SpillManager) openOwner(root string) error {
 		err = filelock.TryLock(lock)
 		lock.Close() // an open file cannot be removed on Windows
 		if err == nil {
-			err = os.RemoveAll(path)
+			err = durable.RemoveAll(path)
 		}
 		if err != nil && !errors.Is(err, filelock.ErrLocked) {
 			return err
