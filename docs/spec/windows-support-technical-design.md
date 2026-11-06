@@ -94,7 +94,7 @@ handle closes or the process ends, as with `flock`.
   has the entry open. A read fails while another worker replaces the entry. The next
   call finds the module in memory or in the file.
 - The self-update lock opens without a check for a reparse point, where Unix passes
-  `O_NOFOLLOW`. It lives in the user's own cache directory, so a link there already
+  `O_NOFOLLOW`. It lives in the user's own config directory, so a link there already
   needs that user's rights.
 - `internal/sqliteuri.File` builds `file:///C:/dir/name.db`. `url.URL` with a
   plain Windows path gives an invalid URI authority.
