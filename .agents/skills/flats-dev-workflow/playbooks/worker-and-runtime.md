@@ -35,6 +35,19 @@ before changing this area.
   a repeated `Close` is safe. Keep `internal/qjs/close_test.go` passing.
 - [ ] Never save a memory image of user module code. Images are for the
   built-in docs app only ([worker cold start spec](../../../../docs/spec/worker-cold-start.md)).
+- [ ] Rebuild the engine binary with `make qjs-wasm`
+  ([scripts/build-qjs-wasm.sh](../../../../scripts/build-qjs-wasm.sh)). It pins
+  quickjs-ng `d01ca4491fb24ccfeccb4c7394e28a3b21fd5986`, needs Homebrew llvm,
+  wasi-libc, wasi-runtimes and binaryen, fails with a clear message when one is
+  missing, and rebuilds the shipped `internal/qjs/qjs.wasm` byte for byte; the
+  SHA-256 is recorded in `internal/qjs/NOTICE` item 19.
+- [ ] The C glue in `internal/qjs/qjswasm/` keeps its own lifetimes and
+  exceptions straight: a resolved entry point belongs to the caller of
+  `detect_entry_point`, `JS_EvalFunction` consumes the function object it is
+  given, a failed numeric or Date conversion clears its pending exception, and
+  allocation failures throw an out-of-memory exception instead of returning
+  NULL. `internal/qjs/audit_cglue_test.go` pins each of these through the Go
+  API.
 
 ## Metrics
 

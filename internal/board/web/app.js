@@ -103,6 +103,7 @@ export class App {
     // session; a remembered name only fills the popup.
     this.join = startsJoined({ joined: stored.joined(), guestToken: stored.guestToken(), name: this.guestName });
     this.joinDialog = null;
+    this.nameDialog = null;      // the unverified member's name prompt, one at a time
     this.viewOnlyNext = false;   // View only was chosen while stopped: record it at the next welcome
     this.guestEnded = false;     // the end of this tab's guest editing was handled
     this.endedFile = null;       // recovery file of the guest editing that ended
@@ -1034,6 +1035,7 @@ export class App {
   // ---- identity (rule 23) ----
 
   namePrompt() {
+    if (this.nameDialog) return;
     const input = h('input', { id: 'name-input', autocomplete: 'nickname', maxlength: '80', value: this.name || '' });
     let chosen = false;
     const acts = h('div', { class: 'acts' }, h('span', { class: 'spacer' }),
@@ -1057,11 +1059,13 @@ export class App {
       body: form,
       className: 'narrow',
       onClose: () => {
+        this.nameDialog = null;
         this.readOnlyChoice = !chosen;
         if (chosen) this.net.restart();
         this.applyMode();
       },
     });
+    this.nameDialog = dlg;
     input.focus();
   }
 
@@ -1229,15 +1233,20 @@ export class App {
   }
 }
 
+// countVoid counts the results that ignored elements for reason. One
+// operation's result is "void:<reason>" or, over several elements,
+// {ok: [id], void: {id: reason}}; above 64 KiB the server summarizes every
+// operation as {ok: count, void: {reason: count}} (Appendix A "Results").
 function countVoid(results, reason) {
-  if (!Array.isArray(results)) {
-    return results && results.void ? results.void[reason] || 0 : 0;
-  }
+  const inOperation = (r) => {
+    if (r === 'void:' + reason) return 1;
+    if (!r || typeof r !== 'object' || !r.void) return 0;
+    const counted = r.void[reason];
+    return typeof counted === 'number' ? counted : Object.values(r.void).filter((v) => v === reason).length;
+  };
+  if (!Array.isArray(results)) return inOperation(results);
   let n = 0;
-  for (const r of results) {
-    if (r === 'void:' + reason) n++;
-    else if (r && typeof r === 'object' && r.void) n += Object.values(r.void).filter((v) => v === reason).length;
-  }
+  for (const r of results) n += inOperation(r);
   return n;
 }
 

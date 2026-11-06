@@ -116,3 +116,24 @@ func TestCancellationReleasesFileLock(t *testing.T) {
 		t.Fatalf("staging remained: %v", e)
 	}
 }
+
+func TestCodePrecedenceDeterministic(t *testing.T) {
+	pairs := [][2]error{
+		{failure("candidate_mismatch", "mismatch"), failure("filesystem", "fs error")},
+		{failure("assets_unavailable", "bad asset"), failure("filesystem", "io")},
+		{failure("checksum", "bad sha"), failure("assets_unavailable", "corrupt")},
+		{failure("invalid_target", "bad tag"), failure("transport", "net error")},
+		{failure("locked", "busy"), failure("file_conflict", "changed")},
+		{context.Canceled, failure("locked", "busy")},
+		{failure("custom_b", "b"), failure("custom_a", "a")},
+	}
+	for _, pair := range pairs {
+		e1 := errors.Join(pair[0], pair[1])
+		e2 := errors.Join(pair[1], pair[0])
+		c1 := Code(e1)
+		c2 := Code(e2)
+		if c1 != c2 {
+			t.Fatalf("nondeterministic precedence for %v and %v: %q != %q", pair[0], pair[1], c1, c2)
+		}
+	}
+}

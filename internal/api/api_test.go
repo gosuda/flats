@@ -408,3 +408,50 @@ func TestHostGuard(t *testing.T) {
 		}
 	}
 }
+
+type failAfterReader struct {
+	r         io.Reader
+	remaining int
+	err       error
+}
+
+func (f *failAfterReader) Read(p []byte) (int, error) {
+	if f.remaining <= 0 {
+		return 0, f.err
+	}
+	if len(p) > f.remaining {
+		p = p[:f.remaining]
+	}
+	n, err := f.r.Read(p)
+	f.remaining -= n
+	if f.remaining == 0 {
+		return n, f.err
+	}
+	return n, err
+}
+
+func TestInterruptedUploadServesInternalServerError(t *testing.T) {
+	srv, _ := setup(t)
+	broken := &failAfterReader{
+		r:         bytes.NewReader(archive(map[string]string{"index.html": "ok"})),
+		remaining: 50,
+		err:       io.ErrUnexpectedEOF,
+	}
+	r := httptest.NewRequest("POST", "/api/flats/site/draft", broken)
+	r.Header.Set("X-Flats-Client", "test")
+	w := httptest.NewRecorder()
+	srv.Config.Handler.ServeHTTP(w, r)
+	if w.Code != 500 {
+		t.Fatalf("want 500 for interrupted upload, got %d %s", w.Code, w.Body.String())
+	}
+	var out map[string]any
+	json.NewDecoder(w.Body).Decode(&out)
+	if out["problems"] != nil {
+		t.Fatalf("interrupted upload should not return validation problems: %v", out)
+	}
+
+	code, out := req(t, "POST", srv.URL+"/api/flats/site/draft", strings.NewReader("not an archive"), nil)
+	if code != 422 || out["problems"] == nil {
+		t.Fatalf("corrupt archive should return 422 with problems, got %d %v", code, out)
+	}
+}

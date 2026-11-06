@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/gosuda/flats/internal/qjs"
+	"github.com/gosuda/flats/internal/jsengine"
 )
 
 // docsDist is a document runtime directory: the built-in docs app with a
@@ -61,7 +61,7 @@ func TestImageDocsRestore(t *testing.T) {
 			t.Fatalf("restored page differs: %d %.200q", got.Status, got.Body)
 		}
 		w.firstVM(t, func(vm *jsVM) {
-			if !vm.rt.Restored() {
+			if !vm.eng.Restored() {
 				t.Fatal("not restored")
 			}
 		})
@@ -77,36 +77,33 @@ func TestImageDocsRestore(t *testing.T) {
 // nondeterminism (a host call, output, Math.random) or leaves a file open
 // makes it non-imageable and fails here.
 func TestImageDocsCensus(t *testing.T) {
-	census := func(dir string) (wall, mono, opens, closes int64, eligible error, hostUsed bool) {
+	census := func(dir string) (wall, mono, opens, closes int64, eligible error) {
 		w := &worker{spec: workerSpec{Dir: dir, Entry: "server.js", DataDir: t.TempDir()}, log: newChildLog(io.Discard)}
 		w.data = newDataStore(w.spec.DataDir)
 		defer w.data.Close()
 		vm := allocJSVM(w, nil)
-		opt := vm.options()
-		c := &qjs.Census{}
-		opt.Census = c
-		if err := vm.newRuntime(opt); err != nil {
+		spec := vm.engineSpec()
+		c := &jsengine.Census{}
+		spec.Census = c
+		if err := vm.newEngine(spec); err != nil {
 			t.Fatal(err)
 		}
 		defer vm.close()
-		if err := vm.startup(func(qc *qjs.Context) error { return vm.load(qc, false) }); err != nil {
+		if err := vm.startup(vm.loadModule); err != nil {
 			t.Fatal(err)
 		}
-		return c.WallReads.Load(), c.MonoReads.Load(), c.FileOpens.Load(), c.FileCloses.Load(), vm.rt.ImageEligible(), vm.hostUsed
+		return c.WallReads.Load(), c.MonoReads.Load(), c.FileOpens.Load(), c.FileCloses.Load(), vm.eng.ImageEligible()
 	}
 	empty := t.TempDir()
 	writeFiles(t, empty, map[string]string{"server.js": "export default {};"})
-	bw, bm, bo, bc, berr, bhost := census(empty)
-	if berr != nil || bhost || bo != bc {
-		t.Fatalf("prelude alone: eligible=%v host=%v opens=%d closes=%d", berr, bhost, bo, bc)
+	bw, bm, bo, bc, berr := census(empty)
+	if berr != nil || bo != bc {
+		t.Fatalf("prelude alone: eligible=%v opens=%d closes=%d", berr, bo, bc)
 	}
-	w, m, o, c, err, host := census(docsDist(t, "# Census\n"))
+	w, m, o, c, err := census(docsDist(t, "# Census\n"))
 	t.Logf("docs module scope: %d wall clock reads, %d monotonic reads, %d files opened and %d closed beyond the entry module (prelude and New_QJS: %d wall, %d mono)", w-bw, m-bm, o-bo, c-bc, bw, bm)
 	if w-bw != 1 {
 		t.Errorf("docs module scope read the wall clock %d times, want exactly 1 (lib0 logging's lastLoggingTime)", w-bw)
-	}
-	if host {
-		t.Error("docs module scope called the host")
 	}
 	if err != nil {
 		t.Errorf("docs runtime not imageable: %v", err)

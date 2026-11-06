@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -152,7 +153,7 @@ func newManager(t *testing.T) *Manager {
 	if err := os.Symlink(filepath.Join(cacheRoot, "cache"), filepath.Join(dir, "cache")); err != nil {
 		t.Fatal(err)
 	}
-	m := &Manager{DataDir: dir, Exe: exe, Env: append([]string{testWorkerEnv + "=1"}, testImageEnv()...), Logf: t.Logf}
+	m := &Manager{DataDir: dir, Exe: exe, Env: append([]string{testWorkerEnv + "=1"}, testImageEnv()...), Logf: t.Logf, Timeout: 60 * time.Second}
 	t.Cleanup(m.Close)
 	return m
 }
@@ -232,6 +233,8 @@ func (l *logs) waitFor(t *testing.T, sub string) {
 type flat struct {
 	inst    core.Instance
 	srv     *httptest.Server
+	client  *http.Client
+	dial    func(context.Context) (net.Conn, error)
 	logs    *logs
 	dataDir string
 	root    string
@@ -249,7 +252,13 @@ func writeFiles(t *testing.T, dir string, files map[string]string) {
 	}
 }
 
-func startFlat(t *testing.T, m *Manager, name string, files map[string]string, entry string, env map[string]string) (*flat, error) {
+type flatOption func(*core.RuntimeSpec)
+
+func withUsageSink(sink core.UsageSink) flatOption {
+	return func(s *core.RuntimeSpec) { s.Usage = sink }
+}
+
+func startFlat(t *testing.T, m *Manager, name string, files map[string]string, entry string, env map[string]string, opts ...flatOption) (*flat, error) {
 	t.Helper()
 	root := t.TempDir()
 	dir := filepath.Join(root, "versions", "1")
@@ -257,6 +266,9 @@ func startFlat(t *testing.T, m *Manager, name string, files map[string]string, e
 	writeFiles(t, dir, files)
 	f := &flat{logs: &logs{}, dataDir: filepath.Join(root, "data"), root: root}
 	f.spec = core.RuntimeSpec{Flat: name, Version: 1, Dir: dir, Entry: entry, DataDir: f.dataDir, Env: env, Log: f.logs.add}
+	for _, opt := range opts {
+		opt(&f.spec)
+	}
 	inst, err := m.Start(context.Background(), f.spec)
 	if err != nil {
 		return nil, err
@@ -273,9 +285,9 @@ func startFlat(t *testing.T, m *Manager, name string, files map[string]string, e
 	return f, nil
 }
 
-func mustStart(t *testing.T, m *Manager, name string, files map[string]string, entry string, env map[string]string) *flat {
+func mustStart(t *testing.T, m *Manager, name string, files map[string]string, entry string, env map[string]string, opts ...flatOption) *flat {
 	t.Helper()
-	f, err := startFlat(t, m, name, files, entry, env)
+	f, err := startFlat(t, m, name, files, entry, env, opts...)
 	if err != nil {
 		t.Fatalf("start: %v", err)
 	}
@@ -298,7 +310,8 @@ func (f *flat) do(t *testing.T, method, path, body string, hdr ...string) result
 	for i := 0; i+1 < len(hdr); i += 2 {
 		req.Header.Set(hdr[i], hdr[i+1])
 	}
-	resp, err := http.DefaultClient.Do(req)
+	client := cmp.Or(f.client, http.DefaultClient)
+	resp, err := client.Do(req)
 	if err != nil {
 		t.Fatalf("%s %s: %v", method, path, err)
 	}
@@ -670,6 +683,7 @@ export default {
 func TestInfiniteLoopTimesOut(t *testing.T) {
 	t.Parallel()
 	m := newManager(t)
+	m.Timeout = DefaultTimeout
 	f := mustStart(t, m, "loop", map[string]string{"index.js": limitsApp}, "index.js", nil)
 	if r := f.get(t, "/"); r.status != 200 {
 		t.Fatalf("warmup = %d", r.status)
@@ -1048,6 +1062,7 @@ func main() {
 	}
 	wasm, _ := os.ReadFile(out)
 	m := newManager(t)
+	m.Timeout = DefaultTimeout
 	probeServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) }))
 	defer probeServer.Close()
 	probeAddr := strings.TrimPrefix(probeServer.URL, "http://")

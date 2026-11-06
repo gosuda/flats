@@ -9,7 +9,7 @@ GO ?= go
 DOC_TEST_PACKAGES = ./docs/... ./plugins/... ./internal/mcpx/... ./internal/doccheck/...
 DOC_RUNTIME_TESTS = ^(TestRuntimeReference|TestTypesMatch)
 
-.PHONY: help docs-check docs-audit docs-generate docs-test docs-verify
+.PHONY: help docs-check docs-audit docs-generate docs-test docs-verify qjs-wasm
 
 help: ## List the targets.
 	@awk 'BEGIN {FS = ":.*## "} /^[a-z-]+:.*## / {printf "  %-14s %s\n", $$1, $$2}' $(MAKEFILE_LIST)
@@ -30,3 +30,6 @@ docs-test: ## Run the tests that pin documentation content.
 docs-verify: docs-check ## Full check after a docs change: links, every package compiles, doc tests.
 	$(GO) test -run '^$$' ./...
 	$(MAKE) docs-test
+
+qjs-wasm: ## Rebuild internal/qjs/qjs.wasm from the pinned quickjs-ng commit (needs Homebrew llvm, wasi-libc, wasi-runtimes and binaryen).
+	./scripts/build-qjs-wasm.sh

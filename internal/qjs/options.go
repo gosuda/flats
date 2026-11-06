@@ -2,6 +2,7 @@ package qjs
 
 import (
 	"context"
+	"fmt"
 	"io"
 )
 
@@ -236,6 +237,20 @@ func getRuntimeOption(registry *ProxyRegistry, options ...Option) (option Option
 		option = Option{}
 	} else {
 		option = options[0]
+	}
+
+	for _, limit := range []struct {
+		name  string
+		value int
+	}{
+		{"MemoryLimit", option.MemoryLimit},
+		{"MaxStackSize", option.MaxStackSize},
+		{"MaxExecutionTime", option.MaxExecutionTime},
+		{"GCThreshold", option.GCThreshold},
+	} {
+		if limit.value < 0 {
+			return option, fmt.Errorf("qjs: %s must not be negative, got %d", limit.name, limit.value)
+		}
 	}
 
 	if option.Context == nil {

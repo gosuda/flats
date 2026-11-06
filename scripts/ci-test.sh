@@ -73,7 +73,7 @@ other)
 		exit 1
 	}
 	# shellcheck disable=SC2086 # one argument per package path.
-	exec go test "$@" $packages
+	GOFLAGS="-count=1${GOFLAGS:+ $GOFLAGS}" exec go test "$@" $packages
 	;;
 *)
 	echo "unknown shard: $shard" >&2

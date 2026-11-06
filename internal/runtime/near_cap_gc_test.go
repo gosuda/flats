@@ -4,13 +4,63 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
-	"strings"
+	"path/filepath"
 	"testing"
 	"time"
 
+	"github.com/gosuda/flats/internal/core"
 	"github.com/gosuda/flats/internal/wsconn"
 )
+
+func mustStartNearCap(t *testing.T, m *Manager, name string, files map[string]string, entry string, env map[string]string) *flat {
+	t.Helper()
+	root := t.TempDir()
+	dir := filepath.Join(root, "versions", "1")
+	os.MkdirAll(dir, 0o755)
+	writeFiles(t, dir, files)
+	f := &flat{logs: &logs{}, dataDir: filepath.Join(root, "data"), root: root}
+	f.spec = core.RuntimeSpec{Flat: name, Version: 1, Dir: dir, Entry: entry, DataDir: f.dataDir, Env: env, Log: f.logs.add}
+	inst, err := m.Start(context.Background(), f.spec)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	f.inst = inst
+	sock := filepath.Join(t.TempDir(), "near-cap.sock")
+	ln, err := net.Listen("unix", sock)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &http.Server{Handler: inst}
+	go srv.Serve(ln)
+	dial := func(ctx context.Context) (net.Conn, error) {
+		var d net.Dialer
+		return d.DialContext(ctx, "unix", sock)
+	}
+	f.dial = dial
+	tr := &http.Transport{
+		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
+			return dial(ctx)
+		},
+	}
+	f.client = &http.Client{Transport: tr}
+	f.srv = &httptest.Server{
+		URL:      "http://near-cap",
+		Listener: ln,
+	}
+	t.Cleanup(func() {
+		srv.Close()
+		tr.CloseIdleConnections()
+		ln.Close()
+		f.inst.Stop()
+		if f.logs.find("DATA RACE") || f.logs.find("panic:") {
+			t.Errorf("worker reported a race or panic:\n%s", f.logs)
+		}
+	})
+	return f
+}
 
 func nearCapCount(full int) int {
 	if os.Getenv("FLATS_FULL_SOAK") == "1" {
@@ -30,7 +80,7 @@ func TestNearCapCycleCollection(t *testing.T) {
 				body = `try {` + body + `} catch(e) {return new Response("caught "+e.name);}`
 			}
 			code := `let calls=0;export default {fetch(){` + body + `}};`
-			f := mustStart(t, newManager(t), "near-cap", map[string]string{"index.js": code}, "index.js", nil)
+			f := mustStartNearCap(t, newManager(t), "near-cap", map[string]string{"index.js": code}, "index.js", nil)
 			count := nearCapCount(600)
 			for i := 1; i <= count; i++ {
 				r := f.get(t, "/")
@@ -48,7 +98,7 @@ func TestNearCapLiveStateCycleCollection(t *testing.T) {
 	code := `const state=Array.from({length:36},()=>"s".repeat(1024*1024));let calls=0;
 export default {fetch(){const graph={text:"x".repeat(1024*1024)};graph.self=graph;
 return new Response(state.length+":"+state[0].length+":"+state[35].length+":"+(++calls));}};`
-	f := mustStart(t, newManager(t), "near-cap-live", map[string]string{"index.js": code}, "index.js", nil)
+	f := mustStartNearCap(t, newManager(t), "near-cap-live", map[string]string{"index.js": code}, "index.js", nil)
 	count := nearCapCount(900)
 	for i := 1; i <= count; i++ {
 		r := f.get(t, "/")
@@ -63,12 +113,10 @@ return new Response(state.length+":"+state[0].length+":"+state[35].length+":"+(+
 func TestNearCapWebSocketCycleCollection(t *testing.T) {
 	t.Parallel()
 	code := `let calls=0;export default {websocket:{message(ws){const graph={text:"x".repeat(3*1024*1024)};graph.self=graph;ws.send(String(++calls));}}};`
-	f := mustStart(t, newManager(t), "near-cap-ws", map[string]string{"index.js": code}, "index.js", nil)
-	addr := strings.TrimPrefix(f.srv.URL, "http://")
-	dial := func(ctx context.Context) (net.Conn, error) { return (&net.Dialer{}).DialContext(ctx, "tcp", addr) }
+	f := mustStartNearCap(t, newManager(t), "near-cap-ws", map[string]string{"index.js": code}, "index.js", nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	ws, err := wsconn.Dial(ctx, dial, addr, "/")
+	ws, err := wsconn.Dial(ctx, f.dial, "near-cap", "/")
 	if err != nil {
 		t.Fatal(err)
 	}

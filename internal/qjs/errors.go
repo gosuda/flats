@@ -33,6 +33,8 @@ var (
 	ErrChanSend                = errors.New("channel send would block: buffer full or no receiver ready")
 	ErrChanReceive             = errors.New("channel receive would block: buffer empty or no sender ready")
 	ErrChanCloseReceiveOnly    = errors.New("cannot close receive-only channel")
+	ErrOutOfMemory             = errors.New("out of memory")
+	ErrStringContainsNUL       = errors.New("string contains a NUL byte")
 )
 
 func combineErrors(errs ...error) error {
@@ -50,11 +52,6 @@ func combineErrors(errs ...error) error {
 
 	return errors.New(errStr)
 }
-
-func newMaxLengthExceededErr(request uint, maxLen int64, index int) error {
-	return fmt.Errorf("length %d exceeds max %d at index %d", request, maxLen, index)
-}
-
 func newOverflowErr(value any, targetType string) error {
 	return fmt.Errorf("value %v overflows %s", value, targetType)
 }

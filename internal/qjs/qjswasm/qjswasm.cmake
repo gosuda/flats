@@ -64,6 +64,7 @@ target_link_options(qjswasm PRIVATE
     "LINKER:--export=JS_NewUndefined"
     "LINKER:--export=JS_NewUninitialized"
     "LINKER:--export=QJS_NewString"
+    "LINKER:--export=QJS_NewStringLen"
     "LINKER:--export=QJS_ToCString"
     "LINKER:--export=JS_FreeCString"
     "LINKER:--export=QJS_ToInt64"

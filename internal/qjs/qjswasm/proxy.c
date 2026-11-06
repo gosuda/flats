@@ -85,6 +85,7 @@ int init_qjs_proxy_value_class(JSContext *ctx)
 
   // Set proto.constructor and ctor.prototype using QuickJS helper
   JS_SetConstructor(ctx, ctor, proto);
+  JS_FreeValue(ctx, proto);
 
   // Add the constructor to the global object
   if (JS_SetPropertyStr(ctx, global_obj, "QJS_PROXY_VALUE", ctor) < 0)

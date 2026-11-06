@@ -6,10 +6,11 @@
 #include <stdbool.h>
 
 /* Detect and load source code from a file or memory.
- * For file input, returns an allocated buffer (caller must free).
+ * For file input, returns an allocated buffer (caller must free) and stores an
+ * owned resolved file name in *resolved_name (caller must free).
  * For in-memory input, returns the provided buffer.
  */
-static uint8_t *detect_buf(JSContext *ctx, QJSEvalOptions *opts, size_t *buf_len, bool is_file)
+static uint8_t *detect_buf(JSContext *ctx, QJSEvalOptions *opts, size_t *buf_len, bool is_file, char **resolved_name)
 {
     // If the input is a file, load the file into a buffer.
     // The buffer will be freed by the caller.
@@ -19,7 +20,10 @@ static uint8_t *detect_buf(JSContext *ctx, QJSEvalOptions *opts, size_t *buf_len
         if (!opts->filename || opts->filename[0] == '\0')
             return NULL;
 
-        opts->filename = detect_entry_point((char *)opts->filename);
+        *resolved_name = detect_entry_point((char *)opts->filename);
+        if (!*resolved_name)
+            return NULL;
+        opts->filename = *resolved_name;
         return js_load_file(ctx, buf_len, opts->filename);
     }
     // If the input is in-memory, return the provided buffer
@@ -69,52 +73,31 @@ static JSValue load_buf(JSContext *ctx, QJSEvalOptions opts, int flags, bool eva
 {
     bool is_file = input_is_file(opts);
     size_t buf_len = 0;
-    uint8_t *buf = detect_buf(ctx, &opts, &buf_len, is_file);
+    char *entry_name = NULL;
+    uint8_t *buf = detect_buf(ctx, &opts, &buf_len, is_file, &entry_name);
     if (buf == NULL)
-        return buf_empty_error(ctx, is_file, &opts);
+    {
+        JSValue err = buf_empty_error(ctx, is_file, &opts);
+        free(entry_name);
+        return err;
+    }
 
     JSValue module_val;
     if (opts.bytecode_buf != NULL)
-        if (!eval)
-        {
-            module_val = JS_ReadObject(ctx, opts.bytecode_buf, opts.bytecode_len, JS_READ_OBJ_BYTECODE);
-            if (JS_IsException(module_val))
-            {
-                if (is_file)
-                    js_free(ctx, buf);
-                return JS_Throw(ctx, JS_GetException(ctx));
-            }
-        }
-        else
-        {
-            JSValue obj = JS_ReadObject(ctx, opts.bytecode_buf, opts.bytecode_len, JS_READ_OBJ_BYTECODE);
-            if (JS_IsException(obj))
-            {
-                if (is_file)
-                    js_free(ctx, buf);
-                return JS_Throw(ctx, JS_GetException(ctx));
-            }
-            module_val = JS_EvalFunction(ctx, obj);
-            if (JS_IsException(module_val))
-            {
-                JS_FreeValue(ctx, obj);
-                if (is_file)
-                    js_free(ctx, buf);
-                return JS_Throw(ctx, JS_GetException(ctx));
-            }
-        }
-
+    {
+        module_val = JS_ReadObject(ctx, opts.bytecode_buf, opts.bytecode_len, JS_READ_OBJ_BYTECODE);
+        if (!JS_IsException(module_val) && eval)
+            module_val = JS_EvalFunction(ctx, module_val);
+    }
     else
     {
         module_val = JS_Eval(ctx, (const char *)buf, buf_len, opts.filename, flags);
-        if (JS_IsException(module_val))
-        {
-            if (is_file)
-                js_free(ctx, buf);
-            return JS_Throw(ctx, JS_GetException(ctx));
-        }
     }
 
+    if (JS_IsException(module_val))
+        module_val = JS_Throw(ctx, JS_GetException(ctx));
+
+    free(entry_name);
     if (is_file)
         js_free(ctx, buf);
 
@@ -171,6 +154,7 @@ static JSModuleDef *js_module_loader_json(JSContext *ctx, const char *module_nam
         JS_FreeCString(ctx, json_string);
         JS_FreeValue(ctx, json_str);
         JS_FreeValue(ctx, json_val);
+        JS_ThrowOutOfMemory(ctx);
         return NULL;
     }
     snprintf(module_source, source_len, module_source_template, json_string);
@@ -204,17 +188,21 @@ static JSModuleDef *js_module_loader_json(JSContext *ctx, const char *module_nam
 /* Module loader with support for appending common suffixes and JSON modules */
 JSModuleDef *QJS_ModuleLoader(JSContext *ctx, const char *module_name, void *opaque)
 {
-    module_name = detect_entry_point((char *)module_name);
-    if (!module_name)
-        return NULL;
-
-    /* Check if it's a JSON module */
-    if (js__has_suffix(module_name, ".json"))
+    char *entry_name = detect_entry_point((char *)module_name);
+    if (!entry_name)
     {
-        return js_module_loader_json(ctx, module_name);
+        JS_ThrowReferenceError(ctx, "could not resolve module '%s'", module_name);
+        return NULL;
     }
 
-    JSModuleDef *mod = js_module_loader(ctx, module_name, opaque);
+    /* Check if it's a JSON module */
+    JSModuleDef *mod;
+    if (js__has_suffix(entry_name, ".json"))
+        mod = js_module_loader_json(ctx, entry_name);
+    else
+        mod = js_module_loader(ctx, entry_name, opaque);
+
+    free(entry_name);
     return mod;
 }
 
@@ -232,7 +220,10 @@ JSValue QJS_Load(JSContext *ctx, QJSEvalOptions opts)
         return JS_Throw(ctx, JS_GetException(ctx));
 
     if (JS_VALUE_GET_TAG(module_val) != JS_TAG_MODULE)
+    {
+        JS_FreeValue(ctx, module_val);
         return JS_ThrowTypeError(ctx, "is not a module");
+    }
 
     if (JS_ResolveModule(ctx, module_val) != 0)
     {
@@ -358,6 +349,7 @@ unsigned char *QJS_Compile(JSContext *c, QJSEvalOptions opts, size_t *outSize)
     if (result == NULL)
     {
         js_free(c, tmp_buf);
+        JS_ThrowOutOfMemory(c);
         return NULL;
     }
 
@@ -387,7 +379,8 @@ uint64_t *QJS_Compile2(JSContext *ctx, QJSEvalOptions opts)
     if (!result)
     {
         free(bytecode);
-        return NULL; // Allocation failure
+        JS_ThrowOutOfMemory(ctx);
+        return NULL;
     }
 
     // Store the address of the bytecode in the high 32 bits and the length in the low 32 bits

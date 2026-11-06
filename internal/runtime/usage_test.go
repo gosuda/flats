@@ -179,30 +179,13 @@ export default {
   websocket: { open(ws) { ws.send("ready"); } },
 };`
 
-func startUsageFlat(t *testing.T, m *Manager, sink core.UsageSink) *flat {
-	t.Helper()
-	root := t.TempDir()
-	dir := filepath.Join(root, "versions", "1")
-	writeFiles(t, dir, map[string]string{"server.js": usageFlat})
-	f := &flat{logs: &logs{}, dataDir: filepath.Join(root, "data"), root: root}
-	f.spec = core.RuntimeSpec{Flat: "usage", Version: 1, Dir: dir, Entry: "server.js", DataDir: f.dataDir, Log: f.logs.add, Usage: sink}
-	inst, err := m.Start(context.Background(), f.spec)
-	if err != nil {
-		t.Fatal(err)
-	}
-	f.inst = inst
-	f.srv = httptest.NewServer(inst)
-	t.Cleanup(func() { f.srv.Close(); f.inst.Stop() })
-	return f
-}
-
 // A real worker reports CPU (and on Linux memory) after ready and then at its
 // interval; the final CPU arrives exactly once, before Stop returns.
 func TestWorkerReportsUsage(t *testing.T) {
 	m := newManager(t)
 	m.UsageInterval = 50 * time.Millisecond
 	sink := &recSink{}
-	f := startUsageFlat(t, m, sink)
+	f := mustStart(t, m, "usage", map[string]string{"server.js": usageFlat}, "server.js", nil, withUsageSink(sink))
 	started, ok := sink.last("started")
 	if !ok {
 		t.Fatal("Started not called once the process started")
@@ -302,7 +285,7 @@ func TestWorkerCrashAndRestartUsage(t *testing.T) {
 	m := newManager(t)
 	m.UsageInterval = 50 * time.Millisecond
 	sink := &recSink{}
-	f := startUsageFlat(t, m, sink)
+	f := mustStart(t, m, "usage", map[string]string{"server.js": usageFlat}, "server.js", nil, withUsageSink(sink))
 	in := f.inst.(*instance)
 	if st := in.WorkerState(); st != core.WorkerRunning {
 		t.Fatalf("state %q", st)

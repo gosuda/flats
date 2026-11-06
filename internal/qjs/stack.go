@@ -194,14 +194,16 @@ func exportStackPointer(wasm []byte) ([]byte, error) {
 
 // relocateStack moves the C stack into a malloc'd block of size bytes.
 func (r *Runtime) relocateStack(size uint32) error {
+	if size <= stackCanarySize {
+		return fmt.Errorf("qjs: stack size %d must exceed the %d-byte canary", size, stackCanarySize)
+	}
+
 	g, ok := r.module.ExportedGlobal(stackPointerExport).(api.MutableGlobal)
 	if !ok {
 		return errors.New("stack pointer is not exported")
 	}
+
 	base := r.Malloc(uint64(size))
-	if base == 0 {
-		return errors.New("cannot allocate the JS stack")
-	}
 	top := (base + uint64(size)) &^ 15
 	if !r.mem.mem.Write(uint32(base), canary) {
 		return errors.New("cannot write stack canary")

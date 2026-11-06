@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"strings"
 	"sync"
@@ -41,7 +42,22 @@ const (
 	// secret and leave a prefix the host cannot recognize. Longer lines are
 	// replaced by a note that keeps only their size.
 	maxLogLine = 64 << 10
+	// jsonEscapeFactor is the worst-case JSON escaping expansion: one byte
+	// of a string becomes \u00XX, six bytes.
+	jsonEscapeFactor = 6
+	// maxRequestEnvelope bounds the JSON request envelope passed to the
+	// engine: method, URL and headers (net/http caps headers at
+	// DefaultMaxHeaderBytes) plus the escaped body, each escaped at up to
+	// jsonEscapeFactor, with slack for the envelope framing.
+	maxRequestEnvelope = jsonEscapeFactor*(MaxRequestBody+http.DefaultMaxHeaderBytes) + 64<<10
+	// maxHostPayload bounds one JSON-escaped host-call argument or result: a
+	// file value escapes at up to jsonEscapeFactor, with slack for the
+	// argument framing.
+	maxHostPayload = jsonEscapeFactor*MaxFileValue + 64<<10
 )
+
+// maxHostPayload must also carry an unescaped db.query result.
+const _ = uint(maxHostPayload - MaxQueryResult)
 
 func omittedLogLine(n int) string {
 	return fmt.Sprintf("log line omitted: %d bytes is more than the %d KiB limit", n, maxLogLine>>10)
