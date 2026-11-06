@@ -653,7 +653,6 @@ func roleCPU(s *Service, slug, role string) float64 {
 // trials the check sink, previews the preview sink, and live builds the
 // flat's live sink, including host restore, restarts and both rename paths.
 func TestUsageSinkOfEveryBuild(t *testing.T) {
-	ostest.SkipPOSIXModes(t)
 	ctx := context.Background()
 	dir := t.TempDir()
 	open := func() (*Service, *store.Store, *usageRuntime) {
@@ -774,7 +773,7 @@ func TestUsageSinkOfEveryBuild(t *testing.T) {
 
 	// A rename that fails after the worker stopped restarts it under the old
 	// slug, on the held state.
-	if os.Geteuid() != 0 { // permission-based failure injection does not apply to root
+	if !ostest.Windows && os.Geteuid() != 0 { // permission-based failure injection needs POSIX modes and a user that is not root
 		journals := s.storageJournalDir()
 		if err := os.Chmod(journals, 0o500); err != nil {
 			t.Fatal(err)
