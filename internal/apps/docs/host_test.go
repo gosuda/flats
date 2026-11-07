@@ -59,6 +59,11 @@ func (*captureNet) Close() error { return nil }
 
 func hostService(t *testing.T) (*core.Service, *captureNet, *captureNet) {
 	t.Helper()
+	return hostServiceWith(t, manager(t))
+}
+
+func hostServiceWith(t *testing.T, runtime core.Runtime) (*core.Service, *captureNet, *captureNet) {
+	t.Helper()
 	dir := t.TempDir()
 	st, err := store.Open(filepath.Join(dir, "host.db"))
 	if err != nil {
@@ -66,7 +71,7 @@ func hostService(t *testing.T) (*core.Service, *captureNet, *captureNet) {
 	}
 	private, public := &captureNet{handlers: map[string]http.Handler{}}, &captureNet{handlers: map[string]http.Handler{}}
 	s, err := core.New(t.Context(), core.Config{DataDir: dir, Store: st, Private: private, Public: public,
-		Runtime: manager(t), DocsApp: core.DocsApp{FS: FS(), Hash: Hash(), Entry: Entry, ContentModule: ContentModule},
+		Runtime: runtime, DocsApp: core.DocsApp{FS: FS(), Hash: Hash(), Entry: Entry, ContentModule: ContentModule},
 		Logf: t.Logf})
 	if err != nil {
 		st.Close()

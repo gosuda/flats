@@ -587,7 +587,7 @@ func (s *Service) buildWithEnvironment(ctx context.Context, slugName string, v s
 		if assets != nil {
 			handler = docsAssets(handler, dir, assets)
 			if managedDocs {
-				handler = s.docsRevisionRoutes(slugName, handler)
+				handler = s.docsImageRoute(slugName, s.docsRevisionRoutes(slugName, handler))
 			}
 		}
 		d.handler = handler
@@ -1136,6 +1136,8 @@ type SaveMeta struct {
 	historical bool
 	// starter suppresses publication of the page placeholder created by create_flat.
 	starter bool
+	// label credits a person with a document save instead of the channel.
+	label string
 }
 
 // SaveVersion validates files and stores them as the flat's draft.
@@ -1213,7 +1215,11 @@ func (s *Service) saveVersionLocked(ctx context.Context, slugName string, files 
 	// A document has no publish step: its save runs at once, Private
 	// unless the operator already approved Public. Its revision is recorded
 	// by the new version's activation, labelled through the intent.
-	if err := s.docsIntentLocked(ctx, slugName, v.Hash, agentLabel(via), meta.Message); err != nil {
+	label := meta.label
+	if label == "" {
+		label = agentLabel(via)
+	}
+	if err := s.docsIntentLocked(ctx, slugName, v.Hash, label, meta.Message); err != nil {
 		return v, err
 	}
 	err = s.applyDocsLocked(ctx, slugName, v.Revision, via)

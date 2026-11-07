@@ -74,6 +74,10 @@ source, concurrent identical requests share rendering work, and stale work
 cannot overwrite a newer theme or source. Diagrams near the viewport render
 first, and work for removed placeholders is discarded.
 
+A pasted image (`_web/src/image-paste.js`) goes to a host route, which adds it to
+the bundle, and its Markdown is inserted at the place of the paste once the host
+accepts it. See [docs-image-paste.md](../../../docs/spec/docs-image-paste.md).
+
 Diagram controls provide an expanded view with zoom, pan and fit, source
 viewing/copying, and SVG or PNG download. The expanded view supports keyboard use,
 Escape to close, and restoring focus to its opener. In the expanded view the
