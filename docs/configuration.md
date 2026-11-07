@@ -38,13 +38,16 @@ OS user configuration directory under `flats-client/`, only the CLI and
   runtime/docs/               generated read-only docs app modules (recreated as needed)
   flats/<slug>/
     draft-revs/ versions/     saved Draft revisions and versions
-    data/db.sqlite data/files/  the flat's own data
+    data/db.sqlite data/files/  the flat's own data (db.sqlite + -wal, -shm)
     snapshots/                DB+FILES snapshots taken before a version goes
                               live and before a data restore (not for documents)
     previews/                 preview data, paired with preview rows in flats.db
+                              (each preview's db.sqlite + -wal, -shm)
     revisions/                revision contents of a document, board or notebook
                               (blobs/, by SHA-256)
     design/                   a design's revision contents (blobs/, by SHA-256)
+    board/board.db            a board's current content and the revisions not yet
+                              imported (+ -wal, -shm)
     notebook/notebook.db      a notebook's current content, receipts, undo and
                               unimported revisions (+ -wal, -shm)
     restore-journal.json      present only while a data restore is unfinished
@@ -94,14 +97,11 @@ resolve by hand.
 Required:
 
 - `config.json`;
-- `flats.db`, copied with `VACUUM INTO` or while the host is stopped, never
-  as a plain copy of a live database, together with `secret.key` from the
-  same moment: the flat secrets and operator keys in `flats.db` need it;
+- `flats.db`, together with `secret.key` from the same moment: the flat
+  secrets and operator keys in `flats.db` need it;
 - `flats/<slug>/` except the temporary copies, with `restore-journal.json`,
   revision contents and snapshots, and `flats/.lifecycle/` and
-  `network-retirements/` when present. A notebook's `notebook/notebook.db` is
-  a live SQLite database: copy it while the host is stopped, or with SQLite's
-  backup API or `VACUUM INTO`, never as a plain copy;
+  `network-retirements/` when present;
 - `tsnet/` and `portal/`: without them new node names and certificates are
   issued;
 - `zrok/` and `zrok-environment/`: without them a deleted flat no longer
@@ -111,7 +111,44 @@ Required:
 
 `cloudflare-quick/` is optional: without it each public flat's quick tunnel
 gets a new random address. Logs, caches, sockets and the lock are rebuilt.
-Stopping the host and copying the whole data directory covers all of it.
+
+To back up, stop the host and copy the whole data directory, plus `config.json`
+when it lives outside that directory. That covers all of it and takes every file
+from one moment. Flats has no supported way to take a backup from a running
+host.
+
+While the host runs, these are live SQLite databases, with recent commits in a
+`-wal` file beside each one:
+
+- `flats.db`;
+- `flats/<slug>/data/db.sqlite`, a flat's own data;
+- `flats/<slug>/previews/<host>/db.sqlite`, while that preview is open;
+- `flats/<slug>/board/board.db`, a board;
+- `flats/<slug>/notebook/notebook.db`, a notebook.
+
+Never take a plain copy of a live database: it can lose recent commits or come
+out corrupt. A host that crashed or was killed also leaves commits in the
+`-wal` file, so copy each `-wal` with its database.
+
+SQLite's backup API (`.backup` in the `sqlite3` shell) copies one live database,
+not the host. The databases and revision contents depend on each other and must
+come from the same moment, and a write between two copies can break that. For
+boards and notebooks:
+
+- With a board or notebook database older than `flats.db`, the host drops the
+  revisions of the next writes without an error, then stops importing.
+- With `flats.db` older than a board or notebook database, the newest revisions
+  are gone and later revisions reuse their numbers.
+- With `revisions/` older than the databases, the host stops importing.
+
+After the host stops importing, writes still report success but no new revision
+appears, and a restart does not clear it.
+
+To restore, stop the host and replace the old directory with the whole copy, at
+the same path. Copying over the old directory can leave a `-wal` file beside a
+restored database and corrupt it. A copy at another path is not used, because
+`host.data_dir` in its `config.json` still names the old path and a service
+started with `--config` still reads the old file.
 
 Restore with the same or a newer Flats release: an older binary refuses a newer
 `config.json` or database.
