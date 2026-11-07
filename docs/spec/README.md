@@ -33,6 +33,7 @@ list.
 | [Notebook technical design](notebook-technical-design.md) | partly implemented | N1 notebook architecture, item and concurrency model, storage, protocol, browser editor, agent interface, and validation plan |
 | [Anonymous public editing for boards](board-public-edit.md) | partly implemented | A Public board level where anyone with the link can edit after typing a name, viewers named automatically, and the Share and Permissions controls |
 | [Anonymous public editing for documents](docs-public-edit.md) | partly implemented | The board's "anyone can edit" Public level for documents: guest names, viewers, the guest projection, limits, guest revisions and the shared console controls |
+| [Pasting images into documents](docs-image-paste.md) | implemented | Members paste an image into the document editor; it becomes a bundle file and a Markdown image at the caret |
 | [Page content type](page-type.md) | implemented | `type: "page"`: one static HTML document with assets, on the website lifecycle |
 | [Operator keys and console domains](console-settings.md) | implemented | One model for the keys Flats needs, and the console's Tailscale domains as an add/remove list |
 | [Console listener address](console-address.md) | implemented | Rename the listener configuration key to `host.console_addr` with a behavior-preserving schema 5 migration |

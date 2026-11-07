@@ -257,49 +257,9 @@ func (s *Service) SaveDocument(ctx context.Context, slugName, path, markdown, ti
 		if err := s.checkTypeChange(ctx, f, contenttype.Docs); err != nil {
 			return store.Version{}, err
 		}
-		// A failed save may have left a newer Draft. Use the current source,
-		// rather than silently adopting those unactivated files on this call.
-		var v store.Version
-		if f.LiveVersion > 0 {
-			v, err = s.st.GetVersion(ctx, slugName, f.LiveVersion)
-		} else {
-			var d store.Draft
-			d, err = s.st.GetDraft(ctx, slugName)
-			v = store.Version{Revision: d.Revision, Role: "draft", Manifest: d.Manifest}
-		}
-		if err != nil && !errors.Is(err, store.ErrNotFound) {
+		files, entry, err = s.docsSourceLocked(ctx, slugName, f)
+		if err != nil {
 			return store.Version{}, err
-		}
-		if err == nil {
-			// Stored source may exceed a newly lowered upload limit or be a
-			// historical rollback above the Markdown-total upload bound. Read
-			// it intact, then validate the resulting bundle after this edit.
-			root, err := os.OpenRoot(s.contentDir(slugName, v))
-			if err != nil {
-				return store.Version{}, err
-			}
-			err = fs.WalkDir(root.FS(), ".", func(p string, d fs.DirEntry, err error) error {
-				if err != nil || d.IsDir() {
-					return err
-				}
-				if !d.Type().IsRegular() {
-					return invalidf("stored bundle contains a non-regular file: %s", p)
-				}
-				b, err := root.ReadFile(p)
-				if err == nil {
-					files = append(files, bundle.File{Path: p, Data: b})
-				}
-				return err
-			})
-			root.Close()
-			if err != nil {
-				return store.Version{}, err
-			}
-			var m bundle.Manifest
-			if err := json.Unmarshal(v.Manifest, &m); err != nil {
-				return store.Version{}, err
-			}
-			entry = m.Entry
 		}
 	}
 	found := false
@@ -377,6 +337,58 @@ func (s *Service) SaveDocument(ctx context.Context, slugName, path, markdown, ti
 		return v, &bundle.ValidationError{Problems: problems}
 	}
 	return v, err
+}
+
+// docsSourceLocked reads the saved source of a docs flat and its explicit
+// entry; both are empty when it has none yet. It uses the running version
+// when there is one: a failed save may have left a newer Draft, and a later
+// save must not silently adopt those unactivated files. Stored source may
+// exceed a newly lowered upload limit or be a historical rollback above the
+// Markdown-total upload bound, so it is read intact; the caller validates the
+// resulting bundle. The caller holds s.lock(slugName).
+func (s *Service) docsSourceLocked(ctx context.Context, slugName string, f store.Flat) ([]bundle.File, string, error) {
+	var v store.Version
+	var err error
+	if f.LiveVersion > 0 {
+		v, err = s.st.GetVersion(ctx, slugName, f.LiveVersion)
+	} else {
+		var d store.Draft
+		d, err = s.st.GetDraft(ctx, slugName)
+		v = store.Version{Revision: d.Revision, Role: "draft", Manifest: d.Manifest}
+	}
+	if errors.Is(err, store.ErrNotFound) {
+		return nil, "", nil
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	root, err := os.OpenRoot(s.contentDir(slugName, v))
+	if err != nil {
+		return nil, "", err
+	}
+	defer root.Close()
+	var files []bundle.File
+	err = fs.WalkDir(root.FS(), ".", func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return err
+		}
+		if !d.Type().IsRegular() {
+			return invalidf("stored bundle contains a non-regular file: %s", p)
+		}
+		b, err := root.ReadFile(p)
+		if err == nil {
+			files = append(files, bundle.File{Path: p, Data: b})
+		}
+		return err
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	var m bundle.Manifest
+	if err := json.Unmarshal(v.Manifest, &m); err != nil {
+		return nil, "", err
+	}
+	return files, m.Entry, nil
 }
 
 // DocumentEditOp is one guarded live edit operation. The docs app validates

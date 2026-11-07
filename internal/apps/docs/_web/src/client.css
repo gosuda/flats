@@ -558,14 +558,16 @@ main {
   color: var(--muted);
   font-style: italic;
 }
-#notice {
+#notice,
+#image-notice {
   padding: 16px 28px;
   color: var(--error);
   background: var(--canvas);
   font-size: 14px;
   line-height: 1.6;
 }
-#notice button {
+#notice button,
+#image-notice button {
   margin-left: 8px;
 }
 /* History: a right-hand column of the flat's revisions. */
@@ -912,7 +914,8 @@ main {
   .surface {
     padding: 24px 16px 60px;
   }
-  #notice {
+  #notice,
+  #image-notice {
     padding: 16px;
   }
 }

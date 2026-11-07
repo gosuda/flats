@@ -77,6 +77,38 @@ The docs handler is the worker plus a thin host wrapper:
   and `Content-Disposition: attachment`.
   This applies to already-saved bundles as well as new uploads.
 
+### Pasted images
+
+`POST /_docs/api/images` ([docs-image-paste.md](../spec/docs-image-paste.md))
+is a host route. A Public route gets 404. It takes the image bytes as the body,
+at most `upload_max_bytes`, and needs `X-Flats-Docs: 1` and a same-origin
+request, as the revision writes do. `imagecheck` decides the format.
+
+The route adds the file through the same path as `save_document`: it reads the
+running version's source, appends `images/<first 16 hex digits of the SHA-256>.<ext>`
+beside the document and saves the bundle, with the person's name and "added
+image `<path>`" as the revision's label and message. The new version's worker
+replaces the old one, so every open page reconnects. The request runs on the
+old version's handler; that handler is not the worker, so replacing the worker
+does not wait for it.
+
+It answers `{reference, path, added}`; `added` is false when the bundle already
+held those bytes there, in which case nothing else happens. A failure after the
+new version took over is still an answer with `added: true`, since the file is
+stored and served and a later request retries preparing the document. Refusals are JSON
+`{code, message}`, with a `message` the page shows as it is:
+
+| Status | Code | When |
+| --- | --- | --- |
+| 400 | `invalid` | Not an accepted image, or `doc` is not a Markdown path |
+| 403 | `forbidden` | Not from the document page |
+| 404 | `not_found` | `doc` is not a document of the running version |
+| 409 | `conflict` | Other bytes or a file are in the way of the image's path |
+| 413 | `too_large` | The image is over `upload_max_bytes` |
+| 413 | `bundle_full` | The bundle with the image would be over `upload_max_bytes` |
+| 503 | `unavailable` | The new version failed before taking over; the running one stays |
+| 507 | `disk_quota` | The flat would be over its disk quota |
+
 ### Trusted access header
 
 Core sets `X-Flats-Access` on every request it hands to a flat handler (all
@@ -126,6 +158,7 @@ at runtime. `dist/THIRD_PARTY_LICENSES.txt` contains bundled licenses and
 | `GET /_docs/api/document?doc=<path>` | `{format:1, doc, markdown, hash, epoch, seq, chain, source:"live"}`; private/host reads add `guest_text` (guests own a Yjs client id in the document) and `guest_lines` (merged 1-based inclusive line ranges of guest-inserted text), and with `blocks=1` one page (1,000 blocks from `block_offset`) of the block outline `blocks:[{hash,kind,level?,line,preview}]` plus `blocks_total`; default doc is entry |
 | `POST /_docs/api/edit?doc=<path>` | Host management only (`private` plus `X-Flats-Host-Op: edit`, see below): guarded live edit; others receive 403 |
 | `GET /_docs/api/receipt?doc=<path>&id=<id>` | Host management only: `{committed, seq?, chain?}` for a live-edit receipt id |
+| `POST /_docs/api/images?doc=<path>&name=<name>` | Served by the host before the worker (private only): adds a pasted image to the bundle; see [pasted images](#pasted-images) |
 | `/_docs/api/revisions…` | Served by the host before the worker (private only): the document page's history; see [history routes](#history-routes) |
 | `/_docs/host/revisions/…` | Host management only (`private` plus `X-Flats-Host-Op: revisions`): revision capture, outbox, staging, intents and restore; see [host operations](#host-operations) |
 | `GET /_docs/assets/client.js` | self-contained browser ESM bundle |

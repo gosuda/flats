@@ -21,6 +21,9 @@ private temporary data and free loopback ports (the product test excludes
   4 MiB responses.
 * The opt-in browser test uses separate Chromium contexts for collaboration,
   the history panel, read-only/mobile views and synthetic composition.
+* The opt-in image paste browser test (`TestBrowserImagePaste`) runs against a
+  real host, not the worker alone. It uses the real clipboard and paste key where
+  it can, and synthetic paste events for several files or a file beside text.
 * The opt-in real-binary product test (`testdata/product_test.mjs`) drives
   collaboration and restart with disposable host state. It predates
   documents without versions: it still opens a docs Draft preview, calls the
