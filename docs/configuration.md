@@ -111,7 +111,10 @@ Required:
 
 `cloudflare-quick/` is optional: without it each public flat's quick tunnel
 gets a new random address. Logs, caches, sockets and the lock are rebuilt.
-Stopping the host and copying the whole data directory covers all of it.
+
+To back up, stop the host and copy the whole data directory. That covers all of
+it and takes every file from one moment. Flats has no supported way to take a
+backup from a running host.
 
 While the host runs, these are live SQLite databases, with recent commits in a
 `-wal` file beside each one:
@@ -123,15 +126,28 @@ While the host runs, these are live SQLite databases, with recent commits in a
 - `flats/<slug>/notebook/notebook.db`, a notebook.
 
 Never take a plain copy of a live database: it can lose recent commits or come
-out corrupt. To copy one from a running host, use SQLite's backup API, for
-example `sqlite3 notebook.db ".backup 'copy.db'"`. It copies pages, so it does
-not depend on the schema. It starts again whenever the database changes during
-the copy, so a large database under steady writes may never finish; stop the
-host in that case. `VACUUM INTO` rebuilds the schema, so it needs everything
-that schema uses: on `notebook.db`, stock SQLite tools stop with
-`no such collation sequence: notebook_u64` and leave an empty output file. Each
-copy made this way is consistent on its own, but the copies do not come from
-the same moment. Only a stopped host gives you a backup taken at one moment.
+out corrupt. A host that crashed or was killed also leaves commits in the
+`-wal` file, so copy each `-wal` with its database.
+
+SQLite's backup API (`.backup` in the `sqlite3` shell) copies one live database,
+not the host. The databases and revision contents depend on each other and must
+come from the same moment, and a write between two copies can break that. For
+boards and notebooks:
+
+- With a board or notebook database older than `flats.db`, the host drops the
+  revisions of the next writes without an error, then stops importing.
+- With `flats.db` older than a board or notebook database, the newest revisions
+  are gone and later revisions reuse their numbers.
+- With `revisions/` older than the databases, the host stops importing.
+
+After the host stops importing, writes still report success but no new revision
+appears, and a restart does not clear it.
+
+To restore, stop the host and replace the old directory with the whole copy, at
+the same path. Copying over the old directory can leave a `-wal` file beside a
+restored database and corrupt it. A copy at another path is not used, because
+`host.data_dir` in its `config.json` still names the old path and a service
+started with `--config` still reads the old file.
 
 Restore with the same or a newer Flats release: an older binary refuses a newer
 `config.json` or database.
