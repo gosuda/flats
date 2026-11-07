@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"slices"
@@ -456,6 +457,26 @@ func recordOutbox(ctx context.Context, tx *sql.Tx, kind, message, opID string, a
 		return 0, err
 	}
 	return seq, clear()
+}
+
+// checkImportCursor refuses a notebook.db that lacks entries flats.db imported.
+// Its next entries would reuse sequence numbers the cursor passed, and import
+// would acknowledge them without importing them. Open runs it before anything
+// can record an entry, because that would raise the mark it compares.
+func (s *store) checkImportCursor(ctx context.Context, storeID string, opts Options) error {
+	if opts.ImportStore != storeID {
+		return nil
+	}
+	// sqlite_sequence keeps the highest seq after acknowledged rows are deleted.
+	var last int64
+	err := s.db.QueryRowContext(ctx, `SELECT seq FROM sqlite_sequence WHERE name = 'outbox'`).Scan(&last)
+	if err != nil && !errors.Is(err, sql.ErrNoRows) {
+		return err
+	}
+	if opts.ImportSeq > last {
+		return fmt.Errorf("notebook.db is behind flats.db: its outbox reached entry %d and flats.db imported through %d; restore both from one backup", last, opts.ImportSeq)
+	}
+	return nil
 }
 
 // Outbox returns pending entries in import order after the given cursor.

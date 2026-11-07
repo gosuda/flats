@@ -134,7 +134,11 @@ func (s *Service) buildBoard(slugName string, v store.Version, title, dataDir st
 	if err != nil {
 		return nil, err
 	}
-	in, _, err := board.Open(s.boardDir(slugName), boardBackend{s: s, slug: slugName}, board.Options{Slug: slugName, Title: title, Now: s.now, PublicAccess: f.PublicAccess})
+	cursor, err := s.importCursor(slugName)
+	if err != nil {
+		return nil, err
+	}
+	in, _, err := board.Open(s.boardDir(slugName), boardBackend{s: s, slug: slugName}, board.Options{Slug: slugName, Title: title, Now: s.now, PublicAccess: f.PublicAccess, ImportStore: cursor.ImportStore, ImportSeq: cursor.ImportSeq})
 	if err != nil {
 		return nil, fmt.Errorf("open the board: %w", err)
 	}
@@ -142,6 +146,16 @@ func (s *Service) buildBoard(slugName string, v store.Version, title, dataDir st
 	// Import what the board recorded while it was not running.
 	s.outbox.pending.Store(slugName, true)
 	return &deployed{version: v, handler: in, inst: in, redact: identity, environment: env}, nil
+}
+
+// importCursor returns the flat's content state for its import cursor. A flat
+// with no content state has no cursor.
+func (s *Service) importCursor(slugName string) (store.ContentState, error) {
+	st, err := s.st.ContentState(context.Background(), slugName)
+	if errors.Is(err, store.ErrNotFound) {
+		return store.ContentState{}, nil
+	}
+	return st, err
 }
 
 // --- errors ---

@@ -460,6 +460,20 @@ so the slug stays free or the flat stays untyped (rule 33); an applied call
 then continues with step 1, and the board's first revisions are `created`
 and the call's own.
 
+**Opening.** The host passes the cursor to `board.Open`, which refuses a
+`board.db` with the cursor's store id whose outbox never reached `import_seq`.
+`sqlite_sequence` keeps the highest sequence number the store assigned after
+its entries are acknowledged. A store behind the cursor is older than
+`flats.db`, for example after restoring one file from a backup. Without the
+refusal its next entries would reuse numbers the cursor already passed, and
+step 1 below would acknowledge them unimported. `board.db` commits with
+`synchronous=FULL`, so a power loss cannot put it behind the cursor. The check
+runs before the instance can record an entry, so the refusal holds across
+restarts and ends only when a matching store is back. The flat does not start, and its log
+names both numbers. A store that recorded past the cursor before this check
+existed passes it: a release without the check already acknowledged those
+entries.
+
 **Importing** (`importBoardLocked`, under the flat lock). The cursor is
 `content_state.import_store` (the board.db outbox id) and `import_seq`:
 
@@ -536,6 +550,9 @@ leaves no flat, shell or database behind.
 buckets, the live images (`assets/<sha256>.<ext>`) and `notebook.json`. A text
 edit changes one block bucket, and unchanged files reuse their hashes. Runtime
 data (incarnations, versions, receipts, undo) never enters these files.
+
+**Opening.** `notebook.Open` refuses a `notebook.db` behind the cursor, as
+[for boards](#boards).
 
 **Importing** (`importNotebookLocked`, under the flat lock). The cursor is
 `content_state.import_store` (the notebook.db store id) and `import_seq`:

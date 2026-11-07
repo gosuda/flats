@@ -195,6 +195,26 @@ func sortedKeys[V any](m map[string]V) []string {
 // maxCreditedGuests is how many guest names an entry lists (spec rule 25).
 const maxCreditedGuests = 5
 
+// checkImportCursor refuses a board.db that lacks entries flats.db imported.
+// Its next entries would reuse sequence numbers the cursor passed, and import
+// would acknowledge them without importing them. It runs before the apply loop
+// starts, because any entry recorded here would raise the mark it compares.
+func (in *Instance) checkImportCursor(opts Options) error {
+	if opts.ImportStore != in.storeID {
+		return nil
+	}
+	// sqlite_sequence keeps the highest seq after acknowledged rows are deleted.
+	var last int64
+	err := in.db.db.QueryRowContext(in.ctx, `SELECT seq FROM sqlite_sequence WHERE name = 'outbox'`).Scan(&last)
+	if err != nil && err != sql.ErrNoRows {
+		return err
+	}
+	if opts.ImportSeq > last {
+		return errorf(CategoryUnavailable, "board.db is behind flats.db: its outbox reached entry %d and flats.db imported through %d; restore both from one backup", last, opts.ImportSeq)
+	}
+	return nil
+}
+
 // OutboxEntry is one unimported outbox entry (5.3 Import).
 type OutboxEntry struct {
 	Seq        int64
