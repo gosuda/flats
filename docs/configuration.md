@@ -134,14 +134,14 @@ not the host. The databases and revision contents depend on each other and must
 come from the same moment, and a write between two copies can break that. For
 boards and notebooks:
 
-- With a board or notebook database older than `flats.db`, the host drops the
-  revisions of the next writes without an error, then stops importing.
+- With a board or notebook database that lacks revisions `flats.db` already
+  recorded, that flat does not start, and its log says why. It starts again once
+  both come from one moment.
 - With `flats.db` older than a board or notebook database, the newest revisions
   are gone and later revisions reuse their numbers.
-- With `revisions/` older than the databases, the host stops importing.
-
-After the host stops importing, writes still report success but no new revision
-appears, and a restart does not clear it.
+- With `revisions/` older than the databases, the host stops importing. Writes
+  still report success but no new revision appears, and a restart does not
+  clear it.
 
 To restore, stop the host and replace the old directory with the whole copy, at
 the same path. Copying over the old directory can leave a `-wal` file beside a
