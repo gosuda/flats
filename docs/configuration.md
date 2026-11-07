@@ -112,9 +112,10 @@ Required:
 `cloudflare-quick/` is optional: without it each public flat's quick tunnel
 gets a new random address. Logs, caches, sockets and the lock are rebuilt.
 
-To back up, stop the host and copy the whole data directory. That covers all of
-it and takes every file from one moment. Flats has no supported way to take a
-backup from a running host.
+To back up, stop the host and copy the whole data directory, plus `config.json`
+when it lives outside that directory. That covers all of it and takes every file
+from one moment. Flats has no supported way to take a backup from a running
+host.
 
 While the host runs, these are live SQLite databases, with recent commits in a
 `-wal` file beside each one:
