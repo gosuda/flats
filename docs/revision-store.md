@@ -469,10 +469,10 @@ refusal its next entries would reuse numbers the cursor already passed, and
 step 1 below would acknowledge them unimported. `board.db` commits with
 `synchronous=FULL`, so a power loss cannot put it behind the cursor. The check
 runs before the instance can record an entry, so the refusal holds across
-restarts and ends only when a matching store is back. The flat does not start, and its log
-names both numbers. A store that recorded past the cursor before this check
-existed passes it: a release without the check already acknowledged those
-entries.
+restarts and ends only when a matching store is back. The flat does not start,
+and its log names both numbers. A store that recorded past the cursor before
+this check existed passes it: a release without the check already acknowledged
+those entries.
 
 **Importing** (`importBoardLocked`, under the flat lock). The cursor is
 `content_state.import_store` (the board.db outbox id) and `import_seq`:
