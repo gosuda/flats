@@ -259,6 +259,9 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 		return nil, err
 	}
 	s.secretKey = key
+	if w := RecoveryCopyWarning(cfg.DataDir, key); w != "" {
+		s.logf("warning: %s", w)
+	}
 	if err := s.recoverStorageOperations(ctx); err != nil {
 		return nil, err
 	}

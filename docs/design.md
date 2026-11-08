@@ -572,6 +572,10 @@ with a shell on the Flats host (see Approvals). Values reach JavaScript as
 `env.NAME` and WASI as environment variables from the captured activation
 snapshot. Changes apply on the next approved deployment, redeployment, rollback or standalone data snapshot restoration,
 or Flats host restart; automatic worker restarts reuse the captured settings.
+`flats secret backup-key` keeps a copy of the key, encrypted under a recovery
+password the operator chooses, beside it, and `restore-key` and `reset` bring
+back a host whose key is lost; see
+[Recovering a lost secret.key](configuration.md#recovering-a-lost-secretkey).
 
 ## Approvals
 

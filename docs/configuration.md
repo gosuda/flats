@@ -39,6 +39,8 @@ the data directory is.
   config-history/             previous config.json copies, newest 10
   flats.db                    metadata database (+ -wal, -shm)
   secret.key                  key for flat secrets and operator keys, 32 bytes, mode 0600
+  secret.key.recovery         that key encrypted under a recovery password (optional)
+  secret.key.recovery.id      the ID of the key in that copy
   backups/                    flats.db copies taken before a schema migration
                               (newest 3) and the archived network-provider.json
   runtime/docs/               generated read-only docs app modules (recreated as needed)
@@ -810,7 +812,8 @@ written to the file.
 
 It refuses, writing nothing but the lock, when the directory already holds
 Flats data: a `flats.db` (convert a legacy one with `flats config migrate`),
-or any of `flats/`, `secret.key`, `tsnet/`, `portal/`, `zrok/`,
+or any of `flats/`, `secret.key`, `secret.key.recovery`,
+`secret.key.recovery.id`, `tsnet/`, `portal/`, `zrok/`,
 `zrok-environment/`, `cloudflare-quick/`, `netbird/`, `backups/`,
 `network-retirements/` or `network-provider.json` without a database (restore
 the database and config from the same backup). Other entries, such as a new
@@ -832,8 +835,69 @@ see [Operator keys](#operator-keys).
 
 If flats have stored secrets, or operator keys are stored, and `secret.key` is
 missing, the host refuses to start instead of creating a new key. Restore the
-key from the same backup as `flats.db`, or, when only operator keys are
-stored, remove them with `flats key rm` and register them again.
+key with `flats secret restore-key` or from the same backup as `flats.db`, or,
+when only operator keys are stored, remove them with `flats key rm` and
+register them again. [Recovering a lost secret.key](#recovering-a-lost-secretkey)
+covers the commands.
+
+### Recovering a lost secret.key
+
+`secret.key` opens every flat secret and stored operator key, and nothing
+else does. Three commands on the host keep a way back when the file is lost.
+They work on the data directory, never call the host, and no agent tool or API
+route reaches them.
+
+```sh
+flats secret backup-key [--out PATH] [--password-file PATH] [--config PATH | --data DIR]
+flats secret restore-key [--from PATH] [--password-file PATH] [--config PATH | --data DIR]
+flats secret reset [--yes] [--config PATH | --data DIR]
+```
+
+- `backup-key` encrypts a copy of `secret.key` under a recovery password and
+  writes it to `secret.key.recovery` in the data directory, with the key's ID
+  in `secret.key.recovery.id`. It works while the host runs. `--out PATH` also
+  writes the copy to a new file to keep apart from the host. On a terminal the
+  command asks for the password twice without echo; `--password-file PATH`
+  reads it from a file instead, without its trailing line ends. The password
+  has at least 12 characters. Run the command again to change it. Flats keeps
+  no copy of the password.
+- `restore-key` needs the host stopped and nothing at `secret.key`. It reads
+  `secret.key.recovery`, or `--from PATH`, asks for the password, checks that
+  the key opens every sealed value in `flats.db`, and only then writes
+  `secret.key`. It never replaces a key.
+- `reset` is for a host that has lost both the key and the password. With the
+  host stopped and nothing at `secret.key`, it lists the flat secrets and
+  operator keys it will delete, asks you to type `reset` (or takes `--yes`),
+  deletes them and leaves an event on each flat. The next start creates a new
+  key: run `backup-key` after it, set the secrets again with `flats secret
+  set` and redeploy, and register the operator keys again with `flats key set`.
+  A key at `secret.key` that opens any of the values makes `reset` refuse.
+  Remove only the values it does not open instead: operator keys first, with
+  `flats key rm` while the host is stopped, because the start refuses while
+  a stored Tailscale or NetBird key does not open, then flat secrets with
+  `flats secret rm` once the host runs.
+
+The copy is the key in the [age](https://age-encryption.org) format, encrypted
+with a passphrase, so the `age` tool opens it without Flats:
+
+```sh
+age -d -o secret.key secret.key.recovery && chmod 600 secret.key
+```
+
+`age` creates its output readable by other users; `chmod` gives it the mode
+Flats uses. This way skips the check against `flats.db` that `restore-key`
+makes. A copy made by hand with `age -p` has no ID file, and the host warns
+about it until `backup-key` writes one.
+
+A copy of the data directory includes the recovery file, so anyone holding a
+backup can guess passwords offline. Each guess costs one scrypt derivation,
+about a second and 256 MiB of memory. Use a long password, and keep it apart
+from the host and its backups.
+
+At each start, when `secret.key.recovery` exists, the host compares the key's
+ID with `secret.key.recovery.id` and logs a warning that names
+`flats secret backup-key` when they differ or the ID file is missing, for
+example after `reset` let the start create a new key.
 
 ## Moving an existing installation
 

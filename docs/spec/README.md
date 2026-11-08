@@ -46,6 +46,7 @@ list.
 | [Agent document routing](agent-document-routing.md) | implemented | `flats agent-setup docs`: an opt-in, previewable and undoable setup that makes Flats the document tool of Claude Code, Codex and Cursor, and blocks the competing Claude Docs route |
 | [Autopilot](autopilot.md) | implemented | An opt-in mode in the new Settings › Experiments tab where agents approve or reject pending approvals for the operations the operator allows, with an operation guide for agents |
 | [Windows support](windows-support.md) | partly implemented | Flats on Windows: a PowerShell installer, a per-user service, Windows file names and locks, and a release archive |
+| [Secret key recovery](secret-key-recovery.md) | implemented | `flats secret backup-key`, `restore-key` and `reset`: a password-encrypted copy of `secret.key`, its restore against the sealed values, and a reset when both are lost |
 | [Public instance mode](public-instance.md) | implemented | An opt-in Experiments mode in which every new flat is created Public on the default public network and no private address is handed out or served |
 
 ## Where the technical designs live

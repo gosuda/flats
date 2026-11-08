@@ -25,6 +25,15 @@ var secretName = regexp.MustCompile(`^[A-Z_][A-Z0-9_]{0,63}$`)
 // still holds secrets sealed with it. A new key could not open them.
 var ErrSecretKeyMissing = errors.New("secret.key is missing but the database holds encrypted secrets")
 
+// ErrInvalidSecretKey reports a file at secret.key that is no key: not a
+// regular file, or not 32 bytes.
+var ErrInvalidSecretKey = errors.New("not a valid secret key")
+
+type invalidKeyError string
+
+func (e invalidKeyError) Error() string      { return string(e) }
+func (invalidKeyError) Is(target error) bool { return target == ErrInvalidSecretKey }
+
 // CheckSecretKey refuses to let a new key be created over existing secrets:
 // restore <dataDir>/secret.key together with flats.db from the same backup.
 func CheckSecretKey(ctx context.Context, dataDir string, st *store.Store) error {
@@ -37,13 +46,13 @@ func CheckSecretKey(ctx context.Context, dataDir string, st *store.Store) error 
 		return err
 	}
 	if has {
-		return fmt.Errorf("%w: restore %s from the backup of this database; Flats will not create a new key", ErrSecretKeyMissing, path)
+		return fmt.Errorf("%w: restore %s with `flats secret restore-key` or from the backup of this database, or, with neither the key nor its recovery password left, delete the stored values with `flats secret reset`; Flats will not create a new key", ErrSecretKeyMissing, path)
 	}
 	if has, err = st.HasSealedHostKeys(ctx); err != nil {
 		return err
 	}
 	if has {
-		return fmt.Errorf("%w: restore %s from the backup of this database, or remove the stored operator keys with `flats key rm` and register them again; Flats will not create a new key", ErrSecretKeyMissing, path)
+		return fmt.Errorf("%w: restore %s with `flats secret restore-key` or from the backup of this database, or remove the stored operator keys with `flats key rm` and register them again; Flats will not create a new key", ErrSecretKeyMissing, path)
 	}
 	return nil
 }
@@ -104,14 +113,14 @@ func readSecretKey(path string) ([]byte, error) {
 		return nil, fmt.Errorf("read secret key %s: %w", path, err)
 	}
 	if !info.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s: secret key must be a regular file", path)
+		return nil, invalidKeyError(path + ": secret key must be a regular file")
 	}
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("read secret key %s: %w", path, err)
 	}
 	if len(b) != 32 {
-		return nil, fmt.Errorf("%s: secret key must be 32 bytes", path)
+		return nil, invalidKeyError(path + ": secret key must be 32 bytes")
 	}
 	return b, nil
 }

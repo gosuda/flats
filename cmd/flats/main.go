@@ -19,6 +19,7 @@ func init() {
 	cli.ConfigUsage = app.ConfigUsage
 	cli.Key = app.KeyCommand
 	cli.KeyUsage = app.KeyUsage
+	cli.SecretKey = app.SecretKeyCommand
 	cli.EnsureConfig = app.EnsureConfig
 }
 
