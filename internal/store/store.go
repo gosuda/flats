@@ -753,16 +753,20 @@ func (s *Store) ListDeployments(ctx context.Context, flat string, limit int) ([]
 
 // AddEvent appends a log event.
 func (s *Store) AddEvent(ctx context.Context, e Event) (int64, error) {
-	var data any
-	if len(e.Data) > 0 {
-		data = string(e.Data)
-	}
-	res, err := s.db.ExecContext(ctx, `INSERT INTO events(flat,at,level,kind,message,data) VALUES(?,?,?,?,?,?)`,
-		e.Flat, unix(e.Time), e.Level, e.Kind, e.Message, data)
+	res, err := addEvent(ctx, s.db, e)
 	if err != nil {
 		return 0, err
 	}
 	return res.LastInsertId()
+}
+
+func addEvent(ctx context.Context, x executor, e Event) (sql.Result, error) {
+	var data any
+	if len(e.Data) > 0 {
+		data = string(e.Data)
+	}
+	return x.ExecContext(ctx, `INSERT INTO events(flat,at,level,kind,message,data) VALUES(?,?,?,?,?,?)`,
+		e.Flat, unix(e.Time), e.Level, e.Kind, e.Message, data)
 }
 
 // ListEvents returns up to limit events for flat with id > after, oldest first
