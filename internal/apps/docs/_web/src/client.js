@@ -259,8 +259,9 @@ const history = initHistory({
     setMode(mode);
   },
   status(message) {
-    $("#status").textContent = message;
-    $("#status").dataset.state = "Saved";
+    syncLabel = message;
+    syncState = "Saved";
+    showStatus();
     provider.catchUp();
   },
 });
@@ -282,11 +283,12 @@ const flatName = () => flat || "these documents";
 // The status line says an image is on its way in place of the sync state,
 // which also hides the reconnect that adding one causes.
 let syncLabel = "",
+  syncState = "",
   undoManager;
 function showStatus() {
   const label = images.active ? "Adding image…" : syncLabel;
   $("#status").textContent = label;
-  $("#status").dataset.state = label;
+  $("#status").dataset.state = images.active ? label : syncState;
 }
 // imageNotice reports a refused image apart from #notice, whose interruption
 // and download actions it must not replace.
@@ -426,7 +428,7 @@ function startReplica() {
     editor,
     hello: () => join.hello(name),
     onState: (label) => {
-      syncLabel = label;
+      syncLabel = syncState = label;
       showStatus();
     },
     onStop: stopped,
