@@ -885,8 +885,8 @@ installer prints that command after an upgrade. `flats install` stops a
 running Flats service while it prepares `config.json` and starts the old
 service definition again if that fails.
 
-To go back to an older release straight after the move, put
-`backups/flats.v<N>.<time>.db` back as `flats.db` and the archived
-`network-provider.<time>.json` as `network-provider.json`; the older binary
-ignores `config.json`. After any change, restore a full backup taken before the
-move.
+To go back to an older release straight after the move, put the
+`backups/flats.v<N>.<time>.db` that the move wrote back as `flats.db`. If the
+old host had a `network-provider.json`, also put the archived
+`network-provider.<time>.json` back under that name. The older binary ignores
+`config.json`. After any change, restore a full backup taken before the move.
