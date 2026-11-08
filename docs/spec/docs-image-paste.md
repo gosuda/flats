@@ -12,7 +12,7 @@ keeps working: serving, History, rollback, Public reading and the agent tools.
 ## Decisions
 
 The owner chose to store pasted images in the bundle (2026-11-06), rather than
-in a separate image store as boards do. That choice brings three costs, which
+in a separate image store as boards do. That choice brings four costs, which
 stay until a later change removes them:
 
 - All of a flat's files together stay within `upload_max_bytes` (20 MiB by
@@ -22,6 +22,10 @@ stay until a later change removes them:
   flat reconnects.
 - Each added image is a revision of the flat, and counts toward the revision
   quota like any other.
+- Each added image writes all of the flat's files again. The host keeps four
+  copies of them, in the running version, the previous version, the last save
+  and the revision history, so the flat's directory holds about four times its
+  files.
 
 ## Behavior
 

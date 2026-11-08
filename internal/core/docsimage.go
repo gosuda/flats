@@ -132,6 +132,8 @@ func (s *Service) docsImageRoute(slugName string, next http.Handler) http.Handle
 		if !docsPageRequest(w, r) {
 			return
 		}
+		// CheckImage decodes the whole image and the bundle holds it as bytes,
+		// so the body is read whole; there is no streaming form to use.
 		data, err := io.ReadAll(http.MaxBytesReader(w, r.Body, s.UploadLimit()))
 		var tooLarge *http.MaxBytesError
 		if errors.As(err, &tooLarge) {
