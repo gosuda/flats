@@ -87,14 +87,15 @@ Out of scope:
 
 7. Each command selects the configuration and the data directory with
    `--config PATH` or `--data DIR`, as `flats key` does. None of them calls the
-   host: `--url` does not apply, and they print text, not JSON.
+   host: `--url` does not apply, and they print text, not JSON. With
+   `--json`, a failure prints as JSON, as for every command.
 8. A password never comes from a command-line argument or an environment
    variable. `--password-file PATH` names a file whose content, without its
-   trailing carriage returns and line feeds, is the password. Without it the
-   command prompts without echo on a terminal, and echo is on again when the
-   command ends, also when an interrupt ends it at the prompt. With neither a
-   file nor a terminal, the command stops with a usage error and writes
-   nothing.
+   trailing carriage returns and line feeds, is the password; a file larger
+   than 4096 bytes is refused. Without it the command prompts without echo on
+   a terminal, and echo is on again when the command ends, also when an
+   interrupt ends it at the prompt. With neither a file nor a terminal, the
+   command stops with a usage error and writes nothing.
 9. A password longer than 1024 bytes is refused by both commands.
 10. A usage mistake exits with status 2. A refusal exits with status 78, like
     `flats key`. Any other failure exits with status 1.
@@ -103,6 +104,9 @@ Out of scope:
     and the next start do, which may migrate a database from an older release,
     writing the `backups/flats.v<N>.<time>.db` copy a migration takes, and
     switch it to WAL. Those are the only writes a refused command can leave.
+    An interrupt (Ctrl-C or SIGTERM) that arrives before a command starts to
+    write, also after the password or the confirmation was entered, writes
+    none of these either. A write that has begun completes.
 
 ## `flats secret backup-key`
 
@@ -117,9 +121,11 @@ flats secret backup-key [--out PATH] [--password-file PATH] [--config PATH | --d
     at start. When nothing is at the path, not even a link, the command
     refuses and says to start the host once, which creates the key, or to run
     `restore-key` when sealed values need the lost key. Anything else that is
-    not a valid key, such as a file of the wrong size or a link that points
-    nowhere, is refused with the host's own message and the advice to move it
-    away, because the next start would stop on it.
+    not a valid key, such as a file of the wrong size or a link that leads to
+    no file (a missing target, a loop, or a file on its path), is refused with
+    the host's own message and the advice to move it away, because the next
+    start would stop on it. When reading `secret.key` fails for another
+    reason, such as permissions, the command stops with that error, status 1.
 14. A new password has at least 12 characters (Unicode code points), from
     either source. On a terminal the command asks twice, and two answers that
     differ are a refusal.
@@ -135,11 +141,13 @@ flats secret backup-key [--out PATH] [--password-file PATH] [--config PATH | --d
     older copy. Replacing an existing copy is how the password changes, and the
     output says that it replaced one.
 16. `--out PATH` also writes the same copy to `PATH`, without the key ID. The
-    command refuses before writing anything when `PATH` exists, and it creates
-    the file so that it never replaces one, also on a volume without hard
-    links. The file gets mode 0600 on Unix. On Windows it takes the access list
-    of its folder. If writing it fails, the command removes what it wrote there
-    and exits with status 1; the files in the data directory stay.
+    command refuses before writing anything when `PATH` exists, when its
+    folder does not exist or is not a folder, and when its folder is the data
+    directory, which holds the copy and its key ID. It creates the file so
+    that it never replaces one, also on a volume without hard links. The file
+    gets mode 0600 on Unix. On Windows it takes the access list of its folder.
+    If writing it fails, the command removes what it wrote there and exits
+    with status 1; the files in the data directory stay.
 17. The output names each file written and says that Flats keeps no copy of
     the password.
 
@@ -160,6 +168,9 @@ flats secret restore-key [--from PATH] [--password-file PATH] [--config PATH | -
 21. It accepts the binary form and the ASCII-armored form (`age -a`). A wrong
     password, a damaged file, or a file without exactly one passphrase
     recipient is refused, and so is a plaintext that is not exactly 32 bytes.
+    A file whose scrypt work factor is above 2^18, the factor `backup-key` and
+    `age -p` use, is refused before any key is derived, so a crafted file
+    cannot make the command use more memory or time than `backup-key` does.
 22. The command checks the recovered key against every sealed value in
     `flats.db`: every flat secret and every operator key record with a stored
     value must open with it. When any does not, it refuses and says how many
@@ -199,8 +210,8 @@ flats secret reset [--yes] [--config PATH | --data DIR]
       stopped. The host then starts with that key, and `flats secret rm`
       removes the flat secrets one by one. The other values stay.
     - Anything at `secret.key` that is not a valid key (the wrong size, not a
-      regular file, a link that points nowhere): the command refuses and says
-      to move it away first, because the next start would stop on it.
+      regular file, a link that leads to no file): the command refuses and
+      says to move it away first, because the next start would stop on it.
     - Reading `secret.key` fails for another reason, such as permissions: the
       command stops with that error, status 1.
 28. It lists what it will delete: each secret's flat and name, and each
@@ -256,6 +267,8 @@ flats secret reset [--yes] [--config PATH | --data DIR]
 - Tests show the start-time warning when the key changes after `backup-key`,
   when the ID file is missing, and no warning when the copy matches or no copy
   exists. A test asserts the start-time refusal message.
+- Tests show that a copy above 2^18 is refused and that one at 2^18 is
+  derived, and that an interrupt after the answers writes nothing.
 - On Linux, a test on a pseudo-terminal shows echo on after a password prompt
   that an interrupt ends before it is shown or while it waits, and after an
   answer.

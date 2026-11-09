@@ -1,5 +1,7 @@
-// Package cli implements the `flats` command line. Every command except
-// serve, worker, install and uninstall is a thin client of the HTTP API.
+// Package cli implements the `flats` command line. Every command is a thin
+// client of the HTTP API except serve, worker, install and uninstall, and
+// config, key and secret backup-key, restore-key and reset, which work on the
+// data directory itself.
 package cli
 
 import (

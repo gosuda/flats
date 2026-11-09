@@ -856,38 +856,46 @@ flats secret reset [--yes] [--config PATH | --data DIR]
 - `backup-key` encrypts a copy of `secret.key` under a recovery password and
   writes it to `secret.key.recovery` in the data directory, with the key's ID
   in `secret.key.recovery.id`. It works while the host runs. `--out PATH` also
-  writes the copy to a new file to keep apart from the host. On a terminal the
-  command asks for the password twice without echo; `--password-file PATH`
-  reads it from a file instead, without its trailing line ends. The password
-  has at least 12 characters. Run the command again to change it. Flats keeps
-  no copy of the password.
+  writes the copy to a new file to keep apart from the host, in an existing
+  folder outside the data directory. On a terminal the command asks for the
+  password twice without echo; `--password-file PATH` reads it from a file
+  instead, without its trailing line ends. The password has at least 12
+  characters and at most 1024 bytes. Run the command again to change it.
+  Flats keeps no copy of the password.
 - `restore-key` needs the host stopped and nothing at `secret.key`. It reads
   `secret.key.recovery`, or `--from PATH`, asks for the password, checks that
   the key opens every sealed value in `flats.db`, and only then writes
-  `secret.key`. It never replaces a key.
+  `secret.key`. It never replaces a key. When `flats.db` holds no sealed
+  value, there is nothing to check the key against: the command says so and
+  writes any key the password opens. It refuses a copy written at a work
+  factor above 2^18, the age default that `backup-key` and `age -p` use.
 - `reset` is for a host that has lost both the key and the password. With the
-  host stopped and nothing at `secret.key`, it lists the flat secrets and
-  operator keys it will delete, asks you to type `reset` (or takes `--yes`),
-  deletes them and leaves an event on each flat. The next start creates a new
-  key: run `backup-key` after it, set the secrets again with `flats secret
-  set` and redeploy, and register the operator keys again with `flats key set`.
+  host stopped, and nothing at `secret.key` or a key there that opens none of
+  the values, it lists the flat secrets and operator keys it will delete,
+  asks you to type `reset` (or takes `--yes`), deletes them and leaves an
+  event on each flat. The next start creates a new key: run `backup-key`
+  after it, set the secrets again with `flats secret set` and redeploy, and
+  register the operator keys again with `flats key set`.
   A key at `secret.key` that opens any of the values makes `reset` refuse.
   Remove only the values it does not open instead: operator keys first, with
   `flats key rm` while the host is stopped, because the start refuses while
   a stored Tailscale or NetBird key does not open, then flat secrets with
-  `flats secret rm` once the host runs.
+  `flats secret rm` once the host runs. Anything else at `secret.key`, such as
+  a file of the wrong size or a broken link, must be moved away first.
 
 The copy is the key in the [age](https://age-encryption.org) format, encrypted
 with a passphrase, so the `age` tool opens it without Flats:
 
 ```sh
-age -d -o secret.key secret.key.recovery && chmod 600 secret.key
+(umask 077 && age -d -o secret.key secret.key.recovery)
 ```
 
-`age` creates its output readable by other users; `chmod` gives it the mode
-Flats uses. This way skips the check against `flats.db` that `restore-key`
-makes. A copy made by hand with `age -p` has no ID file, and the host warns
-about it until `backup-key` writes one.
+Run it in the data directory with the host stopped and nothing at
+`secret.key`, because `age` replaces an existing output file. Without the
+`umask`, `age` creates the file readable by other users; with it the file
+gets the mode 0600 that Flats uses. This way skips the check against
+`flats.db` that `restore-key` makes. A copy made by hand with `age -p` has no
+ID file, and the host warns about it until `backup-key` writes one.
 
 A copy of the data directory includes the recovery file, so anyone holding a
 backup can guess passwords offline. Each guess costs one scrypt derivation,

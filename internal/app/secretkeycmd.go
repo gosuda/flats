@@ -71,7 +71,7 @@ func (k *secretKeyCmd) backup(args []string) error {
 		return actionf("%s is missing: start the host once to create it, or restore it with `flats secret restore-key`", keyPath)
 	}
 	key, err := core.ReadSecretKey(dataDir)
-	if errors.Is(err, core.ErrInvalidSecretKey) || errors.Is(err, fs.ErrNotExist) {
+	if keyUnusable(err, keyPath) {
 		return actionf("%v: move %s away first, because the next start would stop on it", err, keyPath)
 	}
 	if err != nil {
@@ -79,13 +79,8 @@ func (k *secretKeyCmd) backup(args []string) error {
 	}
 	outPath := ""
 	if *outFlag != "" {
-		if outPath, err = cleanPath(*outFlag); err != nil {
-			return actionf("--out: %v", err)
-		}
-		if _, err := os.Lstat(outPath); err == nil {
-			return actionf("--out: %s exists; name a new file", outPath)
-		} else if !errors.Is(err, fs.ErrNotExist) {
-			return actionf("--out: %v", err)
+		if outPath, err = outFile(*outFlag, dataDir); err != nil {
+			return err
 		}
 	}
 	password, err := k.password(*passwordFile, true)
@@ -95,6 +90,9 @@ func (k *secretKeyCmd) backup(args []string) error {
 	data, err := core.SealKeyCopy(key, password, recoveryWorkFactor)
 	if err != nil {
 		return err
+	}
+	if err := k.ctx.Err(); err != nil {
+		return interrupted(err)
 	}
 	replaced, err := core.WriteKeyCopy(dataDir, data, key)
 	if err != nil {
@@ -113,6 +111,48 @@ func (k *secretKeyCmd) backup(args []string) error {
 	}
 	k.printf("Flats keeps no copy of the password. Without it the recovery file opens nothing; keep it apart from this host.\n")
 	return nil
+}
+
+// outFile checks --out before anything is written: a new file in an existing
+// folder other than the data directory, whose own copy and ID would collide.
+func outFile(flag, dataDir string) (string, error) {
+	path, err := cleanPath(flag)
+	if err != nil {
+		return "", actionf("--out: %v", err)
+	}
+	if _, err := os.Lstat(path); err == nil {
+		return "", actionf("--out: %s exists; name a new file", path)
+	} else if !errors.Is(err, fs.ErrNotExist) {
+		return "", actionf("--out: %v", err)
+	}
+	dir := filepath.Dir(path)
+	fi, err := os.Stat(dir)
+	if err != nil {
+		return "", actionf("--out: %v", err)
+	}
+	if !fi.IsDir() {
+		return "", actionf("--out: %s is not a folder", dir)
+	}
+	if data, err := os.Stat(dataDir); err == nil && os.SameFile(fi, data) {
+		return "", actionf("--out: name a file outside the data directory %s, which holds its own copy", dataDir)
+	}
+	return path, nil
+}
+
+// keyUnusable reports whether err from core.ReadSecretKey means that what is
+// at keyPath is no key: the wrong size or type, a target that does not exist
+// (also behind a Windows junction), or a link that leads to no file through a
+// loop or a file on its path. A permission error is not, and stays a failure
+// with status 1.
+func keyUnusable(err error, keyPath string) bool {
+	switch {
+	case err == nil, errors.Is(err, fs.ErrPermission):
+		return false
+	case errors.Is(err, core.ErrInvalidSecretKey), errors.Is(err, fs.ErrNotExist):
+		return true
+	}
+	fi, lerr := os.Lstat(keyPath)
+	return lerr == nil && fi.Mode()&fs.ModeSymlink != 0
 }
 
 func (k *secretKeyCmd) restore(args []string) error {
@@ -159,10 +199,13 @@ func (k *secretKeyCmd) restore(args []string) error {
 		return err
 	}
 	if !check.All() {
-		return actionf("the key in %s opens %d of the %d sealed values in flats.db, so it is not this host's key; nothing was written", src, check.Opened, check.Total)
+		return actionf("the key in %s opens %d of the %d sealed values in flats.db; nothing was written", src, check.Opened, check.Total)
 	}
 	if check.Total == 0 {
 		k.printf("flats.db holds no flat secrets or operator keys, so there is nothing to check the key against\n")
+	}
+	if err := k.ctx.Err(); err != nil {
+		return interrupted(err)
 	}
 	if err := core.RestoreSecretKey(dataDir, key); err != nil {
 		if os.IsExist(err) {
@@ -236,10 +279,16 @@ func (k *secretKeyCmd) reset(args []string) error {
 		events = append(events, store.Event{Flat: s.Flat, Time: now, Level: "warn", Kind: "secret",
 			Message: fmt.Sprintf("secret %s deleted by `flats secret reset`; set it again and redeploy", s.Name)})
 	}
-	if err := st.DeleteSealedValues(k.ctx, events); err != nil {
+	if err := k.ctx.Err(); err != nil {
+		return interrupted(err)
+	}
+	// Once the delete starts it completes and is made durable, also when an
+	// interrupt arrives meanwhile.
+	write := context.WithoutCancel(k.ctx)
+	if err := st.DeleteSealedValues(write, events); err != nil {
 		return err
 	}
-	if err := st.Sync(k.ctx); err != nil {
+	if err := st.Sync(write); err != nil {
 		return err
 	}
 	if total == 1 {
@@ -248,7 +297,11 @@ func (k *secretKeyCmd) reset(args []string) error {
 		k.printf("deleted %d values.\n", total)
 	}
 	if keyMissing {
-		k.printf("The next start creates a new %s. Run `flats secret backup-key` after it: an existing %s holds the lost key.\n", keyPath, core.RecoveryKeyFile)
+		why := "to keep a recovery copy of the new key"
+		if _, err := os.Lstat(filepath.Join(dataDir, core.RecoveryKeyFile)); err == nil {
+			why = "because the existing " + core.RecoveryKeyFile + " holds the lost key"
+		}
+		k.printf("The next start creates a new %s. Run `flats secret backup-key` after it %s.\n", keyPath, why)
 	}
 	k.printf("Set the secrets again with `flats secret set` and redeploy, and the operator keys with `flats key set`.\n")
 	return nil
@@ -264,7 +317,7 @@ func (k *secretKeyCmd) resetAllowed(st *store.Store, dataDir string) (keyMissing
 		return false, err
 	}
 	key, err := core.ReadSecretKey(dataDir)
-	if errors.Is(err, core.ErrInvalidSecretKey) || errors.Is(err, fs.ErrNotExist) {
+	if keyUnusable(err, keyPath) {
 		return false, actionf("%v: move %s away first, because the next start would stop on it", err, keyPath)
 	}
 	if err != nil {

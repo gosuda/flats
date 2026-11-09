@@ -306,8 +306,8 @@ writes and logs nothing. Neither route changes Autopilot.
 
 `flats <command>` calls the HTTP API (the CLI sends `X-Flats-Client: cli`).
 `flats serve` runs the host itself (`flats worker` is the process it starts
-for server flats); `flats config` and
-`flats key` edit the host while it is stopped
+for server flats); `flats config`, `flats key`, and
+`flats secret restore-key` and `reset` edit the host while it is stopped
 ([Configuration and storage](configuration.md)).
 
 | Command | Effect |

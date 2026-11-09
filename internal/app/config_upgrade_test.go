@@ -449,7 +449,7 @@ func TestConfigModeRefusals(t *testing.T) {
 		}
 	})
 	t.Run("missing config over leftover data", func(t *testing.T) {
-		for _, name := range []string{"secret.key", "flats", "tsnet"} {
+		for _, name := range []string{"secret.key", "secret.key.recovery", "secret.key.recovery.id", "flats", "tsnet"} {
 			dir := t.TempDir()
 			markDataDir(t, dir)
 			if err := os.Mkdir(filepath.Join(dir, name), 0o700); err != nil {

@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -97,6 +98,64 @@ func TestKeyCopyRoundTrip(t *testing.T) {
 	}
 	if _, err := OpenKeyCopy(short, testPassword); err == nil || !strings.Contains(err.Error(), "31 bytes") {
 		t.Fatalf("short key: %v", err)
+	}
+	long, err := SealKeyCopy(make([]byte, 64), testPassword, testWorkFactor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenKeyCopy(long, testPassword); err == nil || !strings.Contains(err.Error(), "more than 32 bytes") {
+		t.Fatalf("long key: %v", err)
+	}
+}
+
+// A copy above age's default work factor is refused before any derivation;
+// one at the default is derived (and fails here, as its header is edited).
+func TestKeyCopyWorkFactorCap(t *testing.T) {
+	data, err := SealKeyCopy(make([]byte, 32), testPassword, testWorkFactor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	at := func(logN string) []byte {
+		edited := bytes.Replace(data, []byte(" 10\n"), []byte(" "+logN+"\n"), 1)
+		if bytes.Equal(edited, data) {
+			t.Fatal("no work factor in the header")
+		}
+		return edited
+	}
+	if _, err := OpenKeyCopy(at("19"), testPassword); err == nil || !strings.Contains(err.Error(), "work factor too large: 19") {
+		t.Fatalf("2^19: %v", err)
+	}
+	if _, err := OpenKeyCopy(at("18"), testPassword); !errors.Is(err, ErrRecoveryPassword) {
+		t.Fatalf("2^18: %v", err)
+	}
+}
+
+// A passphrase recipient must be the only one.
+func TestKeyCopyWithAnotherRecipient(t *testing.T) {
+	data, err := SealKeyCopy(make([]byte, 32), testPassword, testWorkFactor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := bytes.Index(data, []byte("\n--- "))
+	if i < 0 {
+		t.Fatal("no header end")
+	}
+	stanza := "-> X25519 " + strings.Repeat("A", 43) + "\n" + strings.Repeat("A", 43) + "\n"
+	both := append(append(bytes.Clone(data[:i+1]), stanza...), data[i+1:]...)
+	if _, err := OpenKeyCopy(both, testPassword); err == nil || !strings.Contains(err.Error(), "must be the only one") {
+		t.Fatalf("two recipients: %v", err)
+	}
+}
+
+// The key ID is the first 16 bytes of SHA-256 over the label, a zero byte
+// and the key (docs/spec/secret-key-recovery.md, rule 2).
+func TestKeyIDKnownAnswer(t *testing.T) {
+	key := make([]byte, 32)
+	for i := range key {
+		key[i] = byte(i)
+	}
+	if got := KeyID(key); got != "f31ed6ddd82a47bb8dcaa37f3d649890" {
+		t.Fatalf("KeyID = %s", got)
 	}
 }
 
@@ -256,6 +315,16 @@ func TestMissingKeyRefusalNamesRecovery(t *testing.T) {
 	err := CheckSecretKey(ctx, t.TempDir(), s.st)
 	if !errors.Is(err, ErrSecretKeyMissing) || !strings.Contains(err.Error(), "flats secret restore-key") || !strings.Contains(err.Error(), "flats secret reset") {
 		t.Fatalf("refusal: %v", err)
+	}
+
+	// With operator keys alone, the way out is `flats key rm`, not reset.
+	keys, dir := newTestService(t)
+	if err := PutHostKeyValue(ctx, dir, keys.st, HostKeyZrok, "zrok-token", KeySourceCLI, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	err = CheckSecretKey(ctx, t.TempDir(), keys.st)
+	if msg := fmt.Sprint(err); !errors.Is(err, ErrSecretKeyMissing) || !strings.Contains(msg, "flats secret restore-key") || !strings.Contains(msg, "flats key rm") || strings.Contains(msg, "reset") {
+		t.Fatalf("operator keys alone: %v", err)
 	}
 }
 

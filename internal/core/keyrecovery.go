@@ -80,12 +80,15 @@ func SealKeyCopy(key []byte, password string, workFactor int) ([]byte, error) {
 
 // OpenKeyCopy decrypts a recovery copy in the binary or the armored form. A
 // wrong password, or a file with no passphrase recipient, wraps
-// ErrRecoveryPassword.
+// ErrRecoveryPassword. A work factor above RecoveryWorkFactor is refused
+// before any key is derived, so a crafted file costs no more memory than
+// backup-key does.
 func OpenKeyCopy(data []byte, password string) ([]byte, error) {
 	id, err := age.NewScryptIdentity(password)
 	if err != nil {
 		return nil, err
 	}
+	id.SetMaxWorkFactor(RecoveryWorkFactor)
 	var src io.Reader = bytes.NewReader(data)
 	if bytes.HasPrefix(bytes.TrimLeft(data, " \t\r\n"), []byte(armor.Header)) {
 		src = armor.NewReader(src)
@@ -102,7 +105,10 @@ func OpenKeyCopy(data []byte, password string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("the recovery file is damaged: %w", err)
 	}
-	if len(key) != 32 {
+	switch {
+	case len(key) > 32:
+		return nil, errors.New("the recovery file holds more than 32 bytes, not a 32-byte key")
+	case len(key) < 32:
 		return nil, fmt.Errorf("the recovery file holds %d bytes, not a 32-byte key", len(key))
 	}
 	return key, nil
