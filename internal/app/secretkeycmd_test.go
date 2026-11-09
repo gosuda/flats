@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"database/sql"
 	"errors"
 	"fmt"
 	"io"
@@ -512,6 +513,42 @@ func TestSecretReset(t *testing.T) {
 
 // A valid key that opens none of the values is no help: reset deletes them
 // and keeps that key.
+// When another connection holds up the checkpoint after the delete, the
+// refusal says the values are deleted. The checkpoint waits out the store's
+// busy timeout of 5 s, so this test runs in parallel.
+func TestSecretResetCheckpointHeldUp(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dir := t.TempDir()
+	path, _, h := hostWithSecrets(t, dir)
+	h.Close()
+	if err := os.Remove(filepath.Join(dir, core.SecretKeyFile)); err != nil {
+		t.Fatal(err)
+	}
+	db, err := sql.Open("sqlite", "file:"+filepath.Join(dir, "flats.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	reader, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var n int
+	if err := reader.QueryRowContext(ctx, "SELECT count(*) FROM secrets").Scan(&n); err != nil || n != 1 {
+		t.Fatalf("before the reset: %d secrets, %v", n, err)
+	}
+	if _, err := runSecretKey(t, path, "reset", "--yes"); err == nil || !strings.Contains(err.Error(), "the values are deleted, but checkpoint database") {
+		t.Fatalf("reset under a reader: %v", err)
+	}
+	if err := reader.Rollback(); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRowContext(ctx, "SELECT count(*) FROM secrets").Scan(&n); err != nil || n != 0 {
+		t.Fatalf("after the reset: %d secrets, %v", n, err)
+	}
+}
+
 func TestSecretResetOverAnotherKey(t *testing.T) {
 	dir := t.TempDir()
 	path, _, h := hostWithSecrets(t, dir)

@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"filippo.io/age"
@@ -79,10 +80,9 @@ func SealKeyCopy(key []byte, password string, workFactor int) ([]byte, error) {
 }
 
 // OpenKeyCopy decrypts a recovery copy in the binary or the armored form. A
-// wrong password, or a file with no passphrase recipient, wraps
-// ErrRecoveryPassword. A work factor above RecoveryWorkFactor is refused
-// before any key is derived, so a crafted file costs no more memory than
-// backup-key does.
+// wrong password wraps ErrRecoveryPassword. A work factor above
+// RecoveryWorkFactor is refused before any key is derived, so a crafted file
+// costs no more memory than backup-key does.
 func OpenKeyCopy(data []byte, password string) ([]byte, error) {
 	id, err := age.NewScryptIdentity(password)
 	if err != nil {
@@ -96,8 +96,16 @@ func OpenKeyCopy(data []byte, password string) ([]byte, error) {
 	r, err := age.Decrypt(src, id)
 	if err != nil {
 		var none *age.NoIdentityMatchError
-		if errors.As(err, &none) {
+		switch {
+		case errors.As(err, &none) && !slices.Contains(none.StanzaTypes, "scrypt"):
+			types := slices.Compact(slices.Sorted(slices.Values(none.StanzaTypes)))
+			return nil, fmt.Errorf("the recovery file is encrypted to %s recipients, not with a password", strings.Join(types, ", "))
+		case errors.As(err, &none):
 			return nil, fmt.Errorf("%w: %v", ErrRecoveryPassword, err)
+		// age has no error value for this refusal; TestKeyCopyWorkFactorCap
+		// pins its text.
+		case strings.Contains(err.Error(), "work factor too large"):
+			return nil, fmt.Errorf("%w (the limit is %d): `age -d` opens such a copy, as the docs describe", err, RecoveryWorkFactor)
 		}
 		return nil, fmt.Errorf("not a readable recovery file: %w", err)
 	}
@@ -226,9 +234,21 @@ func RecoveryCopyWarning(dataDir string, key []byte) string {
 	if _, err := os.Lstat(copyPath); errors.Is(err, fs.ErrNotExist) {
 		return ""
 	}
-	b, err := os.ReadFile(filepath.Join(dataDir, RecoveryKeyIDFile))
+	// An ID is 32 hex digits, so reading 64 bytes is enough, and a large file
+	// cannot slow the start.
+	b, err := readHead(filepath.Join(dataDir, RecoveryKeyIDFile), 64)
 	if err == nil && strings.TrimSpace(string(b)) == KeyID(key) {
 		return ""
 	}
 	return fmt.Sprintf("%s may hold another key than %s, so it may not restore this host: run `flats secret backup-key` to write a current copy", copyPath, SecretKeyFile)
+}
+
+// readHead reads at most n bytes from the start of the file at path.
+func readHead(path string, n int64) ([]byte, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	return io.ReadAll(io.LimitReader(f, n))
 }

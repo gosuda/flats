@@ -78,16 +78,22 @@ func TestKeyCopyRoundTrip(t *testing.T) {
 		t.Fatalf("armored: %v", err)
 	}
 
-	// A file for a key pair has no passphrase recipient.
+	// A file for key pairs has no passphrase recipient, and the refusal says
+	// so instead of blaming the password.
 	id, err := age.GenerateX25519Identity()
 	if err != nil {
 		t.Fatal(err)
 	}
+	other, err := age.GenerateX25519Identity()
+	if err != nil {
+		t.Fatal(err)
+	}
 	var buf bytes.Buffer
-	w, _ := age.Encrypt(&buf, id.Recipient())
+	w, _ := age.Encrypt(&buf, id.Recipient(), other.Recipient())
 	w.Write(key)
 	w.Close()
-	if _, err := OpenKeyCopy(buf.Bytes(), testPassword); !errors.Is(err, ErrRecoveryPassword) {
+	if _, err := OpenKeyCopy(buf.Bytes(), testPassword); err == nil || errors.Is(err, ErrRecoveryPassword) ||
+		err.Error() != "the recovery file is encrypted to X25519 recipients, not with a password" {
 		t.Fatalf("no passphrase recipient: %v", err)
 	}
 
@@ -122,7 +128,7 @@ func TestKeyCopyWorkFactorCap(t *testing.T) {
 		}
 		return edited
 	}
-	if _, err := OpenKeyCopy(at("19"), testPassword); err == nil || !strings.Contains(err.Error(), "work factor too large: 19") {
+	if _, err := OpenKeyCopy(at("19"), testPassword); err == nil || !strings.Contains(err.Error(), "work factor too large: 19 (the limit is 18): `age -d` opens such a copy") {
 		t.Fatalf("2^19: %v", err)
 	}
 	if _, err := OpenKeyCopy(at("18"), testPassword); !errors.Is(err, ErrRecoveryPassword) {

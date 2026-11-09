@@ -288,7 +288,7 @@ func (k *secretKeyCmd) reset(args []string) error {
 		return err
 	}
 	if err := st.Sync(write); err != nil {
-		return err
+		return fmt.Errorf("the values are deleted, but %w", err)
 	}
 	if total == 1 {
 		k.printf("deleted 1 value.\n")
