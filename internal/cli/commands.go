@@ -20,6 +20,7 @@ import (
 
 	"github.com/gosuda/flats/internal/contenttype"
 	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/prompt"
 )
 
 // --- deploy ---
@@ -842,39 +843,14 @@ func (a *app) secretKey(args []string) error {
 // whole input (minus one trailing newline) from a pipe.
 func (a *app) readSecret(name string) (string, error) {
 	if f, ok := a.env.Stdin.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
-		fd := int(f.Fd())
-		saved, err := term.GetState(fd)
+		v, err := prompt.Hidden(a.ctx, f, a.errw, fmt.Sprintf("Value for %s (input hidden): ", name))
 		if err != nil {
 			return "", err
 		}
-		fmt.Fprintf(a.errw, "Value for %s (input hidden): ", name)
-		// main catches SIGINT, so Ctrl-C would not interrupt the read itself:
-		// wait for it or for cancellation, and restore echo on the way out.
-		type read struct {
-			b   []byte
-			err error
-		}
-		ch := make(chan read, 1)
-		go func() {
-			b, err := term.ReadPassword(fd)
-			ch <- read{b, err}
-		}()
-		var r read
-		select {
-		case r = <-ch:
-		case <-a.ctx.Done():
-			_ = term.Restore(fd, saved)
-			fmt.Fprintln(a.errw)
-			return "", a.ctx.Err()
-		}
-		fmt.Fprintln(a.errw)
-		if r.err != nil {
-			return "", r.err
-		}
-		if len(r.b) == 0 {
+		if v == "" {
 			return "", errors.New("empty value; nothing stored")
 		}
-		return string(r.b), nil
+		return v, nil
 	}
 	b, err := io.ReadAll(io.LimitReader(a.env.Stdin, 1<<20))
 	if err != nil {
