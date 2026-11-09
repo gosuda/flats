@@ -234,9 +234,9 @@ func RecoveryCopyWarning(dataDir string, key []byte) string {
 	if _, err := os.Lstat(copyPath); errors.Is(err, fs.ErrNotExist) {
 		return ""
 	}
-	// An ID is 32 hex digits, so reading 64 bytes is enough, and a large file
-	// cannot slow the start.
-	b, err := readHead(filepath.Join(dataDir, RecoveryKeyIDFile), 64)
+	// An ID is 32 hex digits; 4 KiB leaves room for white space around it,
+	// and a large file cannot slow the start.
+	b, err := readHead(filepath.Join(dataDir, RecoveryKeyIDFile), 4096)
 	if err == nil && strings.TrimSpace(string(b)) == KeyID(key) {
 		return ""
 	}

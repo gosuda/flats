@@ -287,9 +287,9 @@ func (k *secretKeyCmd) reset(args []string) error {
 	if err := st.DeleteSealedValues(write, events); err != nil {
 		return err
 	}
-	if err := st.Sync(write); err != nil {
-		return fmt.Errorf("the values are deleted, but %w", err)
-	}
+	// The delete has committed, so the command reports it and the next steps
+	// even when the checkpoint after it fails.
+	synced := st.Sync(write)
 	if total == 1 {
 		k.printf("deleted 1 value.\n")
 	} else {
@@ -303,6 +303,9 @@ func (k *secretKeyCmd) reset(args []string) error {
 		k.printf("The next start creates a new %s. Run `flats secret backup-key` after it %s.\n", keyPath, why)
 	}
 	k.printf("Set the secrets again with `flats secret set` and redeploy, and the operator keys with `flats key set`.\n")
+	if synced != nil {
+		return fmt.Errorf("the values are deleted, but %w", synced)
+	}
 	return nil
 }
 

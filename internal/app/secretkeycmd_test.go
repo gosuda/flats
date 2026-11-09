@@ -511,11 +511,10 @@ func TestSecretReset(t *testing.T) {
 	}
 }
 
-// A valid key that opens none of the values is no help: reset deletes them
-// and keeps that key.
 // When another connection holds up the checkpoint after the delete, the
-// refusal says the values are deleted. The checkpoint waits out the store's
-// busy timeout of 5 s, so this test runs in parallel.
+// command says the values are deleted and still gives its guidance. The
+// checkpoint waits out the store's busy timeout of 5 s, so this test runs in
+// parallel.
 func TestSecretResetCheckpointHeldUp(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -538,8 +537,14 @@ func TestSecretResetCheckpointHeldUp(t *testing.T) {
 	if err := reader.QueryRowContext(ctx, "SELECT count(*) FROM secrets").Scan(&n); err != nil || n != 1 {
 		t.Fatalf("before the reset: %d secrets, %v", n, err)
 	}
-	if _, err := runSecretKey(t, path, "reset", "--yes"); err == nil || !strings.Contains(err.Error(), "the values are deleted, but checkpoint database") {
+	out, err := runSecretKey(t, path, "reset", "--yes")
+	if err == nil || !strings.Contains(err.Error(), "the values are deleted, but checkpoint database") {
 		t.Fatalf("reset under a reader: %v", err)
+	}
+	for _, want := range []string{"deleted 2 values.", "The next start creates a new", "Set the secrets again with `flats secret set`"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("reset under a reader: %q lacks %q", out, want)
+		}
 	}
 	if err := reader.Rollback(); err != nil {
 		t.Fatal(err)
@@ -549,6 +554,8 @@ func TestSecretResetCheckpointHeldUp(t *testing.T) {
 	}
 }
 
+// A valid key that opens none of the values is no help: reset deletes them
+// and keeps that key.
 func TestSecretResetOverAnotherKey(t *testing.T) {
 	dir := t.TempDir()
 	path, _, h := hostWithSecrets(t, dir)
@@ -618,7 +625,20 @@ func TestStartWarnsAboutAStaleCopy(t *testing.T) {
 	if logs := start(); strings.Contains(logs, warning) {
 		t.Fatalf("a warning about a matching copy: %s", logs)
 	}
-	if err := os.Remove(filepath.Join(dir, core.RecoveryKeyIDFile)); err != nil {
+	// White space around the ID is ignored (rule 5).
+	idPath := filepath.Join(dir, core.RecoveryKeyIDFile)
+	id, err := os.ReadFile(idPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	padded := strings.Repeat(" ", 100) + "\n" + strings.TrimSpace(string(id)) + "\n\n"
+	if err := os.WriteFile(idPath, []byte(padded), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if logs := start(); strings.Contains(logs, warning) {
+		t.Fatalf("a warning about a matching ID in white space: %s", logs)
+	}
+	if err := os.Remove(idPath); err != nil {
 		t.Fatal(err)
 	}
 	if logs := start(); !strings.Contains(logs, warning) {
