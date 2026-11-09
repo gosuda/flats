@@ -1,7 +1,6 @@
 package app
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -9,7 +8,6 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -17,6 +15,7 @@ import (
 	"golang.org/x/term"
 
 	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/prompt"
 	"github.com/gosuda/flats/internal/store"
 )
 
@@ -412,8 +411,8 @@ func (k *secretKeyCmd) password(file string, isNew bool) (string, error) {
 
 // prompter asks the operator on a terminal.
 type prompter interface {
-	hidden(prompt string) (string, error)
-	line(prompt string) (string, error)
+	hidden(question string) (string, error)
+	line(question string) (string, error)
 }
 
 // openTerminal returns a prompter for in when it is a terminal, else nil.
@@ -432,83 +431,20 @@ type terminal struct {
 	out io.Writer
 }
 
-// hidden reads a line without echo. Echo goes off and comes back in this
-// goroutine, and the read in ask changes no terminal mode, so an interrupt
-// at any moment leaves echo on.
-func (t *terminal) hidden(prompt string) (string, error) {
-	restore, err := echoOff(int(t.f.Fd()))
-	if err != nil {
-		return "", err
-	}
-	defer restore()
-	return t.ask(prompt, func() (string, error) { return readHiddenLine(t.f) })
+func (t *terminal) hidden(question string) (string, error) {
+	return t.answer(prompt.Hidden(t.ctx, t.f, t.out, question))
 }
 
-func (t *terminal) line(prompt string) (string, error) {
-	return t.ask(prompt, func() (string, error) {
-		s, err := bufio.NewReader(t.f).ReadString('\n')
-		if errors.Is(err, io.EOF) {
-			err = nil
-		}
-		return s, err
-	})
+func (t *terminal) line(question string) (string, error) {
+	return t.answer(prompt.Line(t.ctx, t.f, t.out, question))
 }
 
-// ask prints prompt and waits for read or for cancellation: main catches
-// SIGINT, so Ctrl-C ends the wait, not the read, which stays blocked until
-// the process exits.
-func (t *terminal) ask(prompt string, read func() (string, error)) (string, error) {
-	if err := t.ctx.Err(); err != nil {
+// answer reports a prompt that an interrupt ended as one that wrote nothing.
+func (t *terminal) answer(s string, err error) (string, error) {
+	if err != nil && t.ctx.Err() != nil {
 		return "", interrupted(err)
 	}
-	fmt.Fprint(t.out, prompt)
-	type reply struct {
-		s   string
-		err error
-	}
-	ch := make(chan reply, 1)
-	go func() {
-		s, err := read()
-		ch <- reply{s, err}
-	}()
-	select {
-	case r := <-ch:
-		fmt.Fprintln(t.out)
-		return r.s, r.err
-	case <-t.ctx.Done():
-		fmt.Fprintln(t.out)
-		return "", interrupted(t.ctx.Err())
-	}
-}
-
-// readHiddenLine reads one line as term.ReadPassword does: it ends at a line
-// feed, or a carriage return on Windows, and a backspace drops one byte.
-func readHiddenLine(r io.Reader) (string, error) {
-	var b [1]byte
-	var line []byte
-	for {
-		n, err := r.Read(b[:])
-		if n > 0 {
-			switch c := b[0]; {
-			case c == '\b':
-				if len(line) > 0 {
-					line = line[:len(line)-1]
-				}
-			case c == '\n' && runtime.GOOS != "windows", c == '\r' && runtime.GOOS == "windows":
-				return string(line), nil
-			case c == '\n', c == '\r':
-			default:
-				line = append(line, c)
-			}
-			continue
-		}
-		if err != nil {
-			if errors.Is(err, io.EOF) && len(line) > 0 {
-				return string(line), nil
-			}
-			return "", err
-		}
-	}
+	return s, err
 }
 
 func interrupted(err error) error {

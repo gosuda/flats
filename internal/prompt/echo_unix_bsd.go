@@ -1,6 +1,6 @@
 //go:build darwin || dragonfly || freebsd || netbsd || openbsd
 
-package app
+package prompt
 
 import "golang.org/x/sys/unix"
 

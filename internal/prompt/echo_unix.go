@@ -1,6 +1,6 @@
 //go:build aix || darwin || dragonfly || freebsd || linux || netbsd || openbsd || solaris || zos
 
-package app
+package prompt
 
 import "golang.org/x/sys/unix"
 

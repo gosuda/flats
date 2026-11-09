@@ -1,6 +1,6 @@
 //go:build aix || linux || solaris || zos
 
-package app
+package prompt
 
 import "golang.org/x/sys/unix"
 

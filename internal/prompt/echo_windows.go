@@ -1,4 +1,4 @@
-package app
+package prompt
 
 import "golang.org/x/sys/windows"
 
