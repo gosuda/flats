@@ -91,8 +91,10 @@ Out of scope:
 8. A password never comes from a command-line argument or an environment
    variable. `--password-file PATH` names a file whose content, without its
    trailing carriage returns and line feeds, is the password. Without it the
-   command prompts without echo on a terminal. With neither a file nor a
-   terminal, the command stops with a usage error and writes nothing.
+   command prompts without echo on a terminal, and echo is on again when the
+   command ends, also when an interrupt ends it at the prompt. With neither a
+   file nor a terminal, the command stops with a usage error and writes
+   nothing.
 9. A password longer than 1024 bytes is refused by both commands.
 10. A usage mistake exits with status 2. A refusal exits with status 78, like
     `flats key`. Any other failure exits with status 1.
@@ -254,6 +256,9 @@ flats secret reset [--yes] [--config PATH | --data DIR]
 - Tests show the start-time warning when the key changes after `backup-key`,
   when the ID file is missing, and no warning when the copy matches or no copy
   exists. A test asserts the start-time refusal message.
+- On Linux, a test on a pseudo-terminal shows echo on after a password prompt
+  that an interrupt ends before it is shown or while it waits, and after an
+  answer.
 - The tests lower the work factor to keep the suite fast. One test checks
   that the commands use 2^18, and another reads the work factor a copy was
   written at from its header, without deriving a key at 2^18.

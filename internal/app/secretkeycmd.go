@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -378,33 +379,36 @@ type terminal struct {
 	out io.Writer
 }
 
-// hidden reads without echo. main catches SIGINT, so Ctrl-C does not end the
-// read itself: wait for it or for cancellation, and restore echo on the way out.
+// hidden reads a line without echo. Echo goes off and comes back in this
+// goroutine, and the read in ask changes no terminal mode, so an interrupt
+// at any moment leaves echo on.
 func (t *terminal) hidden(prompt string) (string, error) {
-	fd := int(t.f.Fd())
-	saved, err := term.GetState(fd)
+	restore, err := echoOff(int(t.f.Fd()))
 	if err != nil {
 		return "", err
 	}
-	fmt.Fprint(t.out, prompt)
-	return t.wait(func() (string, error) {
-		b, err := term.ReadPassword(fd)
-		return string(b), err
-	}, func() { _ = term.Restore(fd, saved) })
+	defer restore()
+	return t.ask(prompt, func() (string, error) { return readHiddenLine(t.f) })
 }
 
 func (t *terminal) line(prompt string) (string, error) {
-	fmt.Fprint(t.out, prompt)
-	return t.wait(func() (string, error) {
+	return t.ask(prompt, func() (string, error) {
 		s, err := bufio.NewReader(t.f).ReadString('\n')
 		if errors.Is(err, io.EOF) {
 			err = nil
 		}
 		return s, err
-	}, func() {})
+	})
 }
 
-func (t *terminal) wait(read func() (string, error), restore func()) (string, error) {
+// ask prints prompt and waits for read or for cancellation: main catches
+// SIGINT, so Ctrl-C ends the wait, not the read, which stays blocked until
+// the process exits.
+func (t *terminal) ask(prompt string, read func() (string, error)) (string, error) {
+	if err := t.ctx.Err(); err != nil {
+		return "", interrupted(err)
+	}
+	fmt.Fprint(t.out, prompt)
 	type reply struct {
 		s   string
 		err error
@@ -419,10 +423,43 @@ func (t *terminal) wait(read func() (string, error), restore func()) (string, er
 		fmt.Fprintln(t.out)
 		return r.s, r.err
 	case <-t.ctx.Done():
-		restore()
 		fmt.Fprintln(t.out)
-		return "", fmt.Errorf("interrupted; nothing was written: %w", t.ctx.Err())
+		return "", interrupted(t.ctx.Err())
 	}
+}
+
+// readHiddenLine reads one line as term.ReadPassword does: it ends at a line
+// feed, or a carriage return on Windows, and a backspace drops one byte.
+func readHiddenLine(r io.Reader) (string, error) {
+	var b [1]byte
+	var line []byte
+	for {
+		n, err := r.Read(b[:])
+		if n > 0 {
+			switch c := b[0]; {
+			case c == '\b':
+				if len(line) > 0 {
+					line = line[:len(line)-1]
+				}
+			case c == '\n' && runtime.GOOS != "windows", c == '\r' && runtime.GOOS == "windows":
+				return string(line), nil
+			case c == '\n', c == '\r':
+			default:
+				line = append(line, c)
+			}
+			continue
+		}
+		if err != nil {
+			if errors.Is(err, io.EOF) && len(line) > 0 {
+				return string(line), nil
+			}
+			return "", err
+		}
+	}
+}
+
+func interrupted(err error) error {
+	return fmt.Errorf("interrupted; nothing was written: %w", err)
 }
 
 // readLimited reads a whole file of at most limit bytes.
