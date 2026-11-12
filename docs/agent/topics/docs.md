@@ -55,6 +55,15 @@ or explicitly save the complete desired bundle. No files are deleted to make
 room; the disk quota still applies. **On a Public document a save, like a live edit,
 is visible to everyone at once**; tell the user.
 
+### Images people paste
+
+A person editing on a Private route can paste an image into the editor. It is
+added to the bundle at `images/<hash>.<ext>` beside the document, and the
+Markdown refers to it as `images/<hash>.<ext>`. Saving one document keeps these
+files. **A `replace_bundle` save that omits them deletes them**, and the text
+that refers to them then shows a broken image: read the current file list from
+`get_revision` first. Each added image is a revision.
+
 ### Edit live text
 
 `update_document {slug, doc?, ops, if_hash?}` edits the **live** Markdown of a

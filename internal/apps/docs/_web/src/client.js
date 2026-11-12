@@ -21,6 +21,12 @@ import {
   people,
   readersDialog,
 } from "./guest-ui.js";
+import {
+  ImageQueue,
+  imageMarkdown,
+  pastedImages,
+  uploadImage,
+} from "./image-paste.js";
 import { livePreview } from "./live-view.js";
 import { createMarkdown, linkRules } from "./markdown.js";
 import { editorMarkdown } from "./markdown-inline.js";
@@ -253,8 +259,9 @@ const history = initHistory({
     setMode(mode);
   },
   status(message) {
-    $("#status").textContent = message;
-    $("#status").dataset.state = "Saved";
+    syncLabel = message;
+    syncState = "Saved";
+    showStatus();
     provider.catchUp();
   },
 });
@@ -273,8 +280,89 @@ let viewers = { count: 0, labels: [] },
   readers = false;
 const flatName = () => flat || "these documents";
 
+// The status line says an image is on its way in place of the sync state,
+// which also hides the reconnect that adding one causes.
+let syncLabel = "",
+  syncState = "",
+  undoManager;
+function showStatus() {
+  const label = images.active ? "Adding image…" : syncLabel;
+  $("#status").textContent = label;
+  $("#status").dataset.state = images.active ? label : syncState;
+}
+// imageNotice reports a refused image apart from #notice, whose interruption
+// and download actions it must not replace.
+function imageNotice(message) {
+  let n = $("#image-notice");
+  if (!n) {
+    n = document.createElement("div");
+    n.id = "image-notice";
+    n.setAttribute("role", "status");
+    $("#notice").after(n);
+  }
+  const dismiss = document.createElement("button");
+  dismiss.type = "button";
+  dismiss.textContent = "Dismiss";
+  dismiss.addEventListener("click", () => {
+    n.hidden = true;
+  });
+  n.hidden = false;
+  n.replaceChildren(message + " ", dismiss);
+}
+const images = new ImageQueue({
+  upload: (file) => uploadImage(file, path, name),
+  insert: insertImage,
+  onActive: showStatus,
+  onError: imageNotice,
+});
+// imagePlace keeps where a pasted image goes while the text changes.
+function imagePlace() {
+  const { from, to } = view.state.selection.main;
+  return {
+    from: Y.createRelativePositionFromTypeIndex(text, from),
+    to: Y.createRelativePositionFromTypeIndex(text, to),
+    selected: view.state.doc.sliceString(from, to),
+  };
+}
+function insertImage(reference, place) {
+  if (!view || !writable || provider.model.stopped)
+    throw new Error(
+      "The image was saved, but this page stopped syncing, so it was not added to the text.",
+    );
+  const state = view.state,
+    index = (position) =>
+      Y.createAbsolutePositionFromRelativePosition(position, doc)?.index ??
+      state.selection.main.head,
+    start = index(place.from),
+    end = index(place.to);
+  // The caret follows the image only if the person has not moved it since.
+  const { from: caretFrom, to: caretTo } = state.selection.main,
+    follow = caretFrom === start && caretTo === end;
+  // A selection replaced as a paste replaces it, unless it changed meanwhile.
+  const from =
+    end >= start && state.doc.sliceString(start, end) === place.selected
+      ? start
+      : end;
+  const before = state.doc.lineAt(from),
+    after = state.doc.lineAt(end),
+    insert = imageMarkdown(
+      reference,
+      before.text.slice(0, from - before.from),
+      after.text.slice(end - after.from),
+    );
+  // Its own Undo step, apart from typing just before or after it.
+  undoManager.stopCapturing();
+  view.dispatch({
+    changes: { from, to: end, insert },
+    selection: follow ? { anchor: from + insert.length } : undefined,
+    userEvent: "input.paste",
+    scrollIntoView: follow,
+  });
+  undoManager.stopCapturing();
+}
+
 function createEditor() {
-  const undoManager = new Y.UndoManager(text, {
+  undoManager = new Y.UndoManager(text, {
     trackedOrigins: new Set(),
     captureTimeout: 350,
   });
@@ -288,6 +376,18 @@ function createEditor() {
         editorMarkdown(),
         livePreview(links, resolveURL, (source) => md.render(source)),
         access.of(EditorState.readOnly.of(false)),
+        EditorView.domEventHandlers({
+          paste(event, editor) {
+            const pasted = pastedImages(event.clipboardData);
+            if (!pasted.length) return false;
+            event.preventDefault();
+            if (editor.state.readOnly) return true;
+            if (join.kind === "guest")
+              imageNotice("Guests can't add images to this document.");
+            else images.add(pasted, imagePlace());
+            return true;
+          },
+        }),
         keymap.of([...yUndoManagerKeymap, ...defaultKeymap, indentWithTab]),
         // Without awareness yCollab leaves cursors to remoteCursors, which
         // draws the guest badge.
@@ -328,8 +428,8 @@ function startReplica() {
     editor,
     hello: () => join.hello(name),
     onState: (label) => {
-      $("#status").textContent = label;
-      $("#status").dataset.state = label;
+      syncLabel = syncState = label;
+      showStatus();
     },
     onStop: stopped,
     onAccess,
@@ -632,6 +732,7 @@ window.addEventListener("beforeunload", (event) => {
   }
 });
 window.addEventListener("pagehide", () => {
+  images.close();
   refresh.cancel();
   provider.destroy();
 });

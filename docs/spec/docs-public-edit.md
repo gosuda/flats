@@ -205,10 +205,10 @@ And one for consistency:
     documents, and changing any file of the flat other than the documents'
     text. Most of these have no browser control today for anyone; the host
     still refuses them for guests.
-19. **No new files from guests.** Documents have no upload in the browser, and
-    guests get none. A guest can write Markdown that refers to an image or file
-    of the flat as it is now; a reference to anything else does not load
-    (rule 21a).
+19. **No new files from guests.** Members on Private routes can paste images
+    ([docs-image-paste.md](docs-image-paste.md)); guests get no upload. A guest
+    can write Markdown that refers to an image or file of the flat as it is now;
+    a reference to anything else does not load (rule 21a).
 20. **The host decides, per request.** As board public rule 20: permission
     comes from the route decision and the stored level, checked when a
     connection is admitted and again when each update commits, never from what

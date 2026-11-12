@@ -199,22 +199,35 @@ func (s *Service) docsRevisionFile(w http.ResponseWriter, r *http.Request, slugN
 // docsWriteAllowed applies the write protection of the revision routes and
 // decodes the JSON body into v.
 func docsWriteAllowed(w http.ResponseWriter, r *http.Request, v any) bool {
-	if r.Header.Get("X-Flats-Docs") != "1" || !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
+	if !strings.HasPrefix(r.Header.Get("Content-Type"), "application/json") {
 		docsRevisionError(w, http.StatusForbidden, "forbidden", "revision changes need the document page")
 		return false
 	}
-	if site := r.Header.Get("Sec-Fetch-Site"); site != "" {
-		if site != "same-origin" {
-			docsRevisionError(w, http.StatusForbidden, "forbidden", "cross-site revision change")
-			return false
-		}
-	} else if origin := r.Header.Get("Origin"); origin != "" && origin != requestOrigin(r) {
-		docsRevisionError(w, http.StatusForbidden, "forbidden", "cross-origin revision change")
+	if !docsPageRequest(w, r) {
 		return false
 	}
 	body, err := io.ReadAll(io.LimitReader(r.Body, 4096))
 	if err != nil || (len(body) > 0 && json.Unmarshal(body, v) != nil) {
 		docsRevisionError(w, http.StatusBadRequest, "invalid", "body must be JSON")
+		return false
+	}
+	return true
+}
+
+// docsPageRequest refuses a write that does not come from the document page:
+// it needs the page's own header and a same-origin request.
+func docsPageRequest(w http.ResponseWriter, r *http.Request) bool {
+	if r.Header.Get("X-Flats-Docs") != "1" {
+		docsRevisionError(w, http.StatusForbidden, "forbidden", "this change needs the document page")
+		return false
+	}
+	if site := r.Header.Get("Sec-Fetch-Site"); site != "" {
+		if site != "same-origin" {
+			docsRevisionError(w, http.StatusForbidden, "forbidden", "cross-site change")
+			return false
+		}
+	} else if origin := r.Header.Get("Origin"); origin != "" && origin != requestOrigin(r) {
+		docsRevisionError(w, http.StatusForbidden, "forbidden", "cross-origin change")
 		return false
 	}
 	return true
