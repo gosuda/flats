@@ -2,6 +2,7 @@ package selfupdate
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -165,6 +166,46 @@ func extractTo(w io.Writer, raw []byte) error {
 	return nil
 }
 
+// extractZipTo is extractTo for the Windows archive: one zip entry flats.exe.
+func extractZipTo(w io.Writer, raw []byte) error {
+	r, e := zip.NewReader(bytes.NewReader(raw), int64(len(raw)))
+	if e != nil {
+		return failure("assets_unavailable", "invalid release archive: %w", e)
+	}
+	found := false
+	for _, f := range r.File {
+		if path.IsAbs(f.Name) || path.Clean(f.Name) != f.Name || f.Name == ".." || strings.HasPrefix(f.Name, "../") || strings.Contains(f.Name, "\\") {
+			return failure("assets_unavailable", "unsafe archive entry %q", f.Name)
+		}
+		if f.Name != "flats.exe" {
+			continue
+		}
+		if found || !f.Mode().IsRegular() || f.UncompressedSize64 == 0 || f.UncompressedSize64 > executableLimit {
+			return failure("assets_unavailable", "invalid flats executable entry")
+		}
+		rc, e := f.Open()
+		if e != nil {
+			return failure("assets_unavailable", "invalid release archive: %w", e)
+		}
+		rec := &writeRecorder{w: w}
+		_, e = io.Copy(rec, io.LimitReader(rc, executableLimit+1))
+		if ce := rc.Close(); e == nil {
+			e = ce
+		}
+		if rec.err != nil {
+			return failure("filesystem", "write candidate executable: %w", rec.err)
+		}
+		if e != nil {
+			return failure("assets_unavailable", "invalid compressed archive: %w", e)
+		}
+		found = true
+	}
+	if !found {
+		return failure("assets_unavailable", "release archive has no flats executable")
+	}
+	return nil
+}
+
 // stageStream fills the stage file through fill, so the candidate executable
 // is written once from the archive stream and never buffered whole. It mirrors
 // the create/chmod/sync/close sequence of stage in files.go. fill runs even
@@ -253,6 +294,25 @@ func probe(ctx context.Context, p string) (Identity, error) {
 	return id, e
 }
 
+// supportedPlatform names the systems that have a release archive.
+func supportedPlatform(goos, goarch string) bool {
+	switch goos {
+	case "darwin", "linux":
+		return goarch == "amd64" || goarch == "arm64"
+	case "windows":
+		return goarch == "amd64"
+	}
+	return false
+}
+
+// samePath compares two paths of one file. Windows ignores case.
+func samePath(a, b string) bool {
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(a, b)
+	}
+	return a == b
+}
+
 // Update verifies and atomically replaces one standalone executable.
 func Update(ctx context.Context, o Options) (Identity, string, error) {
 	if !ValidTag(o.Version) {
@@ -264,7 +324,7 @@ func Update(ctx context.Context, o Options) (Identity, string, error) {
 	if o.GOARCH == "" {
 		o.GOARCH = runtime.GOARCH
 	}
-	if (o.GOOS != "darwin" && o.GOOS != "linux") || (o.GOARCH != "amd64" && o.GOARCH != "arm64") {
+	if !supportedPlatform(o.GOOS, o.GOARCH) {
 		return Identity{}, "", failure("invalid_target", "unsupported platform %s/%s", o.GOOS, o.GOARCH)
 	}
 	abs, e := filepath.Abs(o.Path)
@@ -275,13 +335,13 @@ func Update(ctx context.Context, o Options) (Identity, string, error) {
 	if e != nil {
 		return Identity{}, abs, e
 	}
-	if abs != resolved {
+	if !samePath(abs, resolved) {
 		return Identity{}, abs, failure("invalid_target", "executable path resolves elsewhere; use its installation manager")
 	}
 	if strings.Contains(resolved, "/Cellar/") || strings.Contains(resolved, "/Caskroom/") || strings.HasPrefix(resolved, "/nix/store/") {
 		return Identity{}, abs, failure("package_managed", "package-managed executable; use its installation manager")
 	}
-	if strings.Contains(resolved, "/go-build") {
+	if strings.Contains(filepath.ToSlash(resolved), "/go-build") {
 		return Identity{}, abs, failure("invalid_target", "temporary go-build executable cannot be updated")
 	}
 	st, e := regular(abs)
@@ -305,7 +365,10 @@ func Update(ctx context.Context, o Options) (Identity, string, error) {
 	}
 	c := releaseClient(o.Transport)
 	base := "https://github.com/gosuda/flats/releases/download/" + o.Version + "/"
-	name := "flats_" + o.GOOS + "_" + o.GOARCH + ".tar.gz"
+	name, extract := "flats_"+o.GOOS+"_"+o.GOARCH+".tar.gz", extractTo
+	if o.GOOS == "windows" {
+		name, extract = "flats_"+o.GOOS+"_"+o.GOARCH+".zip", extractZipTo
+	}
 	sums, e := download(ctx, c, base+"checksums.txt", 1<<20)
 	if e != nil {
 		return Identity{}, abs, e
@@ -321,7 +384,7 @@ func Update(ctx context.Context, o Options) (Identity, string, error) {
 	if Digest(archive) != sum {
 		return Identity{}, abs, failure("checksum", "release archive checksum mismatch")
 	}
-	staged, e := stageStream(abs, 0755, func(w io.Writer) error { return extractTo(w, archive) })
+	staged, e := stageStream(abs, 0755, func(w io.Writer) error { return extract(w, archive) })
 	if e != nil {
 		return Identity{}, abs, e
 	}
@@ -354,7 +417,7 @@ func Update(ctx context.Context, o Options) (Identity, string, error) {
 	if Digest(now) != Digest(original) {
 		return Identity{}, abs, failure("file_conflict", "executable changed before replacement")
 	}
-	if e = commit(ctx, staged, abs); e != nil {
+	if e = commitExecutable(ctx, staged, abs); e != nil {
 		return Identity{}, abs, e
 	}
 	return id, abs, nil

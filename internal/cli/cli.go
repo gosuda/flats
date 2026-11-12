@@ -68,6 +68,7 @@ type Env struct {
 	Getenv           func(string) string
 	HTTP             *http.Client
 	Launchd          launchd.Runner         // nil: the real launchctl
+	ServiceDir       string                 // Windows: where the service definition lives; "": the default
 	Home             string                 // launchd home; "" = os.UserHomeDir
 	GOOS             string                 // "" = runtime.GOOS
 	PollInterval     time.Duration          // logs --follow and approvals wait; 0 = 2s (wait: 1s)
@@ -131,8 +132,8 @@ func init() {
 		{"secret", "manage server-flat secrets", "secret set <slug> <NAME>   (value from stdin)\n       flats secret rm <slug> <NAME>\n       flats secret ls <slug>", (*app).secret},
 		{"approvals", "list approval requests, or wait for one to be decided", "approvals [--status pending|approved|rejected|failed]\n       flats approvals wait <id> [--timeout seconds]", (*app).approvals},
 		{"status", "show server and service status", "status", (*app).status},
-		{"install", "run `flats serve` at login (launchd/systemd)", "install [--config path] [--data dir] [--executable path] [-- legacy serve flags...]", (*app).install},
-		{"uninstall", "remove the launchd agent", "uninstall", (*app).uninstall},
+		{"install", "run `flats serve` at login (launchd/systemd/scheduled task)", "install [--config path] [--data dir] [--executable path] [-- legacy serve flags...]", (*app).install},
+		{"uninstall", "remove the login service", "uninstall", (*app).uninstall},
 		{"connect", "choose which host this CLI and `flats mcp` talk to (to connect an agent, see mcp-config)", "connect [<url>] [--clear]", (*app).connect},
 		{"mcp", "relay the host's MCP tools over stdio (what the agent plugins run)", "mcp [--url url]", (*app).mcpBridge},
 		{"mcp-config", "print setup commands for Claude Code, Codex and Cursor", "mcp-config [--url url]", (*app).mcpConfig},

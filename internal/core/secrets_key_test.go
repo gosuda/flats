@@ -11,6 +11,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/gosuda/flats/internal/ostest"
 )
 
 func TestConcurrentFirstStartKeyPublication(t *testing.T) {
@@ -60,7 +62,7 @@ func TestConcurrentFirstStartKeyPublication(t *testing.T) {
 			}
 		}
 		info, err := os.Stat(path)
-		if err != nil || info.Mode().Perm() != 0o600 {
+		if err != nil || ostest.WrongMode(info, 0o600) {
 			t.Fatalf("key permissions: %v %v", info, err)
 		}
 		files, err := os.ReadDir(dir)
@@ -102,7 +104,7 @@ func TestDanglingSecretKeySymlink(t *testing.T) {
 	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "secret.key")
-	if err := os.Symlink(filepath.Join(dir, "unmounted-key"), path); err != nil {
+	if err := ostest.Symlink(t, filepath.Join(dir, "unmounted-key"), path); err != nil {
 		t.Fatal(err)
 	}
 	ctx, cancel := context.WithTimeout(t.Context(), 2*time.Second)
@@ -133,7 +135,7 @@ func TestValidExistingKeyIsPreserved(t *testing.T) {
 				t.Fatal(err)
 			}
 			if symlink {
-				if err := os.Symlink(target, path); err != nil {
+				if err := ostest.Symlink(t, target, path); err != nil {
 					t.Fatal(err)
 				}
 			}

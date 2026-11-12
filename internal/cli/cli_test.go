@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	flatsapp "github.com/gosuda/flats/internal/app"
-	"golang.org/x/sys/unix"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -20,7 +19,9 @@ import (
 	"time"
 
 	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/filelock"
 	"github.com/gosuda/flats/internal/launchd"
+	"github.com/gosuda/flats/internal/ostest"
 	"github.com/gosuda/flats/internal/store"
 )
 
@@ -724,7 +725,7 @@ func holdLock(t *testing.T, dir string) *os.File {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := unix.Flock(int(f.Fd()), unix.LOCK_EX|unix.LOCK_NB); err != nil {
+	if err := filelock.TryLock(f); err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { f.Close() })
@@ -831,6 +832,7 @@ func TestInstallStopsRunningService(t *testing.T) {
 }
 
 func TestInstallUninstallStatusWithFakeLaunchd(t *testing.T) {
+	ostest.SkipOnWindows(t, "launchd paths use forward slashes")
 	_, srv := newFakeAPI(t)
 	home := t.TempDir()
 	exe := filepath.Join(home, "flats-bin")
@@ -906,9 +908,9 @@ func TestInstallUninstallStatusWithFakeLaunchd(t *testing.T) {
 	if r := runEnv(t, env, srv.URL, "uninstall"); r.code != 0 || !strings.Contains(r.stdout, "Removed systemd user service") {
 		t.Errorf("linux uninstall: %d %s %s", r.code, r.stdout, r.stderr)
 	}
-	env.GOOS = "windows"
+	env.GOOS = "freebsd"
 	if r := runEnv(t, env, srv.URL, "install"); r.code != ExitError || !strings.Contains(r.stderr, "systemd") {
-		t.Errorf("windows install: %d %s", r.code, r.stderr)
+		t.Errorf("freebsd install: %d %s", r.code, r.stderr)
 	}
 }
 

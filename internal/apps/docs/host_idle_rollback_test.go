@@ -9,12 +9,12 @@ import (
 	"slices"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
 	"github.com/gosuda/flats/internal/bundle"
 	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/ostest"
 )
 
 // rollbackReplyFault alters only delivery of a successful real restore reply.
@@ -51,7 +51,7 @@ func (f *rollbackReplyFault) handler(next http.Handler) http.Handler {
 		if pid <= 0 {
 			err = fmt.Errorf("missing exact child PID")
 		} else {
-			err = syscall.Kill(pid, syscall.SIGKILL)
+			err = ostest.Kill(pid)
 		}
 		deadline := time.Now().Add(10 * time.Second)
 		for err == nil && alive(pid) && time.Now().Before(deadline) {

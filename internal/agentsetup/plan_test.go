@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gosuda/flats/internal/ostest"
 )
 
 func getenv(m map[string]string) func(string) string { return func(k string) string { return m[k] } }
@@ -220,7 +222,7 @@ func TestPlanRefusesAProjectThatIsTheHomeDirectory(t *testing.T) {
 
 	// The same directory under another spelling is still the home directory.
 	alias := filepath.Join(filepath.Dir(f.home), "home-alias")
-	if err := os.Symlink(f.home, alias); err != nil {
+	if err := ostest.Symlink(t, f.home, alias); err != nil {
 		t.Fatal(err)
 	}
 	for name, o := range map[string]Options{
@@ -238,7 +240,7 @@ func TestPlanRefusesAProjectThatIsTheHomeDirectory(t *testing.T) {
 // planning, so a setup that also has good targets writes none of them.
 func TestPlanRefusesATargetUnderADanglingDirectoryLink(t *testing.T) {
 	f := newFixture(t)
-	if err := os.Symlink(filepath.Join(f.home, "missing"), filepath.Join(f.home, ".claude")); err != nil {
+	if err := ostest.Symlink(t, filepath.Join(f.home, "missing"), filepath.Join(f.home, ".claude")); err != nil {
 		t.Fatal(err)
 	}
 	p := f.plan(t, User, false, Claude, Codex)
@@ -264,7 +266,7 @@ func TestBackupNamesUseTheResolvedPath(t *testing.T) {
 	f := newFixture(t)
 	real := filepath.Join(f.home, "dotfiles", "claude")
 	write(t, filepath.Join(real, "CLAUDE.md"), "# mine\n")
-	if err := os.Symlink(real, filepath.Join(f.home, ".claude")); err != nil {
+	if err := ostest.Symlink(t, real, filepath.Join(f.home, ".claude")); err != nil {
 		t.Fatal(err)
 	}
 	p := f.plan(t, User, false, Claude)
@@ -310,20 +312,20 @@ func TestPlanCodexFilePicksTheFileCodexReads(t *testing.T) {
 			"override links to an empty file": {func(t *testing.T, override string) {
 				real := filepath.Join(filepath.Dir(override), "real-override.md")
 				write(t, real, "")
-				if err := os.Symlink(real, override); err != nil {
+				if err := ostest.Symlink(t, real, override); err != nil {
 					t.Fatal(err)
 				}
 			}, emptyOverride},
 			"override links to a directory": {func(t *testing.T, override string) {
 				real := filepath.Join(filepath.Dir(override), "real-override")
 				os.MkdirAll(real, 0o755)
-				if err := os.Symlink(real, override); err != nil {
+				if err := ostest.Symlink(t, real, override); err != nil {
 					t.Fatal(err)
 				}
 			}, "AGENTS.md"},
 			"override is a dangling link": {func(t *testing.T, override string) {
 				os.MkdirAll(filepath.Dir(override), 0o755)
-				if err := os.Symlink(filepath.Join(filepath.Dir(override), "nowhere"), override); err != nil {
+				if err := ostest.Symlink(t, filepath.Join(filepath.Dir(override), "nowhere"), override); err != nil {
 					t.Fatal(err)
 				}
 			}, "AGENTS.md"},
@@ -415,7 +417,7 @@ func TestPlanRefusals(t *testing.T) {
 	write(t, filepath.Join(claude, "CLAUDE.md"), BeginMarker+"\nno end\n")
 	write(t, filepath.Join(claude, "settings.json"), `{"permissions": []}`)
 	os.MkdirAll(filepath.Join(f.home, ".codex", "AGENTS.md"), 0o755) // a directory
-	if err := os.Symlink(filepath.Join(f.home, "nowhere"), filepath.Join(f.project, "CLAUDE.md")); err != nil {
+	if err := ostest.Symlink(t, filepath.Join(f.home, "nowhere"), filepath.Join(f.project, "CLAUDE.md")); err != nil {
 		t.Fatal(err)
 	}
 	user := f.plan(t, User, false, Claude, Codex)
@@ -445,7 +447,7 @@ func TestSymbolicLinksAreFollowedAndKept(t *testing.T) {
 	write(t, filepath.Join(dotfiles, "CLAUDE.md"), "# mine\n")
 	claude := filepath.Join(f.home, ".claude")
 	os.MkdirAll(claude, 0o755)
-	if err := os.Symlink(filepath.Join(dotfiles, "CLAUDE.md"), filepath.Join(claude, "CLAUDE.md")); err != nil {
+	if err := ostest.Symlink(t, filepath.Join(dotfiles, "CLAUDE.md"), filepath.Join(claude, "CLAUDE.md")); err != nil {
 		t.Fatal(err)
 	}
 	p := f.plan(t, User, false, Claude)
@@ -469,7 +471,7 @@ func TestSymbolicLinksAreFollowedAndKept(t *testing.T) {
 	// An empty file behind a link stays after undo.
 	write(t, filepath.Join(dotfiles, "empty.md"), "")
 	os.Remove(filepath.Join(claude, "CLAUDE.md"))
-	os.Symlink(filepath.Join(dotfiles, "empty.md"), filepath.Join(claude, "CLAUDE.md"))
+	ostest.Symlink(t, filepath.Join(dotfiles, "empty.md"), filepath.Join(claude, "CLAUDE.md"))
 	f.apply(t, f.plan(t, User, false, Claude))
 	f.apply(t, f.plan(t, User, true, Claude))
 	if !exists(filepath.Join(dotfiles, "empty.md")) || !exists(filepath.Join(claude, "CLAUDE.md")) {
@@ -617,7 +619,7 @@ func TestCursorRuleThroughALinkKeepsTheLink(t *testing.T) {
 	write(t, target, string(CursorRule()))
 	rule := filepath.Join(f.project, ".cursor", "rules", "flats-documents.mdc")
 	os.MkdirAll(filepath.Dir(rule), 0o755)
-	if err := os.Symlink(target, rule); err != nil {
+	if err := ostest.Symlink(t, target, rule); err != nil {
 		t.Fatal(err)
 	}
 	p := f.plan(t, Project, true, Cursor)
@@ -658,10 +660,10 @@ func TestApplyBacksUpAndKeepsModes(t *testing.T) {
 	if got := read(t, filepath.Join(f.backups, name)); got != "# rules\n" {
 		t.Errorf("backup content = %q", got)
 	}
-	if fi, _ := os.Stat(path); fi.Mode().Perm() != 0o640 {
+	if fi, _ := os.Stat(path); ostest.WrongMode(fi, 0o640) {
 		t.Errorf("mode = %v, want 0640 kept", fi.Mode().Perm())
 	}
-	if fi, _ := os.Stat(filepath.Join(f.home, ".claude", "settings.json")); fi.Mode().Perm() != 0o600 {
+	if fi, _ := os.Stat(filepath.Join(f.home, ".claude", "settings.json")); ostest.WrongMode(fi, 0o600) {
 		t.Errorf("new settings mode = %v, want 0600", fi.Mode().Perm())
 	}
 	// A second backup of the same file within the same second does not collide.
@@ -677,7 +679,7 @@ func TestApplyBacksUpAndKeepsModes(t *testing.T) {
 	g := newFixture(t)
 	proj := g.plan(t, Project, false, Claude)
 	g.apply(t, proj)
-	if fi, _ := os.Stat(filepath.Join(g.project, "CLAUDE.md")); fi.Mode().Perm() != 0o644 {
+	if fi, _ := os.Stat(filepath.Join(g.project, "CLAUDE.md")); ostest.WrongMode(fi, 0o644) {
 		t.Errorf("new instruction file mode = %v, want 0644", fi.Mode().Perm())
 	}
 	if entries, _ = os.ReadDir(g.backups); len(entries) != 0 {

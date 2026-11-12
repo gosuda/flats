@@ -20,6 +20,7 @@ import (
 	zlog "github.com/rs/zerolog/log"
 
 	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/ostest"
 )
 
 // fakeExposure is a loopback TCP listener standing in for a Portal exposure,
@@ -220,7 +221,7 @@ func TestIdentityPersistedAndReused(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm() != 0o600 {
+	if ostest.WrongMode(fi, 0o600) {
 		t.Fatalf("identity mode = %v, want 0600", fi.Mode().Perm())
 	}
 
@@ -246,7 +247,7 @@ func TestIdentityPersistedAndReused(t *testing.T) {
 	if got := ff2.last(t).id; got.Address != first.Address || got.Name != "blog" {
 		t.Fatalf("restart identity = %s/%s, want blog/%s", got.Name, got.Address, first.Address)
 	}
-	if fi, _ := os.Stat(path); fi.Mode().Perm() != 0o600 {
+	if fi, _ := os.Stat(path); ostest.WrongMode(fi, 0o600) {
 		t.Fatalf("mode after load = %v", fi.Mode().Perm())
 	}
 
@@ -813,7 +814,7 @@ func TestDiscoveredRelayIsPinnedAndReused(t *testing.T) {
 		ready("https://m-relay.example", "https://blog.m-relay.example"))
 	waitFor(t, func() bool { return slices.Equal(f.explicit(), []string{"https://m-relay.example"}) })
 	waitFor(t, func() bool { return readPin(t, n, "blog") == "https://m-relay.example" })
-	if fi, err := os.Stat(n.pinPath("blog")); err != nil || fi.Mode().Perm() != 0o600 {
+	if fi, err := os.Stat(n.pinPath("blog")); err != nil || ostest.WrongMode(fi, 0o600) {
 		t.Errorf("pin file mode: %v %v", fi.Mode(), err)
 	}
 	// A relay that discovery adds later does not move the pin.
@@ -980,7 +981,7 @@ func TestAliasShownAndLossWarned(t *testing.T) {
 		b, _ := os.ReadFile(n.aliasPath("blog"))
 		return strings.Contains(string(b), "https://blog.m-relay.example")
 	})
-	if fi, err := os.Stat(n.aliasPath("blog")); err != nil || fi.Mode().Perm() != 0o600 {
+	if fi, err := os.Stat(n.aliasPath("blog")); err != nil || ostest.WrongMode(fi, 0o600) {
 		t.Errorf("alias file mode: %v %v", fi, err)
 	}
 

@@ -239,6 +239,7 @@ func TestDeployedVersionsIncludesPreviousOnly(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { s.Close() })
 	ctx := context.Background()
 	now := time.Now()
 	if err := s.CreateFlat(ctx, Flat{Slug: "old", Name: "old", Visibility: Private, CreatedAt: now, UpdatedAt: now}); err != nil {

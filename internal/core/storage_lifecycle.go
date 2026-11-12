@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/gosuda/flats/internal/durable"
 	"github.com/gosuda/flats/internal/slug"
 	"github.com/gosuda/flats/internal/store"
 )
@@ -107,15 +108,6 @@ func pathExists(path string) (bool, error) {
 	default:
 		return false, err
 	}
-}
-
-func syncDirectory(path string) error {
-	dir, err := os.Open(path)
-	if err != nil {
-		return err
-	}
-	defer dir.Close()
-	return dir.Sync()
 }
 
 func (s *Service) storageOperations() ([]storageOperation, error) {
@@ -260,7 +252,7 @@ func (s *Service) beginStorageOperation(op storageOperation) error {
 	if err := atomicJournal(journal, b); err != nil {
 		return err
 	}
-	return syncDirectory(s.storageJournalDir())
+	return durable.SyncDir(s.storageJournalDir())
 }
 
 func (s *Service) finishStorageOperation(op storageOperation) error {
@@ -271,7 +263,7 @@ func (s *Service) finishStorageOperation(op storageOperation) error {
 	if err := os.Remove(journal); err != nil {
 		return err
 	}
-	return syncDirectory(s.storageJournalDir())
+	return durable.SyncDir(s.storageJournalDir())
 }
 
 func (s *Service) storageOwner(ctx context.Context, slugName string) (bool, error) {
@@ -331,7 +323,7 @@ func (s *Service) recoverStorageRename(ctx context.Context, op storageOperation)
 		return err
 	}
 	if (fromOwned && toExists) || (toOwned && fromExists) {
-		if err := syncDirectory(s.storageRoot()); err != nil {
+		if err := durable.SyncDir(s.storageRoot()); err != nil {
 			return err
 		}
 		owner := op.From
@@ -381,10 +373,10 @@ func (s *Service) recoverStorageDelete(ctx context.Context, op storageOperation)
 		}
 		// Persist the restored entry before the removal from the trash, so
 		// a crash between the syncs cannot leave the files at neither path.
-		if err := syncDirectory(s.storageRoot()); err != nil {
+		if err := durable.SyncDir(s.storageRoot()); err != nil {
 			return err
 		}
-		if err := syncDirectory(s.deletedStorageRoot()); err != nil {
+		if err := durable.SyncDir(s.deletedStorageRoot()); err != nil {
 			return err
 		}
 		s.logf("recovered interrupted delete of %s: the flat still exists, so its storage was restored", op.From)
@@ -416,17 +408,17 @@ func (s *Service) removeDeletedStorage(op storageOperation, move bool) error {
 		if err := os.Rename(source, trash); err != nil {
 			return err
 		}
-		if err := syncDirectory(s.storageRoot()); err != nil {
+		if err := durable.SyncDir(s.storageRoot()); err != nil {
 			return err
 		}
-		if err := syncDirectory(s.deletedStorageRoot()); err != nil {
+		if err := durable.SyncDir(s.deletedStorageRoot()); err != nil {
 			return err
 		}
 	}
 	if err := os.RemoveAll(trash); err != nil {
 		return err
 	}
-	if err := syncDirectory(s.deletedStorageRoot()); err != nil {
+	if err := durable.SyncDir(s.deletedStorageRoot()); err != nil {
 		return err
 	}
 	return s.finishStorageOperation(op)
@@ -550,10 +542,10 @@ func (s *Service) quarantineOrphan(name string) (string, error) {
 		}
 		// Persist the quarantined entry before the removal from root, so a
 		// crash between the syncs cannot leave the files at neither path.
-		if err := syncDirectory(s.orphanStorageRoot()); err != nil {
+		if err := durable.SyncDir(s.orphanStorageRoot()); err != nil {
 			return target, err
 		}
-		return target, syncDirectory(s.storageRoot())
+		return target, durable.SyncDir(s.storageRoot())
 	}
 	return "", fmt.Errorf("too many quarantined copies of %q", name)
 }
@@ -570,10 +562,10 @@ func (s *Service) recoverStorageOperations(ctx context.Context) error {
 	if err := os.MkdirAll(s.orphanStorageRoot(), 0700); err != nil {
 		return err
 	}
-	if err := syncDirectory(s.storageRoot()); err != nil {
+	if err := durable.SyncDir(s.storageRoot()); err != nil {
 		return err
 	}
-	if err := syncDirectory(s.storageJournalDir()); err != nil {
+	if err := durable.SyncDir(s.storageJournalDir()); err != nil {
 		return err
 	}
 	operations, err := s.storageOperations()

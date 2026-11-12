@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gosuda/flats/internal/agentsetup"
+	"github.com/gosuda/flats/internal/ostest"
 )
 
 // setupFx is a home directory, a project and a config directory for one run of
@@ -433,7 +434,7 @@ func TestAgentSetupProjectScope(t *testing.T) {
 	os.MkdirAll(filepath.Join(k.home, ".git"), 0o755)
 	k.project = k.home
 	alias := filepath.Join(filepath.Dir(k.home), "home-alias")
-	if err := os.Symlink(k.home, alias); err != nil {
+	if err := ostest.Symlink(t, k.home, alias); err != nil {
 		t.Fatal(err)
 	}
 	k.home = alias
@@ -447,7 +448,7 @@ func TestAgentSetupProjectScope(t *testing.T) {
 func TestAgentSetupDanglingAgentDirectoryWritesNothing(t *testing.T) {
 	f := newSetupFx(t)
 	os.Remove(filepath.Join(f.home, ".claude"))
-	if err := os.Symlink(filepath.Join(f.home, "missing"), filepath.Join(f.home, ".claude")); err != nil {
+	if err := ostest.Symlink(t, filepath.Join(f.home, "missing"), filepath.Join(f.home, ".claude")); err != nil {
 		t.Fatal(err)
 	}
 	os.MkdirAll(filepath.Join(f.home, ".codex"), 0o755)
@@ -546,6 +547,7 @@ func (c *changeOnRead) Read(p []byte) (int, error) {
 }
 
 func TestAgentSetupReportsWriteFailuresPerFile(t *testing.T) {
+	ostest.SkipPOSIXModes(t)
 	if os.Geteuid() == 0 {
 		t.Skip("a read-only directory does not stop root")
 	}

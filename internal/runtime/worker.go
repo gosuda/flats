@@ -53,9 +53,25 @@ type worker struct {
 // listenerFD is the inherited listening Unix socket (cmd.ExtraFiles[0]).
 const listenerFD = 3
 
+// workerListener is the socket the worker serves on: the inherited one, or the
+// path of its spec where a socket cannot be inherited.
+func workerListener(spec workerSpec) (net.Listener, error) {
+	if spec.Socket != "" {
+		return net.Listen("unix", spec.Socket)
+	}
+	f := os.NewFile(listenerFD, "listener")
+	defer f.Close()
+	return net.FileListener(f)
+}
+
 // specAcknowledged runs after the worker acknowledged its spec. A variable
 // for tests.
 var specAcknowledged = func(workerSpec) {}
+
+// newWorkerServer is the worker's HTTP server.
+func newWorkerServer(h http.Handler) *http.Server {
+	return &http.Server{Handler: h, ReadHeaderTimeout: 30 * time.Second, IdleTimeout: workerServerIdle, ErrorLog: nil}
+}
 
 // WorkerMain is the entry point of "flats worker": it reads its spec from
 // stdin, serves HTTP on the inherited socket and exits when stdin closes
@@ -103,9 +119,7 @@ func WorkerMain(args []string) error {
 	// the parent subtracts it from every usage sample and from the exit.
 	log.send(specAck())
 	specAcknowledged(spec)
-	f := os.NewFile(listenerFD, "listener")
-	ln, err := net.FileListener(f)
-	f.Close()
+	ln, err := workerListener(spec)
 	if err != nil {
 		log.send(childMsg{T: "fatal", Msg: "worker: no listener: " + err.Error()})
 		return err
@@ -118,7 +132,7 @@ func WorkerMain(args []string) error {
 		log.send(childMsg{T: "fatal", Msg: err.Error()})
 		return err
 	}
-	srv := &http.Server{Handler: w, ReadHeaderTimeout: 30 * time.Second, ErrorLog: nil}
+	srv := newWorkerServer(w)
 	served := make(chan error, 1)
 	go func() { served <- srv.Serve(ln) }()
 	log.send(childMsg{T: "ready", MS: time.Since(start).Milliseconds()})

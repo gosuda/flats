@@ -1,3 +1,5 @@
+//go:build !windows
+
 package launchd
 
 import (
@@ -12,6 +14,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gosuda/flats/internal/ostest"
 )
 
 type call struct {
@@ -362,7 +366,7 @@ func TestInstallRetriesBootstrapOnce(t *testing.T) {
 func TestBuildJobKeepsSymlinkedExecutable(t *testing.T) {
 	opts := testOpts(t, &fakeLaunchctl{})
 	link := filepath.Join(t.TempDir(), "flats")
-	if err := os.Symlink(opts.Executable, link); err != nil {
+	if err := ostest.Symlink(t, opts.Executable, link); err != nil {
 		t.Fatal(err)
 	}
 	opts.Executable = link

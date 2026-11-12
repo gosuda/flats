@@ -21,11 +21,17 @@ copy of any setting.
 
 By default the configuration and the data share one directory: the OS user
 configuration directory plus `Flats` (`~/Library/Application Support/Flats` on
-macOS, `$XDG_CONFIG_HOME/Flats` or `~/.config/Flats` on Linux).
+macOS, `$XDG_CONFIG_HOME/Flats` or `~/.config/Flats` on Linux). On Windows it is
+`%LOCALAPPDATA%\Flats`, not the roaming profile, which would copy databases and
+caches at each logon on a domain machine. `flats serve` gives the data directory
+an access list for the user and the system alone, wherever it is: file modes do
+not protect the keys and sockets there.
 
-The client connection is not part of the data directory. It lives in the same
-OS user configuration directory under `flats-client/`, only the CLI and
-`flats mcp` read it, and `flats serve` ignores it.
+The client connection is not part of the data directory. It lives in the OS
+user configuration directory under `flats-client/` (`%APPDATA%` on Windows), only
+the CLI and `flats mcp` read it, and `flats serve` ignores it. On Windows the
+definition of the service, `service.xml`, lies in `%LOCALAPPDATA%\Flats` whatever
+the data directory is.
 
 ```text
 <data-dir>/
@@ -112,9 +118,10 @@ Required:
 `cloudflare-quick/` is optional: without it each public flat's quick tunnel
 gets a new random address. Logs, caches, sockets and the lock are rebuilt.
 
-To back up, stop the host and copy the whole data directory. That covers all of
-it and takes every file from one moment. Flats has no supported way to take a
-backup from a running host.
+To back up, stop the host and copy the whole data directory, plus `config.json`
+when it lives outside that directory. That covers all of it and takes every file
+from one moment. Flats has no supported way to take a backup from a running
+host.
 
 While the host runs, these are live SQLite databases, with recent commits in a
 `-wal` file beside each one:
@@ -709,7 +716,8 @@ approvals.
   started in a terminal stops on SIGHUP instead, as when the terminal
   closes, and one started with SIGHUP ignored (as under `nohup`) ignores it.
   Without a reload the change applies at the next start, which fails if the
-  file is invalid.
+  file is invalid. Windows has no SIGHUP: run `flats install` to restart the
+  service.
 
 Every Flats write keeps the previous file in `config-history/`, writes a
 synced temporary file, renames it into place and syncs the directory.

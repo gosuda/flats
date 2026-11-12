@@ -16,6 +16,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/gosuda/flats/internal/ostest"
 )
 
 // fixtureNow is the fixtures' era; their redirects run until 2100.
@@ -383,7 +385,7 @@ func TestHistoricalFixturesMigrateToLatest(t *testing.T) {
 			if backed != flats {
 				t.Fatalf("backup has %d flats, want %d", backed, flats)
 			}
-			if fi, _ := os.Stat(bk); fi.Mode().Perm() != 0o600 {
+			if fi, _ := os.Stat(bk); ostest.WrongMode(fi, 0o600) {
 				t.Fatalf("backup mode %v", fi.Mode())
 			}
 		})
@@ -664,6 +666,9 @@ func TestBackupFailureAbortsMigration(t *testing.T) {
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
+			if strings.Contains(name, "writable") {
+				ostest.SkipPOSIXModes(t)
+			}
 			if os.Geteuid() == 0 && strings.Contains(name, "writable") {
 				t.Skip("root ignores directory permissions")
 			}

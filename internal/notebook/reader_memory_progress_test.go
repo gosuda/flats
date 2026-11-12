@@ -219,6 +219,7 @@ func TestReaderAdmissionSharesProgressWindow(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		_, read, db := spillSource(t, 1, "text")
 		m := NewSpillManager(t.TempDir(), 1<<30, nil)
+		t.Cleanup(func() { m.Close() })
 		t.Cleanup(func() { m.CancelScope(func(Scope) bool { return true }) })
 		entered := make(chan struct{})
 		done := make(chan error, 1)
@@ -260,6 +261,7 @@ func TestReaderFirstEstimationStall(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		s, read, db := spillSource(t, 1, "text")
 		m := NewSpillManager(t.TempDir(), 1<<30, nil)
+		t.Cleanup(func() { m.Close() })
 		t.Cleanup(func() { m.CancelScope(func(Scope) bool { return true }) })
 		entered := make(chan struct{})
 		done := make(chan error, 1)

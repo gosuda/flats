@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/gosuda/flats/internal/ostest"
 )
 
 func tgz(t *testing.T, entries map[string]string, extra ...*tar.Header) []byte {
@@ -341,7 +343,7 @@ func TestWriteConfinesDirectPathsAndSymlinks(t *testing.T) {
 		dst := filepath.Join(parent, "1")
 		outside := t.TempDir()
 		legacy := dst + ".tmp"
-		if err := os.Symlink(outside, legacy); err != nil {
+		if err := ostest.Symlink(t, outside, legacy); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := Write([]File{{Path: "index.html", Data: []byte("safe")}}, dst); err != nil {
@@ -370,7 +372,7 @@ func TestWriteConfinesDirectPathsAndSymlinks(t *testing.T) {
 	t.Run("root rejects escaping symlink", func(t *testing.T) {
 		staging := t.TempDir()
 		outside := t.TempDir()
-		if err := os.Symlink(outside, filepath.Join(staging, "linked")); err != nil {
+		if err := ostest.Symlink(t, outside, filepath.Join(staging, "linked")); err != nil {
 			t.Fatal(err)
 		}
 		root, err := os.OpenRoot(staging)
@@ -392,7 +394,7 @@ func TestFromDirSkipsLinksAndJunk(t *testing.T) {
 	os.WriteFile(filepath.Join(dir, "index.html"), []byte("i"), 0o644)
 	os.MkdirAll(filepath.Join(dir, "node_modules", "x"), 0o755)
 	os.WriteFile(filepath.Join(dir, "node_modules", "x", "a.js"), []byte("n"), 0o644)
-	os.Symlink("/etc/passwd", filepath.Join(dir, "pw"))
+	ostest.Symlink(t, "/etc/passwd", filepath.Join(dir, "pw"))
 	_, err := FromDir(dir, lim)
 	if v, ok := IsValidation(err); !ok || !strings.Contains(v.Error(), "pw") {
 		t.Fatalf("symlink in dir must be rejected: %v", err)
@@ -517,7 +519,7 @@ func TestFromDirSwapRaceNeverLeaks(t *testing.T) {
 				return
 			default:
 			}
-			_ = os.Symlink(secret, link)
+			_ = ostest.Symlink(t, secret, link)
 			_ = os.Rename(link, target)
 			_ = os.WriteFile(plain, []byte("public"), 0o644)
 			_ = os.Rename(plain, target)
