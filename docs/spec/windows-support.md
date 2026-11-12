@@ -176,29 +176,32 @@ browser on Windows. The technical design holds the measurements. The status is
   16 tests in parallel on Windows: its first `hello` reached the 10 s limit of one
   guest call after a slow worker start, 3.8 s in the last run. It passed 6 of 6 runs on
   four processors. The CI job is the first run of the docs tests on a Windows runner.
-- The `windows` CI job has failed in 2 of its 12 completed runs because the first
-  guest call after a worker start reached the 10 s limit of one guest call, both
-  times in tests of the `docs-soak` shard. On 2026-11-05 the tests were
-  `TestDocumentOwnershipSoak/1MiBASCII` and
-  `TestConflictPrivacyAndRollbackStorageBudgets/bytes`, with
+- The `windows` CI job has failed in 2 of its 12 completed runs because a guest call
+  soon after a worker start reached the 10 s limit of one guest call, both times in
+  tests of the `docs-soak` shard and in workers that started within 2 s of each
+  other. On 2026-11-05 the tests were `TestDocumentOwnershipSoak/1MiBASCII`, at its
+  first guest call, and `TestConflictPrivacyAndRollbackStorageBudgets/bytes`, at the
+  first read of its document after a worker start, with
   `failed to call QJS_FreeValue: module closed with context deadline exceeded`. On
   2026-11-12 they were the four tests that start the shard, `/bytes` among them,
-  after worker starts of 1.2 to 2.6 s, with
+  each at its first guest call, after worker starts of 1.2 to 2.6 s, with
   `failed to call js_std_await: allocate ... after the runtime closed`. The two texts
   differ because [the guarded JS engine](guarded-js-engine.md) came between the runs
   and words a closed runtime differently. Both say that the limit closed the runtime
-  during the call. In each event another worker started in about 0.3 s during those
-  seconds, so the runner did not stop. The cause is not identified. Load does not
-  explain the second event. On four processors that call takes 18 to 212 ms. With
-  three copies of the shard at once, a worker start takes 5.4 to 7.5 s and the call
-  at most 2.1 s. The failed run had worker starts of 1.2 to 2.6 s, against 0.9 to
-  1.8 s in eight runs in which these tests passed, so its starts were at most 0.8 s
-  slower while its calls were more than 10 s slower. At this rate the job can also fail a
-  pull request that did not cause it. On Windows, a document test that starts its
-  host with `startAppModule`, as the tests of both events do, now asks the worker
-  for its goroutine stacks when its first guest call is open after 5 s, and logs
-  them, so the next event shows where the worker waits (`stall_test.go` in
-  `internal/apps/docs`).
+  during the call. Each stalled call reads or writes the flat's database. In each
+  event another worker started in about 0.3 s during those seconds, so the runner
+  did not stop. The cause is not identified. Load does not explain the second
+  event. On four processors that call takes 18 to 212 ms. With three copies of the
+  shard at once, a worker start takes 5.4 to 7.5 s and the call at most 2.1 s. The
+  failed run had worker starts of 1.2 to 2.6 s, against 0.9 to 1.8 s in eight runs
+  in which these tests passed, so its starts were at most 0.8 s slower while its
+  calls were more than 10 s slower. At this rate the job can also fail a pull
+  request that did not cause it. On Windows, a document test that starts its host
+  with `startAppModule`, as the tests of both events do, now asks the worker for its
+  goroutine stacks when its first guest call is open after 5 s, and logs them, so
+  the next event shows where the worker waits (`stall_test.go` in
+  `internal/apps/docs`). The watch covers that first call only: the document read
+  of 2026-11-05 would not have started it.
 - Beside CPU and disk load on four processors, `TestHostIdleRealWorkerCycles` saw a
   worker start stall in two events of 252 runs, with both copies of the test at the
   same moment: for more than 15 s, which failed those two runs, and for more than
