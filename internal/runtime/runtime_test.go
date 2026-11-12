@@ -18,11 +18,11 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
 	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/ostest"
 	"github.com/gosuda/flats/internal/wsconn"
 	"github.com/tetratelabs/wazero"
 )
@@ -135,7 +135,7 @@ func newManager(t *testing.T) *Manager {
 	// A disposable, process-private root shares the compilation cache across
 	// tests without touching another test run or operator state.
 	cacheOnce.Do(func() {
-		cacheRoot, cacheErr = os.MkdirTemp("/tmp", "flats-runtime-test-")
+		cacheRoot, cacheErr = os.MkdirTemp(ostest.TempRoot(), "flats-runtime-test-")
 		if cacheErr == nil {
 			cacheErr = os.Mkdir(filepath.Join(cacheRoot, "cache"), 0o700)
 		}
@@ -150,7 +150,7 @@ func newManager(t *testing.T) *Manager {
 	if err := os.Mkdir(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Symlink(filepath.Join(cacheRoot, "cache"), filepath.Join(dir, "cache")); err != nil {
+	if err := ostest.LinkDir(t, filepath.Join(cacheRoot, "cache"), filepath.Join(dir, "cache")); err != nil {
 		t.Fatal(err)
 	}
 	m := &Manager{DataDir: dir, Exe: exe, Env: append([]string{testWorkerEnv + "=1"}, testImageEnv()...), Logf: t.Logf, Timeout: 60 * time.Second}
@@ -490,7 +490,7 @@ func TestDBPersistsAcrossRequestsAndRestart(t *testing.T) {
 	// Kill the worker: the next request restarts it and the data is still there.
 	in := f.inst.(*instance)
 	pid := in.pid()
-	if err := syscall.Kill(pid, syscall.SIGKILL); err != nil {
+	if err := ostest.Kill(pid); err != nil {
 		t.Fatal(err)
 	}
 	f.logs.waitFor(t, "worker exited unexpectedly")
@@ -506,7 +506,7 @@ func TestDBPersistsAcrossRequestsAndRestart(t *testing.T) {
 	}
 
 	// After another crash, concurrent requests share one restart.
-	if err := syscall.Kill(in.pid(), syscall.SIGKILL); err != nil {
+	if err := ostest.Kill(in.pid()); err != nil {
 		t.Fatal(err)
 	}
 	deadline := time.Now().Add(10 * time.Second)
@@ -546,7 +546,7 @@ func TestDBPersistsAcrossRequestsAndRestart(t *testing.T) {
 	if _, err := os.Stat(in.sock); !os.IsNotExist(err) {
 		t.Fatalf("socket not removed: %v", err)
 	}
-	if syscall.Kill(pid, 0) == nil {
+	if ostest.Alive(pid) {
 		t.Fatal("worker still alive after Stop")
 	}
 	inst2, err := m.Start(context.Background(), f.spec)
@@ -917,6 +917,9 @@ export default {
 		k, _, _ := strings.Cut(kv, "=")
 		wantKeys = append(wantKeys, k)
 	}
+	if ostest.Windows {
+		wantKeys = append(wantKeys, "SYSTEMROOT") // os/exec adds it to every child
+	}
 	sort.Strings(wantKeys)
 	f.logs.waitFor(t, "test-env-keys: ")
 	for _, l := range strings.Split(f.logs.String(), "\n") {
@@ -1219,7 +1222,7 @@ func TestStopWhileServing(t *testing.T) {
 	in := f.inst.(*instance)
 	pid := in.pid()
 	in.Stop()
-	if err := syscall.Kill(pid, 0); err == nil {
+	if ostest.Alive(pid) {
 		t.Fatalf("worker %d still running after Stop", pid)
 	}
 	if r := f.get(t, "/"); r.status != http.StatusServiceUnavailable {
@@ -1348,7 +1351,7 @@ func TestVersionSymlinkRefused(t *testing.T) {
 	dir := filepath.Join(root, "v")
 	writeFiles(t, dir, map[string]string{"index.js": `import * as std from "qjs:std";
 export default { fetch() { return new Response(String(std.loadFile("/link.txt"))); } }`})
-	if err := os.Symlink(outside, filepath.Join(dir, "link.txt")); err != nil {
+	if err := ostest.Symlink(t, outside, filepath.Join(dir, "link.txt")); err != nil {
 		t.Skip(err)
 	}
 	l := &logs{}

@@ -1,0 +1,3 @@
+# A checkout has LF line endings on every system. Embedded docs are parsed by
+# line and hashed, so a CRLF tree builds a binary that panics at start.
+* text=auto eol=lf

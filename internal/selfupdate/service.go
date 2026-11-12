@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/gosuda/flats/internal/systemd"
+	"github.com/gosuda/flats/internal/winservice"
 	"io"
 	"os"
 	"path/filepath"
@@ -14,6 +15,9 @@ import (
 )
 
 func checkService(target, home, goos string) error {
+	if goos == "windows" {
+		return checkWindowsService(target)
+	}
 	if home == "" {
 		var e error
 		home, e = os.UserHomeDir()
@@ -53,6 +57,24 @@ func checkService(target, home, goos string) error {
 	}
 	return nil
 }
+
+// checkWindowsService refuses to replace the binary of the installed scheduled
+// task, as the launchd and systemd checks do.
+func checkWindowsService(target string) error {
+	dir, e := winservice.DefinitionDir()
+	if e != nil {
+		return failure("service_binary", "cannot find the installed service: %w", e)
+	}
+	executable, e := winservice.InstalledExecutable(dir)
+	if e != nil {
+		return failure("service_binary", "cannot inspect the installed service: %w", e)
+	}
+	if executable != "" && samePath(executable, target) {
+		return failure("service_binary", "executable is used by installed Flats service; use a separate client installation or the service installer")
+	}
+	return nil
+}
+
 func plistExecutable(b []byte) (string, error) {
 	d := xml.NewDecoder(bytes.NewReader(b))
 	want := false

@@ -21,6 +21,7 @@ import (
 	"github.com/gosuda/flats/internal/api"
 	"github.com/gosuda/flats/internal/core"
 	"github.com/gosuda/flats/internal/expose/local"
+	"github.com/gosuda/flats/internal/ostest"
 	"github.com/gosuda/flats/internal/store"
 )
 
@@ -487,13 +488,13 @@ func TestSaveVersionFromDir(t *testing.T) {
 	}
 	// A symlinked build directory is resolved; links inside it are still refused.
 	link := filepath.Join(t.TempDir(), "out")
-	if err := os.Symlink(dir, link); err != nil {
+	if err := ostest.Symlink(t, dir, link); err != nil {
 		t.Fatal(err)
 	}
 	if text, isErr := call(t, e.local, "save_draft_from_dir", map[string]any{"slug": "local", "dir": link}, &out); isErr || out.Draft.Files != 2 {
 		t.Fatalf("symlinked dir: %s %+v", text, out)
 	}
-	if err := os.Symlink(filepath.Join(dir, "index.html"), filepath.Join(dir, "alias.html")); err != nil {
+	if err := ostest.Symlink(t, filepath.Join(dir, "index.html"), filepath.Join(dir, "alias.html")); err != nil {
 		t.Fatal(err)
 	}
 	if text, isErr := call(t, e.local, "save_draft_from_dir", map[string]any{"slug": "local", "dir": link}, nil); !isErr || !strings.Contains(text, "alias.html") {

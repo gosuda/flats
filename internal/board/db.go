@@ -6,12 +6,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
 
 	"github.com/gosuda/flats/internal/board/engine"
+	"github.com/gosuda/flats/internal/sqliteuri"
 	_ "modernc.org/sqlite"
 )
 
@@ -99,8 +99,7 @@ func openStore(path string) (s *store, fresh bool, err error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, false, err
 	}
-	u := url.URL{Scheme: "file", Path: path}
-	dsn := u.String() + fmt.Sprintf("?_pragma=busy_timeout(%d)&_pragma=synchronous(FULL)&_txlock=immediate", busyTimeoutMS)
+	dsn := sqliteuri.File(path) + fmt.Sprintf("?_pragma=busy_timeout(%d)&_pragma=synchronous(FULL)&_txlock=immediate", busyTimeoutMS)
 	db, err := sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, false, err

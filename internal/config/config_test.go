@@ -9,6 +9,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/gosuda/flats/internal/ostest"
 )
 
 const testID = "63b57046-582f-48d9-a64f-877ae28d12aa"
@@ -231,7 +233,7 @@ func TestEffectiveDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := HostConfig{testID, "/var/lib/flats", "127.0.0.1:7878", "127.0.0.1:7879", true}
+	want := HostConfig{testID, cleanDataDir("/var/lib/flats"), "127.0.0.1:7878", "127.0.0.1:7879", true}
 	if c.Host != want {
 		t.Errorf("Host = %+v, want %+v", c.Host, want)
 	}
@@ -288,6 +290,7 @@ func TestEffectiveDefaults(t *testing.T) {
 }
 
 func TestDataDirIsClean(t *testing.T) {
+	ostest.SkipOnWindows(t, "forms of Unix paths; TestDataDirIsCleanOnWindows covers Windows")
 	for in, want := range map[string]string{
 		"/var/lib/flats":           "/var/lib/flats",
 		"/var/lib/flats/":          "/var/lib/flats",
@@ -326,7 +329,7 @@ func TestOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := HostConfig{testID, "/var/lib/flats", "127.0.0.1:18000", "[::1]:18001", false}
+	want := HostConfig{testID, cleanDataDir("/var/lib/flats"), "127.0.0.1:18000", "[::1]:18001", false}
 	if c.Host != want {
 		t.Errorf("Host = %+v, want %+v", c.Host, want)
 	}

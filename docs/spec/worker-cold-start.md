@@ -55,7 +55,8 @@ Implemented as designed in [worker-cold-start-technical-design.md](worker-cold-s
 Measured with a ready pre-started worker (p95 of 20 samples, gated budget
 tests): sleeping document first page 26–33 ms on macOS and 25–29 ms in a
 2-CPU Linux container, collaboration hello 24–30 ms, a tiny JavaScript flat's
-start plus first request 18–23 ms. The pre-started worker uses about 37 MB
+start plus first request 18–23 ms. [Windows support](windows-support.md#current-state)
+records a larger document wake on Windows. The pre-started worker uses about 37 MB
 (macOS physical footprint) or 55 MB (Linux PSS). A start within about one
 second after a previous adoption finds no ready spare and takes the old path.
 

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gosuda/flats/internal/durable"
 	"github.com/gosuda/flats/internal/slug"
 	"github.com/gosuda/flats/internal/store"
 )
@@ -114,7 +115,7 @@ func (s *Service) RenameSlug(ctx context.Context, from, to string, via Via) (Fla
 	root := s.storageRoot()
 	if err := os.Rename(fromDir, toDir); err == nil {
 		moved = true
-		if err := syncDirectory(root); err != nil {
+		if err := durable.SyncDir(root); err != nil {
 			rollbackErr := os.Rename(toDir, fromDir)
 			if rollbackErr != nil {
 				// Keep the journal so startup can recover the remaining
@@ -124,7 +125,7 @@ func (s *Service) RenameSlug(ctx context.Context, from, to string, via Via) (Fla
 			}
 			// The data is back at the old path: restart the old worker.
 			restoreCurrent()
-			rollbackErr = syncDirectory(root)
+			rollbackErr = durable.SyncDir(root)
 			if rollbackErr == nil {
 				rollbackErr = s.finishStorageOperation(op)
 			}
@@ -142,7 +143,7 @@ func (s *Service) RenameSlug(ctx context.Context, from, to string, via Via) (Fla
 				// to either slug is refused until then (lockStorage).
 				return FlatView{}, errors.Join(err, fmt.Errorf("restore storage after failed rename: %w", rollbackErr))
 			}
-			if rollbackErr := syncDirectory(root); rollbackErr != nil {
+			if rollbackErr := durable.SyncDir(root); rollbackErr != nil {
 				restoreCurrent()
 				return FlatView{}, errors.Join(err, rollbackErr)
 			}

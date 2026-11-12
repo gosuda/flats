@@ -31,12 +31,15 @@ import (
 	"os"
 	"path"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"unicode/utf8"
 
 	"github.com/gosuda/flats/internal/contenttype"
+	"github.com/gosuda/flats/internal/durable"
 	"github.com/gosuda/flats/internal/safedir"
+	"github.com/gosuda/flats/internal/winname"
 )
 
 // ManifestName is the optional manifest at the bundle root.
@@ -129,14 +132,24 @@ type Limits struct {
 
 // collector accumulates files with limit checks.
 type collector struct {
-	lim   Limits
-	files map[string]File
-	total int64
-	verr  ValidationError
+	lim    Limits
+	files  map[string]File
+	total  int64
+	verr   ValidationError
+	folded map[string]string // Windows: the paths by their case-folded key
 }
 
 func newCollector(lim Limits) *collector {
 	return &collector{lim: lim, files: map[string]File{}}
+}
+
+// reservedDocsPath reports whether p falls under the docs app's own routes.
+// Windows ignores case, so _DOCS is the same directory there.
+func reservedDocsPath(p string) bool {
+	if runtime.GOOS == "windows" {
+		p = strings.ToLower(p)
+	}
+	return p == "_docs" || strings.HasPrefix(p, "_docs/")
 }
 
 func cleanPath(p string) (string, bool) {
@@ -170,6 +183,9 @@ func (c *collector) addFile(name string, r io.Reader, mode fs.FileMode) error {
 		c.verr.add(p, "file appears twice in the archive", "remove the duplicate entry")
 		return nil
 	}
+	if runtime.GOOS == "windows" && !c.storable(p) {
+		return nil
+	}
 	if len(c.files) >= MaxFiles {
 		return fmt.Errorf("upload has more than %d files", MaxFiles)
 	}
@@ -184,6 +200,26 @@ func (c *collector) addFile(name string, r io.Reader, mode fs.FileMode) error {
 	c.total += int64(len(data))
 	c.files[p] = File{Path: p, Data: data, Mode: mode.Perm() &^ 0o022}
 	return nil
+}
+
+// storable reports whether Windows stores p under exactly this name. A name
+// that it refuses or changes, and two names that differ only in case, cannot
+// keep their content apart there.
+func (c *collector) storable(p string) bool {
+	if err := winname.CheckPath(p); err != nil {
+		c.verr.add(p, "Windows cannot store this name: "+err.Error(), "rename the file")
+		return false
+	}
+	if c.folded == nil {
+		c.folded = map[string]string{}
+	}
+	key := winname.FoldKey(p)
+	if other, dup := c.folded[key]; dup {
+		c.verr.add(p, fmt.Sprintf("differs only in case from %s, which Windows treats as the same file", other), "rename one of the files")
+		return false
+	}
+	c.folded[key] = p
+	return true
 }
 
 // skipName drops OS metadata files that are never part of a site.
@@ -814,7 +850,7 @@ func write(files []File, dst string, historical bool) (Result, error) {
 	for _, f := range files {
 		size += int64(len(f.Data))
 	}
-	if err := os.Rename(tmp, dst); err != nil {
+	if err := durable.Rename(tmp, dst); err != nil {
 		return Result{}, err
 	}
 	cleanup = false
@@ -992,7 +1028,7 @@ func parseDocs(files []File, index map[string]bool, fields map[string]json.RawMe
 	}
 	total, documents := 0, 0
 	for _, f := range files {
-		if f.Path == "_docs" || strings.HasPrefix(f.Path, "_docs/") {
+		if reservedDocsPath(f.Path) {
 			verr.add(f.Path, "path is reserved for the docs app", "move the file outside _docs/")
 		}
 		if !IsMarkdown(f.Path) {

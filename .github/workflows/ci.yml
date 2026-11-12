@@ -178,6 +178,43 @@ jobs:
           done
           exit "$failed"
 
+  # Native Windows: the test suite, the service install smoke and its release
+  # archive. The job runs as an administrator, so it cannot show that the
+  # install needs no administrator rights: docs/release.md has that manual check.
+  # It leaves out the docs-budget shard, whose wall-clock budgets belong to the
+  # Linux shard, and internal/devreview, whose run command is Unix only.
+  windows:
+    runs-on: windows-latest
+    timeout-minutes: 75
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-go
+        with:
+          cache-key: windows
+          module-scope: netbird
+          save-modules: "true"
+      - name: Build release archive
+        id: archive
+        run: FLATS_RELEASE_TARGETS=windows/amd64 scripts/build-release.sh v0.0.0-ci "$RUNNER_TEMP/dist"
+      - name: Tests
+        # Verbose: the log keeps the skips and the timing lines of this job.
+        run: |
+          failed=0
+          for shard in runtime-soak runtime-codec runtime docs-soak docs board; do
+            scripts/ci-test.sh "$shard" -v -timeout 30m || failed=1
+          done
+          # shellcheck disable=SC2046 # one argument per package path.
+          go test -v -timeout 30m $(go list ./... | grep -v -E 'internal/(runtime|apps/docs|board|devreview)') || failed=1
+          exit "$failed"
+      # Runs after a failed test step too: the two answer different questions.
+      - name: Install, crash, stop and uninstall the service
+        if: ${{ !cancelled() && steps.archive.outcome == 'success' }}
+        shell: pwsh
+        run: scripts/install-smoke.ps1 "$env:RUNNER_TEMP\dist"
+
   # Native macOS: launchd service install smoke and its release archive.
   # The Linux install smoke runs in the container job, on its archives.
   install-macos:

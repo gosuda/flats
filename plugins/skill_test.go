@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/gosuda/flats/internal/ostest"
 	"github.com/gosuda/flats/internal/clientstate"
 	"github.com/gosuda/flats/plugins"
 )
@@ -115,6 +116,7 @@ func TestMarketplaceReleaseContract(t *testing.T) {
 }
 
 func TestPluginSkillBoundary(t *testing.T) {
+	ostest.SkipOnWindows(t, "a checkout has no symlinks without Developer Mode")
 	// Development skills live in .agents/skills and ship with the checkout only;
 	// the plugin carries integration skills for agents that use a Flats host.
 	dev, err := os.ReadDir("../.agents/skills")

@@ -6,11 +6,12 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"net/url"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
+
+	"github.com/gosuda/flats/internal/sqliteuri"
 )
 
 // Limits are the host's current per-flat storage limits.
@@ -133,8 +134,7 @@ func Open(dir string, b Backend, opts Options) (*Instance, bool, error) {
 			return fail(err)
 		}
 	}
-	u := url.URL{Scheme: "file", Path: s.path}
-	in.readers, err = sql.Open("sqlite", u.String()+"?mode=ro&_pragma=foreign_keys(ON)&_pragma=busy_timeout(5000)")
+	in.readers, err = sql.Open("sqlite", sqliteuri.File(s.path)+"?mode=ro&_pragma=foreign_keys(ON)&_pragma=busy_timeout(5000)")
 	if err != nil {
 		return fail(err)
 	}

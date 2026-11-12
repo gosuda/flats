@@ -9,8 +9,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
+	"time"
 
-	"golang.org/x/sys/unix"
+	"github.com/gosuda/flats/internal/durable"
+	"github.com/gosuda/flats/internal/filelock"
 )
 
 // Error carries a stable machine-readable failure code.
@@ -121,15 +125,15 @@ func lock(path, config string) (func(), error) {
 		return nil, e
 	}
 	name := filepath.Join(dir, Digest([]byte(path))+".lock")
-	fd, e := unix.Open(name, unix.O_CREAT|unix.O_RDWR|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0600)
+	f, e := openLockFile(name)
 	if e != nil {
 		return nil, e
 	}
-	if e = unix.Flock(fd, unix.LOCK_EX|unix.LOCK_NB); e != nil {
-		unix.Close(fd)
+	if e = filelock.TryLock(f); e != nil {
+		f.Close()
 		return nil, failure("locked", "another update holds %s: %w", path, e)
 	}
-	return func() { unix.Flock(fd, unix.LOCK_UN); unix.Close(fd) }, nil
+	return func() { filelock.Unlock(f); f.Close() }, nil
 }
 func regular(path string) (os.FileInfo, error) {
 	st, e := os.Lstat(path)
@@ -163,6 +167,41 @@ func stage(path string, data []byte, mode os.FileMode) (string, error) {
 	}
 	return name, nil
 }
+
+// commitExecutable is commit for the running binary. Windows refuses to replace
+// a running image but lets it move, so it steps aside first. Each aside gets
+// its own name: the service or another process may still run the previous one,
+// and Windows refuses to delete that. Asides of earlier updates that no longer
+// run go now; a later update takes the rest.
+func commitExecutable(ctx context.Context, staged, path string) error {
+	if runtime.GOOS != "windows" {
+		return commit(ctx, staged, path)
+	}
+	if e := ctx.Err(); e != nil {
+		return e
+	}
+	if old, e := filepath.Glob(escapeGlob(path) + ".old-*"); e == nil {
+		for _, name := range old {
+			_ = os.Remove(name) // a running one stays
+		}
+	}
+	aside := fmt.Sprintf("%s.old-%d", path, time.Now().UnixNano())
+	if e := os.Rename(path, aside); e != nil {
+		return e
+	}
+	if e := os.Rename(staged, path); e != nil {
+		return errors.Join(e, os.Rename(aside, path))
+	}
+	_ = os.Remove(aside)
+	return nil
+}
+
+// escapeGlob quotes the pattern characters of a literal path. Windows has no
+// escape character in patterns, so a bracket becomes a class of itself.
+func escapeGlob(path string) string {
+	return strings.NewReplacer("[", "[[]", "*", "[*]", "?", "[?]").Replace(path)
+}
+
 func commit(ctx context.Context, staged, path string) error {
 	if e := ctx.Err(); e != nil {
 		return e
@@ -170,11 +209,7 @@ func commit(ctx context.Context, staged, path string) error {
 	if e := os.Rename(staged, path); e != nil {
 		return e
 	}
-	d, e := os.Open(filepath.Dir(path))
-	if e == nil {
-		e = errors.Join(d.Sync(), d.Close())
-	}
-	if e != nil {
+	if e := durable.SyncDir(filepath.Dir(path)); e != nil {
 		return failure("filesystem", "new bytes may already be installed at %s; directory durability failed: %w", path, e)
 	}
 	return nil

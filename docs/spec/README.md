@@ -46,6 +46,7 @@ list.
 | [Flats behind a reverse proxy](reverse-proxy-sites.md) | implemented | `proxy` and `proxy-public` providers that serve flats through an operator's reverse proxy, address selection by host default, and rename redirects on the arrival network |
 | [Agent document routing](agent-document-routing.md) | implemented | `flats agent-setup docs`: an opt-in, previewable and undoable setup that makes Flats the document tool of Claude Code, Codex and Cursor, and blocks the competing Claude Docs route |
 | [Autopilot](autopilot.md) | implemented | An opt-in mode in the new Settings › Experiments tab where agents approve or reject pending approvals for the operations the operator allows, with an operation guide for agents |
+| [Windows support](windows-support.md) | partly implemented | Flats on Windows: a PowerShell installer, a per-user service, Windows file names and locks, and a release archive |
 | [Public instance mode](public-instance.md) | implemented | An opt-in Experiments mode in which every new flat is created Public on the default public network and no private address is handed out or served |
 
 ## Where the technical designs live

@@ -20,7 +20,8 @@ table; a key's bucket follows the table's Applies column.
 
 ## Requirements
 
-1. **Trigger.** SIGHUP to a `flats serve` process whose standard input is
+1. **Trigger.** Windows has no SIGHUP, so this spec does not apply there: see
+   [Windows support](windows-support.md). SIGHUP to a `flats serve` process whose standard input is
    not a terminal, as under a service manager or in a container without a
    TTY, requests one reload. It never terminates or interrupts that host.
    There is no file watcher. Reloads happen only on the signal. Reloads are

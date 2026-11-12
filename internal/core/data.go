@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/gosuda/flats/internal/sqliteuri"
 	"github.com/gosuda/flats/internal/store"
 )
 
@@ -115,7 +116,7 @@ func copyFile(src, dst string) error {
 }
 
 func vacuumInto(src, dst string) error {
-	db, err := sql.Open("sqlite", "file:"+src+"?mode=ro&_pragma=busy_timeout(5000)")
+	db, err := sql.Open("sqlite", sqliteuri.File(src)+"?mode=ro&_pragma=busy_timeout(5000)")
 	if err != nil {
 		return err
 	}

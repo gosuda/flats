@@ -19,10 +19,10 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"time"
 
 	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/privatedir"
 )
 
 // Manager starts server flats as "flats worker" child processes. It
@@ -118,8 +118,11 @@ func privateDir(dir string) error {
 	if !fi.IsDir() {
 		return fmt.Errorf("%s is not a directory", dir)
 	}
-	if st, ok := fi.Sys().(*syscall.Stat_t); ok && int(st.Uid) != os.Getuid() {
+	if ownedByOther(fi) {
 		return fmt.Errorf("%s is owned by another user", dir)
+	}
+	if err := privatedir.Restrict(dir); err != nil {
+		return fmt.Errorf("%s: %w", dir, err)
 	}
 	if fi.Mode().Perm()&0o077 != 0 {
 		return os.Chmod(dir, 0o700)
@@ -163,25 +166,39 @@ func (m *Manager) startChild(ctx context.Context, spec core.RuntimeSpec) (*insta
 	}
 	var rnd [8]byte
 	rand.Read(rnd[:])
+	sock := filepath.Join(m.sockDir, "w"+hex.EncodeToString(rnd[:])+".sock")
 	in := &instance{
 		m:    m,
 		spec: spec,
-		sock: filepath.Join(m.sockDir, "w"+hex.EncodeToString(rnd[:])+".sock"),
+		sock: sock,
 		ws: workerSpec{Flat: spec.Flat, Version: spec.Version, Generation: spec.Generation, Dir: spec.Dir, Entry: spec.Entry,
 			DataDir: spec.DataDir, Env: spec.Env, NetworkOrigins: append([]string(nil), spec.NetworkOrigins...), CacheDir: m.cacheDir(), TimeoutMS: m.Timeout.Milliseconds(),
-			ImagePath: spec.ImagePath, UsageIntervalMS: m.UsageInterval.Milliseconds()},
+			ImagePath: spec.ImagePath, Socket: specSocket(sock), UsageIntervalMS: m.UsageInterval.Milliseconds()},
 	}
 	if in.ws.Env == nil {
 		in.ws.Env = map[string]string{}
 	}
+	in.connect()
+	t0 := time.Now()
+	if err := in.spawn(ctx); err != nil {
+		return nil, err
+	}
+	in.spec.Log("info", fmt.Sprintf("worker started in %dms", time.Since(t0).Milliseconds()))
+	return in, nil
+}
+
+// workerIdleClose is how long the host keeps an idle connection to a worker.
+const workerIdleClose = 60 * time.Second
+
+// connect builds the transport and the proxy to the worker's socket.
+func (in *instance) connect() {
 	tr := &http.Transport{
 		DialContext: func(ctx context.Context, _, _ string) (net.Conn, error) {
-			var d net.Dialer
-			return d.DialContext(ctx, "unix", in.sock)
+			return dialWorker(ctx, in.sock)
 		},
 		MaxIdleConns:        64,
 		MaxIdleConnsPerHost: 64,
-		IdleConnTimeout:     60 * time.Second,
+		IdleConnTimeout:     workerIdleClose,
 		DisableCompression:  true,
 		// Backstop only: the worker answers within its request timeout.
 		ResponseHeaderTimeout: in.ws.timeout() + 30*time.Second,
@@ -222,12 +239,16 @@ func (m *Manager) startChild(ctx context.Context, spec core.RuntimeSpec) (*insta
 			http.Error(w, "Bad Gateway: the server flat is not responding.", http.StatusBadGateway)
 		},
 	}
-	t0 := time.Now()
-	if err := in.spawn(ctx); err != nil {
+}
+
+// dialWorker connects to the socket of a worker.
+func dialWorker(ctx context.Context, sock string) (net.Conn, error) {
+	var d net.Dialer
+	c, err := d.DialContext(ctx, "unix", sock)
+	if err != nil {
 		return nil, err
 	}
-	in.spec.Log("info", fmt.Sprintf("worker started in %dms", time.Since(t0).Milliseconds()))
-	return in, nil
+	return workerConn(c), nil
 }
 
 // instance is a running server flat: one worker process at a time. The
@@ -379,31 +400,15 @@ func (in *instance) spawn(ctx context.Context) error {
 	return in.spawnExec(ctx)
 }
 
-// listenFile binds a Unix socket at path and returns its listening file
-// for a child's fd 3. The socket file outlives the returned file.
-func listenFile(path string) (*os.File, error) {
-	os.Remove(path)
-	ln, err := net.Listen("unix", path)
-	if err != nil {
-		return nil, fmt.Errorf("worker socket: %w", err)
-	}
-	ul := ln.(*net.UnixListener)
-	ul.SetUnlinkOnClose(false)
-	lf, err := ul.File()
-	ul.Close()
-	if err != nil {
-		os.Remove(path)
-		return nil, fmt.Errorf("worker socket: %w", err)
-	}
-	return lf, nil
-}
-
-// startProc starts a worker process on the listening socket lf. owner is
+// startProc starts a worker process on the listening socket lf, or without
+// one where the worker binds its own socket (lf nil). owner is
 // nil for a pre-started worker, whose warm-up directory warmDir is removed
 // after the process exited, before done is closed.
 func (m *Manager) startProc(lf *os.File, owner *instance, ready chan<- error, warmDir string) (*proc, error) {
 	cmd := m.command()
-	cmd.ExtraFiles = []*os.File{lf} // fd 3
+	if lf != nil {
+		cmd.ExtraFiles = []*os.File{lf} // fd 3
+	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -492,7 +497,7 @@ func (in *instance) adopt(ctx context.Context, sp *spare) (adopted bool, err err
 	}
 	// The bound socket follows its file: a rename moves the worker's listener
 	// to this instance's path.
-	if err := os.Rename(sp.sock, in.sock); err != nil {
+	if err := moveWorkerSocket(sp.sock, in.sock); err != nil {
 		sp.stop()
 		return false, nil
 	}
