@@ -15,6 +15,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/gosuda/flats/internal/ostest"
 )
 
 // fakeBackend is an in-memory zrok account. Listen returns a loopback
@@ -767,6 +769,7 @@ func TestUnshareGetsItsOwnDeadlineAfterDrainTimeout(t *testing.T) {
 }
 
 func TestHasRecordFailsClosed(t *testing.T) {
+	ostest.SkipPOSIXModes(t)
 	dir := t.TempDir()
 	if ok, err := HasRecord(dir, "blog"); ok || err != nil {
 		t.Fatalf("missing record: %v %v", ok, err)

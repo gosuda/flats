@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/gosuda/flats/internal/bundle"
+	"github.com/gosuda/flats/internal/ostest"
 	"github.com/gosuda/flats/internal/store"
 )
 
@@ -258,6 +259,7 @@ func TestRepeatedStartupQuarantineKeepsEarlierOrphans(t *testing.T) {
 // host. The journal stays and keeps the slug reserved until a later startup
 // finishes the removal.
 func TestDeleteCleanupFailureKeepsSlugReserved(t *testing.T) {
+	ostest.SkipPOSIXModes(t)
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores directory permissions")
 	}
@@ -367,6 +369,7 @@ func TestRenameRecoveryRefusesAmbiguousStorage(t *testing.T) {
 // A rename that fails before the metadata commit must restart the worker it
 // stopped, on the old slug, and leave no journal that blocks a later retry.
 func TestFailedRenameRestartsStoppedWorker(t *testing.T) {
+	ostest.SkipPOSIXModes(t)
 	if os.Geteuid() == 0 {
 		t.Skip("permission-based failure injection does not apply to root")
 	}
@@ -429,6 +432,7 @@ func TestFailedRenameRestartsStoppedWorker(t *testing.T) {
 // path, reserved by the journal, instead of quarantining them; otherwise the
 // next startup would release the journal and keep the deleted files forever.
 func TestStuckDeleteIsNotQuarantined(t *testing.T) {
+	ostest.SkipPOSIXModes(t)
 	if os.Geteuid() == 0 {
 		t.Skip("root ignores directory permissions")
 	}

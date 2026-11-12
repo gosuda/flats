@@ -15,6 +15,8 @@ import (
 	"time"
 
 	v1 "github.com/oesni/libtunnel/v1"
+
+	"github.com/gosuda/flats/internal/ostest"
 )
 
 type fakeSession struct {
@@ -213,7 +215,7 @@ func TestServeMintsRecordsAndServesTheOrigin(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm() != 0o600 {
+	if ostest.WrongMode(fi, 0o600) {
 		t.Errorf("record mode %v, want 0600", fi.Mode().Perm())
 	}
 	if b, _ := os.ReadFile(rec); string(b) != `{"tunnel":0}`+"\n" {

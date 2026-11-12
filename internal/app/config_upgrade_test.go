@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -20,6 +21,7 @@ import (
 	"github.com/gosuda/flats/internal/expose/local"
 	"github.com/gosuda/flats/internal/expose/portal"
 	"github.com/gosuda/flats/internal/expose/provider"
+	"github.com/gosuda/flats/internal/ostest"
 	"github.com/gosuda/flats/internal/store"
 )
 
@@ -154,7 +156,7 @@ func TestLegacyUpgradeEndToEnd(t *testing.T) {
   "schema_version": 5,
   "host": {
     "instance_id": "` + instance + `",
-    "data_dir": "` + dir + `"
+    "data_dir": ` + strconv.Quote(dir) + `
   },
   "network": {
     "permitted": ["portal"],
@@ -172,7 +174,7 @@ func TestLegacyUpgradeEndToEnd(t *testing.T) {
     "max_active_relays": 5
   },
   "credentials": {
-    "operator_file": "` + credential + `"
+    "operator_file": ` + strconv.Quote(credential) + `
   }
 }
 `
@@ -449,6 +451,7 @@ func TestConfigModeRefusals(t *testing.T) {
 	t.Run("missing config over leftover data", func(t *testing.T) {
 		for _, name := range []string{"secret.key", "flats", "tsnet"} {
 			dir := t.TempDir()
+			markDataDir(t, dir)
 			if err := os.Mkdir(filepath.Join(dir, name), 0o700); err != nil {
 				t.Fatal(err)
 			}
@@ -573,9 +576,11 @@ func TestConfigModeBootstrap(t *testing.T) {
 	ctx := context.Background()
 	dir := filepath.Join(t.TempDir(), "new")
 	path := filepath.Join(dir, "config.json")
-	// A new volume's lost+found is not Flats data.
-	if err := os.MkdirAll(filepath.Join(dir, "lost+found"), 0o700); err != nil {
-		t.Fatal(err)
+	// A new volume's lost+found is not Flats data. Windows volumes have none.
+	if !ostest.Windows {
+		if err := os.MkdirAll(filepath.Join(dir, "lost+found"), 0o700); err != nil {
+			t.Fatal(err)
+		}
 	}
 	h, err := Start(ctx, configModeOptions(path))
 	if err != nil {

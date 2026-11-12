@@ -10,7 +10,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -18,6 +17,8 @@ import (
 	"sync"
 
 	"modernc.org/sqlite"
+
+	"github.com/gosuda/flats/internal/sqliteuri"
 )
 
 const (
@@ -121,9 +122,9 @@ func openStore(path string) (*store, bool, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, false, fmt.Errorf("notebook.db directory: %w", err)
 	}
-	u := url.URL{Scheme: "file", Path: path}
+	uri := sqliteuri.File(path)
 	// Check the version before connection pragmas that can write the database.
-	preflightDSN := u.String()
+	preflightDSN := uri
 	if _, err := os.Stat(path); err == nil {
 		preflightDSN += "?mode=ro"
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -157,7 +158,7 @@ func openStore(path string) (*store, bool, error) {
 	if err := db.Close(); err != nil {
 		return nil, false, fmt.Errorf("notebook.db close preflight: %w", err)
 	}
-	dsn := u.String() + fmt.Sprintf("?_pragma=busy_timeout(%d)&_pragma=synchronous(FULL)&_pragma=foreign_keys(ON)&_txlock=immediate", busyTimeoutMS)
+	dsn := uri + fmt.Sprintf("?_pragma=busy_timeout(%d)&_pragma=synchronous(FULL)&_pragma=foreign_keys(ON)&_txlock=immediate", busyTimeoutMS)
 	db, err = sql.Open("sqlite", dsn)
 	if err != nil {
 		return nil, false, fmt.Errorf("notebook.db open writable connection: %w", err)

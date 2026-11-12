@@ -494,7 +494,7 @@ var hostFlags = []struct {
 // reported, and is then neither stored nor compared.
 func legacyHostValues(o Options) (map[string]string, []string) {
 	values, notes := map[string]string{}, []string(nil)
-	scratch, _ := config.New(config.NewInstanceID(), string(filepath.Separator))
+	scratch, _ := config.New(config.NewInstanceID(), config.ScratchDataDir())
 	for _, hf := range hostFlags {
 		// --console-host only named a console on the tailnet; legacyConsoleHosts
 		// decides it with the private backend.

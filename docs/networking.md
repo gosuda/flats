@@ -311,6 +311,11 @@ domain for flats, apart from the console and other sites.
 `proxy.addr` instead, forward the original `Host`, allow the reverse proxy on
 the flats it should serve and remove the rewriting.
 
+On Windows, the firewall blocks inbound connections to a background process
+without a prompt. A listener on a non-loopback address, such as `proxy.addr`,
+`host.console_addr` or `host.local_addr`, needs an inbound rule for `flats.exe`.
+Adding that rule needs administrator rights.
+
 ## Scraping metrics
 
 The host serves [`/metrics`](design.md#metrics) in the Prometheus text format

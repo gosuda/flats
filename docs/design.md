@@ -11,7 +11,7 @@ CLI, MCP and console that share one service are described in
 ## Process layout
 
 ```
-flats serve                     (one long-running process; launchd on macOS, systemd on Linux)
+flats serve                     (one long-running process; launchd on macOS, systemd on Linux, a scheduled task on Windows)
 ├── core.Service                flats, Drafts, versions, deploys, previews, approvals and
 │                               revisions (internal/core)
 ├── store                       SQLite metadata <data>/flats.db (modernc.org/sqlite, WAL)
@@ -37,11 +37,11 @@ operator guide is [Private and public access](networking.md) and the provider
 contract is [Network provider lifecycle](network-provider-lifecycle.md).
 
 The data directory defaults to `~/Library/Application Support/Flats` on macOS
-and is set by `host.data_dir` in `config.json`. Without `--config` or
-`FLATS_CONFIG`, `--data` or `FLATS_DATA` says where to find that file and, on a
-first start, which directory to use; a relative path is made absolute at
-startup, since workers run with `/` as their working directory.
-[Configuration and
+and `%LOCALAPPDATA%\Flats` on Windows, and is set by `host.data_dir` in
+`config.json`. Without `--config` or `FLATS_CONFIG`, `--data` or `FLATS_DATA`
+says where to find that file and, on a first start, which directory to use; a
+relative path is made absolute at startup, since workers run with `/` as their
+working directory. [Configuration and
 storage](configuration.md#where-data-lives) maps every file and says what to
 back up; the revision blob directories of documents and designs are described
 in [Revision store](revision-store.md#blobs).

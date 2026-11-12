@@ -79,6 +79,7 @@ type workerSpec struct {
 	PoolSize       int               `json:"pool_size,omitempty"`
 	NetworkOrigins []string          `json:"network_origins,omitempty"`
 	ImagePath      string            `json:"image_path,omitempty"` // document image file; live managed documents only
+	Socket         string            `json:"socket,omitempty"`     // path the worker binds; empty = the inherited socket
 	// UsageIntervalMS is how often the worker reports its CPU and memory;
 	// 0 = usageInterval.
 	UsageIntervalMS int64 `json:"usage_interval_ms,omitempty"`

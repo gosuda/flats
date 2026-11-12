@@ -46,6 +46,9 @@ func init() {
 }
 
 func (s *Static) open(p string) (*os.File, fs.FileInfo, error) {
+	if !allowedName(p) {
+		return nil, nil, fs.ErrNotExist
+	}
 	full := filepath.Join(s.Dir, filepath.FromSlash(p))
 	if !strings.HasPrefix(full, filepath.Clean(s.Dir)+string(filepath.Separator)) && full != filepath.Clean(s.Dir) {
 		return nil, nil, fs.ErrNotExist
@@ -53,6 +56,10 @@ func (s *Static) open(p string) (*os.File, fs.FileInfo, error) {
 	f, err := os.Open(full)
 	if err != nil {
 		return nil, nil, err
+	}
+	if !exactName(f, p) {
+		f.Close()
+		return nil, nil, fs.ErrNotExist
 	}
 	st, err := f.Stat()
 	if err != nil {

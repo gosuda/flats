@@ -163,7 +163,8 @@ the parent only inside the `msg` field of `"log"` lines
 ```
 
 - `cpu_ns`: user + system CPU time of the worker since it started, from
-  `syscall.Getrusage(RUSAGE_SELF)` (Linux and macOS, the release targets).
+  `syscall.Getrusage(RUSAGE_SELF)` on Linux and macOS, `GetProcessTimes` on
+  Windows.
 - `mem` (Linux only, omitted elsewhere): `RssAnon` from `/proc/self/status`,
   the resident private anonymous memory. It includes everything the worker
   maps privately: the Go heap and stacks, wazero linear memory (Go heap when

@@ -16,6 +16,7 @@ import (
 	"testing"
 
 	"github.com/gosuda/flats/internal/buildinfo"
+	"github.com/gosuda/flats/internal/ostest"
 )
 
 type transportFunc func(*http.Request) (*http.Response, error)
@@ -208,11 +209,14 @@ func TestUpdateRefusesSymlinkAndManagedPaths(t *testing.T) {
 	o, _ := setup(t)
 	real := o.Path
 	o.Path = filepath.Join(filepath.Dir(real), "alias")
-	if e := os.Symlink(real, o.Path); e != nil {
+	if e := ostest.Symlink(t, real, o.Path); e != nil {
 		t.Fatal(e)
 	}
 	if _, _, e := Update(t.Context(), o); Code(e) != "invalid_target" {
 		t.Fatal(e)
+	}
+	if ostest.Windows {
+		return // the package managers below exist on macOS and Linux
 	}
 	o.Path = filepath.Join(filepath.Dir(real), "Cellar/flats/1/flats")
 	os.MkdirAll(filepath.Dir(o.Path), 0755)
@@ -275,6 +279,7 @@ func TestServiceXDG(t *testing.T) {
 	assertOld(t, o)
 }
 func TestUpdateExecutesCandidateProbe(t *testing.T) {
+	ostest.SkipOnWindows(t, "the candidate of the fixture is a shell script")
 	o, _ := setup(t)
 	o.Probe = nil
 	o.GOOS = runtime.GOOS

@@ -12,8 +12,10 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-	"syscall"
 	"time"
+
+	"github.com/gosuda/flats/internal/durable"
+	"github.com/gosuda/flats/internal/filelock"
 )
 
 const (
@@ -133,10 +135,10 @@ func (m *SpillManager) openOwner(root string) error {
 		return err
 	}
 	defer namespace.Close()
-	if err := syscall.Flock(int(namespace.Fd()), syscall.LOCK_EX); err != nil {
+	if err := filelock.Lock(namespace); err != nil {
 		return err
 	}
-	defer syscall.Flock(int(namespace.Fd()), syscall.LOCK_UN)
+	defer filelock.Unlock(namespace)
 	entries, err := os.ReadDir(root)
 	if err != nil {
 		return err
@@ -144,7 +146,7 @@ func (m *SpillManager) openOwner(root string) error {
 	for _, entry := range entries {
 		path := filepath.Join(root, entry.Name())
 		if spillName(entry.Name(), "notebook-spill-") {
-			if err := os.RemoveAll(path); err != nil {
+			if err := durable.RemoveAll(path); err != nil {
 				return err
 			}
 			continue
@@ -159,12 +161,12 @@ func (m *SpillManager) openOwner(root string) error {
 		if err != nil {
 			return err
 		}
-		err = syscall.Flock(int(lock.Fd()), syscall.LOCK_EX|syscall.LOCK_NB)
+		err = filelock.TryLock(lock)
+		lock.Close() // an open file cannot be removed on Windows
 		if err == nil {
-			err = os.RemoveAll(path)
+			err = durable.RemoveAll(path)
 		}
-		lock.Close()
-		if err != nil && !errors.Is(err, syscall.EWOULDBLOCK) {
+		if err != nil && !errors.Is(err, filelock.ErrLocked) {
 			return err
 		}
 	}
@@ -183,7 +185,7 @@ func (m *SpillManager) openOwner(root string) error {
 	if err != nil {
 		return err
 	}
-	if err := syscall.Flock(int(lock.Fd()), syscall.LOCK_EX); err != nil {
+	if err := filelock.Lock(lock); err != nil {
 		lock.Close()
 		return err
 	}
@@ -214,12 +216,12 @@ func (m *SpillManager) Close() error {
 		m.timer.Stop()
 		m.timer = nil
 	}
-	err := os.RemoveAll(m.ownerDir)
-	if m.ownerLock != nil {
-		err = errors.Join(err, m.ownerLock.Close())
+	var err error
+	if m.ownerLock != nil { // an open file cannot be removed on Windows
+		err = m.ownerLock.Close()
 		m.ownerLock = nil
 	}
-	return err
+	return errors.Join(err, durable.RemoveAll(m.ownerDir))
 }
 
 type agentAdmissionKey struct{}
@@ -537,7 +539,7 @@ func (m *SpillManager) removeLocked(s *Spill, cause error) {
 		m.used -= s.reserved
 	}
 	// Close before releasing admission: unlinked open files still occupy scratch.
-	if err := os.RemoveAll(s.dir); err != nil {
+	if err := durable.RemoveAll(s.dir); err != nil {
 		s.cleanupErr = err
 		m.initErr = errors.Join(m.initErr, err)
 		for _, w := range m.queue {

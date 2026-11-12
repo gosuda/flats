@@ -15,6 +15,8 @@ import (
 	"testing"
 	"testing/iotest"
 	"time"
+
+	"github.com/gosuda/flats/internal/ostest"
 )
 
 // Tests that change bodyGrace are not parallel.
@@ -159,6 +161,8 @@ func sendSlowly(t *testing.T, addr string, chunks int, size int, gap time.Durati
 }
 
 func TestRequestBodyMinimumRate(t *testing.T) {
+	// A visitor gets the 408 through the proxy: TestProxiedRequestBodyMinimumRate.
+	ostest.SkipOnWindows(t, "on the worker's own socket a reset discards the 408 before the proxy reads it")
 	old := bodyGrace
 	bodyGrace = 300 * time.Millisecond
 	defer func() { bodyGrace = old }()

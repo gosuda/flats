@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/ostest"
 	flatsruntime "github.com/gosuda/flats/internal/runtime"
 )
 
@@ -44,7 +45,7 @@ func TestMain(m *testing.M) {
 		os.Exit(0)
 	}
 	var err error
-	cacheRoot, err = os.MkdirTemp("/tmp", "flats-docs-test-")
+	cacheRoot, err = os.MkdirTemp(ostest.TempRoot(), "flats-docs-test-")
 	if err != nil {
 		panic(err)
 	}

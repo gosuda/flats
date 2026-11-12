@@ -10,6 +10,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/gosuda/flats/internal/ostest"
 )
 
 type spillClock struct {
@@ -23,6 +25,7 @@ func (c *spillClock) advance(d time.Duration) { c.mu.Lock(); c.at = c.at.Add(d);
 func spillManager(t *testing.T, budget int64, clock *spillClock) *SpillManager {
 	t.Helper()
 	m := NewSpillManager(t.TempDir(), budget, clock.now)
+	t.Cleanup(func() { m.Close() })
 	t.Cleanup(func() { m.CancelScope(func(Scope) bool { return true }) })
 	return m
 }
@@ -151,6 +154,7 @@ func TestSpillCaptureProgressFloor(t *testing.T) {
 				if !errors.Is(err, errSpillUnavailable) {
 					t.Fatalf("below floor error: %v", err)
 				}
+				ostest.SkipOnWindows(t, "the test holds the file open, which keeps the directory")
 				if _, e := os.Stat(s.dir); !errors.Is(e, os.ErrNotExist) {
 					t.Fatalf("cancelled scratch survives: %v", e)
 				}
@@ -207,6 +211,7 @@ func TestSpillStallCancellationAndStartupCleanup(t *testing.T) {
 		t.Fatal(err)
 	}
 	cleaned := NewSpillManager(dir, 0, clock.now)
+	t.Cleanup(func() { cleaned.Close() })
 	if cleaned.initErr != nil {
 		t.Fatal(cleaned.initErr)
 	}

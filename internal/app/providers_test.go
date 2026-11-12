@@ -590,6 +590,7 @@ func TestNetbirdLegacyPeerIsDropped(t *testing.T) {
 	provider.RegisterNetbird(fakeNetbirdDriver{})
 	t.Cleanup(func() { provider.RegisterNetbird(nil) })
 	dir := t.TempDir()
+	markDataDir(t, dir)
 	nbDir := filepath.Join(dir, "netbird")
 	if err := os.MkdirAll(nbDir, 0o700); err != nil {
 		t.Fatal(err)

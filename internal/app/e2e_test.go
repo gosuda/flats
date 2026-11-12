@@ -24,7 +24,13 @@ func startLocal(t *testing.T) *Host {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { h.Close() })
+	t.Cleanup(func() {
+		// A dial that lost the race to a reused connection leaves a connection
+		// that sends nothing. Shutdown waits on it until its timeout, and the
+		// Host then keeps the data directory lock.
+		http.DefaultClient.CloseIdleConnections()
+		h.Close()
+	})
 	return h
 }
 

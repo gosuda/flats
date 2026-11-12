@@ -15,6 +15,7 @@ import (
 
 	"github.com/gosuda/flats/internal/board"
 	"github.com/gosuda/flats/internal/bundle"
+	"github.com/gosuda/flats/internal/durable"
 	"github.com/gosuda/flats/internal/site"
 	"github.com/gosuda/flats/internal/store"
 )
@@ -260,7 +261,8 @@ func (s *Service) docsRuntime(v store.Version, versionDir string) (string, strin
 		if err := staged.WriteFile(app.ContentModule, append(append([]byte("export default "), b...), ';', '\n'), 0o444); err != nil {
 			return "", "", nil, nil, err
 		}
-		if err := os.Rename(tmp, dir); err != nil {
+		staged.Close() // Windows does not rename a directory with an open handle
+		if err := durable.Rename(tmp, dir); err != nil {
 			return "", "", nil, nil, err
 		}
 	} else if err != nil {

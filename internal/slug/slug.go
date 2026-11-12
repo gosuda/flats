@@ -5,6 +5,9 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
+	"runtime"
+
+	"github.com/gosuda/flats/internal/winname"
 )
 
 // MinLen and MaxLen bound a flat slug. MaxLen leaves room for a preview
@@ -42,6 +45,9 @@ func Validate(s string) error {
 		default:
 			return fmt.Errorf("%w: %q may only contain lowercase letters, digits and single hyphens", ErrInvalid, s)
 		}
+	}
+	if runtime.GOOS == "windows" && winname.Device(s) {
+		return fmt.Errorf("%w: %q is a device name on Windows", ErrInvalid, s)
 	}
 	return nil
 }

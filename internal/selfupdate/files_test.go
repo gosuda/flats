@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/gosuda/flats/internal/ostest"
 )
 
 func TestSkillSync(t *testing.T) {
@@ -50,7 +52,7 @@ func TestSkillSyncRefusals(t *testing.T) {
 			switch name {
 			case "symlink":
 				os.Rename(p, p+".real")
-				os.Symlink(p+".real", p)
+				ostest.Symlink(t, p+".real", p)
 				want = "invalid_target"
 			case "locked":
 				real, e := canonical(p)
