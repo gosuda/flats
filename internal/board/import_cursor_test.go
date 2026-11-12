@@ -4,19 +4,19 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gosuda/flats/internal/sqliteuri"
 )
 
 // outboxMark reads the highest outbox seq board.db ever assigned.
 func outboxMark(t *testing.T, dir string) int64 {
 	t.Helper()
-	u := url.URL{Scheme: "file", Path: filepath.Join(dir, dbName)}
-	db, err := sql.Open("sqlite", u.String())
+	db, err := sql.Open("sqlite", sqliteuri.File(filepath.Join(dir, dbName)))
 	if err != nil {
 		t.Fatal(err)
 	}
