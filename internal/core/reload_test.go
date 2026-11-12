@@ -180,7 +180,7 @@ func TestReloadRefusesHostMismatch(t *testing.T) {
 		key, value string
 	}{
 		{"host.instance_id", config.NewInstanceID()},
-		{"host.data_dir", "/"},
+		{"host.data_dir", config.ScratchDataDir()},
 	} {
 		t.Run(tc.key, func(t *testing.T) {
 			s, path := newReloadService(t)

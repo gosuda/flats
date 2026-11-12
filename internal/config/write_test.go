@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"testing"
+
+	"github.com/gosuda/flats/internal/ostest"
 )
 
 func writeFile(t *testing.T, path, data string) string {
@@ -74,10 +76,10 @@ func TestCreate(t *testing.T) {
 	if data != string(doc.Encode()) || hash != Hash([]byte(data)) {
 		t.Fatalf("Create wrote %q hash %s", data, hash)
 	}
-	if m := mode(t, path); m != 0o600 {
+	if m := mode(t, path); ostest.WrongPerm(m, 0o600) {
 		t.Errorf("file mode = %v, want 0600", m)
 	}
-	if m := mode(t, dir); m != 0o700 {
+	if m := mode(t, dir); ostest.WrongPerm(m, 0o700) {
 		t.Errorf("dir mode = %v, want 0700", m)
 	}
 
@@ -133,7 +135,7 @@ func TestSave(t *testing.T) {
 	if newHash != Hash([]byte(data)) || !strings.Contains(data, `"version_quota": 4`) {
 		t.Fatalf("saved %q hash %s", data, newHash)
 	}
-	if m := mode(t, path); m != 0o600 {
+	if m := mode(t, path); ostest.WrongPerm(m, 0o600) {
 		t.Errorf("file mode = %v, want 0600", m)
 	}
 	hist := historyFiles(t, dir)
@@ -143,7 +145,7 @@ func TestSave(t *testing.T) {
 	if readString(t, filepath.Join(dir, historyDir, hist[0])) != orig {
 		t.Error("history copy is not the previous file")
 	}
-	if m := mode(t, filepath.Join(dir, historyDir)); m != 0o700 {
+	if m := mode(t, filepath.Join(dir, historyDir)); ostest.WrongPerm(m, 0o700) {
 		t.Errorf("history dir mode = %v, want 0700", m)
 	}
 

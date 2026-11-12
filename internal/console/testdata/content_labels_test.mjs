@@ -28,6 +28,8 @@ globalThis.fetch = async (url, opts = {}) => {
   return { ok: true, json: async () => body };
 };
 const REVISION_MODEL = ['docs', 'design', 'board', 'notebook'];
+// The imported suite's last calls can still land in calls, so look for the stats.
+const lastStats = () => calls.map(([url]) => url).filter((url) => url.includes('/stats?')).at(-1);
 for (const type of ['flat', 'page', 'docs', 'design', 'board', 'notebook', undefined, 'future']) {
   for (views of [0, 7]) {
     flat = { slug: 'sample', name: 'Sample', type, disk_bytes: 1024, versions: 9, visibility: 'private', endpoints: [] };
@@ -43,10 +45,10 @@ for (const type of ['flat', 'page', 'docs', 'design', 'board', 'notebook', undef
     assert.equal(main.textContent.includes('No page views in this period.'), views === 0);
     element(main, 'BUTTON', '7d').dispatch('click');
     await tick();
-    assert.ok(calls.at(-1)[0].endsWith('/stats?days=7'));
+    assert.ok(lastStats().endsWith('/stats?days=7'));
     element(main, 'BUTTON', '30d').dispatch('click');
     await tick();
-    assert.ok(calls.at(-1)[0].endsWith('/stats?days=30'));
+    assert.ok(lastStats().endsWith('/stats?days=30'));
   }
 }
 const main = document.createElement('main');

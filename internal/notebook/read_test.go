@@ -22,6 +22,7 @@ func liveReadFixture(t *testing.T) writerFixture {
 	f := newWriterFixture(t)
 	if f.in.spills == nil {
 		f.in.spills = NewSpillManager(filepath.Join(t.TempDir(), "spills"), 0, f.in.now)
+		t.Cleanup(func() { f.in.spills.Close() })
 	}
 	t.Cleanup(func() { f.in.spills.CancelScope(func(Scope) bool { return true }) })
 	return f

@@ -95,6 +95,7 @@ func newNotebookSourceFixture(t *testing.T, s *Service, kind string, size int) n
 		if err := os.MkdirAll(filepath.Dir(pathOnDisk), 0700); err != nil {
 			t.Fatal(err)
 		}
+		os.Chmod(pathOnDisk, 0o644) // Windows does not rename onto a read-only file
 		if err := os.Rename(file.Name(), pathOnDisk); err != nil {
 			t.Fatal(err)
 		}
@@ -391,7 +392,9 @@ func TestNotebookSourceHistoryMemory(t *testing.T) {
 							scratch := t.TempDir()
 							var handler http.Handler = s.siteHandler("notes", false)
 							if mode == "observed" {
-								in, _, err := notebook.Open(t.TempDir(), backend, notebook.Options{Slug: "notes", Title: "Current", Spills: notebook.NewSpillManager(scratch, 0, time.Now)})
+								spills := notebook.NewSpillManager(scratch, 0, time.Now)
+								defer spills.Close()
+								in, _, err := notebook.Open(t.TempDir(), backend, notebook.Options{Slug: "notes", Title: "Current", Spills: spills})
 								if err != nil {
 									t.Fatal(err)
 								}
@@ -423,10 +426,17 @@ func TestNotebookSourceHistoryMemory(t *testing.T) {
 									return
 								}
 								_ = filepath.WalkDir(scratch, func(path string, entry fs.DirEntry, err error) error {
-									if err == nil && !entry.IsDir() && entry.Name() == "data" {
-										if info, err := entry.Info(); err == nil && info.Size() >= int64(min(size/4, 1<<20)) {
-											streamedProgress = true
-										}
+									if err != nil || entry.IsDir() || entry.Name() != "data" {
+										return nil
+									}
+									// Through a handle: NTFS updates the size in a directory entry when the file closes.
+									f, err := os.Open(path)
+									if err != nil {
+										return nil
+									}
+									defer f.Close()
+									if info, err := f.Stat(); err == nil && info.Size() >= int64(min(size/4, 1<<20)) {
+										streamedProgress = true
 									}
 									return nil
 								})

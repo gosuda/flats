@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/gosuda/flats/internal/ostest"
 )
 
 func lifecyclePanic(fn func()) (err error) {
@@ -446,7 +448,7 @@ func TestMountSymlinkConfinement(t *testing.T) {
 		"dirlink":    dir,
 		"sub/escape": outside,
 	} {
-		if err := os.Symlink(target, filepath.Join(dir, link)); err != nil {
+		if err := ostest.Symlink(t, target, filepath.Join(dir, link)); err != nil {
 			t.Fatal(err)
 		}
 	}

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/ostest"
 )
 
 // loadAverage is the host's load average (for timing reports).
@@ -72,7 +73,7 @@ func TestColdStartBudget(t *testing.T) {
 	}
 	t.Logf("COLDSTART_LOAD %s %s", goruntime.GOOS, loadAverage())
 	// Short: the sockets live in DataDir/run.
-	data, err := os.MkdirTemp("/tmp", "flats-budget-")
+	data, err := os.MkdirTemp(ostest.TempRoot(), "flats-budget-")
 	if err != nil {
 		t.Fatal(err)
 	}

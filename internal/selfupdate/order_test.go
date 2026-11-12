@@ -13,6 +13,8 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+
+	"github.com/gosuda/flats/internal/ostest"
 )
 
 // A bad release archive is reported before any problem with the stage file,
@@ -70,6 +72,7 @@ func badArchives(t *testing.T) map[string][]byte {
 }
 
 func TestBadArchiveBeforeUnwritableInstallDir(t *testing.T) {
+	ostest.SkipPOSIXModes(t)
 	for name, raw := range badArchives(t) {
 		t.Run(name, func(t *testing.T) {
 			o, _ := setup(t)
@@ -105,6 +108,7 @@ func TestBadArchiveBeforeUnwritableInstallDir(t *testing.T) {
 }
 
 func TestBadArchiveBeforeStaleStageObstruction(t *testing.T) {
+	ostest.SkipPOSIXModes(t)
 	// A stale stage path that cannot be removed stays as it is.
 	obstruct := func(t *testing.T, o Options) string {
 		inner := filepath.Join(stageName(o.Path), "keep")

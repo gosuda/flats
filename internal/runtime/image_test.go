@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/gosuda/flats/internal/jsengine"
+	"github.com/gosuda/flats/internal/ostest"
 )
 
 // resetDocumentImages forgets the images this process holds, as a new
@@ -211,7 +212,7 @@ func TestImageCreateLoadAndFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm() != 0o600 {
+	if ostest.WrongMode(fi, 0o600) {
 		t.Fatalf("image mode %v", fi.Mode())
 	}
 	if ents, _ := os.ReadDir(state); len(ents) != 1 {

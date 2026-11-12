@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/gosuda/flats/internal/bundle"
+	"github.com/gosuda/flats/internal/ostest"
 )
 
 // imageRuntime is contentRuntime whose instances behave like a worker that
@@ -99,7 +100,7 @@ func TestDocsImagePathLifecycle(t *testing.T) {
 		t.Fatalf("image path %q for runtime %q", live.ImagePath, live.Dir)
 	}
 	fi, err := os.Stat(state)
-	if err != nil || !fi.IsDir() || fi.Mode().Perm() != 0o700 {
+	if err != nil || !fi.IsDir() || ostest.WrongMode(fi, 0o700) {
 		t.Fatalf("state directory: %v %v", fi, err)
 	}
 	// An isolated start (a scratch trial) shares the runtime directory but

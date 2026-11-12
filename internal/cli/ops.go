@@ -10,18 +10,21 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gosuda/flats/internal/config"
 	"github.com/gosuda/flats/internal/launchd"
 	"github.com/gosuda/flats/internal/systemd"
+	"github.com/gosuda/flats/internal/winservice"
 )
 
 // DefaultDataDir returns the data directory: FLATS_DATA, else the user
 // config directory + Flats (~/Library/Application Support/Flats on macOS,
-// $XDG_CONFIG_HOME/Flats or ~/.config/Flats on Linux), matching `flats serve`.
+// $XDG_CONFIG_HOME/Flats or ~/.config/Flats on Linux), or %LocalAppData%\Flats
+// on Windows, matching `flats serve`.
 func DefaultDataDir(getenv func(string) string) (string, error) {
 	if d := getenv("FLATS_DATA"); d != "" {
 		return d, nil
 	}
-	dir, err := os.UserConfigDir()
+	dir, err := config.UserDataRoot()
 	if err != nil {
 		return "", err
 	}
@@ -32,12 +35,24 @@ func (a *app) launchdOpts() launchd.Options {
 	return launchd.Options{Home: a.env.Home, Run: a.env.Launchd}
 }
 
-func (a *app) requireMacOS() error {
+func (a *app) requireServicePlatform() error {
 	switch a.goos() {
-	case "darwin", "linux":
+	case "darwin", "linux", "windows":
 		return nil
 	}
-	return errors.New("install/uninstall support macOS (launchd) and Linux (systemd user units); elsewhere run `flats serve` under your service manager")
+	return errors.New("install/uninstall support macOS (launchd), Linux (systemd user units) and Windows (a scheduled task); elsewhere run `flats serve` under your service manager")
+}
+
+func (a *app) windowsOpts() winservice.Options {
+	return winservice.Options{Dir: a.env.ServiceDir, Run: winservice.Runner(a.env.Launchd)}
+}
+
+// serviceDir is where the Windows service keeps its definition.
+func (a *app) serviceDir() (string, error) {
+	if a.env.ServiceDir != "" {
+		return a.env.ServiceDir, nil
+	}
+	return winservice.DefinitionDir()
 }
 
 // config runs `flats config` through the Config hook.
@@ -70,21 +85,21 @@ func (a *app) key(args []string) error {
 // then installs a service that runs only `flats serve --config <path>`.
 func (a *app) install(args []string) error {
 	fs := a.flags("install")
-	configPath := fs.String("config", "", "config.json for the service (default: FLATS_CONFIG, else <data>/config.json)")
-	data := fs.String("data", "", "data directory for a new host (default: FLATS_DATA or ~/Library/Application Support/Flats)")
+	configPath := fs.String("config", "", "config.json for the service (default: on Windows the one of the installed service; else FLATS_CONFIG, else <data>/config.json)")
+	data := fs.String("data", "", "data directory for a new host (default: FLATS_DATA, else Flats in the user data directory)")
 	exe := fs.String("executable", "", "flats binary to run (default: this executable)")
 	extra, err := a.parse(fs, args, 0, -1)
 	if err != nil {
 		return err
 	}
-	if err := a.requireMacOS(); err != nil {
+	if err := a.requireServicePlatform(); err != nil {
 		return err
 	}
 	dataDir := *data
 	if dataDir == "" {
 		dataDir = a.env.Getenv("FLATS_DATA")
 	}
-	if a.goos() == "darwin" {
+	if a.goos() == "darwin" || a.goos() == "windows" {
 		// Refuse a `go run` binary before config.json is written.
 		bin := *exe
 		if bin == "" {
@@ -103,6 +118,21 @@ func (a *app) install(args []string) error {
 	if cfgPath == "" {
 		if cfgPath = a.env.Getenv("FLATS_CONFIG"); cfgPath != "" && !filepath.IsAbs(cfgPath) {
 			return fmt.Errorf("FLATS_CONFIG must be an absolute path, not %q", cfgPath)
+		}
+	}
+	// On Windows the installer upgrades through this command, and it is how a
+	// user restarts the service. Without a choice of host, stay on the service's.
+	if a.goos() == "windows" && *configPath == "" && *data == "" && len(extra) == 0 {
+		dir, err := a.serviceDir()
+		if err != nil {
+			return err
+		}
+		installed, err := winservice.InstalledConfig(dir)
+		if err != nil {
+			return err
+		}
+		if installed != "" {
+			cfgPath, dataDir = installed, ""
 		}
 	}
 	// A running service holds the data lock that preparing the config may
@@ -133,8 +163,15 @@ func (a *app) install(args []string) error {
 	// back and start it again, so a failed reinstall never leaves a
 	// previously running host stopped.
 	definition := launchd.PlistPath(a.env.Home)
-	if a.goos() == "linux" {
+	switch a.goos() {
+	case "linux":
 		definition = systemd.UnitPath(a.env.Home)
+	case "windows":
+		dir, err := a.serviceDir()
+		if err != nil {
+			return err
+		}
+		definition = winservice.DefinitionPath(dir)
 	}
 	previous, readErr := os.ReadFile(definition)
 	restore := func(err error) error {
@@ -157,6 +194,32 @@ func (a *app) install(args []string) error {
 		return err
 	}
 
+	if a.goos() == "windows" {
+		opts := a.windowsOpts()
+		opts.Executable, opts.DataDir, opts.Args = *exe, dataDir, serveArgs
+		path, started, err := winservice.Install(a.ctx, opts)
+		if err != nil {
+			return restore(err)
+		}
+		up := started && a.waitForServer()
+		logFile := winservice.LogPath(dataDir)
+		if a.jsonOut {
+			a.writeJSON(map[string]any{"task": winservice.Task, "definition": path, "config": cfgPath, "log": logFile, "url": a.url, "running": up})
+			return nil
+		}
+		fmt.Fprintf(a.out, "Installed scheduled task %s (%s)\n", winservice.Task, path)
+		fmt.Fprintf(a.out, "  config: %s\n", cfgPath)
+		fmt.Fprintf(a.out, "  logs:   %s\n", logFile)
+		switch {
+		case up:
+			fmt.Fprintf(a.out, "Flats is running at %s\n", a.url)
+		case !started:
+			fmt.Fprintln(a.out, "The service is installed and starts at your next login: this session has no desktop to run it in.")
+		default:
+			fmt.Fprintf(a.out, "The service is installed but %s is not answering yet; check %s.\n", a.url, logFile)
+		}
+		return nil
+	}
 	if a.goos() == "linux" {
 		path, err := systemd.Install(a.ctx, systemd.Options{Executable: *exe, DataDir: dataDir, Args: serveArgs, Env: map[string]string{"PATH": a.env.Getenv("PATH")}, Home: a.env.Home, Run: systemd.Runner(a.env.Launchd)})
 		if err != nil {
@@ -207,6 +270,11 @@ func (a *app) install(args []string) error {
 // stopService stops the installed Flats service if it runs, keeping its
 // plist or unit, and returns how to start it again.
 func (a *app) stopService() (bool, func() error, error) {
+	if a.goos() == "windows" {
+		opts := a.windowsOpts()
+		stopped, err := winservice.Stop(a.ctx, opts)
+		return stopped, func() error { return winservice.Start(a.ctx, opts) }, err
+	}
 	if a.goos() == "linux" {
 		opts := systemd.Options{Home: a.env.Home, Run: systemd.Runner(a.env.Launchd)}
 		stopped, err := systemd.Stop(a.ctx, opts)
@@ -245,8 +313,25 @@ func (a *app) uninstall(args []string) error {
 	if _, err := a.parse(fs, args, 0, 0); err != nil {
 		return err
 	}
-	if err := a.requireMacOS(); err != nil {
+	if err := a.requireServicePlatform(); err != nil {
 		return err
+	}
+	if a.goos() == "windows" {
+		removed, err := winservice.Uninstall(a.ctx, a.windowsOpts())
+		if err != nil {
+			return err
+		}
+		if a.jsonOut {
+			a.writeJSON(map[string]any{"removed": removed})
+			return nil
+		}
+		if removed {
+			fmt.Fprintf(a.out, "Removed scheduled task %s. Your flats and data are kept.\n", winservice.Task)
+		} else {
+			fmt.Fprintln(a.out, "The scheduled task was not installed.")
+		}
+		fmt.Fprintln(a.out, uninstallAgentNote)
+		return nil
 	}
 	if a.goos() == "linux" {
 		removed, err := systemd.Uninstall(a.ctx, systemd.Options{Home: a.env.Home, Run: systemd.Runner(a.env.Launchd)})
@@ -278,6 +363,30 @@ func (a *app) uninstall(args []string) error {
 	return nil
 }
 
+func (a *app) windowsTaskState() *windowsTask {
+	task := &windowsTask{Name: winservice.Task}
+	installed, err := winservice.Installed(a.ctx, a.windowsOpts())
+	if err != nil {
+		task.Problem = err.Error()
+		return task
+	}
+	task.Installed = installed
+	if installed {
+		if task.Running, err = winservice.Running(a.windowsOpts()); err != nil {
+			task.Problem = err.Error()
+		}
+	}
+	return task
+}
+
+// windowsTask is the state of the Windows service in `flats status`.
+type windowsTask struct {
+	Name      string `json:"name"`
+	Installed bool   `json:"installed"`
+	Running   bool   `json:"running"`
+	Problem   string `json:"problem,omitempty"` // why the two above are not known
+}
+
 func (a *app) status(args []string) error {
 	fs := a.flags("status")
 	if _, err := a.parse(fs, args, 0, 0); err != nil {
@@ -294,8 +403,15 @@ func (a *app) status(args []string) error {
 			ld = &st
 		}
 	}
+	var task *windowsTask
+	if a.goos() == "windows" {
+		task = a.windowsTaskState()
+	}
 	if a.jsonOut {
 		out := map[string]any{"url": a.url, "server": sys, "launchd": ld}
+		if task != nil {
+			out["task"] = task
+		}
 		if serr != nil {
 			out["server_error"] = serr.Error()
 		}
@@ -321,6 +437,18 @@ func (a *app) status(args []string) error {
 			if hasPublicHosts(body["system"]) {
 				fmt.Fprintf(w, "  note: the public hosts above serve public flats. %s\n", publicURLNotice)
 			}
+		}
+	}
+	if task != nil {
+		switch {
+		case task.Problem != "":
+			fmt.Fprintf(w, "service: scheduled task %s: %s\n", task.Name, task.Problem)
+		case !task.Installed:
+			fmt.Fprintln(w, "service: not installed")
+		case task.Running:
+			fmt.Fprintf(w, "service: scheduled task %s, running\n", task.Name)
+		default:
+			fmt.Fprintf(w, "service: scheduled task %s, stopped\n", task.Name)
 		}
 	}
 	if ld != nil {

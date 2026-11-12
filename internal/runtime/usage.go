@@ -1,9 +1,6 @@
 package runtime
 
-import (
-	"syscall"
-	"time"
-)
+import "time"
 
 // reportUsage sends the worker's CPU and memory now and then every interval,
 // as control lines that are never rate limited. It runs until the process
@@ -22,11 +19,10 @@ func reportUsage(l *childLog, every time.Duration) {
 // usageSample is the process's own CPU time (user+system) and, where it is
 // measured, its resident private anonymous memory.
 func usageSample() (childMsg, bool) {
-	var ru syscall.Rusage
-	if err := syscall.Getrusage(syscall.RUSAGE_SELF, &ru); err != nil {
+	cpu, ok := processCPU()
+	if !ok {
 		return childMsg{}, false
 	}
-	cpu := ru.Utime.Nano() + ru.Stime.Nano()
 	m := childMsg{T: "usage", CPU: &cpu}
 	if mem, ok := privateMemory(); ok {
 		m.Mem = &mem

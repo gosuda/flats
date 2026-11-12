@@ -19,8 +19,10 @@ import (
 	"fmt"
 	"net"
 	"net/url"
+	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -497,7 +499,7 @@ func checkAbsPath(v any) (any, error) {
 	if strings.IndexByte(s, 0) >= 0 {
 		return nil, errors.New("path contains a NUL byte")
 	}
-	if !filepath.IsAbs(s) {
+	if !isAbs(s) {
 		return nil, fmt.Errorf("%q is not an absolute path", s)
 	}
 	return s, nil
@@ -963,11 +965,25 @@ func (d *Document) Effective(overrides map[string]string) (*Config, error) {
 	return c, nil
 }
 
-// cleanDataDir returns host.data_dir in clean form. The key is validated as an
-// absolute path, and Flats runs on Unix only, so the leading "/" changes
-// nothing; filepath.Clean("/" + p) is also the form static analysis accepts
-// as free of ".." traversal for the paths Flats builds under the directory.
-func cleanDataDir(p string) string { return filepath.Clean("/" + p) }
+// isAbs is filepath.IsAbs; tests on Windows also accept Unix fixture paths.
+var isAbs = filepath.IsAbs
+
+// UserDataRoot is the parent of the default data directory: the user config
+// directory, and on Windows %LocalAppData%. The roaming folder would copy
+// databases, sockets and caches at every logon on a domain machine.
+func UserDataRoot() (string, error) {
+	if runtime.GOOS == "windows" {
+		return os.UserCacheDir()
+	}
+	return os.UserConfigDir()
+}
+
+// ScratchDataDir is an absolute data directory for a Document that is only
+// validated and never stored: the root of the current volume.
+func ScratchDataDir() string {
+	dir, _ := filepath.Abs(string(filepath.Separator))
+	return dir
+}
 
 // fill copies values into the typed fields and checks cross-key rules.
 func (c *Config) fill() error {
