@@ -171,6 +171,11 @@ type Options struct {
 	// PublicAccess is the stored public access level of the flat: "" when
 	// it is not Public, "view" or "edit". SetPublicAccess changes it later.
 	PublicAccess string
+	// ImportStore and ImportSeq are the import cursor flats.db holds for this
+	// flat, empty when it has none. Open refuses a board.db with that store
+	// id whose outbox never reached ImportSeq.
+	ImportStore string
+	ImportSeq   int64
 
 	tickEvery time.Duration // tests stop the ticker this way
 }
@@ -278,6 +283,11 @@ func Open(dir string, b Backend, opts Options) (in *Instance, created bool, err 
 		}
 	}
 	if err := in.load(); err != nil {
+		db.close()
+		cancel()
+		return nil, false, err
+	}
+	if err := in.checkImportCursor(opts); err != nil {
 		db.close()
 		cancel()
 		return nil, false, err

@@ -765,6 +765,14 @@ func TestSpareUsageExcludesWarmUp(t *testing.T) {
 	m, _ := spareManager(t)
 	mustStart(t, m, "first", spareTestFiles(), "index.js", nil)
 	sp := waitSpare(t, m, 0)
+	// The check below needs a warm-up CPU above zero. Windows counts CPU in
+	// clock ticks, so a worker that gets its spec in its first moments reports
+	// none. The worker reads its CPU after this wait, and CPU time only grows.
+	for end := time.Now().Add(15 * time.Second); !ostest.CPUCounted(sp.p.cmd.Process.Pid); time.Sleep(time.Millisecond) {
+		if time.Now().After(end) {
+			t.Fatal("the system counted no CPU for the pre-started worker")
+		}
+	}
 	sink := &recSink{}
 	f, err := startFlat(t, m, "second", spareTestFiles(), "index.js", nil, withUsageSink(sink))
 	if err != nil {
@@ -785,8 +793,9 @@ func TestSpareUsageExcludesWarmUp(t *testing.T) {
 	// Stop returned after done closed, so the reader's fields are settled.
 	ps := sp.p.cmd.ProcessState
 	total := (ps.UserTime() + ps.SystemTime()).Nanoseconds()
+	t.Logf("warm-up CPU in the spec acknowledgement: %s of %s", time.Duration(sp.p.baseCPU), time.Duration(total))
 	if sp.p.baseCPU <= 0 {
-		t.Fatal("no warm-up CPU recorded with the spec acknowledgement")
+		t.Fatal("no warm-up CPU recorded with the spec acknowledgement, after the system had counted CPU for the worker")
 	}
 	if want := max(sp.p.lastCPU, total-sp.p.baseCPU); ev.cpu != want || ev.cpu >= total {
 		t.Fatalf("exit CPU %d, want %d (process total %d, warm-up %d)", ev.cpu, want, total, sp.p.baseCPU)
