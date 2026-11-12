@@ -17,7 +17,8 @@ import (
 // The Tailscale backend stores a node's state with ReplaceFile and does not
 // try again, and ReplaceFile fails while a reader holds the file without delete
 // sharing. Neither reader of that file here may make a write fail: applyStatus
-// reads it with durable.ReadFile, and snapshot through os.Root.
+// reads it with durable.ReadFile, and snapshot through os.Root. The store
+// flushes each of the 200 writes, so the test takes some seconds.
 func TestStateReadersLetTheBackendWrite(t *testing.T) {
 	dir := t.TempDir()
 	nd := &node{host: "node", dir: filepath.Join(dir, "node")}

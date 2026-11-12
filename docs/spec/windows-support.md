@@ -189,13 +189,16 @@ browser on Windows. The technical design holds the measurements. The status is
   and words a closed runtime differently. Both say that the limit closed the runtime
   during the call. In each event another worker started in about 0.3 s during those
   seconds, so the runner did not stop. The cause is not identified. Load does not
-  explain the second event: on four processors that call takes 18 to 212 ms, and
-  with three copies of the shard at once a worker start takes 5.4 to 7.5 s before
-  the call takes more than 2.1 s, while the failed run had normal starts. At this
-  rate the job can also fail a pull request that did not cause it. On Windows a
-  document test now asks a worker for its goroutine stacks when its first guest
-  call is open after 5 s, and logs them, so the next event shows where the worker
-  waits (`stall_test.go` in `internal/apps/docs`).
+  explain the second event. On four processors that call takes 18 to 212 ms. With
+  three copies of the shard at once, a worker start takes 5.4 to 7.5 s and the call
+  at most 2.1 s. The failed run had worker starts of 1.2 to 2.6 s, against 0.9 to
+  1.8 s in eight runs in which these tests passed, so its starts were at most 0.8 s
+  slower while its calls were more than 10 s slower. At this rate the job can also fail a
+  pull request that did not cause it. On Windows, a document test that starts its
+  host with `startAppModule`, as the tests of both events do, now asks the worker
+  for its goroutine stacks when its first guest call is open after 5 s, and logs
+  them, so the next event shows where the worker waits (`stall_test.go` in
+  `internal/apps/docs`).
 - Beside CPU and disk load on four processors, `TestHostIdleRealWorkerCycles` saw a
   worker start stall in two events of 252 runs, with both copies of the test at the
   same moment: for more than 15 s, which failed those two runs, and for more than
