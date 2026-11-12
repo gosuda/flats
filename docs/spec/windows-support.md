@@ -194,8 +194,9 @@ browser on Windows. The technical design holds the measurements. The status is
   event. On four processors that call takes 18 to 212 ms. With three copies of the
   shard at once, a worker start takes 5.4 to 7.5 s and the call at most 2.1 s. The
   failed run had worker starts of 1.2 to 2.6 s, against 0.9 to 1.8 s in eight runs
-  in which these tests passed, so its starts were at most 0.8 s slower while its
-  calls were more than 10 s slower. At this rate the job can also fail a pull
+  in which these tests passed, so its starts were at most 0.8 s slower, while its
+  first guest calls did not end within 10 s. How long that call takes on the runner
+  in a run that passes is not measured. At this rate the job can also fail a pull
   request that did not cause it. On Windows, a document test that starts its host
   with `startAppModule`, as the tests of both events do, now asks the worker for its
   goroutine stacks when its first guest call is open after 5 s, and logs them, so

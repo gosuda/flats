@@ -108,6 +108,7 @@ func watchCall(t *testing.T, pid int, after time.Duration) func() string {
 	t.Cleanup(func() {
 		stop()
 		os.Remove(base + ".want")
+		os.Remove(base + ".stacks.tmp")
 		os.Remove(base + ".stacks")
 	})
 	return func() string {
