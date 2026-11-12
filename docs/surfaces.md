@@ -306,8 +306,8 @@ writes and logs nothing. Neither route changes Autopilot.
 
 `flats <command>` calls the HTTP API (the CLI sends `X-Flats-Client: cli`).
 `flats serve` runs the host itself (`flats worker` is the process it starts
-for server flats); `flats config` and
-`flats key` edit the host while it is stopped
+for server flats); `flats config`, `flats key`, and
+`flats secret restore-key` and `reset` edit the host while it is stopped
 ([Configuration and storage](configuration.md)).
 
 | Command | Effect |
@@ -329,7 +329,7 @@ for server flats); `flats config` and
 | `preview <slug> [--version n]` | Open a Private preview; 0 (default) is the current Draft |
 | `visibility <slug> private\|public [--access view\|edit] [--reason r]` | Request a visibility change; `--access edit` lets anyone edit a Public board |
 | `rename <slug> <new-slug>`, `delete <slug> [--reason r]` | Rename; request deletion |
-| `env`, `network`, `secret` | Manage server settings; changing `network` origins or `secret` values works only from the host itself (loopback) |
+| `env`, `network`, `secret` | Manage server settings; changing `network` origins or `secret` values works only from the host itself (loopback). `secret backup-key`, `restore-key` and `reset` work on the data directory and never call the host ([Recovering a lost secret.key](configuration.md#recovering-a-lost-secretkey)) |
 | `approvals [--status s]` | List approvals (read-only) |
 | `status`, `install`, `uninstall`, `connect`, `mcp`, `mcp-config` | Host and client setup ([Connecting agents](agents.md)). `connect` chooses the host the CLI and `mcp` use; `mcp-config` prints the agent setup commands |
 | `agent-setup docs [--agent a] [--scope user\|project] [--dry-run] [--yes] [--undo]` | Make Flats the document tool of Claude Code, Codex or Cursor. It prints a plan and changes files on this machine only after you confirm; `--undo` reverses it ([Use Flats for documents](agents.md#use-flats-for-documents)) |

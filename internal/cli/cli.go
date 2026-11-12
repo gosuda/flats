@@ -1,5 +1,7 @@
-// Package cli implements the `flats` command line. Every command except
-// serve, worker, install and uninstall is a thin client of the HTTP API.
+// Package cli implements the `flats` command line. Every command is a thin
+// client of the HTTP API except serve, worker, install and uninstall, and
+// config, key and secret backup-key, restore-key and reset, which work on the
+// data directory itself.
 package cli
 
 import (
@@ -36,6 +38,10 @@ var Config func(ctx context.Context, args []string, out io.Writer) error
 
 // Key runs `flats key`, wired like Serve.
 var Key func(ctx context.Context, args []string, in io.Reader, out io.Writer) error
+
+// SecretKey runs `flats secret backup-key`, `restore-key` and `reset`, which
+// work on the data directory's secret.key, wired like Serve.
+var SecretKey func(ctx context.Context, args []string, in io.Reader, out io.Writer) error
 
 // KeyUsage is the usage of `flats key`, wired like Serve.
 var KeyUsage = "key <subcommand> [args]"
@@ -129,7 +135,7 @@ func init() {
 		{"notebook", "read or atomically update a notebook", "notebook get <slug> [--page id|--database id] [--view id|--sort json --filter json] [--format structured|markdown] [--limit n] [--revision n]\n       flats notebook get <slug> --cursor cursor [--op-id id]\n       flats notebook apply <slug> <ops.json> [--message m] [--op-id id] [--max-input-bytes n]\n       get follows every continuation; --json returns an array of unchanged response pages\n       apply bounds input before decoding: default 8 MiB + 4 * ceil(20 MiB / 3) bytes\n       for larger host upload limits, set --max-input-bytes to 8 MiB + 4 * ceil(upload_max_bytes / 3)\n       this local limit does not raise the host's upload or operation limits", (*app).notebook},
 		{"env", "manage ordinary server environment variables", "env set <slug> <NAME> <VALUE>\n       flats env rm <slug> <NAME>\n       flats env ls <slug>", (*app).envVars},
 		{"network", "manage server HTTP(S) origin permissions", "network ls <slug>\n       flats network set <slug> <origin>...\n       flats network clear <slug>", (*app).network},
-		{"secret", "manage server-flat secrets", "secret set <slug> <NAME>   (value from stdin)\n       flats secret rm <slug> <NAME>\n       flats secret ls <slug>", (*app).secret},
+		{"secret", "manage server-flat secrets", "secret set <slug> <NAME>   (value from stdin)\n       flats secret rm <slug> <NAME>\n       flats secret ls <slug>\n       flats secret backup-key [--out path] [--password-file path] [--config path | --data dir]\n       flats secret restore-key [--from path] [--password-file path] [--config path | --data dir]\n       flats secret reset [--yes] [--config path | --data dir]", (*app).secret},
 		{"approvals", "list approval requests, or wait for one to be decided", "approvals [--status pending|approved|rejected|failed]\n       flats approvals wait <id> [--timeout seconds]", (*app).approvals},
 		{"status", "show server and service status", "status", (*app).status},
 		{"install", "run `flats serve` at login (launchd/systemd/scheduled task)", "install [--config path] [--data dir] [--executable path] [-- legacy serve flags...]", (*app).install},

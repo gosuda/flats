@@ -39,18 +39,23 @@ the data directory is.
   config-history/             previous config.json copies, newest 10
   flats.db                    metadata database (+ -wal, -shm)
   secret.key                  key for flat secrets and operator keys, 32 bytes, mode 0600
+  secret.key.recovery         that key encrypted under a recovery password (optional)
+  secret.key.recovery.id      the ID of the key in that copy
   backups/                    flats.db copies taken before a schema migration
                               (newest 3) and the archived network-provider.json
   runtime/docs/               generated read-only docs app modules (recreated as needed)
   flats/<slug>/
     draft-revs/ versions/     saved Draft revisions and versions
-    data/db.sqlite data/files/  the flat's own data
+    data/db.sqlite data/files/  the flat's own data (db.sqlite + -wal, -shm)
     snapshots/                DB+FILES snapshots taken before a version goes
                               live and before a data restore (not for documents)
     previews/                 preview data, paired with preview rows in flats.db
+                              (each preview's db.sqlite + -wal, -shm)
     revisions/                revision contents of a document, board or notebook
                               (blobs/, by SHA-256)
     design/                   a design's revision contents (blobs/, by SHA-256)
+    board/board.db            a board's current content and the revisions not yet
+                              imported (+ -wal, -shm)
     notebook/notebook.db      a notebook's current content, receipts, undo and
                               unimported revisions (+ -wal, -shm)
     restore-journal.json      present only while a data restore is unfinished
@@ -100,14 +105,11 @@ resolve by hand.
 Required:
 
 - `config.json`;
-- `flats.db`, copied with `VACUUM INTO` or while the host is stopped, never
-  as a plain copy of a live database, together with `secret.key` from the
-  same moment: the flat secrets and operator keys in `flats.db` need it;
+- `flats.db`, together with `secret.key` from the same moment: the flat
+  secrets and operator keys in `flats.db` need it;
 - `flats/<slug>/` except the temporary copies, with `restore-journal.json`,
   revision contents and snapshots, and `flats/.lifecycle/` and
-  `network-retirements/` when present. A notebook's `notebook/notebook.db` is
-  a live SQLite database: copy it while the host is stopped, or with SQLite's
-  backup API or `VACUUM INTO`, never as a plain copy;
+  `network-retirements/` when present;
 - `tsnet/` and `portal/`: without them new node names and certificates are
   issued;
 - `zrok/` and `zrok-environment/`: without them a deleted flat no longer
@@ -117,7 +119,44 @@ Required:
 
 `cloudflare-quick/` is optional: without it each public flat's quick tunnel
 gets a new random address. Logs, caches, sockets and the lock are rebuilt.
-Stopping the host and copying the whole data directory covers all of it.
+
+To back up, stop the host and copy the whole data directory, plus `config.json`
+when it lives outside that directory. That covers all of it and takes every file
+from one moment. Flats has no supported way to take a backup from a running
+host.
+
+While the host runs, these are live SQLite databases, with recent commits in a
+`-wal` file beside each one:
+
+- `flats.db`;
+- `flats/<slug>/data/db.sqlite`, a flat's own data;
+- `flats/<slug>/previews/<host>/db.sqlite`, while that preview is open;
+- `flats/<slug>/board/board.db`, a board;
+- `flats/<slug>/notebook/notebook.db`, a notebook.
+
+Never take a plain copy of a live database: it can lose recent commits or come
+out corrupt. A host that crashed or was killed also leaves commits in the
+`-wal` file, so copy each `-wal` with its database.
+
+SQLite's backup API (`.backup` in the `sqlite3` shell) copies one live database,
+not the host. The databases and revision contents depend on each other and must
+come from the same moment, and a write between two copies can break that. For
+boards and notebooks:
+
+- With a board or notebook database that lacks revisions `flats.db` already
+  recorded, that flat does not start, and its log says why. It starts again once
+  both come from one moment.
+- With `flats.db` older than a board or notebook database, the newest revisions
+  are gone and later revisions reuse their numbers.
+- With `revisions/` older than the databases, the host stops importing. Writes
+  still report success but no new revision appears, and a restart does not
+  clear it.
+
+To restore, stop the host and replace the old directory with the whole copy, at
+the same path. Copying over the old directory can leave a `-wal` file beside a
+restored database and corrupt it. A copy at another path is not used, because
+`host.data_dir` in its `config.json` still names the old path and a service
+started with `--config` still reads the old file.
 
 Restore with the same or a newer Flats release: an older binary refuses a newer
 `config.json` or database.
@@ -139,9 +178,9 @@ and an empty guide:
 Nothing in them is secret, so they are not encrypted. Because every database
 from step 21 on has the `autopilot` row, that row does not count when Flats
 checks whether a database already holds data. A release older than step 21
-refuses the database; going back means restoring the backup taken before the
-migration, which loses the agent decisions made since. To stop Autopilot
-without going back, turn it off in the console, or stop Flats.
+refuses the database; going back means restoring a full backup taken before
+the upgrade, which loses every change made since, including agent decisions. To
+stop Autopilot without going back, turn it off in the console, or stop Flats.
 
 ### Public instance settings
 
@@ -180,8 +219,9 @@ the mode is off keep the separate approved version/deploy steps. The page
 starter Draft from `create_flat` is not published.
 
 A binary older than database step 23 refuses this database. To run it,
-restore the backup from before migration, losing changes made since. To stop
-the mode without restoring a backup, turn it off in the console or stop Flats.
+restore a full backup taken before the upgrade, losing every change made since.
+To stop the mode without restoring a backup, turn it off in the console or stop
+Flats.
 
 ## config.json
 
@@ -762,7 +802,11 @@ written. Before migrating an existing database Flats writes
 `backups/flats.v<N>.<time>.db` with `VACUUM INTO`; if that fails, it does not
 migrate. Each migration step commits its changes and the new `user_version` in
 one transaction. There are no down migrations: to run an older release,
-restore the backup.
+restore a full backup taken before the upgrade
+([What to back up](#what-to-back-up)). The copy in `backups/` holds only
+`flats.db`. Restored alone, it loses every change recorded there since, and the
+flat directories no longer match it, so use it only if nothing changed since it
+was taken.
 
 ## Starting
 
@@ -810,7 +854,8 @@ written to the file.
 
 It refuses, writing nothing but the lock, when the directory already holds
 Flats data: a `flats.db` (convert a legacy one with `flats config migrate`),
-or any of `flats/`, `secret.key`, `tsnet/`, `portal/`, `zrok/`,
+or any of `flats/`, `secret.key`, `secret.key.recovery`,
+`secret.key.recovery.id`, `tsnet/`, `portal/`, `zrok/`,
 `zrok-environment/`, `cloudflare-quick/`, `netbird/`, `backups/`,
 `network-retirements/` or `network-provider.json` without a database (restore
 the database and config from the same backup). Other entries, such as a new
@@ -832,8 +877,77 @@ see [Operator keys](#operator-keys).
 
 If flats have stored secrets, or operator keys are stored, and `secret.key` is
 missing, the host refuses to start instead of creating a new key. Restore the
-key from the same backup as `flats.db`, or, when only operator keys are
-stored, remove them with `flats key rm` and register them again.
+key with `flats secret restore-key` or from the same backup as `flats.db`, or,
+when only operator keys are stored, remove them with `flats key rm` and
+register them again. [Recovering a lost secret.key](#recovering-a-lost-secretkey)
+covers the commands.
+
+### Recovering a lost secret.key
+
+`secret.key` opens every flat secret and stored operator key, and nothing
+else does. Three commands on the host keep a way back when the file is lost.
+They work on the data directory, never call the host, and no agent tool or API
+route reaches them.
+
+```sh
+flats secret backup-key [--out PATH] [--password-file PATH] [--config PATH | --data DIR]
+flats secret restore-key [--from PATH] [--password-file PATH] [--config PATH | --data DIR]
+flats secret reset [--yes] [--config PATH | --data DIR]
+```
+
+- `backup-key` encrypts a copy of `secret.key` under a recovery password and
+  writes it to `secret.key.recovery` in the data directory, with the key's ID
+  in `secret.key.recovery.id`. It works while the host runs. `--out PATH` also
+  writes the copy to a new file to keep apart from the host, in an existing
+  folder outside the data directory. On a terminal the command asks for the
+  password twice without echo; `--password-file PATH` reads it from a file
+  instead, without its trailing line ends. The password has at least 12
+  characters and at most 1024 bytes. Run the command again to change it.
+  Flats keeps no copy of the password.
+- `restore-key` needs the host stopped and nothing at `secret.key`. It reads
+  `secret.key.recovery`, or `--from PATH`, asks for the password, checks that
+  the key opens every sealed value in `flats.db`, and only then writes
+  `secret.key`. It never replaces a key. When `flats.db` holds no sealed
+  value, there is nothing to check the key against: the command says so and
+  writes any key the password opens. It refuses a copy written at a work
+  factor above 2^18, the age default that `backup-key` and `age -p` use.
+- `reset` is for a host that has lost both the key and the password. With the
+  host stopped, and nothing at `secret.key` or a key there that opens none of
+  the values, it lists the flat secrets and operator keys it will delete,
+  asks you to type `reset` (or takes `--yes`), deletes them and leaves an
+  event on each flat. The next start creates a new key: run `backup-key`
+  after it, set the secrets again with `flats secret set` and redeploy, and
+  register the operator keys again with `flats key set`.
+  A key at `secret.key` that opens any of the values makes `reset` refuse.
+  Remove only the values it does not open instead: operator keys first, with
+  `flats key rm` while the host is stopped, because the start refuses while
+  a stored Tailscale or NetBird key does not open, then flat secrets with
+  `flats secret rm` once the host runs. Anything else at `secret.key`, such as
+  a file of the wrong size or a broken link, must be moved away first.
+
+The copy is the key in the [age](https://age-encryption.org) format, encrypted
+with a passphrase, so the `age` tool opens it without Flats:
+
+```sh
+(umask 077 && age -d -o secret.key secret.key.recovery)
+```
+
+Run it in the data directory with the host stopped and nothing at
+`secret.key`, because `age` replaces an existing output file. Without the
+`umask`, `age` creates the file readable by other users; with it the file
+gets the mode 0600 that Flats uses. This way skips the check against
+`flats.db` that `restore-key` makes. A copy made by hand with `age -p` has no
+ID file, and the host warns about it until `backup-key` writes one.
+
+A copy of the data directory includes the recovery file, so anyone holding a
+backup can guess passwords offline. Each guess costs one scrypt derivation,
+about a second and 256 MiB of memory. Use a long password, and keep it apart
+from the host and its backups.
+
+At each start, when `secret.key.recovery` exists, the host compares the key's
+ID with `secret.key.recovery.id` and logs a warning that names
+`flats secret backup-key` when they differ or the ID file is missing, for
+example after `reset` let the start create a new key.
 
 ## Moving an existing installation
 
@@ -887,5 +1001,8 @@ installer prints that command after an upgrade. `flats install` stops a
 running Flats service while it prepares `config.json` and starts the old
 service definition again if that fails.
 
-To go back to an older release, restore `backups/flats.v<N>.<time>.db`; the
-older binary ignores `config.json`.
+To go back to an older release straight after the move, put the
+`backups/flats.v<N>.<time>.db` that the move wrote back as `flats.db`. If the
+old host had a `network-provider.json`, also put the archived
+`network-provider.<time>.json` back under that name. The older binary ignores
+`config.json`. After any change, restore a full backup taken before the move.

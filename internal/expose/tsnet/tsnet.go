@@ -36,6 +36,7 @@ import (
 	ts "tailscale.com/tsnet"
 
 	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/durable"
 )
 
 // Config configures a Net.
@@ -885,7 +886,9 @@ func (n *Net) refresh(nd *node, lc *local.Client) {
 func (n *Net) applyStatus(nd *node, st *ipnstate.Status) {
 	var identityState []byte
 	if st.BackendState == ipn.Running.String() {
-		identityState, _ = os.ReadFile(filepath.Join(nd.dir, "tailscaled.state"))
+		// The backend replaces this file while it runs, and on Windows its
+		// write fails while os.ReadFile has the file open.
+		identityState, _ = durable.ReadFile(filepath.Join(nd.dir, "tailscaled.state"))
 	}
 	n.mu.Lock()
 	defer n.mu.Unlock()

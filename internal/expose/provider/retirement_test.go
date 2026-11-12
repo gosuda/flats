@@ -33,6 +33,7 @@ import (
 	"tailscale.com/types/logger"
 	"tailscale.com/types/nettype"
 
+	"github.com/gosuda/flats/internal/durable"
 	"github.com/gosuda/flats/internal/expose/local"
 	"github.com/gosuda/flats/internal/expose/tsnet"
 )
@@ -283,7 +284,7 @@ func TestManagerStopSlugRetiresFunnelOnlyIdentityBeforeRecreate(t *testing.T) {
 		statePath := filepath.Join(dir, "tsnet", "recreated", "tailscaled.state")
 		deadline := time.Now().Add(30 * time.Second)
 		for time.Now().Before(deadline) {
-			state, readErr := os.ReadFile(statePath)
+			state, readErr := durable.ReadFile(statePath)
 			status, statusErr := m.ExposureStatus(ctx, "recreated")
 			ready := false
 			for _, ep := range status.Endpoints {
@@ -362,11 +363,7 @@ func TestManagerPublicToPrivateRetiresFunnelOnlyIdentity(t *testing.T) {
 			t.Fatal(err)
 		}
 		waitManagerFunnelState(t, ctx, m, "public-private", stateReady)
-		state, err := os.ReadFile(filepath.Join(tsDir, "public-private", "tailscaled.state"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		return res, state
+		return res, liveState(t, filepath.Join(tsDir, "public-private", "tailscaled.state"))
 	}
 
 	res, before := serve("private-stays-live")
@@ -521,11 +518,7 @@ func TestManagerWithoutTailnetDeletesLegacyIdentityBeforeSlugRecreation(t *testi
 			t.Fatal(err)
 		}
 		waitManagerFunnelState(t, ctx, m, "legacy-recreate", stateReady)
-		state, err := os.ReadFile(filepath.Join(tsDir, "legacy-recreate", "tailscaled.state"))
-		if err != nil {
-			t.Fatal(err)
-		}
-		return state
+		return liveState(t, filepath.Join(tsDir, "legacy-recreate", "tailscaled.state"))
 	}
 
 	if err := Save(dir, File{Version: 1, Permitted: []ID{Funnel}}); err != nil {
@@ -671,6 +664,25 @@ func TestManagerFunnelNeedsMachineAuthIsNotPermissionFailure(t *testing.T) {
 	}
 	if err := tailnet.Close(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// liveState reads the state file of a running node. The Tailscale backend
+// replaces that file at any moment. On Windows its write fails while
+// os.ReadFile has the file open, and a read during the replacement can fail or
+// find no file, so this tries again.
+func liveState(t *testing.T, path string) []byte {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		state, err := durable.ReadFile(path)
+		if err == nil && len(state) > 0 {
+			return state
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("read the state of a running node: %d bytes, %v", len(state), err)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
 

@@ -88,6 +88,17 @@ handle closes or the process ends, as with `flock`.
 - `putBlob` treats a failed rename as success when the blob exists, because
   Windows refuses a rename onto a read-only file, which is the race of two writers
   of one blob. The bytes are the same by their hash.
+- A reader can also stop a writer. The Tailscale backend stores a node's
+  `tailscaled.state` with `ReplaceFileW` and does not try again, and that call fails
+  while a handle without delete sharing is open, which is the handle of `os.Open`
+  and `os.ReadFile`. A status poll that reads the file with `os.ReadFile` can
+  then fail a node start, `tsnet.Up` or a logout. `internal/durable.ReadFile` opens the
+  file with delete sharing, and `applyStatus` reads the state with it.
+  `nodeStateLocation` reads through `os.Root`, which shares delete access too.
+  `TestStateReadersLetTheBackendWrite` runs both readers against the real store.
+  Delete sharing lets a `ReplaceFileW` and a removal through. It does not let a
+  rename onto the file through. A read during a replacement can fail or find no
+  file for a moment, and `applyStatus` then keeps the identity that it read before.
 - `wasmcompile.Module` calls wazero again after a failed read or rename of a cache
   entry, up to ten times with a short wait. wazero keeps a compiled module in memory
   and then stores it in the file cache, and that store fails while another worker

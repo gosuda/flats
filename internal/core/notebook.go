@@ -101,7 +101,11 @@ func (s *Service) buildNotebook(slugName string, v store.Version, title, dataDir
 		h := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(http.StatusOK) })
 		return &deployed{version: v, handler: h, redact: identity, environment: env}, nil
 	}
-	in, _, err := notebook.Open(s.notebookDir(slugName), notebookBackend{s: s, slug: slugName}, notebook.Options{Slug: slugName, Title: title, Now: s.now, Spills: s.notebookSpills()})
+	cursor, err := s.importCursor(slugName)
+	if err != nil {
+		return nil, err
+	}
+	in, _, err := notebook.Open(s.notebookDir(slugName), notebookBackend{s: s, slug: slugName}, notebook.Options{Slug: slugName, Title: title, Now: s.now, Spills: s.notebookSpills(), ImportStore: cursor.ImportStore, ImportSeq: cursor.ImportSeq})
 	if err != nil {
 		return nil, fmt.Errorf("open the notebook: %w", err)
 	}
@@ -228,13 +232,14 @@ func (s *Service) writeNotebookLocked(ctx context.Context, slugName string, via 
 	case t == contenttype.Notebook:
 		in := s.liveNotebook(slugName)
 		if in == nil {
-			if st, err := s.st.ContentState(ctx, slugName); err != nil || st.Phase != "init" {
+			st, err := s.st.ContentState(ctx, slugName)
+			if err != nil || st.Phase != "init" {
 				return nil, false, false, fmt.Errorf("%w: notebook %s is not running; get_logs has details", ErrUnavailable, slugName)
 			}
 			// Recover the durable outcome before attempting host shell publication.
-			pending, _, err := notebook.Open(s.notebookDir(slugName), notebookBackend{s: s, slug: slugName}, notebook.Options{Slug: slugName, Title: f.Name, Now: s.now, Spills: s.notebookSpills()})
+			pending, _, err := notebook.Open(s.notebookDir(slugName), notebookBackend{s: s, slug: slugName}, notebook.Options{Slug: slugName, Title: f.Name, Now: s.now, Spills: s.notebookSpills(), ImportStore: st.ImportStore, ImportSeq: st.ImportSeq})
 			if err != nil {
-				return nil, false, false, fmt.Errorf("open the notebook: %w", err)
+				return nil, false, false, fmt.Errorf("%w: open the notebook: %w", ErrUnavailable, err)
 			}
 			err = run(pending)
 			pending.Stop()

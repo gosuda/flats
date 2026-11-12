@@ -10,7 +10,9 @@ require (
 
 require (
 	cunicu.li/go-rosenpass v0.5.42 // indirect
+	filippo.io/age v1.3.2 // indirect
 	filippo.io/edwards25519 v1.2.0 // indirect
+	filippo.io/hpke v0.4.0 // indirect
 	github.com/DeRuina/timberjack v1.4.2 // indirect
 	github.com/akutz/memconn v0.1.0 // indirect
 	github.com/alexbrainman/sspi v0.0.0-20250919150558-7d374ff0d59e // indirect
