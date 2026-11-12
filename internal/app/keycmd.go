@@ -61,33 +61,12 @@ func KeyCommand(ctx context.Context, args []string, in io.Reader, out io.Writer)
 		}
 	}
 
-	configPath, _, err := c.paths()
+	dataDir, st, done, err := c.openOffline()
 	if err != nil {
 		return err
 	}
-	_, cfg, err := load(configPath)
-	if err != nil {
-		return err
-	}
-	dataDir := cfg.Host.DataDir
-	lock, err := lockOffline(dataDir)
-	if err != nil {
-		return err
-	}
-	defer lock.Close()
+	defer done()
 	dbPath := filepath.Join(dataDir, "flats.db")
-	info, err := inspectDB(dbPath)
-	if err != nil {
-		return err
-	}
-	if info.Binding == nil || info.Binding.InstanceID != cfg.Host.InstanceID {
-		return actionf("%s is not the database of %s; run `flats config init` or start the host once first", dbPath, configPath)
-	}
-	st, err := store.Open(dbPath)
-	if err != nil {
-		return err
-	}
-	defer st.Close()
 
 	switch name {
 	case "ls":
@@ -117,6 +96,38 @@ func KeyCommand(ctx context.Context, args []string, in io.Reader, out io.Writer)
 		c.printf("stored the %s key in %s; the next start connects %s with it if none is connected yet\n", id, dbPath, id)
 	}
 	return nil
+}
+
+// openOffline takes the host lock of the selected configuration's data
+// directory, checks that flats.db belongs to that configuration, and opens
+// it. done closes the store and releases the lock.
+func (c *configCmd) openOffline() (dataDir string, st *store.Store, done func(), err error) {
+	configPath, _, err := c.paths()
+	if err != nil {
+		return "", nil, nil, err
+	}
+	_, cfg, err := load(configPath)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	dataDir = cfg.Host.DataDir
+	lock, err := lockOffline(dataDir)
+	if err != nil {
+		return "", nil, nil, err
+	}
+	dbPath := filepath.Join(dataDir, "flats.db")
+	info, err := inspectDB(dbPath)
+	if err == nil && (info.Binding == nil || info.Binding.InstanceID != cfg.Host.InstanceID) {
+		err = actionf("%s is not the database of %s; run `flats config init` or start the host once first", dbPath, configPath)
+	}
+	if err == nil {
+		st, err = store.Open(dbPath)
+	}
+	if err != nil {
+		lock.Close()
+		return "", nil, nil, err
+	}
+	return dataDir, st, func() { st.Close(); lock.Close() }, nil
 }
 
 // readKeyValue prompts without echo on a terminal.

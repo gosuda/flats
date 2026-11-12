@@ -753,16 +753,20 @@ func (s *Store) ListDeployments(ctx context.Context, flat string, limit int) ([]
 
 // AddEvent appends a log event.
 func (s *Store) AddEvent(ctx context.Context, e Event) (int64, error) {
-	var data any
-	if len(e.Data) > 0 {
-		data = string(e.Data)
-	}
-	res, err := s.db.ExecContext(ctx, `INSERT INTO events(flat,at,level,kind,message,data) VALUES(?,?,?,?,?,?)`,
-		e.Flat, unix(e.Time), e.Level, e.Kind, e.Message, data)
+	res, err := addEvent(ctx, s.db, e)
 	if err != nil {
 		return 0, err
 	}
 	return res.LastInsertId()
+}
+
+func addEvent(ctx context.Context, x executor, e Event) (sql.Result, error) {
+	var data any
+	if len(e.Data) > 0 {
+		data = string(e.Data)
+	}
+	return x.ExecContext(ctx, `INSERT INTO events(flat,at,level,kind,message,data) VALUES(?,?,?,?,?,?)`,
+		e.Flat, unix(e.Time), e.Level, e.Kind, e.Message, data)
 }
 
 // ListEvents returns up to limit events for flat with id > after, oldest first
@@ -1108,6 +1112,55 @@ func (s *Store) DeleteSecret(ctx context.Context, flat, name string) error {
 		return fmt.Errorf("secret %q: %w", name, ErrNotFound)
 	}
 	return nil
+}
+
+// FlatSecret is a sealed secret with the flat it belongs to.
+type FlatSecret struct {
+	Flat string
+	SealedSecret
+}
+
+// ListAllSecrets returns the sealed secrets of every flat, ordered by flat
+// and name.
+func (s *Store) ListAllSecrets(ctx context.Context) ([]FlatSecret, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT flat,name,nonce,ciphertext,updated_at FROM secrets ORDER BY flat,name`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []FlatSecret
+	for rows.Next() {
+		var sec FlatSecret
+		var u int64
+		if err := rows.Scan(&sec.Flat, &sec.Name, &sec.Nonce, &sec.Ciphertext, &u); err != nil {
+			return nil, err
+		}
+		sec.UpdatedAt = fromUnix(u)
+		out = append(out, sec)
+	}
+	return out, rows.Err()
+}
+
+// DeleteSealedValues deletes every flat secret and every operator key record
+// that holds a value, and adds events, in one transaction. A key record that
+// only records a connection stays.
+func (s *Store) DeleteSealedValues(ctx context.Context, events []Event) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	for _, q := range []string{`DELETE FROM secrets`, `DELETE FROM host_keys WHERE ciphertext IS NOT NULL`} {
+		if _, err := tx.ExecContext(ctx, q); err != nil {
+			return err
+		}
+	}
+	for _, e := range events {
+		if _, err := addEvent(ctx, tx, e); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // ListSecrets returns sealed secrets of a flat.

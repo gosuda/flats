@@ -46,20 +46,28 @@ var keyEnv = []struct {
 // when a node has no key. Legacy mode reads them as the environment input.
 var legacyTailscaleEnv = []string{"TS_AUTHKEY", "TS_AUTH_KEY"}
 
+// cleanPath makes a path from the command line or the environment absolute,
+// taking a relative one from the working directory. On Unix the result
+// starts with "/", the form static analysis accepts as free of ".."
+// traversal; a Windows path starts with its volume.
+func cleanPath(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	if filepath.VolumeName(abs) != "" {
+		return filepath.Clean(abs), nil
+	}
+	return filepath.Clean("/" + abs), nil
+}
+
 // readKeyFile reads a key from path, trimmed of surrounding white space.
 // A relative path (from an environment variable) is taken from the working
 // directory; the path is cleaned before use.
 func readKeyFile(path, from string) (string, error) {
-	abs, err := filepath.Abs(path)
+	path, err := cleanPath(path)
 	if err != nil {
 		return "", actionf("%s: %v", from, err)
-	}
-	// On Unix abs already starts with "/"; this is the form static analysis
-	// accepts as free of ".." traversal. A Windows path starts with its volume.
-	if filepath.VolumeName(abs) != "" {
-		path = filepath.Clean(abs)
-	} else {
-		path = filepath.Clean("/" + abs)
 	}
 	b, err := os.ReadFile(path)
 	if err != nil {

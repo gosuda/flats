@@ -20,6 +20,7 @@ import (
 
 	"github.com/gosuda/flats/internal/contenttype"
 	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/prompt"
 )
 
 // --- deploy ---
@@ -753,11 +754,13 @@ func (a *app) logs(args []string) error {
 
 func (a *app) secret(args []string) error {
 	if len(args) == 0 {
-		return usagef("missing subcommand (set, rm or ls)")
+		return usagef("missing subcommand (set, rm, ls, backup-key, restore-key or reset)")
 	}
 	sub, args := args[0], args[1:]
 	fs := a.flags("secret")
 	switch sub {
+	case "backup-key", "restore-key", "reset":
+		return a.secretKey(append([]string{sub}, args...))
 	case "set":
 		pos, err := a.parse(fs, args, 2, 2)
 		if err != nil {
@@ -819,46 +822,35 @@ func (a *app) secret(args []string) error {
 		}
 		return tw.Flush()
 	}
-	return usagef("unknown secret subcommand %q (use set, rm or ls)", sub)
+	return usagef("unknown secret subcommand %q (use set, rm, ls, backup-key, restore-key or reset)", sub)
+}
+
+// secretKey runs the subcommands that work on secret.key in the data
+// directory instead of calling the host.
+func (a *app) secretKey(args []string) error {
+	if SecretKey == nil {
+		return errors.New("secret key commands are not wired")
+	}
+	err := SecretKey(a.ctx, args, a.env.Stdin, a.out)
+	var ec exitCoder
+	if errors.As(err, &ec) && ec.ExitCode() == ExitUsage {
+		return usageError{err.Error()}
+	}
+	return err
 }
 
 // readSecret reads a value from stdin: without echo from a terminal, or the
 // whole input (minus one trailing newline) from a pipe.
 func (a *app) readSecret(name string) (string, error) {
 	if f, ok := a.env.Stdin.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
-		fd := int(f.Fd())
-		saved, err := term.GetState(fd)
+		v, err := prompt.Hidden(a.ctx, f, a.errw, fmt.Sprintf("Value for %s (input hidden): ", name))
 		if err != nil {
 			return "", err
 		}
-		fmt.Fprintf(a.errw, "Value for %s (input hidden): ", name)
-		// main catches SIGINT, so Ctrl-C would not interrupt the read itself:
-		// wait for it or for cancellation, and restore echo on the way out.
-		type read struct {
-			b   []byte
-			err error
-		}
-		ch := make(chan read, 1)
-		go func() {
-			b, err := term.ReadPassword(fd)
-			ch <- read{b, err}
-		}()
-		var r read
-		select {
-		case r = <-ch:
-		case <-a.ctx.Done():
-			_ = term.Restore(fd, saved)
-			fmt.Fprintln(a.errw)
-			return "", a.ctx.Err()
-		}
-		fmt.Fprintln(a.errw)
-		if r.err != nil {
-			return "", r.err
-		}
-		if len(r.b) == 0 {
+		if v == "" {
 			return "", errors.New("empty value; nothing stored")
 		}
-		return string(r.b), nil
+		return v, nil
 	}
 	b, err := io.ReadAll(io.LimitReader(a.env.Stdin, 1<<20))
 	if err != nil {

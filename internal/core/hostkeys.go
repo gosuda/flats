@@ -118,7 +118,7 @@ func OpenHostKey(dataDir string, k store.HostKey) (string, error) {
 	}
 	pt, err := g.Open(nil, k.Nonce, k.Ciphertext, hostKeyAAD(k.ID))
 	if err != nil {
-		return "", fmt.Errorf("decrypt the stored %s key: %w; secret.key does not match flats.db", k.ID, err)
+		return "", fmt.Errorf("decrypt the stored %s key: %w; secret.key does not match flats.db: put back the matching secret.key, which `flats secret restore-key` restores from its recovery copy, or remove this key with `flats key rm` while the host is stopped and register it again", k.ID, err)
 	}
 	return string(pt), nil
 }
