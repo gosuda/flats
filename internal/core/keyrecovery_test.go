@@ -153,14 +153,16 @@ func TestKeyCopyWithAnotherRecipient(t *testing.T) {
 	}
 }
 
-// The key ID is the first 16 bytes of SHA-256 over the label, a zero byte
-// and the key (docs/spec/secret-key-recovery.md, rule 2).
+// The key ID is the first 16 bytes of HMAC-SHA-256 with the key as the HMAC
+// key and the 19 bytes of the label as the message
+// (docs/spec/secret-key-recovery.md, rule 2, which states this value).
+// OpenSSL and .NET computed it, not this package.
 func TestKeyIDKnownAnswer(t *testing.T) {
 	key := make([]byte, 32)
 	for i := range key {
 		key[i] = byte(i)
 	}
-	if got := KeyID(key); got != "f31ed6ddd82a47bb8dcaa37f3d649890" {
+	if got := KeyID(key); got != "5be1a8cb8352ce199e248eadeb89a6b4" {
 		t.Fatalf("KeyID = %s", got)
 	}
 }

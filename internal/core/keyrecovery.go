@@ -3,6 +3,7 @@ package core
 import (
 	"bytes"
 	"context"
+	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -49,12 +50,15 @@ func ReadSecretKey(dataDir string) ([]byte, error) {
 	return readSecretKey(filepath.Join(dataDir, SecretKeyFile))
 }
 
-// KeyID identifies a key without revealing anything that helps open it.
+// KeyID identifies a key without revealing anything that helps open it: the
+// first 16 bytes of HMAC-SHA-256 over a 19-byte label, with the key as the
+// HMAC key (docs/spec/secret-key-recovery.md, rule 2). The key is the HMAC
+// key and not hash input, so that a code scanner does not take the ID for a
+// fast hash of a password.
 func KeyID(key []byte) string {
-	h := sha256.New()
-	h.Write([]byte("flats secret key id\x00"))
-	h.Write(key)
-	return hex.EncodeToString(h.Sum(nil)[:16])
+	mac := hmac.New(sha256.New, key)
+	mac.Write([]byte("flats secret key id"))
+	return hex.EncodeToString(mac.Sum(nil)[:16])
 }
 
 // SealKeyCopy encrypts key under password at the scrypt work factor

@@ -61,8 +61,10 @@ Out of scope:
    turns the file back into a key with the password and without Flats.
 2. `<data>/secret.key.recovery.id` holds the key ID of the key in the copy, as
    32 lowercase hex digits and a line feed. The key ID is the first 16 bytes of
-   SHA-256 over the text `flats secret key id`, a zero byte, and the key. It
-   helps neither to open the copy nor the sealed values, because the key is
+   HMAC-SHA-256 with the key as the HMAC key and, as the message, the 19 ASCII
+   bytes of the text `flats secret key id` with nothing after them. For the
+   key of the 32 bytes `00` to `1f` it is `5be1a8cb8352ce199e248eadeb89a6b4`.
+   It helps neither to open the copy nor the sealed values, because the key is
    256 random bits. Only `backup-key` writes the ID file, so a copy made by
    hand with `age -p` has none until `backup-key` runs once.
 3. On Unix, Flats writes both files with mode 0600. On Windows the data
