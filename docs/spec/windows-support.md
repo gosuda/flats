@@ -176,9 +176,9 @@ browser on Windows. The technical design holds the measurements. The status is
   16 tests in parallel on Windows: its first `hello` reached the 10 s limit of one
   guest call after a slow worker start, 3.8 s in the last run. It passed 6 of 6 runs on
   four processors. The CI job is the first run of the docs tests on a Windows runner.
-- The `windows` CI job has failed in 2 of its 12 completed runs because a guest call
-  soon after a worker start reached the 10 s limit of one guest call, both times in
-  tests of the `docs-soak` shard and in workers that started within 2 s of each
+- The `windows` CI job failed in 2 of its first 12 completed runs because a guest
+  call soon after a worker start reached the 10 s limit of one guest call, both times
+  in tests of the `docs-soak` shard and in workers that started within 2 s of each
   other. On 2026-11-05 the tests were `TestDocumentOwnershipSoak/1MiBASCII`, at its
   first guest call, and `TestConflictPrivacyAndRollbackStorageBudgets/bytes`, at the
   first read of its document after a worker start, with
