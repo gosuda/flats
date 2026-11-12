@@ -176,9 +176,9 @@ and an empty guide:
 Nothing in them is secret, so they are not encrypted. Because every database
 from step 21 on has the `autopilot` row, that row does not count when Flats
 checks whether a database already holds data. A release older than step 21
-refuses the database; going back means restoring the backup taken before the
-migration, which loses the agent decisions made since. To stop Autopilot
-without going back, turn it off in the console, or stop Flats.
+refuses the database; going back means restoring a full backup taken before
+the upgrade, which loses every change made since, including agent decisions. To
+stop Autopilot without going back, turn it off in the console, or stop Flats.
 
 ### Public instance settings
 
@@ -217,8 +217,9 @@ the mode is off keep the separate approved version/deploy steps. The page
 starter Draft from `create_flat` is not published.
 
 A binary older than database step 23 refuses this database. To run it,
-restore the backup from before migration, losing changes made since. To stop
-the mode without restoring a backup, turn it off in the console or stop Flats.
+restore a full backup taken before the upgrade, losing every change made since.
+To stop the mode without restoring a backup, turn it off in the console or stop
+Flats.
 
 ## config.json
 
@@ -799,7 +800,11 @@ written. Before migrating an existing database Flats writes
 `backups/flats.v<N>.<time>.db` with `VACUUM INTO`; if that fails, it does not
 migrate. Each migration step commits its changes and the new `user_version` in
 one transaction. There are no down migrations: to run an older release,
-restore the backup.
+restore a full backup taken before the upgrade
+([What to back up](#what-to-back-up)). The copy in `backups/` holds only
+`flats.db`. Restored alone, it loses every change recorded there since, and the
+flat directories no longer match it, so use it only if nothing changed since it
+was taken.
 
 ## Starting
 
@@ -924,5 +929,8 @@ installer prints that command after an upgrade. `flats install` stops a
 running Flats service while it prepares `config.json` and starts the old
 service definition again if that fails.
 
-To go back to an older release, restore `backups/flats.v<N>.<time>.db`; the
-older binary ignores `config.json`.
+To go back to an older release straight after the move, put the
+`backups/flats.v<N>.<time>.db` that the move wrote back as `flats.db`. If the
+old host had a `network-provider.json`, also put the archived
+`network-provider.<time>.json` back under that name. The older binary ignores
+`config.json`. After any change, restore a full backup taken before the move.
