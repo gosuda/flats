@@ -176,23 +176,23 @@ browser on Windows. The technical design holds the measurements. The status is
   16 tests in parallel on Windows: its first `hello` reached the 10 s limit of one
   guest call after a slow worker start, 3.8 s in the last run. It passed 6 of 6 runs on
   four processors. The CI job is the first run of the docs tests on a Windows runner.
-- The `windows` CI job failed in one of its first five runs, on 2026-11-05, in
+- The `windows` CI job has failed in 2 of its 12 completed runs because the first
+  guest call after a worker start reached the 10 s limit of one guest call, both
+  times in tests of the `docs-soak` shard. On 2026-11-05 the tests were
   `TestDocumentOwnershipSoak/1MiBASCII` and
-  `TestConflictPrivacyAndRollbackStorageBudgets/bytes`. In each, the first call after
-  a worker start on a 1 MiB document reached the 10 s limit of one guest call, with
-  `failed to call QJS_FreeValue: module closed with context deadline exceeded`.
-  A third parallel subtest started a worker in 310 ms during those seconds, so the
-  runner did not stop. The cause is not identified. The evidence points at load on
-  the runner, not at a Windows code path, and the run after
-  [the guarded JS engine](guarded-js-engine.md) passed, which does not rule it out.
-  At that rate this job can also fail a pull request that did not cause it.
-  It failed the same way on 2026-11-12, in the four tests that start the `docs-soak`
-  shard: the first guest call of each worker reached the 10 s limit after a worker
-  start of 1.2 to 2.6 s. That makes two events in the 12 runs of the job so far. Load
-  does not explain the second event. On four processors that call takes 18 to
-  212 ms, and with three copies of the shard at once a worker start takes 5.4 to
-  7.5 s before the call takes more than 2.1 s, while the failed run had normal
-  starts. A fifth worker started and answered during those seconds. On Windows a
+  `TestConflictPrivacyAndRollbackStorageBudgets/bytes`, with
+  `failed to call QJS_FreeValue: module closed with context deadline exceeded`. On
+  2026-11-12 they were the four tests that start the shard, `/bytes` among them,
+  after worker starts of 1.2 to 2.6 s, with
+  `failed to call js_std_await: allocate ... after the runtime closed`. The two texts
+  differ because [the guarded JS engine](guarded-js-engine.md) came between the runs
+  and words a closed runtime differently. Both say that the limit closed the runtime
+  during the call. In each event another worker started in about 0.3 s during those
+  seconds, so the runner did not stop. The cause is not identified. Load does not
+  explain the second event: on four processors that call takes 18 to 212 ms, and
+  with three copies of the shard at once a worker start takes 5.4 to 7.5 s before
+  the call takes more than 2.1 s, while the failed run had normal starts. At this
+  rate the job can also fail a pull request that did not cause it. On Windows a
   document test now asks a worker for its goroutine stacks when its first guest
   call is open after 5 s, and logs them, so the next event shows where the worker
   waits (`stall_test.go` in `internal/apps/docs`).

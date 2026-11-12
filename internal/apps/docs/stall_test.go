@@ -66,13 +66,22 @@ func watchCall(pid int, after time.Duration) func() string {
 		return func() string { return "" }
 	}
 	base := filepath.Join(stallDir(), strconv.Itoa(pid))
-	timer := time.AfterFunc(after, func() { os.WriteFile(base+".want", nil, 0o600) })
+	// Windows gives the id of an ended process to a new one. Nothing of an
+	// earlier worker with this id may stay, before the request or after it.
+	os.Remove(base + ".stacks")
+	asked := make(chan struct{})
+	timer := time.AfterFunc(after, func() {
+		os.WriteFile(base+".want", nil, 0o600)
+		close(asked)
+	})
 	return func() string {
 		if timer.Stop() {
 			return ""
 		}
+		<-asked
+		defer os.Remove(base + ".want")
 		defer os.Remove(base + ".stacks")
-		for end := time.Now().Add(5 * time.Second); time.Now().Before(end); time.Sleep(50 * time.Millisecond) {
+		for end := time.Now().Add(10 * time.Second); time.Now().Before(end); time.Sleep(50 * time.Millisecond) {
 			if b, err := os.ReadFile(base + ".stacks"); err == nil {
 				return string(b)
 			}
