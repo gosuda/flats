@@ -35,6 +35,11 @@ type Options struct {
 	Now    func() time.Time
 	Log    *slog.Logger
 	Spills *SpillManager
+	// ImportStore and ImportSeq are the import cursor flats.db holds for this
+	// flat, empty when it has none. Open refuses a notebook.db with that store
+	// id whose outbox never reached ImportSeq.
+	ImportStore string
+	ImportSeq   int64
 }
 
 // WriteError distinguishes permanent refusals from retryable admission failures.
@@ -107,6 +112,9 @@ func Open(dir string, b Backend, opts Options) (*Instance, bool, error) {
 		return fail(err)
 	}
 	in.storeID = state.Store
+	if err := s.checkImportCursor(ctx, state.Store, opts); err != nil {
+		return fail(err)
+	}
 	// A crash after schema creation but before the first content commit must
 	// finish initialization rather than adopt an empty notebook.
 	created := fresh || state.Seq == 0
