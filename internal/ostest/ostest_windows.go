@@ -47,3 +47,19 @@ func LoopbackDial(ctx context.Context, network, address string) (net.Conn, error
 	}
 	return new(net.Dialer).DialContext(ctx, network, address)
 }
+
+// CPUCounted reports whether the system has counted CPU time for the process.
+// Windows counts it in clock ticks of about 16 ms, so a new process reads zero
+// for a moment.
+func CPUCounted(pid int) bool {
+	h, err := windows.OpenProcess(windows.PROCESS_QUERY_LIMITED_INFORMATION, false, uint32(pid))
+	if err != nil {
+		return false
+	}
+	defer windows.CloseHandle(h)
+	var creation, exit, kernel, user windows.Filetime
+	if windows.GetProcessTimes(h, &creation, &exit, &kernel, &user) != nil {
+		return false
+	}
+	return kernel.HighDateTime|kernel.LowDateTime|user.HighDateTime|user.LowDateTime != 0
+}

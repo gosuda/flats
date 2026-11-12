@@ -186,6 +186,16 @@ browser on Windows. The technical design holds the measurements. The status is
   the runner, not at a Windows code path, and the run after
   [the guarded JS engine](guarded-js-engine.md) passed, which does not rule it out.
   At that rate this job can also fail a pull request that did not cause it.
+  It failed the same way on 2026-11-12, in the four tests that start the `docs-soak`
+  shard: the first guest call of each worker reached the 10 s limit after a worker
+  start of 1.2 to 2.6 s. That makes two events in the 12 runs of the job so far. Load
+  does not explain the second event. On four processors that call takes 18 to
+  212 ms, and with three copies of the shard at once a worker start takes 5.4 to
+  7.5 s before the call takes more than 2.1 s, while the failed run had normal
+  starts. A fifth worker started and answered during those seconds. On Windows a
+  document test now asks a worker for its goroutine stacks when its first guest
+  call is open after 5 s, and logs them, so the next event shows where the worker
+  waits (`stall_test.go` in `internal/apps/docs`).
 - Beside CPU and disk load on four processors, `TestHostIdleRealWorkerCycles` saw a
   worker start stall in two events of 252 runs, with both copies of the test at the
   same moment: for more than 15 s, which failed those two runs, and for more than

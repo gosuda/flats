@@ -38,6 +38,9 @@ func TestMain(m *testing.M) {
 		afterSpec(func() {
 			fmt.Fprintf(os.Stderr, "{\"t\":\"log\",\"level\":\"info\",\"msg\":\"docs test worker pid:%d\"}\n", os.Getpid())
 		})
+		if dir := os.Getenv(stallDirEnv); dir != "" {
+			go dumpStacksOnRequest(dir)
+		}
 		if err := flatsruntime.WorkerMain(os.Args[1:]); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
@@ -48,6 +51,11 @@ func TestMain(m *testing.M) {
 	cacheRoot, err = os.MkdirTemp(ostest.TempRoot(), "flats-docs-test-")
 	if err != nil {
 		panic(err)
+	}
+	if ostest.Windows {
+		if err = os.Mkdir(stallDir(), 0o700); err != nil {
+			panic(err)
+		}
 	}
 	code := m.Run()
 	if sharedManager != nil {
@@ -89,10 +97,14 @@ func afterSpec(fn func()) {
 }
 
 // docsWorkerEnv is the environment of test document workers: the dispatch
-// variable and the suite's document image switches (FLATS_NO_IMAGES,
-// FLATS_FORCE_IMAGES), which the worker reads.
+// variable, on Windows the directory of stack requests (stall_test.go), and
+// the suite's document image switches (FLATS_NO_IMAGES, FLATS_FORCE_IMAGES),
+// which the worker reads.
 func docsWorkerEnv() []string {
 	env := []string{"FLATS_DOCS_TEST_WORKER=1"}
+	if ostest.Windows {
+		env = append(env, stallDirEnv+"="+stallDir())
+	}
 	for _, k := range []string{"FLATS_NO_IMAGES", "FLATS_FORCE_IMAGES"} {
 		if v := os.Getenv(k); v != "" {
 			env = append(env, k+"="+v)
