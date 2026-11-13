@@ -151,9 +151,12 @@ minutes after a hosted runner boots, its system drive is read for about 45 s,
 and a flush there takes seconds. A document test met that as a guest call at
 the request limit ([Current state](spec/windows-support.md#current-state)).
 The step prints the boot time of the runner, so that a later stall can be
-compared with it. It then runs `scripts/install-smoke.ps1` on the Windows
-release archive. The job runs as an administrator, so the check that the
-install needs no administrator rights stays manual in [Releases](release.md).
+compared with it. The package `internal/site` runs first, with the default
+temp directory: one of its tests needs the short (8.3) names of the system
+drive, and the temporary drive keeps none. After the tests the job runs
+`scripts/install-smoke.ps1` on the Windows release archive. The job runs as an
+administrator, so the check that the install needs no administrator rights
+stays manual in [Releases](release.md).
 
 A `container` job builds the image for `linux/amd64` and `linux/arm64` from
 the Linux release archives and runs `scripts/container-smoke.sh` on the

@@ -252,5 +252,4 @@ browser on Windows. The technical design holds the measurements. The status is
 
 - Whether the document app can truncate its write-ahead log outside the call that
   commits. The truncation keeps the log at rest inside the disk quota. Inside the call
-  it adds a second flush to a call that has a limit of 10 s
-  ([Current state](#current-state)).
+  it flushes again, and the call has a limit of 10 s ([Current state](#current-state)).
