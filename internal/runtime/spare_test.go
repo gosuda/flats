@@ -87,7 +87,13 @@ func TestSpareAdoption(t *testing.T) {
 	mustStart(t, m, "first", spareTestFiles(), "index.js", nil)
 	sp := waitSpare(t, m, 0)
 	pid := sp.p.cmd.Process.Pid
+	// Windows reads the clock in ticks, so two readings a moment apart can be
+	// equal. The adoption request begins only when the clock has passed this
+	// reading: a start time that the adoption sets is then later than it.
 	waiting := time.Now()
+	for !time.Now().After(waiting) {
+		time.Sleep(time.Millisecond)
+	}
 	f := mustStart(t, m, "second", spareTestFiles(), "index.js", nil)
 	in := f.inst.(*instance)
 	if in.pid() != pid {

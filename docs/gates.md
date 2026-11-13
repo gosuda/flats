@@ -145,7 +145,15 @@ service stays stopped on upgrade, and uninstall removes it.
 
 The `windows` job runs the test shards on `windows-latest`, without the
 `docs-budget` shard, whose wall-clock budgets belong to the Linux job, and
-without `internal/devreview`, whose run command is Unix only. It then runs
+without `internal/devreview`, whose run command is Unix only. Its tests keep
+their data below `RUNNER_TEMP`, on the runner's temporary drive. About 11
+minutes after a hosted runner boots, its system drive is read for about 45 s,
+and a flush there takes seconds. A document test met that as a guest call at
+the request limit ([Current state](spec/windows-support.md#current-state)).
+The step prints the boot time of the runner, so that a later stall can be
+compared with it. The package `internal/site` runs first, with the default
+temp directory: one of its tests needs the short (8.3) names of the system
+drive, and the temporary drive keeps none. After the tests the job runs
 `scripts/install-smoke.ps1` on the Windows release archive. The job runs as an
 administrator, so the check that the install needs no administrator rights
 stays manual in [Releases](release.md).
