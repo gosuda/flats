@@ -55,7 +55,6 @@ func (a *app) serviceDir() (string, error) {
 	return winservice.DefinitionDir()
 }
 
-// config runs `flats config` through the Config hook.
 // backup runs `flats backup`, which works on the data directory instead of calling
 // the host. It takes --json out of the arguments, as the global flag.
 func (a *app) backup(args []string) error {
@@ -78,6 +77,7 @@ func (a *app) backup(args []string) error {
 	return err
 }
 
+// config runs `flats config` through the Config hook.
 func (a *app) config(args []string) error {
 	if Config == nil {
 		return errors.New("config is not wired")
