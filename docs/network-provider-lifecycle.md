@@ -517,21 +517,22 @@ combine. The status handler releases the backend lock before it installs a
 network map and does not check afterwards that the backend still runs. A
 shutdown does not wait for a handler that is in work. A network map that
 reaches a closed connection sets the relay flag and not the node. v1.104.7,
-the newest release, has the same text in each of these functions, and the root
-module can carry no patched copy. The development branch of the library
-ignores the status of a control client that a logout replaced (commit
-`b9d5ff3ae` of 2026-11-10), which removes the case after a logout. No release
-holds that commit yet. The case of a backend that closes while it handles its
-first network map stays on that branch. A logout followed by a close meets the
-fault when a status is in work at that moment. A backend gets four or five
-statuses with a network map in the first 0.6 s after its start, the last of
-them 7 to 19 ms after it reports `Running`, and none in the 4 s after that (20
-starts against the test control server). The retry above logs out a fresh
-backend about 1 ms after its start, so it has the highest risk. The `windows`
-CI job met the fault once in its first 32 runs. The order of its log lines and
-the state rule of the library place that event in the retry, and its stack
-names no node. After such an end a host that runs as the installed service
-starts again, and a host that runs in the foreground stays down.
+the newest release on 2026-11-13, has the same text in each of these
+functions, and the root module can carry no patched copy. The development
+branch of the library ignores the status of a control client that a logout
+replaced (commit `b9d5ff3ae` of 2026-11-10), which removes the case after a
+logout. No release holds that commit yet. The case of a backend that closes
+while it handles its first network map stays on that branch. A logout followed
+by a close meets the fault when a status is in work at that moment. A backend
+gets four or five statuses with a network map in the first 0.6 s after its
+start, the last of them 7 to 19 ms after it reports `Running`, and none in the
+4 s after that (20 starts against the test control server). The retry above
+logs out a fresh backend about 1 ms after its start, so it has the highest
+risk. The `windows` CI job met the fault once in its first 32 runs. The order
+of its log lines and the state rule of the library place that event in the
+retry, and its stack names no node. After such an end a host that runs as the
+installed service starts again, and a host that runs in the foreground stays
+down.
 
 ## Private Tailscale revocation
 

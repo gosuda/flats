@@ -27,9 +27,9 @@ before changing the test.
 - [ ] For parallel runs, read `go test -json` pause/cont events to see what ran
   alongside the failing test before blaming parallelism.
 - [ ] When several tests of the `windows` job stall at one time, look at the
-  clock before the test. The step prints the boot time of the runner, and the
-  system drive of a hosted runner can stall flushes for a while at a fixed
-  time after the boot
+  clock before the test. The step prints the boot time of the runner in a log
+  line that begins with `the runner booted at`. The system drive of a hosted
+  runner can stall flushes for a while at a fixed time after the boot
   ([Current state](../../../../docs/spec/windows-support.md#current-state) has
   the measurement). Measure the time of a flushed write beside the test before
   you change the test, and keep test data below `RUNNER_TEMP`, as the job
