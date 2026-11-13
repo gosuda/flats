@@ -111,6 +111,12 @@ var registerSequenceCollation = sync.OnceValue(func() error {
 	})
 })
 
+// RegisterCollation registers the notebook_u64 collation that notebook.db
+// indexes use. A program that opens notebook.db without this package, such as
+// a backup that copies or checks it, calls it first. It is safe to call more
+// than once.
+func RegisterCollation() error { return registerSequenceCollation() }
+
 func openStore(path string) (*store, bool, error) {
 	if err := registerSequenceCollation(); err != nil {
 		return nil, false, fmt.Errorf("notebook.db sequence collation: %w", err)

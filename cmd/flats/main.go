@@ -15,6 +15,7 @@ import (
 func init() {
 	cli.Serve = app.Serve
 	cli.Worker = runtime.WorkerMain
+	cli.Backup = app.BackupCommand
 	cli.Config = app.ConfigCommand
 	cli.ConfigUsage = app.ConfigUsage
 	cli.Key = app.KeyCommand
