@@ -188,12 +188,13 @@ browser on Windows. The technical design holds the measurements. The status is
   four failed tests in a run. A measurement on other runners gives the system drive of
   the runner as the cause. About 11 minutes after a hosted runner boots, about 1.2 GB
   are read from that drive in 36 to 50 s, through page faults. Seventeen runners showed
-  the reads in the counters. On an eighteenth the counters began after the reads came.
-  On the three where a watch looked, the process of the Windows Storage Service used a
-  full processor in those seconds, and nothing measured attributes the reads to it. A
-  job started 1 min 44 s to 4 min 55 s after the boot of its runner on seventeen of the
-  eighteen runners, and 11 min 1 s after it on one. On that one the reads came while the
-  job was in its setup steps, before its tests. The shard runs from about 9 to 10 min
+  the reads in the counters. On an eighteenth the counters began after the time at which
+  the reads come on the others, and recorded none. On the three where a watch looked,
+  the process of the Windows Storage Service used a full processor in those seconds, and
+  nothing measured attributes the reads to it. A job started 1 min 44 s to 4 min 55 s
+  after the boot of its runner on seventeen of the eighteen runners, and 11 min 1 s
+  after it on one. On that one the reads would fall, by the clock of the others, into
+  the setup steps of the job, before its tests. The shard runs from about 9 to 10 min
   after the job starts. Each of the four events began 9 min 9 s to 9 min 43 s after its
   job started, which is the time of the reads on a runner that booted about 2 min before
   its job. The boot times of those four runners are not recorded, so the events fit the
