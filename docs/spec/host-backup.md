@@ -375,7 +375,9 @@ flats backup --verify PATH [--json]
   host. A test shows that the copy has the modes of rule 10 on Unix, and a test
   shows the output of rule 24 and rule 29.
 - A test shows a backup of a stopped host with a `-wal` file, and the error of
-  rule 11 when the folder is not writable.
+  rule 11 when the folder is not writable. A test shows that a snapshot that cannot
+  start within the busy timeout is tried again and succeeds on a later try, and
+  fails the backup after the third.
 - The Windows job runs the same tests, including a copy of a database that a
   process holds open.
 - `docs/configuration.md` names this command as the supported way, no longer says
