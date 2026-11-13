@@ -176,33 +176,38 @@ browser on Windows. The technical design holds the measurements. The status is
   16 tests in parallel on Windows: its first `hello` reached the 10 s limit of one
   guest call after a slow worker start, 3.8 s in the last run. It passed 6 of 6 runs on
   four processors. The CI job is the first run of the docs tests on a Windows runner.
-- The `windows` CI job failed in 2 of its first 12 completed runs because a guest
-  call soon after a worker start reached the 10 s limit of one guest call, both times
-  in tests of the `docs-soak` shard and in workers that started within 2 s of each
-  other. On 2026-11-05 the tests were `TestDocumentOwnershipSoak/1MiBASCII`, at its
-  first guest call, and `TestConflictPrivacyAndRollbackStorageBudgets/bytes`, at the
-  first read of its document after a worker start, with
-  `failed to call QJS_FreeValue: module closed with context deadline exceeded`. On
-  2026-11-12 they were the four tests that start the shard, `/bytes` among them,
-  each at its first guest call, after worker starts of 1.2 to 2.6 s, with
-  `failed to call js_std_await: allocate ... after the runtime closed`. The two texts
-  differ because [the guarded JS engine](guarded-js-engine.md) came between the runs
-  and words a closed runtime differently. Both say that the limit closed the runtime
-  during the call. Each stalled call reads or writes the flat's database. In each
-  event another worker started in about 0.3 s during those seconds, so the runner
-  did not stop. The cause is not identified. Load does not explain the second
-  event. On four processors that call takes 18 to 212 ms. With three copies of the
-  shard at once, a worker start takes 5.4 to 7.5 s and the call at most 2.1 s. The
-  failed run had worker starts of 1.2 to 2.6 s, against 0.9 to 1.8 s in eight runs
-  in which these tests passed, so its starts were at most 0.8 s slower, while its
-  first guest calls did not end within 10 s. How long that call takes on the runner
-  in a run that passes is not measured. At this rate the job can also fail a pull
-  request that did not cause it. On Windows, a document test that starts its host
-  with `startAppModule`, as the tests of both events do, now asks the worker for its
-  goroutine stacks when its first guest call is open after 5 s, and logs them, so
-  the next event shows where the worker waits (`stall_test.go` in
-  `internal/apps/docs`). The watch covers that first call only: the document read
-  of 2026-11-05 would not have started it.
+- A guest call that writes waits for the drive, and on a drive with slow flushes it
+  fails. The worker's database flushes at each commit. The document app also truncates
+  the write-ahead log inside the call that commits, when the log holds more than 64
+  frames, so that the log at rest stays inside the disk quota (`commit` in
+  `storage.js`). That copies the log into the database and flushes again. When each
+  flush takes seconds, such a call reaches the 10 s limit of one guest call: the request
+  answers 504, the limit closes the JavaScript runtime of the call, and a WebSocket
+  whose message was in work closes with code 1011. The `windows` CI job met this in 4 of
+  its first 32 completed runs, each time in tests of the `docs-soak` shard and in the
+  workers of several tests at one time. The cause was the system drive of the runner.
+  About 11 minutes after a hosted runner boots, about 1.2 GB are read from that drive in
+  36 to 50 s, through page faults. Nine of nine measured runners showed the reads. On
+  the three where a watch looked, the process of the Windows Storage Service used a full
+  processor in exactly those seconds, and nothing measured attributes the reads to it. A
+  job starts 2 to 4.5 min after the boot of its runner, and the shard runs from about 9
+  to 10 min after the job starts. Each of the four events began 9 min 9 s to 9 min 43 s
+  after its job started, which is the time of the reads on a runner that booted about 2
+  min before its job. Six of the runners repeated the shard 25 times each. On the three
+  that kept the test data in the default temp directory, which is on that drive, the run
+  that met the reads had a guest call of 7.9 to 11.2 s and a flushed write of 4 KiB of
+  1.1 to 2.8 s, and one of the three failed two tests with the errors of the four
+  events. The stacks of the stalled calls end in `FlushFileBuffers`, for the commit in
+  one sample and for the truncation in a later one, and the timers of each process were
+  on time. The longest guest call of the other 72 runs on those runners took 2.7 s,
+  although single flushed writes took 1.4 and 2.0 s there in the first run of two jobs.
+  On the three that kept the test data on the temporary drive, the longest guest call of
+  75 runs took 2.7 s and the longest flushed write 0.13 s, the runs during the reads
+  included. The job now keeps its test data on that drive, below `RUNNER_TEMP`. The
+  product is as before: the limit, the flush of each commit and the truncation inside
+  the commit. A host whose data directory is on a drive with such delays fails the calls
+  that write during them. Whether the truncation can leave the call that commits is not
+  decided.
 - Beside CPU and disk load on four processors, `TestHostIdleRealWorkerCycles` saw a
   worker start stall in two events of 252 runs, with both copies of the test at the
   same moment: for more than 15 s, which failed those two runs, and for more than

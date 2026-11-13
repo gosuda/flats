@@ -201,7 +201,18 @@ jobs:
         run: FLATS_RELEASE_TARGETS=windows/amd64 scripts/build-release.sh v0.0.0-ci "$RUNNER_TEMP/dist"
       - name: Tests
         # Verbose: the log keeps the skips and the timing lines of this job.
+        # The test data goes to the runner's temporary drive. About 11 minutes
+        # after a hosted runner boots, its system drive is read for about 45 s.
+        # A flush there then takes seconds, and a document test that writes
+        # meets the request limit (docs/gates.md). The step prints the boot
+        # time, so that a later stall can be compared with it.
         run: |
+          mkdir -p "$RUNNER_TEMP/test-tmp"
+          TMP=$(cygpath -w "$RUNNER_TEMP/test-tmp")
+          TEMP=$TMP
+          export TMP TEMP
+          booted=$(pwsh -NoProfile -Command "(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss')" | tr -d '\r\n') || booted=unknown
+          echo "the runner booted at $booted UTC, it is $(date -u '+%Y-%m-%d %H:%M:%S') UTC, and the test data is below $TEMP"
           failed=0
           for shard in runtime-soak runtime-codec runtime docs-soak docs board; do
             scripts/ci-test.sh "$shard" -v -timeout 30m || failed=1

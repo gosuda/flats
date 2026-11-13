@@ -93,17 +93,10 @@ func startAppModule(t *testing.T, data, source, version string, environment map[
 		t.Fatal(err)
 	}
 	a := &app{srv: httptest.NewServer(inst), inst: inst, data: data, pid: int(workerPID.Load())}
-	// Before the cleanup that stops the worker, so that the cleanup of the
-	// watch runs after the worker ended.
-	stacks := watchCall(t, a.pid, firstCallStall)
 	t.Cleanup(a.stop)
 	// The host installs a disk budget before the worker admits live edits;
 	// these tests run without a quota.
-	status, out := a.hostOp(t, "POST", "budget", map[string]any{"quota": 0, "other": 0, "ttl_ms": 24 * 60 * 60 * 1000})
-	if s := stacks(); s != "" {
-		t.Logf("the first guest call of worker %d was open after %s; its goroutine stacks:\n%s", a.pid, firstCallStall, s)
-	}
-	if status != 200 {
+	if status, out := a.hostOp(t, "POST", "budget", map[string]any{"quota": 0, "other": 0, "ttl_ms": 24 * 60 * 60 * 1000}); status != 200 {
 		t.Fatal("budget", status, out)
 	}
 	return a
