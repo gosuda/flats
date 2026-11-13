@@ -49,6 +49,7 @@ list.
 | [Windows support](windows-support.md) | partly implemented | Flats on Windows: a PowerShell installer, a per-user service, Windows file names and locks, and a release archive |
 | [Secret key recovery](secret-key-recovery.md) | implemented | `flats secret backup-key`, `restore-key` and `reset`: a password-encrypted copy of `secret.key`, its restore against the sealed values, and a reset when both are lost |
 | [Public instance mode](public-instance.md) | implemented | An opt-in Experiments mode in which every new flat is created Public on the default public network and no private address is handed out or served |
+| [Host backup](host-backup.md) | planned | `flats backup --out` copies a running or stopped host into a directory with a manifest, and `flats backup --verify` checks such a copy: databases as snapshots, write-once blobs in two passes, board and notebook coherence with `flats.db`, and a self-check that fails to be run again |
 
 ## Where the technical designs live
 
