@@ -120,10 +120,73 @@ Required:
 `cloudflare-quick/` is optional: without it each public flat's quick tunnel
 gets a new random address. Logs, caches, sockets and the lock are rebuilt.
 
-To back up, stop the host and copy the whole data directory, plus `config.json`
-when it lives outside that directory. That covers all of it and takes every file
-from one moment. Flats has no supported way to take a backup from a running
-host.
+To back up, run this on the machine of the data directory, with the host running
+or stopped:
+
+```bash
+flats backup --out PATH [--exclude-secret-key] [--config PATH | --data DIR]
+```
+
+`PATH` must not exist, and its folder must. The command writes `PATH/manifest.json`
+(the Flats version, and the size and SHA-256 of every file), `PATH/data/` (the data
+directory) and, when `config.json` lives outside the data directory,
+`PATH/config.json` and the `config-history/` folder beside it. It writes into a
+temporary folder and renames it to `PATH` at the end, so a failed or interrupted
+backup leaves nothing at `PATH`. Details are in the [Host backup](spec/host-backup.md)
+spec.
+
+The command does not pause the host. It copies each live database as a snapshot
+(`VACUUM INTO`, which holds every commit up to its moment), copies the revision
+contents, which the host writes once, in two passes, and checks its own copy. A change during the copy
+that could make the copy inconsistent, such as a flat that was created, renamed or
+deleted, or a board that kept changing while its database and `flats.db` were
+copied, makes the command fail with "run the backup again". Under constant writes
+it can fail again and again. Stop the host then, and run the command again: the
+copy of a stopped host is exact.
+
+A copy of a running host does not come from one moment. Two flats' databases come
+from different moments, and so do a flat's `data/db.sqlite` and its `data/files/`.
+A file that a flat writes all the time can be partial. The command lists such
+files as unstable and keeps the last read. Each database, each outbox database
+against `flats.db`, and every blob that a database needs are consistent in the
+copy.
+
+The copy holds every secret that the host holds, including `secret.key`, the
+operator keys and the sealed values in `flats.db`. Keep it as protected as the data
+directory, in a folder that only you can write. With `--exclude-secret-key`, the
+copy has no `secret.key`, so you can keep the key apart from the data. The
+recovery copy `secret.key.recovery` stays in it, and anyone who holds the copy can
+guess its password offline
+([Secret key recovery](spec/secret-key-recovery.md#the-recovery-copy)).
+
+To check a copy, run `flats backup --verify PATH`. It needs no host and no
+configuration, and it writes nothing. It compares every file with the manifest,
+checks each database, checks that the outbox databases of documents, boards and
+notebooks fit `flats.db`, checks that every blob that a flat needs is in the copy,
+and checks that `secret.key` opens every sealed value. It prints `ok` or each
+failure, and exits with status 1 on a failure. It refuses, with status 78, a copy
+whose `flats.db` has another schema version than this Flats expects, and says
+which Flats version made it. Run `--verify` before every restore.
+
+To restore, stop the host, run `flats backup --verify PATH`, move the old data
+directory away and copy `PATH/data` to the same path. If `PATH/config.json` and
+`PATH/config-history/` exist, copy them to the place of the configuration file and
+the folder beside it. Then start the host. A copy made with `--exclude-secret-key`
+needs the key first: put `secret.key` back from where you kept it, or run
+`flats secret restore-key` with the recovery password
+([Recovering a lost secret.key](#recovering-a-lost-secretkey)). Copying over the old directory can
+leave a `-wal` file beside a restored database and corrupt it. A copy at another
+path is not used, because `host.data_dir` in its `config.json` still names the
+old path and a service started with `--config` still reads the old file.
+
+Restore with the same or a newer Flats release: an older binary refuses a newer
+`config.json` or database.
+
+#### Copying by hand
+
+You can still copy the data directory yourself with the host stopped, plus
+`config.json` when it lives outside that directory. That covers all of it and
+takes every file from one moment.
 
 While the host runs, these are live SQLite databases, with recent commits in a
 `-wal` file beside each one:
@@ -151,15 +214,6 @@ boards and notebooks:
 - With `revisions/` older than the databases, the host stops importing. Writes
   still report success but no new revision appears, and a restart does not
   clear it.
-
-To restore, stop the host and replace the old directory with the whole copy, at
-the same path. Copying over the old directory can leave a `-wal` file beside a
-restored database and corrupt it. A copy at another path is not used, because
-`host.data_dir` in its `config.json` still names the old path and a service
-started with `--config` still reads the old file.
-
-Restore with the same or a newer Flats release: an older binary refuses a newer
-`config.json` or database.
 
 ### Autopilot settings
 
