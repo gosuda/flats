@@ -159,6 +159,11 @@ recovery copy `secret.key.recovery` stays in it, and anyone who holds the copy c
 guess its password offline
 ([Secret key recovery](spec/secret-key-recovery.md#the-recovery-copy)).
 
+The command works only on a data directory that a host of this Flats release wrote.
+After an upgrade, start the host once so that it migrates `flats.db`. To back up a
+stopped host of an older release before you start the new one, copy the data
+directory by hand ([Copying by hand](#copying-by-hand)).
+
 To check a copy, run `flats backup --verify PATH`. It needs no host and no
 configuration, and it writes nothing. It compares every file with the manifest,
 checks each database, checks that the outbox databases of documents, boards and

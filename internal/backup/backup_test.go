@@ -245,6 +245,32 @@ func TestRunRefuses(t *testing.T) {
 	}
 }
 
+// A flats.db of another schema version, or one that is no Flats database, is refused before the command
+// writes anything: a host of an older release migrates it when it starts.
+func TestRunRefusesAFlatsDBOfAnotherRelease(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		prepare func(f *fixture)
+		want    string
+	}{
+		"an older schema": {func(f *fixture) { f.sql(nameFlatsDB, `PRAGMA user_version = 1`) }, "has schema version 1"},
+		"a newer schema":  {func(f *fixture) { f.sql(nameFlatsDB, `PRAGMA user_version = 9999`) }, "newer Flats"},
+		"not a database":  {func(f *fixture) { f.write(nameFlatsDB, strings.Repeat("not a database ", 20)) }, "not a Flats database"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			f := newFixture(t)
+			tc.prepare(f)
+			_, err := f.run(f.options("c1"))
+			var refused *RefusedError
+			if !errors.As(err, &refused) || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want a refusal with %q", err, tc.want)
+			}
+			f.nothingLeft()
+		})
+	}
+}
+
 func dirNames(t *testing.T, dir string) []string {
 	t.Helper()
 	entries, err := os.ReadDir(dir)

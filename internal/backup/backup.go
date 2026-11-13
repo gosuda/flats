@@ -15,6 +15,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/gosuda/flats/internal/store"
 )
 
 // Options select one backup.
@@ -75,10 +77,14 @@ func Run(ctx context.Context, o Options) (res *Result, err error) {
 	if err != nil {
 		return nil, err
 	}
-	if _, err := os.Stat(filepath.Join(data, nameFlatsDB)); err != nil {
+	flatsDB := filepath.Join(data, nameFlatsDB)
+	if _, err := os.Stat(flatsDB); err != nil {
 		if errors.Is(err, fs.ErrNotExist) {
 			return nil, &RefusedError{fmt.Sprintf("%s has no %s: it is not the data directory of a Flats host", data, nameFlatsDB)}
 		}
+		return nil, err
+	}
+	if err := checkSchema(flatsDB); err != nil {
 		return nil, err
 	}
 	out, err := filepath.Abs(o.Out)
@@ -254,6 +260,25 @@ func Run(ctx context.Context, o Options) (res *Result, err error) {
 		res.Bytes += f.Size
 	}
 	return res, nil
+}
+
+// checkSchema refuses a flats.db that is not the database of a host of this
+// release. The check of the copy (rule 25) refuses the same databases, and doing
+// it first saves the copy that would end in that refusal. A host of an older
+// release migrates its flats.db when it starts.
+func checkSchema(flatsDB string) error {
+	info, err := store.Inspect(flatsDB)
+	switch {
+	case errors.Is(err, store.ErrSchemaTooNew):
+		return &RefusedError{fmt.Sprintf("%s was written by a newer Flats than this one", flatsDB)}
+	case errors.Is(err, store.ErrNotFlats):
+		return &RefusedError{fmt.Sprintf("%s is not a Flats database: %v", flatsDB, err)}
+	case err != nil:
+		return fmt.Errorf("read the schema version of %s: %w", flatsDB, err)
+	case info.Version != info.Latest:
+		return &RefusedError{fmt.Sprintf("%s has schema version %d and this Flats expects %d. Start the host once with this Flats, which migrates it, or copy the stopped data directory by hand", flatsDB, info.Version, info.Latest)}
+	}
+	return nil
 }
 
 // readKeyBytes returns the bytes of secret.key, following a link as the host

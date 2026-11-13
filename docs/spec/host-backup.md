@@ -160,7 +160,11 @@ these steps and no other:
     not call the host, so `--url` does not apply. It refuses before writing
     anything when `--out` names something that exists, even a link; when its
     folder does not exist or is not a folder; when it is inside the data
-    directory; or when the data directory is inside it. It creates a new
+    directory; when the data directory is inside it; or when `flats.db` is not the
+    database of a host of this release, which means a file that is no Flats
+    database or a `user_version` other than the one this binary expects (rule 25).
+    A host of an older release migrates its `flats.db` when it starts, and the
+    refusal says so and names the copy by hand. It creates a new
     directory `PATH.partial-<random>` in the same folder, with mode 0700. All
     writes go there.
 13. **Survey.** For each flat directory below `flats/` it lists the directory and
@@ -327,7 +331,8 @@ flats backup --verify PATH [--json]
 30. A usage mistake, such as both `--out` and `--verify`, or neither, exits with
     status 2. A refusal exits with status 78, like `flats key`: an existing
     `PATH`, a missing or unusable folder, a `PATH` inside the data directory, a
-    data directory with no `flats.db`, and a `user_version` that rule 25 refuses.
+    data directory with no `flats.db`, a `flats.db` that is no Flats database, and
+    a `user_version` that rule 25 refuses.
     Any other failure exits with status 1: an unstable host file after 3 copies, a
     database that stays incoherent after 3 attempts, a change of the layout during
     the copy (rule 19), a changed key (rule 22), a failed verification, and an
