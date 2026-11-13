@@ -187,27 +187,31 @@ browser on Windows. The technical design holds the measurements. The status is
   its first 32 completed runs, each time in tests of the `docs-soak` shard, with one to
   four failed tests in a run. A measurement on other runners gives the system drive of
   the runner as the cause. About 11 minutes after a hosted runner boots, about 1.2 GB
-  are read from that drive in 36 to 50 s, through page faults. Fifteen of fifteen
-  measured runners showed the reads. On the three where a watch looked, the process of
-  the Windows Storage Service used a full processor in those seconds, and nothing
-  measured attributes the reads to it. A job starts about 2 to 5 min after the boot of
-  its runner, and the shard runs from about 9 to 10 min after the job starts. Each of
-  the four events began 9 min 9 s to 9 min 43 s after its job started, which is the time
-  of the reads on a runner that booted about 2 min before its job. The boot times of
-  those four runners are not recorded, so the events fit the clock of the reads, and no
-  record shows the reads in them. Six of the measured runners repeated the shard 25
-  times each. On the three that kept the test data in the default temp directory, which
-  is on that drive, the run that met the reads had a guest call of 7.9 to 11.2 s and a
-  flushed write of 4 KiB of 1.1 to 2.8 s, and one of the three failed two tests with the
-  errors of the four events. The stacks of the stalled calls end in `FlushFileBuffers`,
-  for the commit in one sample and for the truncation in a later one, and the timers of
-  each process were on time. The longest guest call of the other 72 runs on those
-  runners took 2.7 s, although single flushed writes took 1.4 and 2.0 s there in the
-  first run of two jobs. On the three that kept the test data on the temporary drive,
-  the longest guest call of 75 runs took 2.7 s and the longest flushed write 0.13 s, the
-  runs during the reads included. The job now keeps its test data on that drive, below
-  `RUNNER_TEMP`. The product is as before: the limit, the flush of each commit and the
-  truncation inside the commit. A host whose data directory is on a drive with such
+  are read from that drive in 36 to 50 s, through page faults. Seventeen runners showed
+  the reads in the counters. On an eighteenth the counters began after the reads came.
+  On the three where a watch looked, the process of the Windows Storage Service used a
+  full processor in those seconds, and nothing measured attributes the reads to it. A
+  job started 1 min 44 s to 4 min 55 s after the boot of its runner on seventeen of the
+  eighteen runners, and 11 min 1 s after it on one. On that one the reads came while the
+  job was in its setup steps, before its tests. The shard runs from about 9 to 10 min
+  after the job starts. Each of the four events began 9 min 9 s to 9 min 43 s after its
+  job started, which is the time of the reads on a runner that booted about 2 min before
+  its job. The boot times of those four runners are not recorded, so the events fit the
+  clock of the reads, and no record shows the reads in them. Six of the measured runners
+  repeated the shard 25 times each. On the three that kept the test data in the default
+  temp directory, which is on that drive, the run that met the reads had a guest call of
+  7.9 to 11.2 s and a flushed write of 4 KiB of 1.1 to 2.8 s, and one of the three
+  failed two tests with the errors of the four events. The stacks of the stalled calls
+  end in `FlushFileBuffers`, for the commit in one sample and for the truncation in a
+  later one, and the timers of each process were on time. The longest guest call of the
+  other 72 runs on those runners took 2.7 s, although single flushed writes took 1.4 and
+  2.0 s there in the first run of two jobs. On the three that kept the test data on the
+  temporary drive, the longest guest call of 75 runs took 2.7 s and the longest flushed
+  write 0.13 s, the runs during the reads included. The job now keeps its test data on
+  that drive, below `RUNNER_TEMP`, except for the package `internal/site`, which runs
+  first with the default temp directory ([the gates](../gates.md#pull-request-baseline)
+  have the reason). The product is as before: the limit, the flush of each commit and
+  the truncation inside the commit. A host whose data directory is on a drive with such
   delays fails the calls that write during them. The place of the truncation is an
   [open question](#open-questions).
 - Beside CPU and disk load on four processors, `TestHostIdleRealWorkerCycles` saw a
