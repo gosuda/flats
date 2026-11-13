@@ -177,8 +177,9 @@ these steps and no other:
     snapshot and otherwise the file alone (`installSnapshot`). The command copies
     the file of every snapshot, and the directory of every complete one. A
     snapshot with a directory and no marker is being written or was abandoned by
-    a crash. The command leaves it out whole and lists it in `excluded`. A snapshot with no directory is a
-    legacy snapshot, and the command copies its file.
+    a crash. The command leaves it out whole and lists it in `excluded`. A
+    snapshot with no directory is a legacy snapshot, and the command copies its
+    file.
 15. **Databases.** It snapshots, one at a time, every database of the flats that
     is not in the group below: `data/db.sqlite`, each preview database,
     `board.db` and `notebook.db`. It then snapshots `flats.db` and the outbox
