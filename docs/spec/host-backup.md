@@ -115,10 +115,16 @@ Out of scope:
    copy, the command reads it again up to 3 times and keeps the last read. It
    then lists the path in `unstable`, and the backup does not fail. A flat may
    write its files all the time, and rule 33 says what that means.
-8. A file or directory that is gone when the command opens it is skipped in the
-   write-once and guest classes, because the host removes those files on purpose
-   (pruning, the sweep, the flat itself). In the host class and for a database it
-   fails the backup, because the layout changed (rule 19).
+8. A file or directory that is gone when the command opens it is skipped and
+   listed in `skipped` when the host removes it on purpose while it runs: a
+   write-once or guest file (pruning, the sweep, the flat itself), anything below
+   `previews/<host>/` with its database (a preview expires), a file of
+   `config-history/` (the host keeps the newest 10), and an entry of
+   `network-retirements/` (a finished retirement). For `flats.db`, the
+   `data/db.sqlite`, `board.db` and `notebook.db` of a flat, and every other host
+   file, the command waits 100 ms and tries again, up to 3 times, because a
+   restore of a legacy snapshot replaces `db.sqlite` by a rename. It fails the
+   backup when the path is still gone.
 9. The command copies regular files and directories. It does not follow a
    symbolic link or a Windows junction, and it does not open a FIFO, a socket or
    a device file. It lists each such entry in `skipped` with its path and kind.
@@ -168,28 +174,34 @@ these steps and no other:
     `.flats-snapshot-complete`. The host restores the directory of a complete
     snapshot and otherwise the file alone (`installSnapshot`). The command copies
     the file of every snapshot, and the directory of every complete one. A
-    snapshot with a directory and no marker is being written. The command leaves
-    it out whole and lists it in `excluded`. A snapshot with no directory is a
+    snapshot with a directory and no marker is being written or was abandoned by
+    a crash. The command leaves it out whole and lists it in `excluded`. A snapshot with no directory is a
     legacy snapshot, and the command copies its file.
 15. **Databases.** It snapshots every database of the flats (`data/db.sqlite`,
     each preview database, `board.db` and `notebook.db`), one at a time, and then
     `flats.db`.
 16. **Coherence.** For each outbox database (rule 5) whose flat has a cursor
     (`content_state.import_store` is not empty), the copy is coherent with
-    `flats.db` by the test that the host runs when it opens the database
-    (`checkImportCursor` of the board and of the notebook). When the store id of
+    `flats.db` by the test that the host runs when it opens a board or a
+    notebook (`checkImportCursor`). The host runs no such test for a document, and
+    the command applies the same test to its database. When the store id of
     the database (the `store` row of its `meta` table, or `flats_docs_meta` for a
     document) differs from `import_store`, there is nothing to compare. Otherwise
     the highest outbox sequence (`sqlite_sequence` of the table `outbox`, or
     `flats_docs_outbox`) must not be below `import_seq`. A flat with no cursor,
     and a flat whose outbox database does not exist, have nothing to compare.
     When a database is below its cursor, an entry was created and imported between
-    its snapshot and the snapshot of `flats.db`, and the restored flat would not
-    start. The command then snapshots those databases again, then `flats.db` again,
-    and checks every outbox database again, up to 3 attempts in all. After the
-    third it fails the backup. The databases come before `flats.db` because an
-    outbox entry that the `flats.db` snapshot has already imported is at or before
-    its cursor, and the host acknowledges such an entry again
+    its snapshot and the snapshot of `flats.db`. A restored board or notebook in
+    that state does not start. A restored document starts, and its next import
+    acknowledges through `import_seq`, which deletes every outbox entry up to that
+    number, so the new entries that reuse those numbers are dropped unimported
+    ([docs app](../internal/docs-app.md)). The command then snapshots those
+    databases again, then `flats.db` again, and checks every outbox database again,
+    up to 3 attempts in all. After the third it fails the backup. Under constant
+    writes to several outbox databases the attempts can fail again and again, and
+    the docs advise a stopped host then. The databases come before `flats.db`
+    because an outbox entry that the `flats.db` snapshot has already imported is at
+    or before its cursor, and the host acknowledges such an entry again
     ([boards](../revision-store.md#boards) and
     [notebooks](../revision-store.md#notebooks), importing, step 1; for a document,
     [Importing](../revision-store.md#importing), step 1). The reverse order could
@@ -198,10 +210,10 @@ these steps and no other:
     does not know, so that every later import waits.
 17. **Write-once files, second pass.** It copies the write-once files that are new
     since the first pass. This pass starts after the last snapshot. A blob that a
-    snapshot references is in the copy unless the host unreferenced it and the sweep
-    deleted it before the first pass read it. The sweep deletes only a blob that is
-    older than 10 minutes, so that needs a copy that runs longer than that. Rule 27
-    finds such a loss.
+    snapshot references is in the copy, unless the host created the blob after the
+    first pass, unreferenced it, and the sweep deleted it before this pass. The
+    sweep deletes only a blob that is older than 10 minutes, so that needs a copy
+    that runs longer than that. Rule 27 finds such a loss.
 18. **Guest files and host files.** It copies the guest class and the host class.
 19. **Survey again.** It lists what step 13 listed. The backup fails when a flat
     directory appeared or disappeared, when a directory of step 13 that existed
@@ -214,7 +226,8 @@ these steps and no other:
 20. **Verification.** It runs the checks of rules 25 to 28 on the copy in
     `PATH.partial-<random>`, with the manifest that it holds in memory. Its first
     check reads every written file again from the destination and compares it with
-    the hash that rule 6 computed, so a failed write to the destination is found.
+    the hash that rule 4, 6 or 7 computed, so a failed write to the destination is
+    found.
 21. **Publish.** It writes `manifest.json` into the partial directory, syncs the
     files and the directory, and moves the partial directory to `PATH` in a way
     that fails when anything exists there, an empty directory included. When
@@ -346,13 +359,17 @@ flats backup --verify PATH [--json]
   that an entry recorded after the snapshot of the database and imported before the
   snapshot of `flats.db` fails the check of rule 16 on the first attempt, passes on
   the next, and fails the backup when it happens on three attempts. A test shows
-  that an entry recorded and acknowledged after the snapshot of the database and
-  before the snapshot of `flats.db` does not lose a revision after a restore.
+  that an entry recorded before the snapshot of the database, and imported and
+  acknowledged before the snapshot of `flats.db`, does not lose a revision after a
+  restore.
 - Tests show that these fail the backup with nothing at `PATH`: a flat created,
   renamed and deleted during the copy, a restore journal that appears, a changed
   `secret.key`, a host file that stays unstable, and a database that stays
   incoherent. A test shows that the first use of the database of a flat that has
-  no `data/` yet does not fail the backup.
+  no `data/` yet does not fail the backup. A test shows that a preview that
+  expires during the copy, a file of `config-history/` that the host removes, and a
+  finished retirement marker do not fail the backup and are listed in `skipped`,
+  and that a `db.sqlite` that is missing for the whole retry fails it.
 - Tests show the result for a skipped entry (a symbolic link, a FIFO, a link to a
   file outside the data directory), a write-once file and a guest file that vanish
   during the copy, a guest file that stays unstable (the backup succeeds and lists
