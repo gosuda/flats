@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -326,86 +327,216 @@ var outboxCases = []outboxCase{
 }
 
 // bump makes the live outbox database reach one more entry, acknowledged, and moves the cursor
-// of flats.db to it: an entry that was created and imported.
+// of flats.db to it: an entry that was created, imported and acknowledged.
 func (c outboxCase) bump(f *fixture, last int64) {
 	f.sql(c.rel, `INSERT INTO `+c.table+`(created_at) VALUES(0)`, `DELETE FROM `+c.table)
 	f.setCursor("x", last)
 }
 
+// pend adds an entry to the live outbox database that flats.db has not imported.
+func (c outboxCase) pend(f *fixture) {
+	f.sql(c.rel, `INSERT INTO `+c.table+`(created_at) VALUES(0)`)
+}
+
+// The snapshots of an attempt run together in production. A test that must change the host between
+// two of them runs them one by one: the outbox databases before flats.db, or after it.
+var snapshotOrders = map[string]struct {
+	order func(all []dbEntry) []dbEntry // all ends with flats.db
+	first func(c outboxCase) string     // the snapshot after which the host changes
+}{
+	"outbox first": {func(all []dbEntry) []dbEntry { return all }, func(c outboxCase) string { return c.rel }},
+	"flats.db first": {func(all []dbEntry) []dbEntry {
+		return append([]dbEntry{all[len(all)-1]}, all[:len(all)-1]...)
+	}, func(outboxCase) string { return nameFlatsDB }},
+}
+
 func TestCoherenceRetriesAndSucceeds(t *testing.T) {
 	t.Parallel()
-	for _, tc := range outboxCases {
-		t.Run(tc.typ, func(t *testing.T) {
-			t.Parallel()
-			f := newFixture(t)
-			tc.add(f, "x", 4, 4)
-			o := f.options("c1")
-			bumped := false
-			o.afterStep = func(step int) error {
-				if step == 15 && !bumped { // after the database snapshots, before the one of flats.db
-					bumped = true
-					tc.bump(f, 5)
+	for name, so := range snapshotOrders {
+		for _, tc := range outboxCases {
+			t.Run(name+"/"+tc.typ, func(t *testing.T) {
+				t.Parallel()
+				f := newFixture(t)
+				tc.add(f, "x", 4, 4)
+				o := f.options("c1")
+				o.order = so.order
+				bumped := false
+				o.afterSnapshot = func(rel string) {
+					if rel == so.first(tc) && !bumped { // an entry is created, imported and acknowledged between the two snapshots
+						bumped = true
+						tc.bump(f, 5)
+					}
 				}
-				return nil
-			}
-			res, err := f.run(o)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if res.Attempts != 2 || res.Retries != 1 {
-				t.Errorf("attempts = %d, retries = %d, want 2 and 1", res.Attempts, res.Retries)
-			}
-			if got, err := Verify(context.Background(), res.Out); err != nil || len(got.Failures) > 0 {
-				t.Errorf("Verify = %+v, %v", got, err)
-			}
-		})
+				res, err := f.run(o)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if res.Attempts != 2 || res.Retries != 1 {
+					t.Errorf("attempts = %d, retries = %d, want 2 and 1", res.Attempts, res.Retries)
+				}
+				if got, err := Verify(context.Background(), res.Out); err != nil || len(got.Failures) > 0 {
+					t.Errorf("Verify = %+v, %v", got, err)
+				}
+			})
+		}
 	}
 }
 
 func TestCoherenceFailsAfterThreeAttempts(t *testing.T) {
 	t.Parallel()
-	for _, tc := range outboxCases {
-		t.Run(tc.typ, func(t *testing.T) {
-			t.Parallel()
-			f := newFixture(t)
-			tc.add(f, "x", 4, 4)
-			o := f.options("c1")
-			n := int64(4)
-			o.afterSnapshot = func(rel string) {
-				if rel == tc.rel { // the flat is written again after every snapshot of its database
-					n++
-					tc.bump(f, n)
+	for name, so := range snapshotOrders {
+		for _, tc := range outboxCases {
+			t.Run(name+"/"+tc.typ, func(t *testing.T) {
+				t.Parallel()
+				f := newFixture(t)
+				tc.add(f, "x", 4, 4)
+				o := f.options("c1")
+				o.order = so.order
+				n := int64(4)
+				o.afterSnapshot = func(rel string) {
+					if rel == so.first(tc) { // the flat is written again between the two snapshots of every attempt
+						n++
+						tc.bump(f, n)
+					}
 				}
-			}
-			_, err := f.run(o)
-			var rerun *RerunError
-			if !errors.As(err, &rerun) || !strings.Contains(err.Error(), "run the backup again") {
-				t.Fatalf("err = %v, want a failure to run again", err)
-			}
-			f.nothingLeft()
-		})
+				_, err := f.run(o)
+				var rerun *RerunError
+				if !errors.As(err, &rerun) || !strings.Contains(err.Error(), "run the backup again") {
+					t.Fatalf("err = %v, want a failure to run again", err)
+				}
+				f.nothingLeft()
+			})
+		}
 	}
 }
 
-func TestCoherenceAnEntryImportedBeforeTheSnapshotOfFlatsDBIsCoherent(t *testing.T) {
+// An entry that the host creates or imports in a way that keeps the invariant of rule 16 does not
+// make a copy incoherent.
+func TestCoherenceAcceptsWhatARunningHostCanProduce(t *testing.T) {
 	t.Parallel()
 	for _, tc := range outboxCases {
-		t.Run(tc.typ, func(t *testing.T) {
+		t.Run("an entry is imported after the snapshot of the database/"+tc.typ, func(t *testing.T) {
 			t.Parallel()
 			f := newFixture(t)
-			tc.add(f, "x", 5, 4) // the database is ahead of the cursor: entry 5 is pending
+			tc.add(f, "x", 5, 4) // entry 5 is pending
 			o := f.options("c1")
-			o.afterStep = func(step int) error {
-				if step == 15 {
-					f.setCursor("x", 5) // flats.db imports entry 5 after the snapshot of the database
+			o.order = snapshotOrders["outbox first"].order
+			o.afterSnapshot = func(rel string) {
+				if rel == tc.rel {
+					f.setCursor("x", 5) // flats.db imports entry 5 before its snapshot: the entry is still in the outbox copy
 				}
-				return nil
 			}
 			res, err := f.run(o)
 			if err != nil || res.Attempts != 1 {
 				t.Fatalf("Run = %+v, %v; want one attempt", res, err)
 			}
 		})
+		t.Run("an entry is created after the snapshot of flats.db/"+tc.typ, func(t *testing.T) {
+			t.Parallel()
+			f := newFixture(t)
+			tc.add(f, "x", 5, 4)
+			o := f.options("c1")
+			o.order = snapshotOrders["flats.db first"].order
+			o.afterSnapshot = func(rel string) {
+				if rel == nameFlatsDB {
+					tc.pend(f) // entry 6 is not imported: the outbox copy keeps it, and the cursor stays below it
+				}
+			}
+			res, err := f.run(o)
+			if err != nil || res.Attempts != 1 {
+				t.Fatalf("Run = %+v, %v; want one attempt", res, err)
+			}
+		})
+	}
+}
+
+// incoherentCursors tests the invariant of rule 16 on a copy: the entries through "acked" are gone from
+// the outbox, the ones after "last" do not exist, and the cursor must lie between the two.
+func TestIncoherentCursors(t *testing.T) {
+	t.Parallel()
+	for _, tc := range outboxCases {
+		t.Run(tc.typ, func(t *testing.T) {
+			t.Parallel()
+			f := newFixture(t)
+			tc.add(f, "x", 5, 3) // entries 4 and 5 are pending: acked 3, last 5
+			for seq, want := range map[int64]string{
+				2: "acknowledged entries through 3, and the import cursor of flats.db is 2",
+				3: "", 4: "", 5: "",
+				6: "below the import cursor 6 of flats.db: its outbox reached 5",
+			} {
+				bad, err := incoherentCursors(context.Background(), f.data, []cursor{{flat: "x", typ: tc.typ, store: tc.storeID, seq: seq}})
+				if err != nil {
+					t.Fatal(err)
+				}
+				switch {
+				case want == "" && len(bad) != 0:
+					t.Errorf("cursor %d: %v, want none", seq, bad)
+				case want != "" && (len(bad) != 1 || !strings.Contains(bad[0].reason(), want)):
+					t.Errorf("cursor %d: %v, want %q", seq, bad, want)
+				}
+			}
+			bad, err := incoherentCursors(context.Background(), f.data, []cursor{{flat: "x", typ: tc.typ, store: "another store", seq: 99}})
+			if err != nil || len(bad) != 0 {
+				t.Errorf("another store: %v, %v; want nothing to compare", bad, err)
+			}
+		})
+	}
+}
+
+// A group of snapshots starts together, however many members leave before they start.
+func TestBarrierOpensWhenAMemberLeavesEarly(t *testing.T) {
+	t.Parallel()
+	b := newBarrier(3)
+	var wg sync.WaitGroup
+	for i := 0; i < 2; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, gate := b.member()
+			gate()
+		}()
+	}
+	arrive, _ := b.member()
+	arrive()
+	arrive() // a member counts once
+	done := make(chan struct{})
+	go func() { wg.Wait(); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the members still wait for a member that left")
+	}
+}
+
+// One damaged database stops the whole group of snapshots and leaves nothing behind.
+func TestRunFailsOnADamagedOutboxDatabase(t *testing.T) {
+	t.Parallel()
+	f := populated(t)
+	if err := os.WriteFile(filepath.Join(f.data, "flats", "b", "board", nameBoardDB), []byte(strings.Repeat("not a database ", 100)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := f.run(f.options("c1"))
+	if err == nil || !strings.Contains(err.Error(), "snapshot flats/b/board/board.db") {
+		t.Fatalf("err = %v, want a failure that names the database", err)
+	}
+	f.nothingLeft()
+}
+
+// A host with more outbox databases than one group holds is still copied coherently.
+func TestRunWithMoreOutboxDatabasesThanOneGroupHolds(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	for _, s := range []string{"a", "b", "c"} {
+		f.board(s, "st"+s, 3, 3)
+	}
+	o := f.options("c1")
+	o.maxGroup = 1
+	res, err := f.run(o)
+	if err != nil || res.Attempts != 1 {
+		t.Fatalf("Run = %+v, %v", res, err)
+	}
+	if got, err := Verify(context.Background(), res.Out); err != nil || len(got.Failures) > 0 {
+		t.Errorf("Verify = %+v, %v", got, err)
 	}
 }
 
@@ -606,6 +737,7 @@ func TestVanishedFiles(t *testing.T) {
 	t.Run("a database that stays gone fails the backup", func(t *testing.T) {
 		t.Parallel()
 		f := populated(t)
+		f.server("a") // its database is the first of the single snapshots, and s comes after it
 		o := f.options("c1")
 		o.afterSnapshot = func(rel string) { os.Remove(filepath.Join(f.data, "flats", "s", "data", nameDataDB)) }
 		start := time.Now()
@@ -722,28 +854,54 @@ func TestAnExistingFolderThatAppearsDuringTheCopyIsNotReplaced(t *testing.T) {
 	f.nothingLeftBut("c1")
 }
 
-func TestARetryOfASnapshotThatIsBusy(t *testing.T) {
-	if testing.Short() {
-		t.Skip("waits for the busy timeout")
-	}
+// A rollback-journal database that a writer holds exclusively makes the snapshot wait for the busy
+// timeout and fail (rule 4). The writer takes the lock just before the first snapshot starts, so the time
+// that Run needs to get there does not matter.
+func TestASnapshotThatIsBusy(t *testing.T) {
 	t.Parallel()
-	f := populated(t)
-	// A rollback-journal database that a writer holds exclusively makes the snapshot wait for the
-	// busy timeout, 5 s, and fail. The writer lets go before the second try ends.
-	path := filepath.Join(f.data, "flats", "s", "data", nameDataDB)
-	locked := make(chan struct{})
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		holdExclusive(t, path, locked, 5500*time.Millisecond)
-	}()
-	<-locked
-	res, err := f.run(f.options("c1"))
-	<-done
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Retries < 1 {
-		t.Errorf("retries = %d, want at least 1", res.Retries)
+	for name, tc := range map[string]struct {
+		busy, hold time.Duration
+		retries    bool // the writer lets go after the first try failed and before the last one ends
+	}{
+		"a later try succeeds":     {2 * time.Second, 3 * time.Second, true},
+		"the third try also fails": {200 * time.Millisecond, 3 * time.Second, false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			f := populated(t)
+			path := filepath.Join(f.data, "flats", "s", "data", nameDataDB)
+			o := f.options("c1")
+			o.busyTimeout = tc.busy
+			var done chan struct{}
+			o.afterStep = func(step int) error {
+				if step == 14 {
+					locked := make(chan struct{})
+					done = make(chan struct{})
+					go func() {
+						defer close(done)
+						holdExclusive(t, path, locked, tc.hold)
+					}()
+					<-locked
+				}
+				return nil
+			}
+			res, err := f.run(o)
+			if done != nil {
+				<-done
+			}
+			if !tc.retries {
+				if err == nil || !strings.Contains(err.Error(), "snapshot flats/s/data/db.sqlite") {
+					t.Fatalf("err = %v, want a failure that names the database", err)
+				}
+				f.nothingLeft()
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.Retries < 1 {
+				t.Errorf("retries = %d, want at least 1", res.Retries)
+			}
+		})
 	}
 }

@@ -220,12 +220,12 @@ func (v *verifier) checkParts(ctx context.Context) {
 		v.fail("data/flats.db", "cannot read the import cursors: %v", err)
 		return
 	}
-	behind, err := behindCursor(ctx, v.data, cursors)
+	bad, err := incoherentCursors(ctx, v.data, cursors)
 	if err != nil {
 		v.fail("data/flats.db", "cannot check the outbox databases: %v", err)
 	}
-	for _, b := range behind {
-		v.fail(manifestPath(outboxPath(b.flat, b.typ)), "is below the import cursor %d of flats.db", b.seq)
+	for _, b := range bad {
+		v.fail(manifestPath(outboxPath(b.flat, b.typ)), "%s", b.reason())
 	}
 	st, err := store.OpenImmutable(flatsDB)
 	if err != nil {

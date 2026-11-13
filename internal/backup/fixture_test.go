@@ -106,14 +106,15 @@ func (f *fixture) setCursor(slug string, seq int64) {
 	f.sql(nameFlatsDB, `UPDATE content_state SET import_seq = `+strconv.FormatInt(seq, 10)+` WHERE flat = '`+slug+`'`)
 }
 
-// outbox makes an outbox with entries up to last, then acknowledges them, which
-// leaves sqlite_sequence at last.
-func outboxSQL(table string, last int64) []string {
+// outboxSQL makes an outbox with entries up to last, then acknowledges the entries
+// through cursor, as a host does once flats.db has imported them. sqlite_sequence
+// stays at last, and the entries after cursor stay in the table.
+func outboxSQL(table string, last, cursor int64) []string {
 	s := []string{`CREATE TABLE ` + table + `(seq INTEGER PRIMARY KEY AUTOINCREMENT, created_at INTEGER NOT NULL DEFAULT 0)`}
 	for i := int64(0); i < last; i++ {
 		s = append(s, `INSERT INTO `+table+`(created_at) VALUES(0)`)
 	}
-	return append(s, `DELETE FROM `+table)
+	return append(s, `DELETE FROM `+table+` WHERE seq <= `+strconv.FormatInt(cursor, 10))
 }
 
 // board adds a board flat whose board.db has the store id and an outbox that
@@ -127,7 +128,7 @@ func (f *fixture) board(slug, storeID string, last, cursor int64) {
 		`INSERT INTO meta VALUES('store', '` + storeID + `')`,
 		`CREATE TABLE assets(hash TEXT PRIMARY KEY, mime TEXT NOT NULL DEFAULT '')`,
 	}
-	f.sql("flats/"+slug+"/board/board.db", append(stmts, outboxSQL("outbox", last)...)...)
+	f.sql("flats/"+slug+"/board/board.db", append(stmts, outboxSQL("outbox", last, cursor)...)...)
 }
 
 // notebook adds a notebook flat in the same way.
@@ -140,7 +141,7 @@ func (f *fixture) notebook(slug, storeID string, last, cursor int64) {
 		`INSERT INTO meta VALUES(1, '` + storeID + `')`,
 		`CREATE TABLE assets(hash TEXT PRIMARY KEY, mime TEXT NOT NULL DEFAULT '')`,
 	}
-	f.sql("flats/"+slug+"/notebook/notebook.db", append(stmts, outboxSQL("outbox", last)...)...)
+	f.sql("flats/"+slug+"/notebook/notebook.db", append(stmts, outboxSQL("outbox", last, cursor)...)...)
 }
 
 // docs adds a document flat. The docs worker keeps its store id as JSON.
@@ -152,7 +153,7 @@ func (f *fixture) docs(slug, storeID string, last, cursor int64) {
 		`CREATE TABLE flats_docs_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)`,
 		`INSERT INTO flats_docs_meta VALUES('store', '"` + storeID + `"')`,
 	}
-	f.sql("flats/"+slug+"/data/db.sqlite", append(stmts, outboxSQL("flats_docs_outbox", last)...)...)
+	f.sql("flats/"+slug+"/data/db.sqlite", append(stmts, outboxSQL("flats_docs_outbox", last, cursor)...)...)
 }
 
 // server adds a server flat with its own database and a file.

@@ -26,6 +26,9 @@ const maxTries = 3
 // that is gone (rule 8).
 const vanishPause = 100 * time.Millisecond
 
+// busyTimeout is how long a snapshot waits for a lock before it counts as busy (rule 4).
+const busyTimeout = 5 * time.Second
+
 var bufPool = sync.Pool{New: func() any { b := make([]byte, 256<<10); return &b }}
 
 // copier holds the state of one run.
@@ -35,6 +38,8 @@ type copier struct {
 	root       string // the partial directory; the copy of the data directory is root/data
 	excludeKey bool
 
+	// mu guards the fields below while snapshots run together (rule 15).
+	mu       sync.Mutex
 	files    map[string]File   // by manifest path
 	dbs      map[string]string // manifest path of each database -> kind
 	excluded map[string]bool
@@ -42,16 +47,20 @@ type copier struct {
 	unstable map[string]bool
 	retries  int
 
-	// Test hooks. They are nil in production.
+	// Test hooks. They are nil in production. order makes the snapshots of one
+	// attempt run one by one, in the order that it returns, instead of together.
 	afterSnap func(rel string)
 	midCopy   func(src string)
+	order     func(all []dbEntry) []dbEntry
+	maxGroup  int
+	busy      time.Duration
 }
 
 func newCopier(ctx context.Context, data, root string, excludeKey bool) *copier {
 	return &copier{
 		ctx: ctx, data: data, root: root, excludeKey: excludeKey,
 		files: map[string]File{}, dbs: map[string]string{}, excluded: map[string]bool{},
-		skipped: map[string]string{}, unstable: map[string]bool{},
+		skipped: map[string]string{}, unstable: map[string]bool{}, maxGroup: maxTogether, busy: busyTimeout,
 	}
 }
 

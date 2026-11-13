@@ -82,10 +82,11 @@ type outboxState struct {
 	present bool // the database has an outbox and a store id
 	store   string
 	last    int64 // the highest outbox sequence ever assigned
+	acked   int64 // the entries through this sequence are acknowledged: gone from the outbox
 }
 
-// readOutbox reads the store id and the highest outbox sequence of a copy of a
-// board, notebook or docs worker database, as the host's checkImportCursor does
+// readOutbox reads the store id and the sequence numbers of a copy of a board,
+// notebook or docs worker database, as the host's checkImportCursor does
 // (rule 16).
 func readOutbox(ctx context.Context, path, typ string) (outboxState, error) {
 	if typ == typeNotebook {
@@ -98,14 +99,14 @@ func readOutbox(ctx context.Context, path, typ string) (outboxState, error) {
 		return outboxState{}, err
 	}
 	defer db.Close()
-	var storeQuery, seqName string
+	var storeQuery, table string
 	switch typ {
 	case typeBoard:
-		storeQuery, seqName = `SELECT value FROM meta WHERE key = 'store'`, "outbox"
+		storeQuery, table = `SELECT value FROM meta WHERE key = 'store'`, "outbox"
 	case typeNotebook:
-		storeQuery, seqName = `SELECT store FROM meta WHERE singleton = 1`, "outbox"
+		storeQuery, table = `SELECT store FROM meta WHERE singleton = 1`, "outbox"
 	case typeDocs:
-		storeQuery, seqName = `SELECT value FROM flats_docs_meta WHERE key = 'store'`, "flats_docs_outbox"
+		storeQuery, table = `SELECT value FROM flats_docs_meta WHERE key = 'store'`, "flats_docs_outbox"
 	default:
 		return outboxState{}, nil
 	}
@@ -125,9 +126,17 @@ func readOutbox(ctx context.Context, path, typ string) (outboxState, error) {
 			st.store = s
 		}
 	}
-	err = db.QueryRowContext(ctx, `SELECT seq FROM sqlite_sequence WHERE name = ?`, seqName).Scan(&st.last)
+	err = db.QueryRowContext(ctx, `SELECT seq FROM sqlite_sequence WHERE name = ?`, table).Scan(&st.last)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) && !isNoTable(err) {
 		return outboxState{}, err
+	}
+	var oldest sql.NullInt64
+	if err := db.QueryRowContext(ctx, `SELECT MIN(seq) FROM `+table).Scan(&oldest); err != nil && !isNoTable(err) {
+		return outboxState{}, err
+	}
+	st.acked = st.last
+	if oldest.Valid {
+		st.acked = oldest.Int64 - 1
 	}
 	st.present = st.store != ""
 	return st, nil
@@ -135,11 +144,35 @@ func readOutbox(ctx context.Context, path, typ string) (outboxState, error) {
 
 func isNoTable(err error) bool { return err != nil && strings.Contains(err.Error(), "no such table") }
 
-// behindCursor returns the cursors whose outbox database in the copy dataRoot is
-// below the cursor (rule 16). A flat with no cursor, a missing database, an
-// outbox that is not there and another store id have nothing to compare.
-func behindCursor(ctx context.Context, dataRoot string, cursors []cursor) ([]cursor, error) {
-	var behind []cursor
+// incoherent is a flat whose outbox database and import cursor cannot come from
+// one moment of a running host.
+type incoherent struct {
+	cursor
+	last, acked int64
+}
+
+func (b incoherent) String() string {
+	if b.seq > b.last {
+		return fmt.Sprintf("%s (its outbox reached %d, flats.db imported through %d)", b.flat, b.last, b.seq)
+	}
+	return fmt.Sprintf("%s (its outbox acknowledged entries through %d, flats.db imported through %d)", b.flat, b.acked, b.seq)
+}
+
+func (b incoherent) reason() string {
+	if b.seq > b.last {
+		return fmt.Sprintf("is below the import cursor %d of flats.db: its outbox reached %d", b.seq, b.last)
+	}
+	return fmt.Sprintf("has acknowledged entries through %d, and the import cursor of flats.db is %d, so revisions are missing", b.acked, b.seq)
+}
+
+// incoherentCursors returns the flats whose outbox database in the copy dataRoot
+// does not fit its cursor in flats.db (rule 16). The cursor of a running host is
+// never below the entries that the outbox has acknowledged and never above the
+// highest entry that it has made: acknowledged <= cursor <= last. A flat with no
+// cursor, a missing database, an outbox that is not there and another store id
+// have nothing to compare.
+func incoherentCursors(ctx context.Context, dataRoot string, cursors []cursor) ([]incoherent, error) {
+	var bad []incoherent
 	for _, c := range cursors {
 		rel := outboxPath(c.flat, c.typ)
 		if rel == "" {
@@ -156,9 +189,35 @@ func behindCursor(ctx context.Context, dataRoot string, cursors []cursor) ([]cur
 		if err != nil {
 			return nil, fmt.Errorf("read the outbox of %s: %w", c.flat, err)
 		}
-		if st.present && st.store == c.store && c.seq > st.last {
-			behind = append(behind, c)
+		if st.present && st.store == c.store && (c.seq > st.last || st.acked > c.seq) {
+			bad = append(bad, incoherent{c, st.last, st.acked})
 		}
 	}
-	return behind, nil
+	return bad, nil
+}
+
+// liveCursors lists the flats that have an import cursor in the live flats.db
+// and their content types. A flat whose cursor appears later is found by the
+// check of the copy and snapshotted again.
+func liveCursors(ctx context.Context, flatsDB string) (map[string]string, error) {
+	db, err := sql.Open("sqlite", sqliteuri.File(flatsDB)+"?mode=ro&_pragma=busy_timeout(5000)")
+	if err != nil {
+		return nil, err
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	rows, err := db.QueryContext(ctx, `SELECT flat, type FROM content_state WHERE COALESCE(import_store, '') <> ''`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var flat, typ string
+		if err := rows.Scan(&flat, &typ); err != nil {
+			return nil, err
+		}
+		out[flat] = typ
+	}
+	return out, rows.Err()
 }

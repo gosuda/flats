@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gosuda/flats/internal/ostest"
 )
 
 // goodCopy makes a copy of a populated host that passes every check.
@@ -146,10 +148,14 @@ func TestVerifyRefusesAnotherSchemaVersion(t *testing.T) {
 			(&fixture{t: t, data: filepath.Join(out, "data")}).sql(nameFlatsDB, `PRAGMA user_version = `+version)
 			rehash(t, out)
 			_ = f
+			before := snapshotTree(t, out)
 			_, err := Verify(context.Background(), out)
 			var refused *RefusedError
 			if !errors.As(err, &refused) || !strings.Contains(err.Error(), "vtest") {
 				t.Fatalf("err = %v, want a refusal that names the Flats version of the manifest", err)
+			}
+			if after := snapshotTree(t, out); !slices.Equal(before, after) {
+				t.Errorf("the refusal changed the copy:\nbefore %v\nafter  %v", before, after)
 			}
 		})
 	}
@@ -192,6 +198,23 @@ func TestVerifyFindsAnOutboxBehindItsCursor(t *testing.T) {
 			(&fixture{t: t, data: filepath.Join(out, "data")}).sql(nameFlatsDB, `UPDATE content_state SET import_seq = 99 WHERE flat = '`+slug+`'`)
 			rehash(t, out)
 			wantFailure(t, failuresOf(t, out), rel, "below the import cursor 99")
+		})
+	}
+}
+
+// The outbox has acknowledged entries that flats.db has not imported, so their revisions are in no
+// database of the copy.
+func TestVerifyFindsAnOutboxAheadOfItsCursor(t *testing.T) {
+	t.Parallel()
+	for slug, rel := range map[string]string{
+		"b": "data/flats/b/board/board.db", "n": "data/flats/n/notebook/notebook.db", "d": "data/flats/d/data/db.sqlite",
+	} {
+		t.Run(slug, func(t *testing.T) {
+			t.Parallel()
+			_, out := goodCopy(t)
+			(&fixture{t: t, data: filepath.Join(out, "data")}).sql(nameFlatsDB, `UPDATE content_state SET import_seq = 1 WHERE flat = '`+slug+`'`)
+			rehash(t, out)
+			wantFailure(t, failuresOf(t, out), rel, "has acknowledged entries through")
 		})
 	}
 }
@@ -253,7 +276,9 @@ func TestVerifyChangesNothing(t *testing.T) {
 }
 
 // snapshotTree lists every path under root with its size, modification time and
-// directory flag.
+// directory flag. On Windows it leaves out the modification time of a directory:
+// the system finishes the delete of a file, such as the -wal file that the test
+// helper leaves behind, some time after the call returns, and then changes it.
 func snapshotTree(t *testing.T, root string) []string {
 	t.Helper()
 	var out []string
@@ -266,7 +291,11 @@ func snapshotTree(t *testing.T, root string) []string {
 			return err
 		}
 		rel, _ := filepath.Rel(root, p)
-		out = append(out, rel+"|"+fi.Mode().String()+"|"+fi.ModTime().UTC().Format(time.RFC3339Nano)+"|"+strings.Repeat("d", map[bool]int{true: 1}[fi.IsDir()]))
+		mod := fi.ModTime().UTC().Format(time.RFC3339Nano)
+		if fi.IsDir() && ostest.Windows {
+			mod = ""
+		}
+		out = append(out, rel+"|"+fi.Mode().String()+"|"+mod+"|"+strings.Repeat("d", map[bool]int{true: 1}[fi.IsDir()]))
 		if !fi.IsDir() {
 			out[len(out)-1] += "|" + itoa(fi.Size())
 		}

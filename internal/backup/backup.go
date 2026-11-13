@@ -8,8 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -29,6 +31,9 @@ type Options struct {
 	afterStep     func(step int) error
 	afterSnapshot func(rel string)
 	midCopy       func(src string)
+	order         func(all []dbEntry) []dbEntry // see copier.order
+	maxGroup      int                           // overrides maxTogether
+	busyTimeout   time.Duration                 // overrides busyTimeout
 }
 
 // Result reports a finished backup.
@@ -117,7 +122,13 @@ func Run(ctx context.Context, o Options) (res *Result, err error) {
 		}
 	}()
 	c := newCopier(ctx, data, partial, o.ExcludeSecretKey)
-	c.afterSnap, c.midCopy = o.afterSnapshot, o.midCopy
+	c.afterSnap, c.midCopy, c.order = o.afterSnapshot, o.midCopy, o.order
+	if o.maxGroup > 0 {
+		c.maxGroup = o.maxGroup
+	}
+	if o.busyTimeout > 0 {
+		c.busy = o.busyTimeout
+	}
 	if err := os.Mkdir(filepath.Join(partial, "data"), 0o700); err != nil {
 		return nil, err
 	}
@@ -258,21 +269,44 @@ func readKeyBytes(data string, excluded bool) ([]byte, error) {
 	return b, err
 }
 
-// databasesAndCoherence runs steps 15 and 16: it snapshots every database of the
-// flats, then flats.db, and checks every outbox database against the cursors of
-// flats.db. A database that is below its cursor is snapshotted again, then
-// flats.db again, up to maxTries attempts in all.
+// maxTogether is how many outbox databases one attempt snapshots together with
+// flats.db. It bounds the files that the command holds open at once on a host
+// with many flats; the check of rule 16 covers the other databases.
+const maxTogether = 64
+
+// databasesAndCoherence runs steps 15 and 16. It snapshots the databases of the
+// flats that the check does not need to pair with flats.db, one by one. Then it
+// snapshots flats.db together with the outbox databases of the flats that have an
+// import cursor, and checks every outbox database against the cursors in the copy
+// of flats.db (rule 16). When a database does not fit its cursor, it snapshots
+// the group again, up to maxTries attempts in all.
 func (c *copier) databasesAndCoherence(hook func(int) error) (int, error) {
 	dbs, err := c.flatDatabases()
 	if err != nil {
 		return 0, err
 	}
+	live, err := liveCursors(c.ctx, c.src(nameFlatsDB))
+	if err != nil {
+		return 0, fmt.Errorf("read the import cursors of flats.db: %w", err)
+	}
+	byRel := make(map[string]dbEntry, len(dbs))
 	for _, d := range dbs {
-		if err := c.mkdir(filepath.ToSlash(filepath.Dir(d.rel))); err != nil {
-			return 0, err
+		byRel[d.rel] = d
+	}
+	var group []dbEntry
+	grouped := map[string]bool{}
+	for _, flat := range slices.Sorted(maps.Keys(live)) {
+		d, ok := byRel[outboxPath(flat, live[flat])]
+		if ok && len(group) < c.maxGroup {
+			group = append(group, d)
+			grouped[d.rel] = true
 		}
-		if err := c.snapshotDB(d.rel, d.kind); err != nil {
-			return 0, err
+	}
+	for _, d := range dbs {
+		if !grouped[d.rel] {
+			if err := c.snapshotDB(d.rel, d.kind, nil); err != nil {
+				return 0, err
+			}
 		}
 	}
 	if err := hook(15); err != nil {
@@ -280,41 +314,40 @@ func (c *copier) databasesAndCoherence(hook func(int) error) (int, error) {
 	}
 	dataRoot := filepath.Join(c.root, "data")
 	for attempt := 1; ; attempt++ {
-		if err := c.snapshotDB(nameFlatsDB, KindFlats); err != nil {
+		if err := c.snapshotTogether(group); err != nil {
 			return 0, err
 		}
 		cursors, err := readCursors(c.ctx, filepath.Join(dataRoot, nameFlatsDB))
 		if err != nil {
 			return 0, fmt.Errorf("read the import cursors of the copy: %w", err)
 		}
-		behind, err := behindCursor(c.ctx, dataRoot, cursors)
+		bad, err := incoherentCursors(c.ctx, dataRoot, cursors)
 		if err != nil {
 			return 0, err
 		}
-		if len(behind) == 0 {
+		if len(bad) == 0 {
+			if err := c.sealDatabases(); err != nil {
+				return 0, err
+			}
 			return attempt, hook(16)
 		}
 		if attempt == maxTries {
-			names := make([]string, len(behind))
-			for i, b := range behind {
-				names[i] = b.flat
+			names := make([]string, len(bad))
+			for i, b := range bad {
+				names[i] = b.String()
 			}
 			sort.Strings(names)
-			return 0, &RerunError{fmt.Errorf("the outbox of %s stayed below its import cursor on %d attempts; its flat was written during the copy", strings.Join(names, ", "), maxTries)}
+			return 0, &RerunError{fmt.Errorf("the outbox of %s does not fit its import cursor in flats.db on %d attempts; the flat was written during the copy", strings.Join(names, ", "), maxTries)}
 		}
 		c.retries++
-		for _, b := range behind {
-			rel := outboxPath(b.flat, b.typ)
-			kind := KindData
-			switch b.typ {
-			case typeBoard:
-				kind = KindBoard
-			case typeNotebook:
-				kind = KindNotebook
+		for _, b := range bad { // a database that was not in the group joins it, first
+			d, ok := byRel[outboxPath(b.flat, b.typ)]
+			if ok && !slices.ContainsFunc(group, func(g dbEntry) bool { return g.rel == d.rel }) {
+				group = slices.Insert(group, 0, d)
 			}
-			if err := c.snapshotDB(rel, kind); err != nil {
-				return 0, err
-			}
+		}
+		if len(group) > c.maxGroup {
+			group = group[:c.maxGroup]
 		}
 	}
 }

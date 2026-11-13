@@ -1,6 +1,6 @@
 # Host backup
 
-Status: planned.
+Status: implemented.
 
 ## Summary
 
@@ -20,9 +20,7 @@ The request is issue #223. The requester chose on 2026-11-14 that a running
 host is never paused. The copy checks itself, and it fails, to be run again,
 when a change during the copy could make it inconsistent.
 
-## Current state
-
-Nothing in this spec exists yet. Today:
+## Before this change
 
 - [Configuration](../configuration.md#what-to-back-up) says to stop the host and
   copy the whole data directory, and that Flats has no supported way to take a
@@ -67,8 +65,10 @@ Out of scope:
 
 1. The copy is a new directory `PATH` that holds `manifest.json`, `data/` and,
    only when the configuration file lies outside the data directory,
-   `config.json`. `data/` mirrors the data directory. A configuration file inside
-   the data directory is copied once, as `data/config.json`.
+   `config.json` and the `config-history/` folder that the host keeps beside it.
+   `data/` mirrors the data directory. A configuration file inside the data
+   directory is copied once, as `data/config.json`, and so is its
+   `config-history/`.
 2. The copy holds everything that
    [What to back up](../configuration.md#what-to-back-up) names, including the
    optional `cloudflare-quick/`, and `config-history/`. Each path belongs to one
@@ -86,16 +86,18 @@ Out of scope:
    - the `-wal`, `-shm` and `-journal` file of each SQLite database, because the
      snapshot of rule 4 holds its commits;
    - below a flat's directory: `health-check/`, `restore-trial/` and the
-     temporary directories of a restore (`data.restore`, `.restore-old`);
+     temporary directories of a restore (`data.restore`, `data.restore-old`);
    - below `revisions/` and `design/`: `tmp/`;
    - a snapshot that is being written (rule 14).
 4. Each SQLite database is copied as a snapshot made with `VACUUM INTO` from a
    read-only connection with a busy timeout of 5 s. The snapshot holds every
    commit up to its moment, has no `-wal` or `-shm`, and is consistent by itself.
    The command snapshots one database at a time, so that the host's own
-   checkpoints resume between two snapshots. A snapshot that cannot start within
-   the busy timeout is tried again, up to 3 times. The command computes the
-   SHA-256 of each snapshot file it wrote. The manifest lists each database in
+   checkpoints resume between two snapshots, with one exception: the group of
+   rule 15 starts together. A snapshot that cannot start within the busy timeout
+   is tried again, up to 3 times. The command syncs each snapshot file and
+   computes its SHA-256 after the last snapshot, so that this work does not
+   lengthen the time between two snapshots. The manifest lists each database in
    `databases`, with its path and kind (`flats`, `data`, `preview`, `board` or
    `notebook`).
 5. A flat's `data/db.sqlite` is the database of a server flat, of a document
@@ -177,37 +179,60 @@ these steps and no other:
     snapshot with a directory and no marker is being written or was abandoned by
     a crash. The command leaves it out whole and lists it in `excluded`. A snapshot with no directory is a
     legacy snapshot, and the command copies its file.
-15. **Databases.** It snapshots every database of the flats (`data/db.sqlite`,
-    each preview database, `board.db` and `notebook.db`), one at a time, and then
-    `flats.db`.
-16. **Coherence.** For each outbox database (rule 5) whose flat has a cursor
-    (`content_state.import_store` is not empty), the copy is coherent with
-    `flats.db` by the test that the host runs when it opens a board or a
-    notebook (`checkImportCursor`). The host runs no such test for a document, and
-    the command applies the same test to its database. When the store id of
-    the database (the `store` row of its `meta` table, or `flats_docs_meta` for a
-    document) differs from `import_store`, there is nothing to compare. Otherwise
+15. **Databases.** It snapshots, one at a time, every database of the flats that
+    is not in the group below: `data/db.sqlite`, each preview database,
+    `board.db` and `notebook.db`. It then snapshots `flats.db` and the outbox
+    databases (rule 5) of the flats that have a cursor in the live `flats.db`
+    (`content_state.import_store` is not empty) at the same time. Each snapshot of
+    this group opens its connection first, and all of them start together. A
+    member that fails before its start does not hold the others. The group holds
+    at most 64 outbox databases, in the order of the flat names, so that the
+    command holds a bounded number of files open on a host with many flats. The
+    other outbox databases are snapshotted one at a time before the group. A flat
+    that gets its cursor after the command read the live `flats.db` is found by
+    rule 16.
+16. **Coherence.** An outbox database (rule 5) fits the cursor of its flat in the
+    copy of `flats.db` when the cursor lies between what the outbox has
+    acknowledged and what it has created: `acked <= import_seq <= last`. `last` is
     the highest outbox sequence (`sqlite_sequence` of the table `outbox`, or
-    `flats_docs_outbox`) must not be below `import_seq`. A flat with no cursor,
-    and a flat whose outbox database does not exist, have nothing to compare.
-    When a database is below its cursor, an entry was created and imported between
-    its snapshot and the snapshot of `flats.db`. A restored board or notebook in
-    that state does not start. A restored document starts, and its next import
-    acknowledges through `import_seq`, which deletes every outbox entry up to that
-    number, so the new entries that reuse those numbers are dropped unimported
-    ([docs app](../internal/docs-app.md)). The command then snapshots those
-    databases again, then `flats.db` again, and checks every outbox database again,
-    up to 3 attempts in all. After the third it fails the backup. Under constant
-    writes to several outbox databases the attempts can fail again and again, and
-    the docs advise a stopped host then. The databases come before `flats.db`
-    because an outbox entry that the `flats.db` snapshot has already imported is at
-    or before its cursor, and the host acknowledges such an entry again
+    `flats_docs_outbox`). `acked` is the lowest sequence that is still in that
+    table, minus one, or `last` when the table is empty. A running host keeps this
+    true at every moment: it creates an entry, `flats.db` imports it and moves the
+    cursor, and then the host acknowledges the entry by deleting it
     ([boards](../revision-store.md#boards) and
     [notebooks](../revision-store.md#notebooks), importing, step 1; for a document,
-    [Importing](../revision-store.md#importing), step 1). The reverse order could
-    lose the revisions that were imported and acknowledged between the two
-    snapshots, and could leave a document entry whose source version `flats.db`
-    does not know, so that every later import waits.
+    [Importing](../revision-store.md#importing), step 1). When the store id of the
+    database (the `store` row of its `meta` table, or `flats_docs_meta` for a
+    document) differs from `import_store`, there is nothing to compare. A flat with
+    no cursor, and a flat whose outbox database does not exist, have nothing to
+    compare. The host runs the upper half of this test when it opens a board or a
+    notebook (`checkImportCursor`) and no test for a document. The command applies
+    the whole test to all three.
+
+    Two snapshots that do not start at one moment can break the test in two ways:
+
+    - `import_seq > last`: an entry was created and imported after the snapshot of
+      the database and before the snapshot of `flats.db`. A restored board or
+      notebook in that state does not start. A restored document starts, and its
+      next import acknowledges through `import_seq`, which deletes every outbox
+      entry up to that number, so the new entries that reuse those numbers are
+      dropped unimported ([docs app](../internal/docs-app.md)).
+    - `acked > import_seq`: entries were imported and acknowledged after the
+      snapshot of `flats.db` and before the snapshot of the database. Their
+      revisions are in no database of the copy, and the restored host does not
+      notice that.
+
+    An entry that is only created in the gap, or that the `flats.db` snapshot
+    imported and the database snapshot still holds, keeps the test true. The second
+    entry is at or before the cursor, and the host acknowledges it again.
+
+    The group of rule 15 starts together to make the gap short, and the test holds
+    for either order of two snapshots. When the test fails, the command snapshots
+    the group again as a whole. A database that the check found and that was not in
+    the group joins it. Then it checks every outbox database again, up to 3
+    attempts in all. After the third it fails the backup. Under constant writes to
+    several outbox databases the attempts can fail again and again, and the docs
+    advise a stopped host then.
 17. **Write-once files, second pass.** It copies the write-once files that are new
     since the first pass. This pass starts after the last snapshot. A blob that a
     snapshot references is in the copy, unless the host created the blob after the
@@ -331,8 +356,8 @@ flats backup --verify PATH [--json]
 
 35. To restore, the operator stops the host, runs `flats backup --verify PATH`,
     moves the old data directory away, copies `PATH/data` to the same path, copies
-    `PATH/config.json`, when it exists, to the place of the configuration file, and
-    starts the host. A copy at another path is not used, as
+    `PATH/config.json` and `PATH/config-history/`, when they exist, to the place of
+    the configuration file and the folder beside it, and starts the host. A copy at another path is not used, as
     [configuration](../configuration.md#what-to-back-up) says. A copy made with
     `--exclude-secret-key` needs `secret.key` put back from where the operator
     kept it, or `flats secret restore-key` with the recovery password, before the
@@ -347,21 +372,31 @@ flats backup --verify PATH [--json]
 
 ## Completion criteria
 
-- A test starts a host with a document, a board, a notebook, a server flat with
-  SQLite data and files below `data/files/`, a flat secret and an operator key.
-  It runs `flats backup` while writes to the document, the board, the notebook and
-  the server flat's database run, and restores the result into a new data
-  directory at the old path. The host starts, serves every flat, reads the files,
-  opens the secret and the operator key, and holds at least the writes that were
-  acknowledged before the backup began. `flats backup --verify` passes on the copy
-  before the restore.
-- For each kind of outbox database (a document, a board, a notebook), a test shows
-  that an entry recorded after the snapshot of the database and imported before the
-  snapshot of `flats.db` fails the check of rule 16 on the first attempt, passes on
-  the next, and fails the backup when it happens on three attempts. A test shows
-  that an entry recorded before the snapshot of the database, and imported and
-  acknowledged before the snapshot of `flats.db`, does not lose a revision after a
-  restore.
+- A test starts a host with a board, a notebook, a server flat with SQLite data
+  and files below `data/files/`, a flat secret and an operator key. It runs
+  `flats backup` while writes to the board and the notebook run, and restores the
+  result into a new data directory at the old path. The host starts, serves every
+  flat, reads the files, opens the secret and the operator key, accepts a new
+  write to the board and to the notebook, and the board continues its sequence
+  above the one that the copy had reached. `flats backup --verify` passes on the
+  copy before the restore. This test has no document and no running server flat:
+  they need the docs worker and a flat process, which the unit tests do not start.
+  The package tests cover the outbox database of a document and the database of a
+  server flat with fixture databases. A backup of a host with a running document
+  and a running server flat under write load has no automatic test, and this is a
+  known gap.
+- For each kind of outbox database (a document, a board, a notebook) and for each
+  order of the two snapshots, a test shows that a change between the snapshot of
+  the database and the snapshot of `flats.db` that breaks the test of rule 16
+  fails it on the first attempt, passes on the next, and fails the backup when it
+  happens on three attempts. The tests set the order, which production code
+  leaves to the group of rule 15. A test shows that an entry that is only created
+  in the gap, and an entry that is imported but not yet acknowledged, do not fail
+  the test. A test shows the three states of rule 16 on a copy directly: the
+  cursor below `acked`, between `acked` and `last`, and above `last`. A test shows
+  that a group of snapshots does not wait for a member that failed, that a damaged
+  database fails the backup with nothing at `PATH`, and that a host with more
+  outbox databases than one group holds is copied and verified.
 - Tests show that these fail the backup with nothing at `PATH`: a flat created,
   renamed and deleted during the copy, a restore journal that appears, a changed
   `secret.key`, a host file that stays unstable, and a database that stays
@@ -374,15 +409,17 @@ flats backup --verify PATH [--json]
   file outside the data directory), a write-once file and a guest file that vanish
   during the copy, a guest file that stays unstable (the backup succeeds and lists
   it), a snapshot with no directory (copied), a complete snapshot (copied) and a
-  snapshot with a directory and no marker (left out), and a restore from a copy
-  that holds a legacy snapshot followed by a `restore_data` rollback to it.
+  snapshot with a directory and no marker (left out). A restore that uses the
+  legacy snapshot of a copy has no test: the copy holds its file byte for byte,
+  and the restore is the host's own.
 - Tests show that `--verify` fails on each of: a changed byte in a copied file, a
   missing file, an extra file, a format it does not know, a `user_version` it does
-  not expect, a database that fails `quick_check`, an outbox database behind its
-  cursor (a document, a board and a notebook), a needed blob that is missing, and a
-  `flats.db` with sealed values and a key that does not open them. A test runs
-  `--verify` twice on a copy of an older release and shows that `PATH` is the same
-  before and after, byte for byte and file for file.
+  not expect, a database that fails `quick_check`, an outbox database below or
+  above its cursor (a document, a board and a notebook), a needed blob that is
+  missing, and a `flats.db` with sealed values and a key that does not open them. A
+  test runs `--verify` twice on a copy, and once on a copy with another schema
+  version, and shows that `PATH` keeps the same files with the same sizes and
+  modification times.
 - Tests show that each refusal of rules 12 and 30 writes nothing, that the exit
   codes are 2, 78 and 1 as rule 30 says, that an interrupt at each of the steps
   12 to 21 leaves no `PATH` and removes the partial directory, and that a `PATH`
@@ -391,12 +428,13 @@ flats backup --verify PATH [--json]
   recovery copy, and that a restore of that copy plus `restore-key` starts the
   host. A test shows that the copy has the modes of rule 10 on Unix, and a test
   shows the output of rule 24 and rule 29.
-- A test shows a backup of a stopped host with a `-wal` file, and the error of
-  rule 11 when the folder is not writable. A test shows that a snapshot that cannot
-  start within the busy timeout is tried again and succeeds on a later try, and
-  fails the backup after the third.
-- The Windows job runs the same tests, including a copy of a database that a
-  process holds open.
+- A test shows a backup of a stopped host with a `-wal` file and no `-shm`, and
+  that the copy holds the commits of the `-wal` file. The error for a folder that
+  is not writable has no test, because a test owns its folder and may run as the
+  superuser. A test shows that a snapshot that cannot start within the busy timeout
+  is tried again and succeeds on a later try, and fails the backup after the third.
+- The Windows job runs the same tests, including the backup of a running host,
+  which holds its databases open.
 - `docs/configuration.md` names this command as the supported way, no longer says
   that Flats has no supported way, and gives the restore of rule 35.
   `docs/surfaces.md` lists the command. The spec index lists this page.
