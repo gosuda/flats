@@ -88,9 +88,11 @@ Out of scope:
    - The key exists, and its path after the operating system resolved every link
      lies inside the data directory after the same resolution. A data directory
      that is a link, or a key path that is a link into the data directory, ends
-     here. The resolution does not catch every name that a file system can give
-     one file, such as a Windows short name, and the docs say to keep the key on
-     another directory.
+     here. The resolution does not unify every name that a file system can give
+     one file. A Windows short name, a hard link and a bind mount of the
+     directory of the key into the data directory escape it. The backup closes
+     that gap with its own scan (rule 16), and the docs say to keep the key in a
+     directory that no link and no mount reaches from the data directory.
 
 ## The host
 
@@ -116,16 +118,26 @@ Out of scope:
    in a read-only folder or with mode 0444 works. The host does not check the mode
    or the owner of the file. It must be readable by the user that runs the host,
    which is uid 65532 in the container image. What `Start` writes before the
-   check is what it writes before `CheckSecretKey` today: the host lock, the
-   migration of `config.json` and `flats.db` with their copies, and the binding of
-   an interrupted init (rule 11 of [secret key recovery](secret-key-recovery.md)).
-   The setting adds no write to that list.
-8. The host reads the key once at start and keeps it in memory, as now. A change
-   of the file during the run has no effect until the next start. A SIGHUP reload
-   adopts a changed `host.secret_key_path` into its document and lists it as
-   awaiting a restart (`AwaitRestart`), like the other restart keys, and the
-   running host keeps the key it read at start. The key joins `restartKeys` in
-   `internal/core/reload.go` and rule 8 of [config reload](config-reload.md).
+   check is what it writes before `CheckSecretKey` today. That is the host lock
+   and the Windows access list, the migration of `config.json` and `flats.db`
+   with their copies, the move of `network-provider.json` into `backups/`, and the
+   writes of an interrupted init or legacy migration, as rule 11 of
+   [secret key recovery](secret-key-recovery.md) lists them and as `prepare` makes
+   them. The setting adds no write to them.
+8. Flat secrets use the key that `core.New` read at start and keeps in memory,
+   as now. Operator keys do not. `SealHostKey` and `OpenHostKey` read the key
+   file at each use, as now, for the console, `currentTailscaleKey` and the
+   enrolment of a waiting key. With the setting, those reads go through the
+   location of rule 3 and refuse in its cases. A file that is replaced during the
+   run changes what operator-key actions open at once, and a file that appears at
+   `<data>/secret.key` during the run makes them refuse. A replacement of the key
+   during a run has no other defined effect (see "Scope"). The start reads the
+   file twice, in the check of rule 5 and in `core.New`, and `core.New` makes the
+   same checks through the same function and returns the same kind of refusal.
+   A SIGHUP reload adopts a changed `host.secret_key_path` into its document and
+   lists it as awaiting a restart (`AwaitRestart`), like the other restart keys,
+   and the running host keeps the key that it holds. The key joins `restartKeys`
+   in `internal/core/reload.go` and rule 8 of [config reload](config-reload.md).
 9. Everything that seals or opens an operator key uses the same location. That
    means the console, `flats key set`, the key inputs of `flats serve`
    (`--tailscale-authkey-file`, `FLATS_TAILSCALE_AUTHKEY`) and the import of a
@@ -140,8 +152,10 @@ Out of scope:
 `reset` find the data directory with `--config PATH` or `--data DIR`. Both ways
 load the configuration file that they resolve. A missing or invalid file is a
 refusal with status 78, as today, so the setting applies in both ways. Every
-command of this list gets the location from the function of rule 3 and refuses
-in the cases of rule 3.
+command of this list that reads or writes the key (`key set`, `backup-key`,
+`restore-key` and `reset`) gets the location from the function of rule 3 and
+refuses in the cases of rule 3. `key ls` and `key rm` touch no key and do not
+call it, so they still work when the location is in one of those states.
 
 11. `backup-key` reads the key at the location. The recovery copy and its ID file
     stay in the data directory.
@@ -171,9 +185,16 @@ in the cases of rule 3.
 ## Backup
 
 16. `flats backup` takes the location from the configuration file that it
-    resolves, as the commands above do, and refuses in the cases of rule 3 before
-    it writes anything. With the setting, the key is therefore not in the data
-    directory, and the copy never holds it. The manifest records
+    resolves, as the commands above do, and refuses in the cases of rule 3 in the
+    preflight, before it writes anything. With the setting, the key is therefore not
+    in the data directory. While the setting is on, the walk leaves out
+    `<data>/secret.key` as it does with `--exclude-secret-key` and lists it in
+    `excluded`, so a file that appears there during the copy is not copied. When
+    the command has read the key (rule 17), step 20 also scans every file of the
+    copy for the 32 bytes of the key, and a hit fails the backup with the kind of
+    failure that a second run cannot clear. That scan holds for every name that
+    a file system can give the key file, which the checks of rule 3 do not. The
+    manifest records
     `secret_key: "external"`, and the output says that the key is kept at the
     path and must be backed up apart from the copy. The manifest keeps
     `format: 1`. `external` is a new value of an existing field, and a `--verify`
@@ -186,8 +207,9 @@ in the cases of rule 3.
     does. `Run` passes the key bytes to that check, and the standalone `--verify`
     has none (rule 19). A key that does not open the sealed values fails the
     backup with the kind of failure that a second run cannot clear. A key that
-    cannot be read before step 13, because it is missing or unreadable, refuses
-    the backup, and the message names `--exclude-secret-key`.
+    cannot be read, because it is missing or unreadable, refuses the backup in the
+    preflight (step 12), before the partial directory exists, and the message
+    names `--exclude-secret-key`. Step 13 reads the key again for rule 22.
 18. With the setting, `--exclude-secret-key` means that the command does not
     read the key. It skips the reads of rule 17 and the key check. The manifest
     still records `external`. Without the setting the flag keeps its meaning
@@ -201,8 +223,10 @@ in the cases of rule 3.
     puts the key at the configured path before the start. The docs say so.
 21. The key commands and `flats backup` run as processes of their own. A key
     that only the service process can see, such as a systemd `LoadCredential=`
-    file under `$CREDENTIALS_DIRECTORY` or a Docker secret that is mounted into
-    the service container, is missing for them. For such a key, `flats backup`
+    file under `$CREDENTIALS_DIRECTORY`, or a Docker secret that is mounted into
+    the service container, is missing for a process outside the service. A
+    command that runs inside the container with `docker exec` sees the secret. A
+    one-off container and a process on the host do not. For such a key, `flats backup`
     needs `--exclude-secret-key`, `restore-key` needs `--out`, and the other key
     commands cannot run unless the operator gives them the same mount. The docs
     say this, and they show a deployment that works for every command, a plain
@@ -219,9 +243,10 @@ in the cases of rule 3.
     `config set host.secret_key_path`. It also shows a systemd drop-in with
     `LoadCredential=` and the limits of rule 21. `docs/design.md` ("Secrets") says
     where the key may be. The spec index lists this page. The out-of-scope notes
-    and rules 22, 24 and 28 of [host backup](host-backup.md), rule 8 of
-    [config reload](config-reload.md) and rules 18 and 23 of
-    [secret key recovery](secret-key-recovery.md) change as this spec says.
+    and rules 12, 22, 24, 28, 30, 31 and 35 of [host backup](host-backup.md), rule
+    8 of [config reload](config-reload.md), and rules 19, 23 and 31 of
+    [secret key recovery](secret-key-recovery.md) change as this spec says. Rule
+    12 here changes rules 19 and 23 there, and rule 14 here changes rule 31.
 
 ## Compatibility
 
@@ -244,11 +269,12 @@ tests of `internal/app` do.
 
 - Configuration tests. A relative path, a NUL byte and a path inside the data
   directory are refused, with the value and the reason. The default path
-  `<data>/secret.key` is refused. An empty value is accepted. `config set`,
-  `get` and `unset` round trip. `config set host.data_dir` refuses a directory
-  that contains the key path. Every example file of an earlier schema still
-  migrates, and `schema_version` stays 5. An older release refuses a file with
-  the key as unknown.
+  `<data>/secret.key` is refused. An empty value is accepted. `config set` and
+  `unset` round trip, and `config show` lists the key. `config set host.data_dir`
+  refuses a directory that contains the key path. Every example file of an
+  earlier schema still migrates, and `schema_version` stays 5. The parser refuses
+  an unknown key in the `host` object, which is the rule that makes an older
+  release refuse the new key. The tests build no older binary.
 - Host tests with the setting. A missing file, a link to nothing, a directory, a
   file of 31 and of 33 bytes, an unreadable file, a file at `<data>/secret.key`,
   and a key that is a link into the data directory each stop the start before any
@@ -275,13 +301,22 @@ tests of `internal/app` do.
 - Backup tests. The manifest has `external`, and no file of the copy holds the 32
   bytes of the key (a test scans every file of the copy). The output names the
   path. A leftover `<data>/secret.key` and a key that resolves into the data
-  directory refuse the backup before it writes anything. A key that changes
-  between step 13 and step 18 fails the copy. A key that does not open the sealed
-  values fails the backup and says that a second run does not help.
-  `--exclude-secret-key` skips the reads and the check. A missing or unreadable
-  key refuses the backup and names the flag. `--verify` reports the note. A copy
-  restored with the key put back at the path starts a host that opens every
+  directory refuse the backup before it writes anything. A hard link to the key
+  under another name in the data directory fails the backup at step 20 through
+  the scan of rule 16, with the kind of failure that a second run does not clear.
+  A `<data>/secret.key` that appears during the copy is not copied and is listed
+  in `excluded`. A key that changes between step 13 and step 18 fails the copy. A
+  key that does not open the sealed values fails the backup and says that a
+  second run does not help. `--exclude-secret-key` skips the reads, the scan and
+  the check. A missing or unreadable key refuses the backup in the preflight,
+  makes no partial directory, and names the flag. `--verify` reports the note. A
+  copy restored with the key put back at the path starts a host that opens every
   sealed value.
+- Operator-key tests with the setting. The console and `flats key set` open and
+  seal with the configured file at each use. Replacing the file between two uses
+  changes what they open, and a file that appears at `<data>/secret.key` makes
+  them refuse (rule 8). `flats key ls` and `flats key rm` work while the location
+  is in a state that rule 3 refuses.
 - Docs. `docs/configuration.md`, `docs/container.md` and `docs/design.md` say
   what rules 21, 22 and 24 list, and the documentation checks pass.
 
