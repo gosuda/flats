@@ -9,8 +9,8 @@ import (
 	"testing"
 )
 
-// `flats audit ls` reaches the wired command with its arguments, makes --json print a failure as JSON, and keeps the exit status of
-// the command: 2 for a usage mistake, 78 for a refusal, 1 for another failure.
+// `flats audit ls` reaches the wired command with its arguments and keeps the exit status of the command: 2 for a usage mistake,
+// 78 for a refusal, 1 for another failure.
 func TestAuditIsWiredAndKeepsItsExitStatus(t *testing.T) {
 	old := Audit
 	t.Cleanup(func() { Audit = old })

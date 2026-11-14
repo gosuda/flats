@@ -253,7 +253,9 @@ with that start failing, as it does on a host without an account.
   finds the history from before the rename. A flat created again under a deleted slug is not mixed with the old rows,
   and `--flat OLDSLUG` finds the rows of a deleted flat. A trimming of the log of the flat to a small `system.events_keep`
   and a `Sweep` never remove an audit row. No statement of the code updates or deletes an audit row, which a test shows
-  by scanning the sources (a restore of a flat's data and every other path included).
+  by scanning the sources for the table name. The scan reads literal text only. The tests named above show the behaviour
+  of the retention, the sweep, the deletion and the rename; the restore of a flat's data has no test of its own, and the
+  scan is the only check of it.
 - Operator keys. The console sets, replaces and removes the Tailscale and NetBird keys. `flats key set` and `rm` write
   the events with `via` `command` and the operating-system user. A start input stores a key once, with `from` and `via`
   `start`, and writes nothing when a key of that kind is stored already. The import of a legacy key writes `key.set` with
