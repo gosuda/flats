@@ -232,10 +232,12 @@ Tests that need a file mode, a read-only folder or a link run on Unix as a user 
 elsewhere. The audit write fails in a test through a `BEFORE INSERT` trigger on `audit_events` that raises an error,
 which needs no seam in the product code. A second process that writes to a live database is a second `*sql.DB` of the
 test, as the host tests of `internal/app` already do. The migration fixture is a database built by the registry up to
-version 24, as `TestHistoricalFixturesMigrateToLatest` does. The zrok calls that the enrolment path makes (`zrok.Describe`,
-`Connect`, `New` and `Adopt` in `internal/app/providers.go`) need a seam, function variables that a test replaces,
-because no test builds a zrok account. The seam must let a test drive both the consume through `recordConnection`
-(no account is connected yet) and the clean-up through `clearConnected` (`Describe` reports a connected account).
+version 24, as `TestHistoricalFixturesMigrateToLatest` does. The zrok calls that describe, connect, replace and disconnect the account (`zrok.Describe`, `Connect`, `Replace` and
+`Disconnect` in `internal/app/providers.go`) are function variables that a test replaces, because no test builds a zrok
+account. The seam lets a test drive both the consume through `recordConnection` (no account is connected yet) and the
+clean-up through `clearConnected` (`Describe` reports a connected account). The start of the zrok backend after a
+connection (`zrok.New` and `Adopt`) is left out of the seam: the event is written before it, so the tests drive the consume
+with that start failing, as it does on a host without an account.
 
 - Migration. A `flats.db` of version 24 migrates to 25, and the table has the columns and indexes of rule 1 and the
   `at` unit of the other tables. The tests that pin the latest version change with it. A database with an audit row
@@ -250,7 +252,8 @@ because no test builds a zrok account. The seam must let a test drive both the c
   carry its ID. A rename leaves the rows under the old slug and the same `flat_id`, and `flats audit ls --flat NEWSLUG`
   finds the history from before the rename. A flat created again under a deleted slug is not mixed with the old rows,
   and `--flat OLDSLUG` finds the rows of a deleted flat. A trimming of the log of the flat to a small `system.events_keep`
-  and a `Sweep` never remove an audit row. A restore of a flat's data leaves the rows.
+  and a `Sweep` never remove an audit row. No statement of the code updates or deletes an audit row, which a test shows
+  by scanning the sources (a restore of a flat's data and every other path included).
 - Operator keys. The console sets, replaces and removes the Tailscale and NetBird keys. `flats key set` and `rm` write
   the events with `via` `command` and the operating-system user. A start input stores a key once, with `from` and `via`
   `start`, and writes nothing when a key of that kind is stored already. The import of a legacy key writes `key.set` with
@@ -269,7 +272,8 @@ because no test builds a zrok account. The seam must let a test drive both the c
   0), the text and the JSON lines, the empty result, and the exit statuses 2 and 78 with the three messages of
   rule 23. It works with a host that runs and writes at the same moment, and it sees a commit that sits in the
   write-ahead log. For a host that runs, the set of entries of the data directory and the bytes of every file other than
-  `flats.db-wal` and `-shm` are the same before and after, because the host and the reader may change those two. For a
+  `flats.db`, `flats.db-wal`, `flats.db-shm` and `flats.lock` are the same before and after, because the host changes
+  those itself (a checkpoint rewrites `flats.db`) and the reader may create or update `-shm`. For a
   host that stopped cleanly, every entry and every byte is the same. A `-wal` file of 0 bytes does not make the open
   immutable (rule 22): a commit that the host writes during a listing shows in a later page. `--kind key.rotate` lists
   a row of that kind that the test inserted by hand. For a stopped host that left a `-wal` file and no `-shm`, only an empty `-shm` appears, and an unwritable folder

@@ -177,3 +177,29 @@ func TestFlatDeletionRecordsItsSecretsAndKeepsThem(t *testing.T) {
 		}
 	}
 }
+
+// The sweep trims the logs of flats and never an audit row (rule 2). The default events_keep is 5000.
+func TestSweepKeepsTheAuditRows(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s, dir := newTestService(t)
+	if _, err := s.CreateFlat(ctx, "app", "", ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSecret(ctx, "app", "TOKEN", "v", ViaConsole); err != nil {
+		t.Fatal(err)
+	}
+	for range 5100 {
+		if _, err := s.st.AddEvent(ctx, store.Event{Flat: "app", Time: time.Now(), Level: "info", Kind: "runtime", Message: "line"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	s.Sweep(ctx)
+	evs, err := s.st.ListEvents(ctx, "app", "", 0, 10000)
+	if err != nil || len(evs) > 5000 {
+		t.Fatalf("the sweep left %d events of the flat, %v; want it trimmed to 5000", len(evs), err)
+	}
+	if got := eventLines(auditOf(t, dir)); !slices.Equal(got, []string{"secret.set app/TOKEN console"}) {
+		t.Errorf("audit rows after the sweep = %q", got)
+	}
+}

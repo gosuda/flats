@@ -516,3 +516,138 @@ func TestAuditRowsAreNotReachableThroughTheHTTPSurfaces(t *testing.T) {
 		}
 	}
 }
+
+// seedAudit inserts n key.backup events, named n0000 and up, with a connection of its own, in one transaction.
+func seedAudit(t *testing.T, dir string, n int) {
+	t.Helper()
+	db, err := sql.Open("sqlite", "file:"+filepath.ToSlash(filepath.Join(dir, "flats.db"))+"?_pragma=busy_timeout(5000)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := range n {
+		if _, err := tx.Exec(`INSERT INTO audit_events(at,kind,name,via) VALUES(?,?,?,?)`, time.Now().UnixMilli(), "key.backup", fmt.Sprintf("n%04d", i), "command"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// More rows than one page (500): the command lists every one once, in order (rule 22).
+func TestAuditLsListsMoreRowsThanOnePageOnceAndInOrder(t *testing.T) {
+	dir, config, _ := auditHost(t)
+	before := len(auditIn(t, dir))
+	seedAudit(t, dir, 1203)
+	out, err := runAudit(t, config, "--limit", "0", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := jsonLines(t, out)
+	if len(rows) != before+1203 {
+		t.Fatalf("%d rows, want %d", len(rows), before+1203)
+	}
+	var last float64
+	seen := map[string]bool{}
+	for i, r := range rows {
+		id := r["id"].(float64)
+		if id <= last {
+			t.Fatalf("row %d: id %v after %v, want ascending ids", i, id, last)
+		}
+		last = id
+		if name := r["name"].(string); strings.HasPrefix(name, "n0") || strings.HasPrefix(name, "n1") {
+			if seen[name] {
+				t.Fatalf("%s is listed twice", name)
+			}
+			seen[name] = true
+		}
+	}
+	if len(seen) != 1203 {
+		t.Errorf("%d seeded rows listed, want 1203", len(seen))
+	}
+	// --limit takes the newest across the page size too.
+	out, err = runAudit(t, config, "--limit", "700", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rows := jsonLines(t, out); len(rows) != 700 || rows[699]["name"] != "n1202" || rows[0]["name"] != "n0503" {
+		t.Errorf("newest 700: %d rows, first %v, last %v", len(rows), rows[0]["name"], rows[len(rows)-1]["name"])
+	}
+}
+
+// stallingWriter holds its first write until it is released, and keeps what it was given.
+type stallingWriter struct {
+	once    sync.Once
+	reached chan struct{}
+	release chan struct{}
+	mu      sync.Mutex
+	buf     bytes.Buffer
+}
+
+func (w *stallingWriter) Write(p []byte) (int, error) {
+	w.once.Do(func() { close(w.reached) })
+	<-w.release
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.Write(p)
+}
+
+func (w *stallingWriter) String() string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.buf.String()
+}
+
+// A row that the host commits while the command waits on its output, between the first page and the next, shows in a later
+// page (rule 22 and its criterion).
+func TestAuditLsShowsARowCommittedBetweenTwoPages(t *testing.T) {
+	dir, config, h := auditHost(t)
+	seedAudit(t, dir, 1203)
+	w := &stallingWriter{reached: make(chan struct{}), release: make(chan struct{})}
+	done := make(chan error, 1)
+	go func() {
+		done <- AuditCommand(context.Background(), []string{"ls", "--limit", "0", "--json", "--config", config}, w)
+	}()
+	select {
+	case <-w.reached:
+	case <-time.After(20 * time.Second):
+		t.Fatal("the command never wrote")
+	}
+	if err := h.Store.AppendAudit(context.Background(), store.AuditEvent{Kind: store.AuditKeyBackup, Via: store.AuditViaCommand, Name: "late"}); err != nil {
+		t.Fatal(err)
+	}
+	close(w.release)
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	rows := jsonLines(t, w.String())
+	if len(rows) == 0 {
+		t.Fatal("the command listed nothing")
+	}
+	if last := rows[len(rows)-1]["name"]; last != "late" {
+		t.Errorf("the last of %d rows is %v; want the row that the host committed while the command was between pages", len(rows), last)
+	}
+}
+
+// The reserved kind key.rotate is listed as it is, with its fields, and --kind selects it (rule 15).
+func TestAuditLsListsTheReservedKeyRotateKind(t *testing.T) {
+	dir, config, h := auditHost(t)
+	if err := h.Store.AppendAudit(context.Background(), store.AuditEvent{Kind: store.AuditKeyRotate, Via: store.AuditViaCommand,
+		Data: store.AuditData(map[string]any{"from": "aaaa", "to": "bbbb"})}); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runAudit(t, config, "--kind", "key.rotate", "--json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows := jsonLines(t, out)
+	if len(rows) != 1 || rows[0]["kind"] != "key.rotate" || rows[0]["data"].(map[string]any)["to"] != "bbbb" {
+		t.Errorf("rows = %v", rows)
+	}
+	_ = dir
+}

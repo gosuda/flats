@@ -205,24 +205,40 @@ type AuditReader struct {
 // neither exists. It never migrates. It fails with fs.ErrNotExist for a missing database and with ErrAuditSchema,
 // or ErrSchemaTooNew, for another schema version.
 func OpenAuditReader(path string) (*AuditReader, error) {
-	info, err := Inspect(path)
+	// The version is read through the same open as the log: Inspect opens immutable while the -wal file is empty,
+	// which a host that started and has not written yet leaves.
+	fi, err := os.Stat(path)
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
-	if !info.Exists || info.New {
-		return nil, fmt.Errorf("open %s: %w", path, fs.ErrNotExist)
+	if !fi.Mode().IsRegular() {
+		return nil, fmt.Errorf("open %s: not a regular file", path)
 	}
-	if info.Version != info.Latest {
-		return nil, fmt.Errorf("open %s: %w: version %d, expected %d", path, ErrAuditSchema, info.Version, info.Latest)
+	if fi.Size() == 0 && sidecarSize(path+"-wal") == 0 {
+		return nil, fmt.Errorf("open %s: %w", path, fs.ErrNotExist) // an empty file is a database that was never made
+	}
+	if fi.Size() > 0 {
+		if err := checkHeader(path); err != nil {
+			return nil, fmt.Errorf("open %s: %w", path, err)
+		}
 	}
 	db, err := sql.Open("sqlite", fileURI(path)+auditReadQuery(path)+"&_pragma=busy_timeout(5000)")
 	if err != nil {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	if err := db.PingContext(context.Background()); err != nil {
+	var version int
+	if err := db.QueryRowContext(context.Background(), `PRAGMA user_version`).Scan(&version); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("open %s: %w", path, err)
+	}
+	switch {
+	case version > latestVersion():
+		db.Close()
+		return nil, fmt.Errorf("open %s: %w: schema %d, supported %d", path, ErrSchemaTooNew, version, latestVersion())
+	case version < latestVersion():
+		db.Close()
+		return nil, fmt.Errorf("open %s: %w: version %d, expected %d", path, ErrAuditSchema, version, latestVersion())
 	}
 	return &AuditReader{db: db}, nil
 }
@@ -276,15 +292,8 @@ func (q AuditQuery) where() (string, []any) {
 
 // FlatID returns the ID of the flat that has slug now, and whether there is one.
 func (r *AuditReader) FlatID(ctx context.Context, slug string) (string, bool, error) {
-	var uid sql.NullString
-	err := r.db.QueryRowContext(ctx, `SELECT uid FROM flats WHERE slug=?`, slug).Scan(&uid)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, nil
-	}
-	if err != nil {
-		return "", false, err
-	}
-	return uid.String, uid.String != "", nil
+	uid, err := flatUID(ctx, r.db, slug)
+	return uid, uid != "", err
 }
 
 // Start returns the id before the first of the newest limit events that match q, so that the events with a larger id

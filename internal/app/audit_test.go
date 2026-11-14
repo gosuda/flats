@@ -34,6 +34,14 @@ func auditIn(t *testing.T, dir string) []store.AuditEvent {
 	return evs
 }
 
+// actorTag is how auditSummary writes the actor: nothing when the system gave no user name.
+func actorTag(actor string) string {
+	if actor == "" {
+		return ""
+	}
+	return " actor=" + actor
+}
+
 // auditSummary is "kind name via actor data" for each event, so that a test compares a whole sequence.
 func auditSummary(evs []store.AuditEvent) []string {
 	var out []string
@@ -126,9 +134,9 @@ func TestKeyCommandsWriteEventsWithTheOperatingSystemUser(t *testing.T) {
 	run("rm", "tailscale")
 	me := operatorUser()
 	want := []string{
-		"key.set tailscale command actor=" + me + ` {"replaced":false}`,
-		"key.set tailscale command actor=" + me + ` {"replaced":true}`,
-		"key.delete tailscale command actor=" + me + ` {"reason":"removed"}`,
+		"key.set tailscale command" + actorTag(me) + ` {"replaced":false}`,
+		"key.set tailscale command" + actorTag(me) + ` {"replaced":true}`,
+		"key.delete tailscale command" + actorTag(me) + ` {"reason":"removed"}`,
 	}
 	if got := auditSummary(auditIn(t, dir)); !slices.Equal(got, want) {
 		t.Fatalf("events:\n%q\nwant\n%q", got, want)
@@ -233,7 +241,7 @@ func TestZrokTokenConsumptionWritesEvents(t *testing.T) {
 	}
 	me := operatorUser()
 	want := []string{
-		"key.set zrok command actor=" + me + ` {"replaced":false}`,
+		"key.set zrok command" + actorTag(me) + ` {"replaced":false}`,
 		`key.delete zrok start {"reason":"connected"}`,
 	}
 	if got := auditSummary(auditIn(t, dir)); !slices.Equal(got, want) {

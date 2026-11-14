@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"os/user"
+	"time"
 
 	"github.com/gosuda/flats/internal/core"
 	"github.com/gosuda/flats/internal/store"
@@ -20,6 +21,12 @@ func consoleAudit(ctx context.Context) store.Audit {
 // operating-system user, which is "root" under sudo (rule 5 of the spec).
 func commandAudit() store.Audit {
 	return store.Audit{Via: store.AuditViaCommand, Actor: operatorUser()}
+}
+
+// commandEvent is an audit event that a command writes after its work: the kind, the channel command, the operating-system
+// user and the fields.
+func commandEvent(kind string, fields map[string]any) store.AuditEvent {
+	return store.AuditEvent{Time: time.Now(), Kind: kind, Via: store.AuditViaCommand, Actor: operatorUser(), Data: store.AuditData(fields)}
 }
 
 // operatorUser returns the name of the operating-system user that runs the process, or "" when the system gives none.

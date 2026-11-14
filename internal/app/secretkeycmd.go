@@ -109,10 +109,9 @@ func (k *secretKeyCmd) backup(args []string) error {
 		}
 	}
 	// The event follows the work, and the work stays when the event cannot be written (rule 17).
-	ev := store.AuditEvent{Time: time.Now(), Kind: store.AuditKeyBackup, Via: store.AuditViaCommand, Actor: operatorUser(),
-		Data: store.AuditData(map[string]any{"key_id": core.KeyID(key), "out": outPath != "" && outErr == nil})}
+	ev := commandEvent(store.AuditKeyBackup, map[string]any{"key_id": core.KeyID(key), "out": outPath != "" && outErr == nil})
 	if err := store.AppendAuditBeside(k.ctx, filepath.Join(dataDir, "flats.db"), ev); err != nil {
-		return errors.Join(outErr, fmt.Errorf("the recovery copy in %s was written, and the audit event %s was not recorded: %w", dataDir, ev.Kind, err))
+		return errors.Join(outErr, fmt.Errorf("the recovery copy %s was written, and the audit event %s was not recorded: %w", filepath.Join(dataDir, core.RecoveryKeyFile), ev.Kind, err))
 	}
 	if outErr != nil {
 		return outErr
@@ -268,8 +267,7 @@ func (k *secretKeyCmd) restore(args []string) error {
 // auditRestore appends the key.restore event after the key was written to file. A failure follows rule 17 of the
 // audit spec: the work stays, and the error says so.
 func (k *secretKeyCmd) auditRestore(st *store.Store, key []byte, out bool, check core.KeyCheck, file string) error {
-	ev := store.AuditEvent{Time: time.Now(), Kind: store.AuditKeyRestore, Via: store.AuditViaCommand, Actor: operatorUser(),
-		Data: store.AuditData(map[string]any{"key_id": core.KeyID(key), "out": out, "opened": check.Opened, "total": check.Total})}
+	ev := commandEvent(store.AuditKeyRestore, map[string]any{"key_id": core.KeyID(key), "out": out, "opened": check.Opened, "total": check.Total})
 	if err := st.AppendAudit(k.ctx, ev); err != nil {
 		return fmt.Errorf("the key was written to %s, and the audit event %s was not recorded: %w", file, ev.Kind, err)
 	}

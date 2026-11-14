@@ -51,7 +51,8 @@ Out of scope:
   [secret key path](secret-key-path.md) adds, and rules 19, 23 and 31 below apply
   to that location. The recovery copy and its key ID stay in the data directory.
 - Audit records (#224 item 4) are implemented by [audit events](audit-events.md). `reset` still leaves an event on each
-  flat whose secrets it deletes, as `flats secret rm` does, and also writes audit events (rules 11, 12 and 30 below).
+  flat whose secrets it deletes, as `flats secret rm` does, and also writes audit events (rule 30 below). `backup-key`
+  and the refusals of the commands change in rules 11 and 12 below.
 - The console and MCP. No agent tool or API route reaches these commands.
 
 ## The recovery copy

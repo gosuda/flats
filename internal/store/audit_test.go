@@ -10,6 +10,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -823,5 +824,121 @@ func TestAppendAuditBesideRefusesAnotherSchemaAndWritesNothing(t *testing.T) {
 	// The database was not migrated by the attempt.
 	if info, err := Inspect(path); err != nil || info.Version != 24 {
 		t.Fatalf("after the refusal: %+v, %v", info, err)
+	}
+}
+
+// A -wal file of 0 bytes, which a host that started and has not written yet leaves, does not stop the reader, and the version
+// is read through the same plain open (rule 22).
+func TestReaderOpensADatabaseWhoseWalFileIsEmpty(t *testing.T) {
+	t.Parallel()
+	s := open(t)
+	if err := s.AppendAudit(context.Background(), AuditEvent{Kind: AuditKeyBackup, Via: AuditViaCommand}); err != nil {
+		t.Fatal(err)
+	}
+	path := s.path
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path+"-wal", nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	rd, err := OpenAuditReader(path)
+	if err != nil {
+		t.Fatalf("OpenAuditReader with an empty -wal file: %v", err)
+	}
+	defer rd.Close()
+	if evs, err := rd.List(context.Background(), AuditQuery{}, 0, 10); err != nil || len(evs) != 1 {
+		t.Errorf("List = %v, %v", evs, err)
+	}
+	// An empty database file with no -wal file was never made; a file that is no SQLite file is refused.
+	dir := t.TempDir()
+	empty := filepath.Join(dir, "flats.db")
+	if err := os.WriteFile(empty, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenAuditReader(empty); !errors.Is(err, fs.ErrNotExist) {
+		t.Errorf("empty file: %v, want fs.ErrNotExist", err)
+	}
+	junk := filepath.Join(dir, "junk.db")
+	if err := os.WriteFile(junk, []byte(strings.Repeat("not sqlite ", 20)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := OpenAuditReader(junk); !errors.Is(err, ErrNotFlats) {
+		t.Errorf("junk file: %v, want ErrNotFlats", err)
+	}
+}
+
+// An older binary refuses a database of schema 25, as Open does, and so does its reader (rule 25).
+func TestAnOlderBinaryRefusesAVersion25Database(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "flats.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.Close()
+	t.Run("a registry that ends at 24", func(t *testing.T) {
+		withMigrations(t, migrations[:len(migrations)-1])
+		if _, err := Open(path); !errors.Is(err, ErrSchemaTooNew) {
+			t.Errorf("Open = %v, want ErrSchemaTooNew", err)
+		}
+		if _, err := OpenAuditReader(path); !errors.Is(err, ErrSchemaTooNew) {
+			t.Errorf("OpenAuditReader = %v, want ErrSchemaTooNew", err)
+		}
+	})
+}
+
+// The reserved kind key.rotate is stored and listed like the others (rule 15).
+func TestTheReservedKeyRotateKindIsListed(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s := open(t)
+	if err := s.AppendAudit(ctx, AuditEvent{Kind: AuditKeyRotate, Via: AuditViaCommand, Data: AuditData(map[string]any{"to": "bbbb"})}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AppendAudit(ctx, AuditEvent{Kind: AuditKeyBackup, Via: AuditViaCommand}); err != nil {
+		t.Fatal(err)
+	}
+	rd, err := OpenAuditReader(s.path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rd.Close()
+	evs, err := rd.List(ctx, AuditQuery{Kind: AuditKeyRotate}, 0, 10)
+	if err != nil || len(evs) != 1 || string(evs[0].Data) != `{"to":"bbbb"}` {
+		t.Errorf("List(key.rotate) = %+v, %v", evs, err)
+	}
+}
+
+// No code but the audit code touches audit_events, and that code only creates, inserts and selects (rule 2). The scan covers
+// every path that could change a row: retention, the sweep, a flat's deletion or rename, a restore of a flat's data, and the
+// reset (a migration may create the table).
+func TestNothingUpdatesOrDeletesAnAuditRow(t *testing.T) {
+	t.Parallel()
+	write := regexp.MustCompile(`(?is)\b(update|delete\s+from|drop\s+table|drop\s+index|alter\s+table|insert\s+or\s+replace|replace\s+into)\s+"?audit_events`)
+	var touching []string
+	for _, root := range []string{"../../internal", "../../cmd"} {
+		err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+			if err != nil || d.IsDir() || !strings.HasSuffix(path, ".go") || strings.HasSuffix(path, "_test.go") {
+				return err
+			}
+			b, err := os.ReadFile(path)
+			if err != nil {
+				return err
+			}
+			if !bytes.Contains(b, []byte("audit_events")) {
+				return nil
+			}
+			touching = append(touching, filepath.ToSlash(path))
+			if m := write.Find(b); m != nil {
+				t.Errorf("%s changes or deletes audit rows: %q", path, m)
+			}
+			return nil
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	if want := []string{"../../internal/store/audit.go"}; !slices.Equal(touching, want) {
+		t.Errorf("files that name audit_events: %v, want only %v", touching, want)
 	}
 }
