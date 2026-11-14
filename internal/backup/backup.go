@@ -117,6 +117,8 @@ func Run(ctx context.Context, o Options) (res *Result, err error) {
 	}
 	// Once, here, before any goroutine: the snapshots of one attempt open connections together, and the driver's
 	// table of collations is not safe against a registration that overlaps an open (a data race that CI found).
+	// collation_test.go registers it in init() as well, because the tests run in parallel in one process. So the
+	// race lane cannot catch a move of this call into a goroutine: check that by reading, whenever this code changes.
 	if err := notebook.RegisterCollation(); err != nil {
 		return nil, err
 	}
