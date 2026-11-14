@@ -6,12 +6,13 @@ import (
 	"strings"
 )
 
-// cleanKeyPath returns host.secret_key_path in clean form, or "" for no path.
+// cleanKeyPath returns host.secret_key_path in clean form, or "" for no path. It uses the form of
+// cleanDataDir, which static analysis accepts as free of ".." traversal for the file calls on the path.
 func cleanKeyPath(p string) string {
 	if p == "" {
 		return ""
 	}
-	return filepath.Clean(p)
+	return cleanDataDir(p)
 }
 
 // InsideDir reports whether child is dir or lies below it. It compares the two
