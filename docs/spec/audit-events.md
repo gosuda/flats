@@ -58,7 +58,7 @@ Out of scope:
 - Events for the decryption of secrets at an activation or at a console use of an operator key, for the check of a key
   against the stored values, for `flats backup` reading the key, for a change of `host.secret_key_path`, and for
   changes of `config.json`. They change no sealed value.
-- A downgrade path that keeps data (rule 24).
+- A downgrade path that keeps data (rule 25).
 - Changes to the per-flat events, to `system.events_keep` or to what the log of a flat shows.
 
 ## The log
@@ -120,8 +120,9 @@ Out of scope:
    secret the flat held, with `via` `flat-delete`. The names are read in the transaction that deletes the flat. When an
    approval deleted the flat, `data` carries its ID (`applyDelete` has it), so that #225 can join the decision to the
    deletion.
-10. `key.set` is written whenever a sealed operator key value is stored or replaced. `from` says which input a `start`
-    or `migration` event came from. A start input that is ignored because a key of that kind is stored already (the
+10. `key.set` is written whenever a sealed operator key value is stored or replaced. `from` is the kind of input that a `start`
+    or `migration` event came from (`flag`, `env` or `config`, the `source` of the key input), not the name of the
+    flag or variable. A start input that is ignored because a key of that kind is stored already (the
     seed rule of [operator keys](../configuration.md#operator-keys)) changes nothing and writes nothing.
 11. `key.delete` is written whenever a sealed operator key value is removed. The paths are
     - the console routes and `flats key rm` (`reason` `removed`, `via` `console` and `command`);
@@ -159,8 +160,8 @@ Out of scope:
 18. `flats secret backup-key` works while the host runs and takes no host lock (rule 12 of
     [secret key recovery](secret-key-recovery.md)). It appends its event with a write of its own to `flats.db`: one
     `BEGIN IMMEDIATE` transaction that reads `user_version`, checks that it is the one of this binary, and inserts the
-    row, with the busy timeout of the store (5 s). It does not migrate. When the version is another one, or the
-    transaction cannot start, it follows rule 17. The write creates `flats.db-wal` and `-shm` when a stopped host left
+    row, with the busy timeout of the store (5 s). It does not migrate, and its open does not create `flats.db`. When the
+    database is missing, the version is another one, or the transaction cannot start, it follows rule 17. The write creates `flats.db-wal` and `-shm` when a stopped host left
     none, so the docs say to run the command as the user that runs the host, as for `flats key`, `restore-key` and
     `reset`.
 19. The other commands that write an event (`flats key set` and `rm`, `restore-key`, `reset`) already open `flats.db`
@@ -176,18 +177,23 @@ flats audit ls [--since TIME] [--kind KIND] [--flat SLUG] [--flat-id ID] [--limi
     ago) and compares it with `at`. `--kind` takes a kind of the table. `--flat-id` selects the events of one flat by
     its ID. `--flat SLUG` selects the events of the flat that has that slug now, by its ID, so a rename does not split
     its history. When no flat has the slug, it selects the rows that were written under that slug, which is how the
-    events of a deleted flat are found. A flat that was created again under a deleted slug has another ID, and its
-    events do not mix with the old ones. `--limit` defaults to 100 and returns the newest events that match, and
+    events of a deleted flat are found. That fallback can return the rows of more than one flat, when a slug was used by
+    two flats that were both deleted, and `--flat-id` separates them. A flat that exists under a slug that an older flat
+    used has another ID, and `--flat SLUG` does not return the older flat's rows. `--kind` is free text that is compared
+    with the column: a kind that no row has gives an empty result. `--limit` defaults to 100 and returns the newest events that match, and
     `--limit 0` returns every match. A flag value that does not parse is a usage mistake with status 2.
 21. The text output is one line for each event with the time, the kind, the slug and name, `via`, `actor` and `data`.
     With `--json` it is one JSON object per line (JSON lines) with the fields of rule 1 (`data` as an object, `at` as an
     RFC 3339 time in UTC with milliseconds), which is the format that `flats audit export` of #225 extends. The ID of a
     flat is shown to the operator here, as it is in no other output.
-22. The command opens `flats.db` read-only with the store's read-only open, which sees the write-ahead log of a host
-    that runs, takes no host lock, never calls the host and writes no row. It creates no file when the host runs or
-    when the host stopped cleanly. A stopped host that left a `-wal` file and no `-shm` makes the open create an empty
-    `-shm`, as for `flats backup` (rule 11 of [host backup](host-backup.md)); that needs a writable folder, and the
-    command stops with status 1 and the error when it has none. The command reads the log in pages of at most 500 rows
+22. The command opens `flats.db` read-only, takes no host lock, never calls the host and writes no row. The open is
+    never immutable while a host may write: it is a plain read-only open, which sees the write-ahead log, whenever a
+    `flats.db-wal` or `-journal` file exists, whatever its size (a host that started and has not written yet has a
+    `-wal` file of 0 bytes), and it is immutable only when neither file exists. The store's `openReadOnly` decides by
+    the size of the file, so the implementation adds the condition or an open of its own. The open creates no file when
+    the host runs or when the host stopped cleanly. A stopped host that left a `-wal` file and no `-shm` makes the open
+    create an empty `-shm`, as for `flats backup` (rule 11 of [host backup](host-backup.md)); that needs a writable
+    folder, and the command stops with status 1 and the error when it has none. The command reads the log in pages of at most 500 rows
     by `id`, each in its own short read transaction, and writes a page to its output between two transactions. It holds
     no transaction while it waits for a slow reader of its output, so the checkpoints of the host (`Sync`) are not
     blocked.
@@ -226,8 +232,10 @@ Tests that need a file mode, a read-only folder or a link run on Unix as a user 
 elsewhere. The audit write fails in a test through a `BEFORE INSERT` trigger on `audit_events` that raises an error,
 which needs no seam in the product code. A second process that writes to a live database is a second `*sql.DB` of the
 test, as the host tests of `internal/app` already do. The migration fixture is a database built by the registry up to
-version 24, as `TestHistoricalFixturesMigrateToLatest` does. The zrok connect call needs a seam, a function variable
-that a test replaces, because no test builds a zrok account.
+version 24, as `TestHistoricalFixturesMigrateToLatest` does. The zrok calls that the enrolment path makes (`zrok.Describe`,
+`Connect`, `New` and `Adopt` in `internal/app/providers.go`) need a seam, function variables that a test replaces,
+because no test builds a zrok account. The seam must let a test drive both the consume through `recordConnection`
+(no account is connected yet) and the clean-up through `clearConnected` (`Describe` reports a connected account).
 
 - Migration. A `flats.db` of version 24 migrates to 25, and the table has the columns and indexes of rule 1 and the
   `at` unit of the other tables. The tests that pin the latest version change with it. A database with an audit row
@@ -260,8 +268,11 @@ that a test replaces, because no test builds a zrok account.
 - `flats audit ls`. The filters (`--since` in both forms, `--kind`, `--flat`, `--flat-id`), the limit (default, a number,
   0), the text and the JSON lines, the empty result, and the exit statuses 2 and 78 with the three messages of
   rule 23. It works with a host that runs and writes at the same moment, and it sees a commit that sits in the
-  write-ahead log. For a host that runs, and for a host that stopped cleanly, the data directory is the same before and
-  after. For a stopped host that left a `-wal` file and no `-shm`, only an empty `-shm` appears, and an unwritable folder
+  write-ahead log. For a host that runs, the set of entries of the data directory and the bytes of every file other than
+  `flats.db-wal` and `-shm` are the same before and after, because the host and the reader may change those two. For a
+  host that stopped cleanly, every entry and every byte is the same. A `-wal` file of 0 bytes does not make the open
+  immutable (rule 22): a commit that the host writes during a listing shows in a later page. `--kind key.rotate` lists
+  a row of that kind that the test inserted by hand. For a stopped host that left a `-wal` file and no `-shm`, only an empty `-shm` appears, and an unwritable folder
   gives status 1. With `--limit 0` and an output that is stalled, a host `Sync` succeeds (rule 22).
 - Agents. The test starts a host, writes audit events, and checks that `GET /flats/{slug}/logs` and the MCP `get_logs` of an
   existing flat return none of the audit rows, that the MCP tool list has no tool with `audit` in its name, and that
