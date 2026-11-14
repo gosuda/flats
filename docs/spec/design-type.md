@@ -52,8 +52,9 @@ previews, changes are live at once, and history is kept as revisions.
    - `notes`: free notes on the canvas, each with `x`, `y`, `text` and an
      optional `w` and color. They are for headings over a group of artboards
      and comments to the reader.
-   - `launch` (optional): open on the whole canvas (the default) or focused on
-     one artboard.
+   - `launch` (optional): accepted and kept for older designs. It no longer
+     changes how the canvas opens: the design always opens on the whole canvas
+     (rule 5).
 
    Every artboard listed must exist. An `.html` file that is not listed is not
    an artboard: it can still be linked or embedded.
@@ -77,9 +78,11 @@ previews, changes are live at once, and history is kept as revisions.
 ## Viewing
 
 5. **The canvas.** The design's URL opens a canvas that shows every artboard at
-   its frame with its title, plus the notes. People pan and zoom it, and fit it
-   to the window. Without modifiers, wheel and trackpad input pans on both
-   axes. Holding Shift constrains panning to the horizontal axis, including
+   its frame with its title, plus the notes, fitted to the window. The first
+   view is always the whole canvas, never one artboard; only a link whose
+   fragment names an artboard (`#cart.html`) opens straight into one. People
+   pan and zoom it, and fit it to the window again. Without modifiers, wheel
+   and trackpad input pans on both axes. Holding Shift constrains panning to the horizontal axis, including
    diagonal input and small residual movement on the other axis. The first
    nonzero sample selects the component with the larger absolute raw delta,
    without `deltaMode` conversion (horizontal on a tie);

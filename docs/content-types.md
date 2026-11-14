@@ -571,8 +571,8 @@ change is kept as a revision.
   - `order`: back to front. Boards missing from it are appended.
   - `notes`: headings over a group of artboards and comments to the reader.
     Colors are `gray`, `yellow`, `blue`, `green`, `pink` and `purple`.
-  - `launch`: `{"view": "focused", "board": "cart.html"}` opens one artboard
-    first.
+  - `launch`: `{"view": "canvas"}`. The design always opens on the whole
+    canvas; `{"view": "focused", ...}` is still accepted and changes nothing.
 - Artboards: one complete HTML document per `.html` file. Each should also
   work when opened on its own.
 - Assets: images, fonts, CSS, JS and data files, referenced by relative path.
