@@ -366,3 +366,42 @@ func TestKeyRefusalIsAnActionError(t *testing.T) {
 		t.Errorf("another error changed: %v", got)
 	}
 }
+
+// The console's methods for the operator keys seal and open under the configured file, through the key location of
+// the host, and never create a key in the data directory (rules 8 and 9).
+func TestConsoleOperatorKeyMethodsUseTheConfiguredFile(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	config, key, h := hostWithSecrets(t, dir)
+	if err := h.Close(); err != nil {
+		t.Fatal(err)
+	}
+	keyPath := keyOutside(t, dir, config)
+	h2, err := Start(ctx, configModeOptions(config))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer h2.Close()
+	if err := h2.SetTailscaleKey(ctx, keyA); err != nil {
+		t.Fatalf("SetTailscaleKey: %v", err)
+	}
+	if v, err := h2.currentTailscaleKey(ctx); err != nil || v != keyA {
+		t.Errorf("currentTailscaleKey = %q, %v; want the key that the console stored", v, err)
+	}
+	if _, err := os.Lstat(filepath.Join(dir, core.SecretKeyFile)); !os.IsNotExist(err) {
+		t.Errorf("a console method created a key in the data directory: %v", err)
+	}
+	// The key opens only with the configured file: with another key there, the stored value does not open.
+	if err := os.WriteFile(keyPath, bytes.Repeat([]byte{9}, 32), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h2.currentTailscaleKey(ctx); err == nil {
+		t.Error("a replaced key file still opened the stored Tailscale key")
+	}
+	if err := os.WriteFile(keyPath, key, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if v, err := h2.currentTailscaleKey(ctx); err != nil || v != keyA {
+		t.Errorf("after the key came back: %q, %v", v, err)
+	}
+}

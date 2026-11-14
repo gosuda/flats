@@ -417,3 +417,74 @@ func TestRestoreKeyOutRefusesAFolderBelowTheDataDirectory(t *testing.T) {
 		})
 	}
 }
+
+// Every command that reads or writes the key refuses in the two states of rule 3 that the setting alone cannot see: a
+// second key at <data>/secret.key, and a configured path that resolves into the data directory. It changes nothing then.
+// `key ls` and `key rm` touch no key, so they still work in both states (the commands' preamble and rule 3).
+func TestEveryKeyCommandRefusesInTheCasesOfRule3(t *testing.T) {
+	states := map[string]struct {
+		put  func(t *testing.T, dir, keyPath string, key []byte)
+		want string
+	}{
+		"a second key in the data directory": {func(t *testing.T, dir, keyPath string, key []byte) {
+			if err := os.WriteFile(filepath.Join(dir, core.SecretKeyFile), key, 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}, "move that file away"},
+		"a key path that is a link into the data directory": {func(t *testing.T, dir, keyPath string, key []byte) {
+			inner := filepath.Join(dir, "inner.key")
+			if err := os.WriteFile(inner, key, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Remove(keyPath); err != nil {
+				t.Fatal(err)
+			}
+			if err := ostest.Symlink(t, inner, keyPath); err != nil {
+				t.Skipf("no symbolic links here: %v", err)
+			}
+		}, "inside the data directory"},
+	}
+	for name, st := range states {
+		t.Run(name, func(t *testing.T) {
+			dir, config, key, keyPath := stoppedHostWithAKeyOutside(t)
+			outFile := filepath.Join(t.TempDir(), "out.key")
+			st.put(t, dir, keyPath, key)
+			refuses := map[string]func() error{
+				"backup-key": func() error {
+					_, err := runSecretKey(t, config, "backup-key", "--password-file", passwordFile(t, recoveryPassword))
+					return err
+				},
+				"restore-key": func() error {
+					_, err := runSecretKey(t, config, "restore-key", "--password-file", passwordFile(t, recoveryPassword))
+					return err
+				},
+				"restore-key --out": func() error {
+					_, err := runSecretKey(t, config, "restore-key", "--out", outFile, "--password-file", passwordFile(t, recoveryPassword))
+					return err
+				},
+				"reset": func() error { _, err := runSecretKey(t, config, "reset", "--yes"); return err },
+				"key set": func() error {
+					return KeyCommand(context.Background(), []string{"set", "tailscale", "--config", config}, strings.NewReader(keyA), &bytes.Buffer{})
+				},
+			}
+			for cmd, run := range refuses {
+				if err := run(); err == nil || exitCode(err) != ExitConfig || !strings.Contains(err.Error(), st.want) {
+					t.Errorf("%s: err = %v (status %d), want a refusal that says %q", cmd, err, exitCode(err), st.want)
+				}
+			}
+			for _, cmd := range [][]string{{"ls"}, {"rm", "tailscale"}} {
+				if err := KeyCommand(context.Background(), append(cmd, "--config", config), strings.NewReader(""), &bytes.Buffer{}); err != nil {
+					t.Errorf("key %s in this state: %v", cmd[0], err)
+				}
+			}
+			for _, name := range []string{core.RecoveryKeyFile, core.RecoveryKeyIDFile} {
+				if _, err := os.Lstat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+					t.Errorf("a refused command wrote %s: %v", name, err)
+				}
+			}
+			if _, err := os.Lstat(outFile); !os.IsNotExist(err) {
+				t.Errorf("a refused restore-key --out wrote its file: %v", err)
+			}
+		})
+	}
+}
