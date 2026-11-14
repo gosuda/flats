@@ -12,7 +12,7 @@ The question "who decides this value?" picks the place:
 | The operator | `config.json` | addresses, system policies, permitted networks, console domains, provider settings |
 | Flats while running | `flats.db` | flats, drafts, versions, deployments, revision metadata of documents, designs, boards and notebooks, approvals, per-flat provider permission, events, analytics (page views, and per-day usage in `usagedays`), ordinary app environment variables, encrypted secrets, encrypted operator keys, console node records, [Autopilot settings](#autopilot-settings), [public instance settings](#public-instance-settings) |
 | The flat | `flats/<slug>/` | uploaded code, revision contents, the flat's SQLite database and FILES, a board's or notebook's current content |
-| Nobody may read it in plain text | separate files | `secret.key` |
+| Nobody may read it in plain text | separate files | `secret.key`, or the file that [`host.secret_key_path`](#keeping-the-key-outside-the-data-directory) names |
 | A client machine's user | `flats-client/connection.json` | which Flats host the CLI and `flats mcp` use, saved by `flats connect` |
 
 No value is stored in two places. `flats.db` also holds `host_binding`, which
@@ -39,6 +39,7 @@ the data directory is.
   config-history/             previous config.json copies, newest 10
   flats.db                    metadata database (+ -wal, -shm)
   secret.key                  key for flat secrets and operator keys, 32 bytes, mode 0600
+                              (not here when host.secret_key_path names another file)
   secret.key.recovery         that key encrypted under a recovery password (optional)
   secret.key.recovery.id      the ID of the key in that copy
   backups/                    flats.db copies taken before a schema migration
@@ -82,7 +83,8 @@ retention deletes revisions.
 
 Operator keys (the Tailscale auth key, the NetBird setup key, and a zrok token
 waiting to be used) are kept in `flats.db`, encrypted with `secret.key`; see
-[Operator keys](#operator-keys). `config.json` holds no key and no path to one.
+[Operator keys](#operator-keys). `config.json` holds no key. It holds a path to
+the key file only when you set `host.secret_key_path`.
 
 A rename or deletion writes a journal under `flats/.lifecycle/` before it moves
 or removes a flat directory, and startup finishes or undoes an interrupted one
@@ -106,7 +108,9 @@ Required:
 
 - `config.json`;
 - `flats.db`, together with `secret.key` from the same moment: the flat
-  secrets and operator keys in `flats.db` need it;
+  secrets and operator keys in `flats.db` need it. With
+  [`host.secret_key_path`](#keeping-the-key-outside-the-data-directory) the key
+  is a file outside the data directory, and you keep it apart from the copy;
 - `flats/<slug>/` except the temporary copies, with `restore-journal.json`,
   revision contents and snapshots, and `flats/.lifecycle/` and
   `network-retirements/` when present;
@@ -159,6 +163,17 @@ recovery copy `secret.key.recovery` stays in it, and anyone who holds the copy c
 guess its password offline
 ([Secret key recovery](spec/secret-key-recovery.md#the-recovery-copy)).
 
+With [`host.secret_key_path`](#keeping-the-key-outside-the-data-directory) the key
+is not in the data directory, so it is not in the copy. The manifest records
+`secret_key: "external"`, and the command prints where the key is: back that file
+up apart from the copy. The command reads the key, checks that it opens every
+sealed value of the copy, and fails if the key changed during the copy. It
+refuses before it writes anything when the key is missing or unreadable, and the
+message names `--exclude-secret-key`; with the flag it does not read the key at
+all. It also scans every file of the copy for the 32 bytes of the key, under any
+name, and fails the backup when it finds them: run it again after you remove the
+second copy of the key from the data directory.
+
 The command works only on a data directory that a host of this Flats release wrote.
 After an upgrade, start the host once so that it migrates `flats.db`. To back up a
 stopped host of an older release before you start the new one, copy the data
@@ -168,7 +183,9 @@ To check a copy, run `flats backup --verify PATH`. It needs no host and no
 configuration, and it writes nothing. It compares every file with the manifest,
 checks each database, checks that the outbox databases of documents, boards and
 notebooks fit `flats.db`, checks that every blob that a flat needs is in the copy,
-and checks that `secret.key` opens every sealed value. It prints `ok` or each
+and checks that `secret.key` opens every sealed value. For a copy with an
+external key it has no key to use: it says in a note that the key is outside the
+copy and that it did not check the sealed values. It prints `ok` or each
 failure, and exits with status 1 on a failure. It refuses, with status 78, a copy
 whose `flats.db` has another schema version than this Flats expects, and says
 which Flats version made it. Run `--verify` before every restore.
@@ -179,7 +196,9 @@ directory away and copy `PATH/data` to the same path. If `PATH/config.json` and
 the folder beside it. Then start the host. A copy made with `--exclude-secret-key`
 needs the key first: put `secret.key` back from where you kept it, or run
 `flats secret restore-key` with the recovery password
-([Recovering a lost secret.key](#recovering-a-lost-secretkey)). Copying over the old directory can
+([Recovering a lost secret.key](#recovering-a-lost-secretkey)). A copy with an
+external key brings back the `config.json` that holds `host.secret_key_path`:
+put the key at that path before you start the host. Copying over the old directory can
 leave a `-wal` file beside a restored database and corrupt it. A copy at another
 path is not used, because `host.data_dir` in its `config.json` still names the
 old path and a service started with `--config` still reads the old file.
@@ -319,6 +338,7 @@ written; `flats config unset KEY` removes it.
 | `host.console_addr` | `127.0.0.1:7878`; console, HTTP API and MCP listener | restart |
 | `host.local_addr` | `127.0.0.1:7879` | restart |
 | `host.server_runtime` | `true` | restart |
+| `host.secret_key_path` | `""` (the key is `<data-dir>/secret.key`); an absolute path outside `host.data_dir` | offline: `flats config set host.secret_key_path`; a SIGHUP reload lists it as awaiting a restart, and the running host keeps its key |
 | `metrics.enabled` | `true` | restart |
 | `metrics.expose_on` | `["localhost"]`; unique entries from `localhost`, `console`, `external`; `[]` exposes nowhere | restart |
 | `metrics.per_flat` | `true`; set `false` to omit per-flat Prometheus series | restart |
@@ -709,11 +729,13 @@ A key reaches Flats in one of these ways:
   - `flats key set tailscale|zrok|netbird` reads the key from standard input
     (a prompt without echo on a terminal) or `--from-file PATH`, never from
     the command line, and replaces a stored one. A zrok token waits for the
-    next start, which connects it when no account is connected.
+    next start, which connects it when no account is connected. With
+    `host.secret_key_path` it needs the key file there and never creates one.
   - `flats key ls` lists the keys with their state, source and time, never
     their values.
   - `flats key rm` removes a stored key or a waiting zrok token and needs no
-    `secret.key`. Disconnecting a zrok account stays in the console.
+    `secret.key`; `flats key ls` needs none either. Disconnecting a zrok
+    account stays in the console.
 - **At start**, in this order of priority:
   1. the flags `--tailscale-authkey-file` (`--authkey-file` for a legacy
      service), `--zrok-token-file` and `--netbird-setup-key-file`, each naming
@@ -746,7 +768,12 @@ on, while `TS_AUTHKEY`, `TS_AUTH_KEY`, `TS_CLIENT_SECRET`, `TS_CLIENT_ID`,
 read them and bypass Flats.
 
 If operator keys are stored and `secret.key` is missing, the host refuses to
-start instead of creating a new key (see [Starting](#starting)).
+start instead of creating a new key (see [Starting](#starting)). The console,
+`flats key set` and the keys given at start read the key file each time they
+seal or open a key, so a key file that you replace while the host runs changes
+what they open at once. With
+[`host.secret_key_path`](#keeping-the-key-outside-the-data-directory) they read
+the file that it names.
 
 No MCP tool and no agent API route reads or sets a key. The console's routes
 are protected against cross-site requests, not authenticated: a program that
@@ -941,16 +968,136 @@ when only operator keys are stored, remove them with `flats key rm` and
 register them again. [Recovering a lost secret.key](#recovering-a-lost-secretkey)
 covers the commands.
 
+With `host.secret_key_path` the host never creates a key, with or without
+sealed values. Before any listener opens, it checks the file that the setting
+names, and a refusal exits with status 78 and names the path and the setting;
+[Keeping the key outside the data directory](#keeping-the-key-outside-the-data-directory)
+lists the cases.
+
+### Keeping the key outside the data directory
+
+By default `secret.key` lies in the data directory, so a copy of that directory
+holds the sealed values and the key that opens them. `host.secret_key_path`
+names another file for the key, for example a Docker secret or a file that only
+the service user can read. The [Secret key path](spec/secret-key-path.md) spec
+has the rules.
+
+```sh
+flats config set host.secret_key_path /etc/flats/secret.key --config PATH
+```
+
+The value is an absolute path without a NUL byte, and it must not lie inside
+`host.data_dir`. Stop the host first, because `flats config set` refuses while
+a host runs. The setting applies at the next start. A SIGHUP reload lists it as
+awaiting a restart and the running host keeps the key that it holds.
+
+With the setting, the host only reads the key. It never creates, writes,
+renames or deletes the file, and it makes no temporary file beside it, so a key
+on a read-only mount works. Flats does not check the mode or the owner of the
+file. The user that runs the host must be able to read it (uid `65532` in the
+container image). It must be a regular file of exactly 32 bytes, and the host
+refuses to start otherwise. Flats never creates a key at a configured path.
+
+Make a key with 32 random bytes:
+
+```sh
+(umask 077 && head -c 32 /dev/urandom > /etc/flats/secret.key)
+```
+
+```powershell
+$k = New-Object byte[] 32
+[System.Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($k)
+[System.IO.File]::WriteAllBytes('C:\ProgramData\flats\secret.key', $k)
+```
+
+On Windows, give the file an access list for the service account only. Flats
+does not set one.
+
+To move the key of an existing host out of the data directory, stop the host,
+move the file, and set the path:
+
+```sh
+mv DATA/secret.key /etc/flats/secret.key
+flats config set host.secret_key_path /etc/flats/secret.key --config PATH
+```
+
+Keep the key in a folder that no link and no mount reaches from the data
+directory. The checks below follow links, but they cannot find every name that
+a file system gives one file, such as a Windows short name, a hard link or a
+bind mount of the folder into the data directory.
+
+The start refuses, with status 78 and before any listener opens, in each of
+these cases. The message names the path and the setting, and it holds when
+`flats.db` has no sealed value too:
+
+- nothing is at the path, or a link there points to nothing;
+- the path is not a regular file once links are followed, or it is not 32
+  bytes, or the user cannot read it;
+- a file, a directory or a link exists at `DATA/secret.key`: two keys would be in
+  use, and a copy of the data directory would hold the one that you wanted to
+  keep out. Move that file away;
+- the key, after the system resolved every link, lies inside the data
+  directory.
+
+`flats key set`, `flats secret backup-key`, `restore-key` and `reset` refuse in
+the last two cases too. `flats key ls` and `flats key rm` touch no key and still
+work. `flats backup` refuses in them before it writes anything.
+
+`flats config set` and `unset` load the file first, so they cannot repair a
+file that the check refuses, for example a key path that lies inside
+`host.data_dir`. Edit `config.json` by hand: remove `host.secret_key_path` or
+give it a path outside the data directory. For the same reason,
+`flats config set host.data_dir` refuses a directory that contains the key path.
+
+To put the key back in the data directory, or to go back to an older Flats,
+stop the host, copy the key to `DATA/secret.key`, and clear the setting:
+
+```sh
+cp /etc/flats/secret.key DATA/secret.key
+flats config unset host.secret_key_path --config PATH
+```
+
+Copy before you clear. `flats config unset` works while a file is at
+`DATA/secret.key`, but a start between the two steps then refuses instead of
+creating a new key. An older release refuses a `config.json` that holds
+`host.secret_key_path`, as it refuses any key it does not know, so clear the
+setting before you start it.
+
+The key commands and `flats backup` run as processes of their own. A key that
+only the service process can see is missing for them. This holds for a systemd
+credential, and for a Docker secret that is mounted into the service container
+([Docker](container.md#keeping-the-key-outside-the-volume)). For such a key,
+`flats backup` needs `--exclude-secret-key`, `flats secret restore-key` needs
+`--out FILE` (it writes the recovered key to a new file of mode 0600 and changes
+nothing at the path), and the other key commands cannot run unless you give them
+the same mount. A plain file that the service user can read, for example
+`/etc/flats/secret.key` with mode 0400, works for every command. A drop-in for a
+system service that loads a systemd credential:
+
+```ini
+# /etc/systemd/system/flats.service.d/key.conf
+[Service]
+LoadCredential=secret.key:/etc/flats/secret.key
+```
+
+```sh
+flats config set host.secret_key_path /run/credentials/flats.service/secret.key --config PATH
+```
+
+`systemd.exec(5)` names the credentials directory of a service. The path in
+`config.json` is fixed, so it cannot use `$CREDENTIALS_DIRECTORY`.
+
 ### Recovering a lost secret.key
 
 `secret.key` opens every flat secret and stored operator key, and nothing
 else does. Three commands on the host keep a way back when the file is lost.
 They work on the data directory, never call the host, and no agent tool or API
-route reaches them.
+route reaches them. With `host.secret_key_path` they use the file that it
+names, and the recovery copy stays in the data directory.
 
 ```sh
 flats secret backup-key [--out PATH] [--password-file PATH] [--config PATH | --data DIR]
-flats secret restore-key [--from PATH] [--password-file PATH] [--config PATH | --data DIR]
+flats secret restore-key [--from PATH] [--out FILE] [--password-file PATH] [--config PATH | --data DIR]
 flats secret reset [--yes] [--config PATH | --data DIR]
 ```
 
@@ -963,20 +1110,30 @@ flats secret reset [--yes] [--config PATH | --data DIR]
   instead, without its trailing line ends. The password has at least 12
   characters and at most 1024 bytes. Run the command again to change it.
   Flats keeps no copy of the password.
-- `restore-key` needs the host stopped and nothing at `secret.key`. It reads
+- `restore-key` needs the host stopped and nothing at `secret.key`, or, with
+  `host.secret_key_path`, nothing at that path. It reads
   `secret.key.recovery`, or `--from PATH`, asks for the password, checks that
   the key opens every sealed value in `flats.db`, and only then writes
-  `secret.key`. It never replaces a key. When `flats.db` holds no sealed
-  value, there is nothing to check the key against: the command says so and
-  writes any key the password opens. It refuses a copy written at a work
-  factor above 2^18, the age default that `backup-key` and `age -p` use.
+  `secret.key`, or the file at `host.secret_key_path`. It never replaces a
+  key. When `flats.db` holds no sealed value, there is nothing to check the key
+  against: the command says so and writes any key the password opens. It
+  refuses a copy written at a work factor above 2^18, the age default that
+  `backup-key` and `age -p` use. With `host.secret_key_path` its synced
+  temporary file lies beside the configured path. When it cannot write there,
+  for example on a read-only mount, it writes nothing and names `--out`.
+  `--out FILE` writes the recovered key to a new file of mode 0600 instead,
+  after the same checks of the key. It needs no empty path, because the path may
+  hold a wrong key, and it changes nothing there. `FILE` must not lie in the data
+  directory. Move `FILE` into your secret store and remove it.
 - `reset` is for a host that has lost both the key and the password. With the
   host stopped, and nothing at `secret.key` or a key there that opens none of
   the values, it lists the flat secrets and operator keys it will delete,
   asks you to type `reset` (or takes `--yes`), deletes them and leaves an
   event on each flat. The next start creates a new key: run `backup-key`
   after it, set the secrets again with `flats secret set` and redeploy, and
-  register the operator keys again with `flats key set`.
+  register the operator keys again with `flats key set`. With
+  `host.secret_key_path` the next start creates no key: put a key at that path
+  before it, and run `backup-key` after it.
   A key at `secret.key` that opens any of the values makes `reset` refuse.
   Remove only the values it does not open instead: operator keys first, with
   `flats key rm` while the host is stopped, because the start refuses while
@@ -995,7 +1152,8 @@ Run it in the data directory with the host stopped and nothing at
 `secret.key`, because `age` replaces an existing output file. Without the
 `umask`, `age` creates the file readable by other users; with it the file
 gets the mode 0600 that Flats uses. This way skips the check against
-`flats.db` that `restore-key` makes. A copy made by hand with `age -p` has no
+`flats.db` that `restore-key` makes. With `host.secret_key_path`, name that path
+after `-o` instead of `secret.key`. A copy made by hand with `age -p` has no
 ID file, and the host warns about it until `backup-key` writes one.
 
 A copy of the data directory includes the recovery file, so anyone holding a

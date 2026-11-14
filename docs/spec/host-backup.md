@@ -56,10 +56,10 @@ Out of scope:
 - Scheduling, upload to a remote store, compression, encryption of the copy and
   incremental copies.
 - A pause of the running host. The requester chose a copy that checks itself.
-- The key path setting and key rotation (#224 items 1 and 2). The command reads
-  `secret.key` at its fixed path. When those items ship, the command must read
-  the key through the function that they add, and a rotation during a copy must
-  fail the copy (rule 22).
+- Key rotation (#224 item 2). A rotation during a copy must fail the copy (rule
+  22). The key path setting (#224 item 1) is implemented, and the command reads
+  the key through the location that it adds. [Secret key path](secret-key-path.md)
+  says how rules 12, 22, 24, 28, 30, 31 and 35 apply to it.
 
 ## The copy
 
@@ -167,7 +167,11 @@ these steps and no other:
     database of a host of this release, which means a file that is no Flats
     database or a `user_version` other than the one this binary expects (rule 25).
     A host of an older release migrates its `flats.db` when it starts, and the
-    refusal says so and names the copy by hand. This check comes last, because
+    refusal says so and names the copy by hand. With `host.secret_key_path`, it
+    also refuses, before it opens any database, when the checks of rule 3 of
+    [secret key path](secret-key-path.md) fail or the key cannot be read, and the
+    message names `--exclude-secret-key`. That flag skips the read. The database
+    check comes last, because
     it is the only refusal that opens a database, and opening the database of a
     stopped host that left a `-wal` file and no `-shm` creates an empty `-shm`
     (rule 11). It creates a new
@@ -178,7 +182,8 @@ these steps and no other:
     Each has the file identity that the system gives (the inode on Unix, the file
     index on Windows) and its creation time where the system has one. It lists
     the entry names of `flats/.lifecycle/` and each `restore-journal.json` with
-    its size and modification time. It reads `secret.key`. A journal that exists
+    its size and modification time. It reads `secret.key`, or the key at the
+    configured path. A journal that exists
     now is data and is copied. It is not a failure.
 14. **Write-once files, first pass.** It copies the write-once class. A snapshot
     is the file `<kind>-<ms>.sqlite` and, in the current format, the directory
@@ -271,7 +276,10 @@ these steps and no other:
     directory.
 22. `secret.key` is read at step 13 and again at step 18. When the two reads
     differ, the command fails the backup, so a key change during the copy, such as
-    a rotation, never pairs one key with the other key's `flats.db`.
+    a rotation, never pairs one key with the other key's `flats.db`. With
+    `host.secret_key_path`, both reads use the configured file, the second one
+    without the refusal of a file at `<data>/secret.key`, and a file that is
+    gone at the second read fails the backup the same way.
 23. On any failure, and on an interrupt (Ctrl-C or SIGTERM) before step 21, the
     command removes the partial directory and exits with a failure. `PATH` never
     holds an incomplete copy. After a crash a `PATH.partial-<random>` can stay. It
@@ -288,7 +296,10 @@ flats backup --out PATH [--exclude-secret-key] [--config PATH | --data DIR] [--j
     With `--exclude-secret-key`, `data/secret.key` is not copied and the manifest
     records `secret_key: "excluded"`. The recovery copy `secret.key.recovery` and
     its `.id` file stay, so a copy without the key can still be restored with
-    `flats secret restore-key`. A holder of the copy can guess the recovery
+    `flats secret restore-key`. With `host.secret_key_path`, the walk leaves out
+    `<data>/secret.key` as well and lists it in `excluded`, the manifest records
+    `secret_key: "external"`, and the flag means that the command does not read
+    the key ([secret key path](secret-key-path.md), rules 16 to 18). A holder of the copy can guess the recovery
     password offline, as
     [secret key recovery](secret-key-recovery.md#the-recovery-copy) says. The
     output names the folder, the number of files and bytes, whether a secret key
@@ -333,7 +344,10 @@ flats backup --verify PATH [--json]
     every flat secret and every operator key record with a stored value opens with
     that key. The code is the one of `flats secret restore-key` (rule 22 of its
     spec), reading the immutable connection of rule 25. When the copy has no
-    `secret.key`, the command says so and skips this check.
+    `secret.key`, the command says so and skips this check. With
+    `secret_key: "external"`, `flats backup --out` checks the copy against the key
+    that it read, and the standalone `--verify` has no key and reports a note
+    ([secret key path](secret-key-path.md), rules 17 and 19).
 29. The output lists each failure with its path and reason, and ends with the
     count. It prints `ok` and the Flats version that made the copy when nothing
     failed.
@@ -344,13 +358,17 @@ flats backup --verify PATH [--json]
     status 2. A refusal exits with status 78, like `flats key`: an existing
     `PATH`, a missing or unusable folder, a `PATH` inside the data directory, a
     data directory with no `flats.db`, a `flats.db` that is no Flats database, and
-    a `user_version` that rule 25 refuses.
+    a `user_version` that rule 25 refuses, and, with `host.secret_key_path`, a
+    key that the checks of rule 3 of [secret key path](secret-key-path.md) refuse
+    or that cannot be read.
     Any other failure exits with status 1: an unstable host file after 3 copies, a
     database that stays incoherent after 3 attempts, a change of the layout during
     the copy (rule 19), a changed key (rule 22), a failed verification, and an
-    input or output error such as a full disk. A failure that a second run can
-    clear says so: "run the backup again".
-31. A refusal writes nothing at `PATH`, and the only file that it can create
+    input or output error such as a full disk, and, with `host.secret_key_path`,
+    a key that does not open the sealed values of the copy and a copy that holds
+    the bytes of the key. The last two say that a second run does not clear them.
+    A failure that a second run can clear says so: "run the backup again".
+31. A refusal writes nothing at `PATH`, including a refusal of the key, and the only file that it can create
     anywhere is the empty `-shm` that the schema refusal of rule 12 can leave
     beside the database of a stopped host. A failure leaves nothing at `PATH`.
 
@@ -381,7 +399,9 @@ flats backup --verify PATH [--json]
     [configuration](../configuration.md#what-to-back-up) says. A copy made with
     `--exclude-secret-key` needs `secret.key` put back from where the operator
     kept it, or `flats secret restore-key` with the recovery password, before the
-    start.
+    start. A copy with `secret_key: "external"` brings back `config.json` with
+    `host.secret_key_path`, and the operator puts the key at that path before
+    the start.
 
 ## Compatibility
 

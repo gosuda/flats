@@ -1,6 +1,6 @@
 # Secret key path
 
-Status: planned.
+Status: implemented.
 
 ## Summary
 
@@ -15,7 +15,7 @@ The request is item 1 of issue #224. Items 2 to 4 (rotation, injected secrets,
 audit events) are separate changes, and item 5 (the recovery password) is done
 ([secret key recovery](secret-key-recovery.md)).
 
-## Current state
+## Before this change
 
 - The host reads `<data>/secret.key` at start (`New` in
   `internal/core/service.go`). When the file is missing and `flats.db` holds no
@@ -79,7 +79,7 @@ Out of scope:
    `host.data_dir` or to leave the setting empty, and to edit `config.json` by
    hand.
 3. The location of the key is one function of the data directory and the
-   setting. Every place that "Current state" names gets the path from it. It
+   setting. Every place that "Before this change" names gets the path from it. It
    returns the path and whether the setting chose it. With the setting, it
    refuses in two more cases that the check of rule 2 cannot see.
    - A file, a directory or a link exists at `<data>/secret.key`. Two keys would
@@ -240,9 +240,10 @@ call it, so they still work when the location is in one of those states.
     existing key out of the data directory and back, what a refusal means, and the
     hand edit that rule 2 asks for), and the effect on a downgrade (rule 24).
     `docs/container.md` shows a Docker secret and a Compose secret with
-    `config set host.secret_key_path`. It also shows a systemd drop-in with
-    `LoadCredential=` and the limits of rule 21. `docs/design.md` ("Secrets") says
-    where the key may be. The spec index lists this page. The out-of-scope notes
+    `config set host.secret_key_path`. `docs/configuration.md` also shows a systemd
+    drop-in with `LoadCredential=` and the limits of rule 21, because the systemd
+    service is not a container. `docs/design.md` ("Secrets") says where the key may
+    be. The spec index lists this page. The out-of-scope notes
     and rules 12, 22, 24, 28, 30, 31 and 35 of [host backup](host-backup.md), rule
     8 of [config reload](config-reload.md), and rules 19, 23 and 31 of
     [secret key recovery](secret-key-recovery.md) change as this spec says. Rule

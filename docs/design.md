@@ -52,7 +52,9 @@ The advisory lock uses the persistent file inode; do not remove or replace it.
 Successful shutdown and process exit release it, and failed startup cleans up
 before releasing it. `secret.key` is generated into a private synced temporary
 file and atomically linked into place without replacing a concurrent winner;
-readers see either no key or all 32 bytes.
+readers see either no key or all 32 bytes. With `host.secret_key_path` the host
+generates nothing: it reads the key file that the setting names and refuses to
+start when it cannot.
 
 Shutdown drains the management server (5 s; force-close on failure), stops
 core workers, closes public then private networks, closes SQLite and releases
@@ -566,7 +568,10 @@ and separate browser-side CORS/CSP behavior. WASI has no outbound HTTP ABI.
 ## Secrets
 
 Values are sealed with AES-256-GCM (random nonce, AAD = secret name) under
-`<data>/secret.key`. Only the console and the local CLI (`flats secret set`,
+`<data>/secret.key`, or under the file that `host.secret_key_path` names, which
+keeps the key out of the data directory and of a copy of it (the host only reads
+that file; see [Keeping the key outside the data directory](configuration.md#keeping-the-key-outside-the-data-directory)).
+Only the console and the local CLI (`flats secret set`,
 loopback only) can set or delete values; APIs and MCP return names and update
 times only. The CLI is recognized by its `X-Flats-Client: cli` header on the
 loopback listener, so this stops MCP and remote API clients, not a process
