@@ -60,7 +60,7 @@ func TestPublicInstanceCreationMarkMigrationAndLifetime(t *testing.T) {
 		t.Fatalf("lost mark on rename/restart: %+v %v", f, err)
 	}
 	info, err := Inspect(path)
-	if err != nil || info.Version != 24 {
+	if err != nil || info.Version != latestVersion() {
 		t.Fatalf("schema: %+v %v", info, err)
 	}
 }

@@ -10,7 +10,7 @@ The question "who decides this value?" picks the place:
 | Decided by | Stored in | Examples |
 | --- | --- | --- |
 | The operator | `config.json` | addresses, system policies, permitted networks, console domains, provider settings |
-| Flats while running | `flats.db` | flats, drafts, versions, deployments, revision metadata of documents, designs, boards and notebooks, approvals, per-flat provider permission, events, analytics (page views, and per-day usage in `usagedays`), ordinary app environment variables, encrypted secrets, encrypted operator keys, console node records, [Autopilot settings](#autopilot-settings), [public instance settings](#public-instance-settings) |
+| Flats while running | `flats.db` | flats, drafts, versions, deployments, revision metadata of documents, designs, boards and notebooks, approvals, per-flat provider permission, events, the [audit log](#audit-log) of secret and key operations, analytics (page views, and per-day usage in `usagedays`), ordinary app environment variables, encrypted secrets, encrypted operator keys, console node records, [Autopilot settings](#autopilot-settings), [public instance settings](#public-instance-settings) |
 | The flat | `flats/<slug>/` | uploaded code, revision contents, the flat's SQLite database and FILES, a board's or notebook's current content |
 | Nobody may read it in plain text | separate files | `secret.key`, or the file that [`host.secret_key_path`](#keeping-the-key-outside-the-data-directory) names |
 | A client machine's user | `flats-client/connection.json` | which Flats host the CLI and `flats mcp` use, saved by `flats connect` |
@@ -1172,6 +1172,60 @@ At each start, when `secret.key.recovery` exists, the host compares the key's
 ID with `secret.key.recovery.id` and logs a warning that names
 `flats secret backup-key` when they differ or the ID file is missing, for
 example after `reset` let the start create a new key.
+
+### Audit log
+
+Every change of a sealed value, and every key backup, key restore and reset, writes one event to the audit log in
+`flats.db` (the table `audit_events`, schema version 25). It is separate from the log of a flat, which Flats
+trims to `system.events_keep` events and removes with the flat. The audit log is append-only, is never trimmed,
+and the deletion or rename of a flat does not change it. Agents cannot read it: no MCP tool and no API route
+returns it, and `get_logs` shows only the log of the flat. The value of a secret or key is never recorded, only
+its name.
+
+| Kind | Written when | `data` |
+| --- | --- | --- |
+| `secret.set` | a flat secret is stored or replaced | `created`: true for a new name |
+| `secret.delete` | a secret is deleted, by `flats secret reset`, or with its flat | `approval`: the approval that deleted the flat, when there is one |
+| `key.set` | an operator key value is stored or replaced | `replaced`; `from` (`flag`, `env` or `config`) for a start input or a migration |
+| `key.delete` | an operator key value is removed, or a waiting zrok token is used up | `reason`: `removed` or `connected` |
+| `key.backup` | `flats secret backup-key` wrote the recovery copy | `key_id`, and `out` when `--out` wrote a second copy |
+| `key.restore` | `flats secret restore-key` wrote the key | `key_id`, `out`, and how many sealed values the key `opened` of the `total` |
+| `key.reset` | `flats secret reset` deleted the stored values | how many `secrets` and `keys`; each value also has its own delete event |
+
+Each event has a time, the slug and the ID of the flat when it concerns one, the name of the secret or key, the
+channel (`via`) and the actor. The channel is `console`, `cli` (`flats secret set` or `rm` through the loopback
+API), `command` (a command that you ran on the host), `start` (an input that the host read at start, or the zrok
+enrolment after it), `migration` (the import of a legacy key) or `flat-delete`. The actor is the identity that the
+channel knows. For the console it is the text that the console records for approvals: a tailnet user or node, a
+NetBird peer, the external origin, or the address of the caller. For a command it is the name of the operating-system
+user, which is `root` under `sudo`. For `cli`, `start`, `migration` and `flat-delete` it is empty: the CLI header is
+a claim of the client and not an identity. The log holds these names for as long as the host keeps `flats.db`, so
+treat it as you treat the approval records.
+
+```sh
+flats audit ls [--since TIME] [--kind KIND] [--flat SLUG] [--flat-id ID] [--limit N] [--json] [--config PATH | --data DIR]
+```
+
+`flats audit ls` lists the events oldest first, the newest 100 by default (`--limit 0` lists all). `--since` takes
+an RFC 3339 time or a duration such as `24h`. `--flat SLUG` follows a flat through its renames, because it selects by
+the flat's ID; when no flat has that slug any more, it lists the events that were written under it, which is how you
+find a deleted flat. `--flat-id` selects one flat by its ID, which `--json` prints with every event. `--json` prints one JSON object per
+line. The command reads `flats.db` without a host lock and never calls the host, so it works while the host runs
+and while it is stopped. It writes no row. A stopped host that crashed and left a `-wal` file makes the read create an
+empty `-shm` file beside it, which needs a writable folder. The command refuses, with status 78, a data directory
+without `flats.db` and a database of another schema version, and says whether to start the host once so that it migrates
+or to use the release that wrote it.
+
+`flats secret backup-key` writes its event with a write of its own to `flats.db`, without the host lock, so run it as
+the user that runs the host, as you run `flats key`, `restore-key` and `reset`. When it cannot record the event, it
+exits with status 1 and says that the recovery copy was written and the event was not.
+
+A restore of the host from `flats backup` replaces `flats.db`, so it drops the audit events that were written after
+the copy. Anyone who can write `flats.db` can change the log. To keep a record off the host, copy the output of
+`flats audit ls --json` from time to time.
+
+The audit log is a schema change: an older Flats refuses a `flats.db` of schema 25. To go back to an older release,
+restore a backup of the whole data directory that you took before the upgrade, as [flats.db](#flatsdb) says.
 
 ## Moving an existing installation
 

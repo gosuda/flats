@@ -158,7 +158,7 @@ func TestResolveTailscaleKeySeeds(t *testing.T) {
 		t.Fatalf("source = %q", k.Source)
 	}
 	// The console replaced it; the unchanged env value no longer wins.
-	if err := core.PutHostKeyValue(ctx, core.NewKeyFile(dir, ""), st, core.HostKeyTailscale, keyB, core.KeySourceConsole, time.Now()); err != nil {
+	if err := core.PutHostKeyValue(ctx, core.NewKeyFile(dir, ""), st, core.HostKeyTailscale, keyB, core.KeySourceConsole, time.Now(), store.Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	key, differs, err = resolveTailscaleKey(ctx, core.NewKeyFile(dir, ""), st, keyInput{keyA, core.KeySourceEnv, "FLATS_TAILSCALE_AUTHKEY"}, time.Now(), logf)

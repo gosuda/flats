@@ -204,7 +204,7 @@ func TestLegacySecretsRemainReadableByRuntime(t *testing.T) {
 	for name, value := range legacy {
 		nonce := make([]byte, g.NonceSize())
 		ciphertext := g.Seal(nil, nonce, []byte(value), []byte(name))
-		if err := s.st.PutSecret(ctx, "legacy", store.SealedSecret{Name: name, Nonce: nonce, Ciphertext: ciphertext, UpdatedAt: s.now()}); err != nil {
+		if err := s.st.PutSecret(ctx, "legacy", store.SealedSecret{Name: name, Nonce: nonce, Ciphertext: ciphertext, UpdatedAt: s.now()}, store.Audit{}); err != nil {
 			t.Fatal(err)
 		}
 		if err := s.SetSecret(ctx, "legacy", name, value, ViaCLI); !errors.Is(err, ErrInvalid) {
@@ -453,7 +453,7 @@ func TestEnvironmentCaptureFailureReportsUntouchedData(t *testing.T) {
 			}
 			// Corruption can arise from a mismatched restored host key/database pair.
 			// It must fail before any health runtime or live data mutation.
-			if err := s.st.PutSecret(ctx, "app", store.SealedSecret{Name: "TOKEN", Nonce: make([]byte, 12), Ciphertext: []byte("invalid-sealed-data"), UpdatedAt: s.now()}); err != nil {
+			if err := s.st.PutSecret(ctx, "app", store.SealedSecret{Name: "TOKEN", Nonce: make([]byte, 12), Ciphertext: []byte("invalid-sealed-data"), UpdatedAt: s.now()}, store.Audit{}); err != nil {
 				t.Fatal(err)
 			}
 			beforeStarts := starts

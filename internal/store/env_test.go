@@ -26,10 +26,10 @@ func TestEnvLifecycleAndCollisions(t *testing.T) {
 	if vars, err := s.ListEnv(ctx, "b"); err != nil || len(vars) != 0 {
 		t.Fatalf("isolation: %v %v", vars, err)
 	}
-	if err := s.PutSecret(ctx, "a", SealedSecret{Name: "MODE", Nonce: []byte{1}, Ciphertext: []byte{2}, UpdatedAt: now}); !errors.Is(err, ErrEnvCollision) {
+	if err := s.PutSecret(ctx, "a", SealedSecret{Name: "MODE", Nonce: []byte{1}, Ciphertext: []byte{2}, UpdatedAt: now}, Audit{}); !errors.Is(err, ErrEnvCollision) {
 		t.Fatalf("secret collision: %v", err)
 	}
-	if err := s.PutSecret(ctx, "a", SealedSecret{Name: "TOKEN", Nonce: []byte{1}, Ciphertext: []byte{2}, UpdatedAt: now}); err != nil {
+	if err := s.PutSecret(ctx, "a", SealedSecret{Name: "TOKEN", Nonce: []byte{1}, Ciphertext: []byte{2}, UpdatedAt: now}, Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.PutEnv(ctx, "a", EnvVar{Name: "TOKEN", Value: "ordinary", UpdatedAt: now}); !errors.Is(err, ErrEnvCollision) {
@@ -42,7 +42,7 @@ func TestEnvLifecycleAndCollisions(t *testing.T) {
 	if err != nil || len(vars) != 1 || vars[0].Value != "two" || !vars[0].UpdatedAt.Equal(now) {
 		t.Fatalf("renamed: %+v %v", vars, err)
 	}
-	if err := s.DeleteFlat(ctx, "renamed"); err != nil {
+	if err := s.DeleteFlat(ctx, "renamed", Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	if vars, err := s.ListEnv(ctx, "renamed"); err != nil || len(vars) != 0 {
@@ -78,7 +78,7 @@ func TestConcurrentEnvSecretCollisionAcrossStores(t *testing.T) {
 	go func() {
 		defer wg.Done()
 		<-start
-		secretErr = b.PutSecret(t.Context(), "app", SealedSecret{Name: "SHARED", Nonce: []byte{1}, Ciphertext: []byte{2}, UpdatedAt: now})
+		secretErr = b.PutSecret(t.Context(), "app", SealedSecret{Name: "SHARED", Nonce: []byte{1}, Ciphertext: []byte{2}, UpdatedAt: now}, Audit{})
 	}()
 	close(start)
 	wg.Wait()
@@ -98,7 +98,8 @@ func TestEnvMigrationPreservesSecrets(t *testing.T) {
 	if err := s.CreateFlat(t.Context(), Flat{Slug: "app", Name: "app", Visibility: Private, CreatedAt: now, UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.PutSecret(t.Context(), "app", SealedSecret{Name: "TOKEN", Nonce: []byte{1}, Ciphertext: []byte{2}, UpdatedAt: now}); err != nil {
+	// The schema is the old one, without the audit log, so the row is written as the code of that time wrote it.
+	if _, err := s.db.ExecContext(t.Context(), `INSERT INTO secrets(flat,name,nonce,ciphertext,updated_at) VALUES('app','TOKEN',x'01',x'02',?)`, unix(now)); err != nil {
 		t.Fatal(err)
 	}
 	s.Close()
@@ -131,7 +132,7 @@ func TestEnvironmentSnapshotReadsNamespacesTogether(t *testing.T) {
 	if err := s.PutEnv(ctx, "app", EnvVar{Name: "MODE", Value: "a", UpdatedAt: now}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.PutSecret(ctx, "app", SealedSecret{Name: "TOKEN", Nonce: []byte{1}, Ciphertext: []byte("a"), UpdatedAt: now}); err != nil {
+	if err := s.PutSecret(ctx, "app", SealedSecret{Name: "TOKEN", Nonce: []byte{1}, Ciphertext: []byte("a"), UpdatedAt: now}, Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SetNetworkPolicy(ctx, "app", NetworkPolicy{Origins: []string{"a"}, UpdatedAt: now}); err != nil {

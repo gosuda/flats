@@ -139,7 +139,7 @@ func (s *Service) createNotebookLocked(ctx context.Context, slugName, name strin
 	if _, err := s.createFlatLocked(ctx, slugName, title, via); err != nil {
 		return nil, err
 	}
-	return s.initNotebookLocked(ctx, slugName, title, via, func() { _ = s.st.DeleteFlat(ctx, slugName) })
+	return s.initNotebookLocked(ctx, slugName, title, via, func() { _ = s.st.DeleteFlat(ctx, slugName, store.Audit{}) })
 }
 
 func (s *Service) initNotebookLocked(ctx context.Context, slugName, title string, via Via, undo func()) (*notebook.Instance, error) {

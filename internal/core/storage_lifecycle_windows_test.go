@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/gosuda/flats/internal/bundle"
+	"github.com/gosuda/flats/internal/store"
 )
 
 // Windows refuses to rename a directory while a file below it is open. That is
@@ -35,7 +36,7 @@ func TestDeleteWithAnOpenFileKeepsItsSlugReserved(t *testing.T) {
 	if err := s.beginStorageOperation(op); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.st.DeleteFlat(t.Context(), op.From); err != nil {
+	if err := s.st.DeleteFlat(t.Context(), op.From, store.Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	release := holdOpen(t, secret)

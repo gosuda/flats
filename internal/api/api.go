@@ -98,6 +98,8 @@ func (s *Server) Handler() http.Handler {
 						return
 					}
 					via = core.ViaConsole
+					// A change of a sealed value that this request makes names who asked in its audit event.
+					r = r.WithContext(core.WithAuditActor(r.Context(), consoleActor(r)))
 				} else {
 					if code, err := agentRequest(r); err != nil {
 						writeErr(w, code, err)

@@ -123,7 +123,7 @@ func TestRecoverInterruptedStorageDelete(t *testing.T) {
 				t.Fatal(err)
 			}
 			if phase != "before metadata commit" {
-				if err := s.st.DeleteFlat(t.Context(), op.From); err != nil {
+				if err := s.st.DeleteFlat(t.Context(), op.From, store.Audit{}); err != nil {
 					t.Fatal(err)
 				}
 			}
@@ -171,7 +171,7 @@ func TestUnfinishedDeleteBlocksReuseEvenAfterDirectoryIsGone(t *testing.T) {
 	if err := s.beginStorageOperation(op); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.st.DeleteFlat(t.Context(), op.From); err != nil {
+	if err := s.st.DeleteFlat(t.Context(), op.From, store.Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.RemoveAll(s.flatDir(op.From)); err != nil {
@@ -269,7 +269,7 @@ func TestDeleteCleanupFailureKeepsSlugReserved(t *testing.T) {
 	if err := s.beginStorageOperation(op); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.st.DeleteFlat(t.Context(), op.From); err != nil {
+	if err := s.st.DeleteFlat(t.Context(), op.From, store.Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	locked := filepath.Join(s.flatDir(op.From), "data", "files")
@@ -346,7 +346,7 @@ func TestRenameRecoveryRefusesAmbiguousStorage(t *testing.T) {
 		if err := os.Rename(s.flatDir(op.From), s.flatDir(op.To)); err != nil {
 			t.Fatal(err)
 		}
-		if err := s.st.DeleteFlat(t.Context(), op.From); err != nil {
+		if err := s.st.DeleteFlat(t.Context(), op.From, store.Audit{}); err != nil {
 			t.Fatal(err)
 		}
 		if err := s.recoverStorageOperations(t.Context()); err != nil {
@@ -442,7 +442,7 @@ func TestStuckDeleteIsNotQuarantined(t *testing.T) {
 	if err := s.beginStorageOperation(op); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.st.DeleteFlat(t.Context(), op.From); err != nil {
+	if err := s.st.DeleteFlat(t.Context(), op.From, store.Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Chmod(s.deletedStorageRoot(), 0o500); err != nil {
