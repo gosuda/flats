@@ -205,7 +205,7 @@ func (f *fixture) nothingLeftBut(names ...string) {
 func TestRunRefuses(t *testing.T) {
 	t.Parallel()
 	f := newFixture(t)
-	check := func(name string, o Options) {
+	check := func(t *testing.T, name string, o Options) {
 		t.Helper()
 		before := dirNames(t, f.out)
 		_, err := f.run(o)
@@ -221,27 +221,28 @@ func TestRunRefuses(t *testing.T) {
 		t.Fatal(err)
 	}
 	o := f.options("taken")
-	check("existing folder", o)
+	check(t, "existing folder", o)
 	o = f.options("x")
 	o.Out = filepath.Join(f.root, "no-such-folder", "x")
-	check("missing folder", o)
+	check(t, "missing folder", o)
 	o = f.options("x")
 	o.Out = filepath.Join(f.data, "inside")
-	check("inside the data directory", o)
+	check(t, "inside the data directory", o)
 	o = f.options("x")
 	o.Out = filepath.Join(f.root, "afile")
 	if err := os.WriteFile(o.Out, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	check("an existing file", o)
+	check(t, "an existing file", o)
 	o = f.options("x")
 	o.DataDir = f.root // has no flats.db
-	check("no flats.db", o)
-	link := filepath.Join(f.out, "link")
-	if err := ostest.Symlink(t, filepath.Join(f.root, "nowhere"), link); err == nil {
-		o = f.options("link")
-		check("a dangling link", o)
-	}
+	check(t, "no flats.db", o)
+	t.Run("a dangling link", func(t *testing.T) { // a symbolic link needs a privilege on Windows, and skips only this case
+		link := filepath.Join(f.out, "link")
+		if err := ostest.Symlink(t, filepath.Join(f.root, "nowhere"), link); err == nil {
+			check(t, "a dangling link", f.options("link"))
+		}
+	})
 }
 
 // A flats.db of another schema version, or one that is no Flats database, is refused before the command
@@ -881,9 +882,9 @@ func TestAnExistingFolderThatAppearsDuringTheCopyIsNotReplaced(t *testing.T) {
 
 // A rollback-journal database that a writer holds exclusively makes the snapshot wait for the busy
 // timeout and fail (rule 4). The writer takes the lock just before the first snapshot starts, so the time
-// that Run needs to get there does not matter.
+// that Run needs to get there does not matter. The test holds a lock for seconds, so it runs alone: the other tests
+// of the package wait for it (the playbook of the timing tests), and its two cases run together.
 func TestASnapshotThatIsBusy(t *testing.T) {
-	t.Parallel()
 	for name, tc := range map[string]struct {
 		busy, hold time.Duration
 		retries    bool // the writer lets go after the first try failed and before the last one ends
