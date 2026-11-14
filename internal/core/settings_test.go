@@ -127,10 +127,10 @@ func TestMissingSecretKeyWithSecretsRefused(t *testing.T) {
 	if err := e.svc.SetSecret(ctx, "app", "TOKEN", "v", core.ViaCLI); err != nil {
 		t.Fatal(err)
 	}
-	if err := core.CheckSecretKey(ctx, e.dataDir, e.st); err != nil {
+	if err := core.CheckSecretKey(ctx, core.NewKeyFile(e.dataDir, ""), e.st); err != nil {
 		t.Fatal(err)
 	}
-	if err := core.CheckSecretKey(ctx, t.TempDir(), e.st); !errors.Is(err, core.ErrSecretKeyMissing) {
+	if err := core.CheckSecretKey(ctx, core.NewKeyFile(t.TempDir(), ""), e.st); !errors.Is(err, core.ErrSecretKeyMissing) {
 		t.Fatalf("missing key over secrets: %v", err)
 	}
 	if _, err := core.New(ctx, core.Config{DataDir: t.TempDir(), Store: e.st, Logf: t.Logf}); !errors.Is(err, core.ErrSecretKeyMissing) {

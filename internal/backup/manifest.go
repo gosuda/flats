@@ -23,6 +23,8 @@ const (
 	SecretKeyIncluded = "included"
 	SecretKeyExcluded = "excluded"
 	SecretKeyAbsent   = "absent"
+	// SecretKeyExternal: host.secret_key_path keeps the key outside the data directory, so the copy never holds it.
+	SecretKeyExternal = "external"
 )
 
 // Values of Manifest.Config.

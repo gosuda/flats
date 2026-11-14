@@ -44,7 +44,7 @@ func Verify(ctx context.Context, root string) (*VerifyResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	fails, notes, err := verifyTree(ctx, root, m)
+	fails, notes, err := verifyTree(ctx, root, m, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -54,8 +54,12 @@ func Verify(ctx context.Context, root string) (*VerifyResult, error) {
 type verifier struct {
 	root, data string
 	m          *Manifest
-	fails      []Failure
-	notes      []string
+	// extKey is the key of a copy whose key is outside it (secret_key "external"), when the caller has
+	// the bytes: Run does, a standalone Verify does not. The check opens the sealed values with it, and
+	// every file of the copy is scanned for it (docs/spec/secret-key-path.md, rules 16 and 17).
+	extKey []byte
+	fails  []Failure
+	notes  []string
 }
 
 func (v *verifier) fail(path, format string, args ...any) {
@@ -63,9 +67,10 @@ func (v *verifier) fail(path, format string, args ...any) {
 }
 
 // verifyTree runs the checks of rules 25 to 28 on the copy in root against the
-// manifest m, which Run holds in memory before it writes manifest.json.
-func verifyTree(ctx context.Context, root string, m *Manifest) ([]Failure, []string, error) {
-	v := &verifier{root: root, data: filepath.Join(root, "data"), m: m}
+// manifest m, which Run holds in memory before it writes manifest.json. extKey is the bytes of an
+// external key, or nil.
+func verifyTree(ctx context.Context, root string, m *Manifest, extKey []byte) ([]Failure, []string, error) {
+	v := &verifier{root: root, data: filepath.Join(root, "data"), m: m, extKey: extKey}
 	flatsDB := filepath.Join(v.data, nameFlatsDB)
 	flatsHere, sidecar := false, false
 	if _, err := os.Stat(flatsDB); err == nil {
@@ -151,9 +156,13 @@ func (v *verifier) checkFiles(ctx context.Context) error {
 			return nil
 		}
 		seen[rel] = true
-		got, err := hashFile(p)
+		got, holdsKey, err := hashScan(p, v.extKey)
 		if err != nil {
 			return err
+		}
+		if holdsKey {
+			// A second run cannot clear this: a name for the key file got into the copy.
+			v.fails = append(v.fails, Failure{Path: rel, Reason: "holds the bytes of the secret key, which the copy must not hold", Fixed: true})
 		}
 		switch {
 		case got.Size != f.Size:
@@ -368,13 +377,22 @@ func (v *verifier) assetHashes(ctx context.Context, flat, typ string) map[string
 // checkKey is the key check of rule 28: the key in the copy opens every sealed
 // value of flats.db. It skips the check when the copy has no key.
 func (v *verifier) checkKey(ctx context.Context) {
-	if v.m.SecretKey != SecretKeyIncluded {
-		v.notes = append(v.notes, "the copy holds no secret.key, so the sealed values were not checked against a key")
+	var key []byte
+	keyName := "data/secret.key"
+	switch {
+	case v.m.SecretKey == SecretKeyIncluded:
+		var err error
+		if key, err = core.NewKeyFile(v.data, "").Read(); err != nil {
+			v.fail("data/secret.key", "is not a usable key: %v", err)
+			return
+		}
+	case v.m.SecretKey == SecretKeyExternal && v.extKey != nil:
+		key, keyName = v.extKey, "the key at host.secret_key_path"
+	case v.m.SecretKey == SecretKeyExternal:
+		v.notes = append(v.notes, "the key is outside the copy, so the sealed values were not checked against a key")
 		return
-	}
-	key, err := core.ReadSecretKey(v.data)
-	if err != nil {
-		v.fail("data/secret.key", "is not a usable key: %v", err)
+	default:
+		v.notes = append(v.notes, "the copy holds no secret.key, so the sealed values were not checked against a key")
 		return
 	}
 	st, err := store.OpenImmutable(filepath.Join(v.data, nameFlatsDB))
@@ -389,6 +407,6 @@ func (v *verifier) checkKey(ctx context.Context) {
 		return
 	}
 	for _, n := range check.Unopened {
-		v.fails = append(v.fails, Failure{Path: "data/flats.db", Reason: fmt.Sprintf("%s does not open with data/secret.key", n), Fixed: true})
+		v.fails = append(v.fails, Failure{Path: "data/flats.db", Reason: fmt.Sprintf("%s does not open with %s", n, keyName), Fixed: true})
 	}
 }

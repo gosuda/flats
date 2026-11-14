@@ -947,9 +947,9 @@ func importLegacyKey(ctx context.Context, dataDir string, st *store.Store, plan 
 	if err := core.CheckHostKeyValue(core.HostKeyTailscale, v); err != nil {
 		return actionf("%s: %v", from, err)
 	}
-	stored, _, err := core.StoredHostKey(ctx, dataDir, st, core.HostKeyTailscale)
+	stored, _, err := core.StoredHostKey(ctx, core.NewKeyFile(dataDir, ""), st, core.HostKeyTailscale)
 	if err != nil || stored != "" {
 		return err
 	}
-	return core.PutHostKeyValue(ctx, dataDir, st, core.HostKeyTailscale, v, core.KeySourceFlag, time.Now())
+	return core.PutHostKeyValue(ctx, core.NewKeyFile(dataDir, ""), st, core.HostKeyTailscale, v, core.KeySourceFlag, time.Now())
 }

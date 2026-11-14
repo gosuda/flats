@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gosuda/flats/internal/core"
 	"github.com/gosuda/flats/internal/notebook"
 	"github.com/gosuda/flats/internal/store"
 )
@@ -25,7 +26,8 @@ type Options struct {
 	DataDir          string // the data directory of the host
 	ConfigPath       string // the configuration file, "" when the host has none
 	Out              string // the new folder to write
-	ExcludeSecretKey bool   // leave secret.key out (rule 24)
+	ExcludeSecretKey bool   // leave secret.key out (rule 24); with SecretKeyPath, do not read the key
+	SecretKeyPath    string // host.secret_key_path, "" for the key at <data>/secret.key
 	FlatsVersion     string // recorded in the manifest
 	Now              func() time.Time
 
@@ -47,6 +49,7 @@ type Result struct {
 	Retries   int // the retries of rules 4 to 7
 	Attempts  int // the attempts at coherence of rule 16, at least 1
 	SecretKey string
+	KeyPath   string // the external key's path, when SecretKey is "external"
 	Skipped   []Skip
 	Unstable  []string
 }
@@ -111,6 +114,20 @@ func Run(ctx context.Context, o Options) (res *Result, err error) {
 	if isUnder(final, data) {
 		return nil, &RefusedError{fmt.Sprintf("the data directory %s lies inside --out %s", data, out)}
 	}
+	// A configured key (docs/spec/secret-key-path.md, rules 16 and 17): the checks of rule 3, and a key that
+	// can be read unless --exclude-secret-key says that the command does not read it. These refusals come
+	// before the partial directory exists.
+	keyFile := core.NewKeyFile(data, o.SecretKeyPath)
+	if keyFile.Configured() {
+		if err := keyFile.Check(); err != nil {
+			return nil, &RefusedError{err.Error()}
+		}
+		if !o.ExcludeSecretKey {
+			if _, err := keyFile.Read(); err != nil {
+				return nil, &RefusedError{fmt.Sprintf("%v; --exclude-secret-key makes the backup skip the key", err)}
+			}
+		}
+	}
 	// Last, because it is the one refusal that opens a database, and that can create a -shm file (rule 11).
 	if err := checkSchema(flatsDB); err != nil {
 		return nil, err
@@ -136,7 +153,8 @@ func Run(ctx context.Context, o Options) (res *Result, err error) {
 			os.RemoveAll(partial)
 		}
 	}()
-	c := newCopier(ctx, data, partial, o.ExcludeSecretKey)
+	// With a configured key the walk leaves out <data>/secret.key as well (rule 16): the key is not part of the data.
+	c := newCopier(ctx, data, partial, o.ExcludeSecretKey || keyFile.Configured())
 	c.afterSnap, c.midCopy, c.order = o.afterSnapshot, o.midCopy, o.order
 	if o.maxGroup > 0 {
 		c.maxGroup = o.maxGroup
@@ -156,7 +174,7 @@ func Run(ctx context.Context, o Options) (res *Result, err error) {
 	if err != nil {
 		return nil, err
 	}
-	key0, err := readKeyBytes(data, o.ExcludeSecretKey)
+	key0, err := readKey(keyFile, o.ExcludeSecretKey)
 	if err != nil {
 		return nil, err
 	}
@@ -206,12 +224,15 @@ func Run(ctx context.Context, o Options) (res *Result, err error) {
 	if d := s1.diff(s2); d != "" {
 		return nil, &RerunError{fmt.Errorf("a flat was created, renamed, deleted or restored during the copy (%s)", d)}
 	}
-	key1, err := readKeyBytes(data, o.ExcludeSecretKey)
+	key1, err := readKey(keyFile, o.ExcludeSecretKey)
 	if err != nil {
+		if keyFile.Configured() {
+			return nil, &RerunError{fmt.Errorf("the secret key at %s cannot be read any more: %w", keyFile.Path(), err)}
+		}
 		return nil, err
 	}
 	if !bytes.Equal(key0, key1) {
-		return nil, &RerunError{errors.New("secret.key changed during the copy")}
+		return nil, &RerunError{fmt.Errorf("the secret key at %s changed during the copy", keyFile.Path())}
 	}
 	if err := o.hook(19); err != nil {
 		return nil, err
@@ -223,7 +244,12 @@ func Run(ctx context.Context, o Options) (res *Result, err error) {
 	m.Created = o.Now().UTC().Format(time.RFC3339)
 	m.Attempts = attempts
 	m.Config = configState
+	// The bytes of a configured key go to the check of step 20: it opens the sealed values of the copy with
+	// them, and it scans every file of the copy for them (rule 16 and 17 of the spec of the key path).
+	var externalKey []byte
 	switch {
+	case keyFile.Configured():
+		m.SecretKey, externalKey = SecretKeyExternal, key0
 	case o.ExcludeSecretKey:
 		m.SecretKey = SecretKeyExcluded
 	case key0 != nil:
@@ -231,7 +257,7 @@ func Run(ctx context.Context, o Options) (res *Result, err error) {
 	default:
 		m.SecretKey = SecretKeyAbsent
 	}
-	if fails, _, err := verifyTree(ctx, partial, m); err != nil {
+	if fails, _, err := verifyTree(ctx, partial, m, externalKey); err != nil {
 		return nil, err
 	} else if len(fails) > 0 {
 		err := fmt.Errorf("the copy failed its own check: %s: %s", fails[0].Path, fails[0].Reason)
@@ -265,6 +291,9 @@ func Run(ctx context.Context, o Options) (res *Result, err error) {
 	published = true
 
 	res = &Result{Out: final, Files: len(m.Files), Attempts: attempts, Retries: c.retries, SecretKey: m.SecretKey, Skipped: m.Skipped, Unstable: m.Unstable}
+	if m.SecretKey == SecretKeyExternal {
+		res.KeyPath = keyFile.Path()
+	}
 	for _, f := range m.Files {
 		res.Bytes += f.Size
 	}
@@ -288,6 +317,18 @@ func checkSchema(flatsDB string) error {
 		return &RefusedError{fmt.Sprintf("%s has schema version %d and this Flats expects %d. Start the host once with this Flats, which migrates it, or copy the stopped data directory by hand", flatsDB, info.Version, info.Latest)}
 	}
 	return nil
+}
+
+// readKey returns the bytes of the host key, or nil when the key is excluded or the default file is not
+// there. A configured key must be readable, and it is not read at all when it is excluded.
+func readKey(k core.KeyFile, excluded bool) ([]byte, error) {
+	if excluded {
+		return nil, nil
+	}
+	if k.Configured() {
+		return k.Read()
+	}
+	return readKeyBytes(k.DataDir(), false)
 }
 
 // readKeyBytes returns the bytes of secret.key, following a link as the host

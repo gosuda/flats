@@ -49,12 +49,16 @@ func (b *backupCmd) run(out string, exclude bool) error {
 	if err != nil {
 		return err
 	}
-	dataDir, err := b.dataDir()
+	dataDir, keyFile, err := b.location()
 	if err != nil {
 		return err
 	}
+	keyPath := "" // host.secret_key_path, when the setting is on
+	if keyFile.Configured() {
+		keyPath = keyFile.Path()
+	}
 	res, err := backup.Run(b.ctx, backup.Options{
-		DataDir: dataDir, ConfigPath: configPath, Out: out,
+		DataDir: dataDir, ConfigPath: configPath, Out: out, SecretKeyPath: keyPath,
 		ExcludeSecretKey: exclude, FlatsVersion: buildinfo.Get().Version,
 	})
 	if err != nil {
@@ -71,6 +75,8 @@ func (b *backupCmd) report(dataDir string, res *backup.Result) {
 	switch res.SecretKey {
 	case backup.SecretKeyIncluded:
 		b.printf("  secret.key is in the copy\n")
+	case backup.SecretKeyExternal:
+		b.printf("  the secret key is kept at %s, outside the data directory, and is not in the copy; back it up apart from the copy\n", res.KeyPath)
 	case backup.SecretKeyExcluded:
 		b.printf("  secret.key is not in the copy; the recovery copy %s stays, so `flats secret restore-key` can bring the key back\n", "secret.key.recovery")
 	default:

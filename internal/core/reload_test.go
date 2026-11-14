@@ -472,3 +472,26 @@ func TestReloadSerializesWithConsoleSave(t *testing.T) {
 		t.Fatal("reload or save result missing")
 	}
 }
+
+// A reload adopts a changed host.secret_key_path and lists it as awaiting a restart. The running host keeps the
+// key that it read at start (docs/spec/secret-key-path.md, rule 8).
+func TestReloadListsTheSecretKeyPathAsAwaitingARestart(t *testing.T) {
+	s, path := newReloadService(t)
+	before := string(s.secretKey)
+	editConfig(t, path, func(d *config.Document) error {
+		return d.Set("host.secret_key_path", filepath.Join(t.TempDir(), "elsewhere", "secret.key"))
+	})
+	rep, err := s.ReloadConfig(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(rep.AwaitRestart, []string{"host.secret_key_path"}) {
+		t.Fatalf("await restart %v", rep.AwaitRestart)
+	}
+	if len(rep.Applied) != 0 || len(rep.Held) != 0 {
+		t.Errorf("applied %v, held %v; want none", rep.Applied, rep.Held)
+	}
+	if string(s.secretKey) != before {
+		t.Error("the running host changed its key at a reload")
+	}
+}

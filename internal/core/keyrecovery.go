@@ -44,12 +44,6 @@ const (
 // ErrRecoveryPassword reports that a password does not open a recovery copy.
 var ErrRecoveryPassword = errors.New("the password does not open this recovery file")
 
-// ReadSecretKey reads dataDir's secret.key with the checks the host makes at
-// start.
-func ReadSecretKey(dataDir string) ([]byte, error) {
-	return readSecretKey(filepath.Join(dataDir, SecretKeyFile))
-}
-
 // KeyID identifies a key without revealing anything that helps open it: the
 // first 16 bytes of HMAC-SHA-256 over a 19-byte label, with the key as the
 // HMAC key (docs/spec/secret-key-recovery.md, rule 2). The key is the HMAC
@@ -183,15 +177,6 @@ func CheckKey(ctx context.Context, st *store.Store, key []byte) (KeyCheck, error
 		}
 	}
 	return c, nil
-}
-
-// RestoreSecretKey writes key as dataDir's secret.key. It never replaces
-// anything there: os.IsExist reports that the name is taken.
-func RestoreSecretKey(dataDir string, key []byte) error {
-	if err := publishKey(filepath.Join(dataDir, SecretKeyFile), key); err != nil {
-		return err
-	}
-	return durable.SyncDir(dataDir)
 }
 
 // WriteKeyCopy writes data, the recovery copy of key, to dataDir and then

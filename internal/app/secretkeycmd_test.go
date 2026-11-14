@@ -87,7 +87,7 @@ func hostWithSecrets(t *testing.T, dir string) (string, []byte, *Host) {
 	if err := h.Svc.SetSecret(ctx, "app", "API_KEY", "hunter2-value", core.ViaCLI); err != nil {
 		t.Fatal(err)
 	}
-	if err := core.PutHostKeyValue(ctx, dir, h.Store, core.HostKeyZrok, "zrok-token", core.KeySourceCLI, time.Now()); err != nil {
+	if err := core.PutHostKeyValue(ctx, core.NewKeyFile(dir, ""), h.Store, core.HostKeyZrok, "zrok-token", core.KeySourceCLI, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	key, err := os.ReadFile(filepath.Join(dir, core.SecretKeyFile))

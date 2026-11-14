@@ -1,6 +1,7 @@
 package backup
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -256,4 +257,51 @@ func syncTree(root string) error {
 		}
 	}
 	return nil
+}
+
+// hashScan returns the size and SHA-256 of the file at path, and reports whether the file holds the
+// bytes of needle anywhere. A nil needle scans for nothing. It reads the file once, through the pooled
+// buffer, and keeps the last len(needle)-1 bytes of each read so that a hit across two reads is found.
+func hashScan(path string, needle []byte) (File, bool, error) {
+	if len(needle) == 0 {
+		f, err := hashFile(path)
+		return f, false, err
+	}
+	in, err := os.Open(path)
+	if err != nil {
+		return File{}, false, err
+	}
+	defer in.Close()
+	h := sha256.New()
+	bp := bufPool.Get().(*[]byte)
+	defer bufPool.Put(bp)
+	buf := *bp
+	keep := len(needle) - 1
+	var size int64
+	var found bool
+	carry := 0 // bytes at the start of buf that come from the earlier read
+	for {
+		n, rerr := in.Read(buf[carry:])
+		if n > 0 {
+			h.Write(buf[carry : carry+n])
+			size += int64(n)
+			total := carry + n
+			if !found && bytes.Contains(buf[:total], needle) {
+				found = true
+			}
+			if total > keep {
+				copy(buf, buf[total-keep:total])
+				carry = keep
+			} else {
+				carry = total
+			}
+		}
+		if rerr == io.EOF {
+			break
+		}
+		if rerr != nil {
+			return File{}, false, rerr
+		}
+	}
+	return File{Size: size, SHA256: hex.EncodeToString(h.Sum(nil))}, found, nil
 }
