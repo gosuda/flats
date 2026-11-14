@@ -580,6 +580,9 @@ with a shell on the Flats host (see Approvals). Values reach JavaScript as
 `env.NAME` and WASI as environment variables from the captured activation
 snapshot. Changes apply on the next approved deployment, redeployment, rollback or standalone data snapshot restoration,
 or Flats host restart; automatic worker restarts reuse the captured settings.
+Every change of a sealed value, and every key backup, restore and reset, writes an event to the audit log in
+`flats.db`, in the transaction of the change. The log is append-only and outlives the flat; no agent surface reads it
+([Audit log](configuration.md#audit-log)).
 `flats secret backup-key` keeps a copy of the key, encrypted under a recovery
 password the operator chooses, beside it, and `restore-key` and `reset` bring
 back a host whose key is lost; see

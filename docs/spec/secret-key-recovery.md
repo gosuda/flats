@@ -50,8 +50,8 @@ Out of scope:
   implemented: the commands find the key through the location that
   [secret key path](secret-key-path.md) adds, and rules 19, 23 and 31 below apply
   to that location. The recovery copy and its key ID stay in the data directory.
-- Audit records (#224 item 4). `reset` leaves an event on each flat whose
-  secrets it deletes, as `flats secret rm` does today.
+- Audit records (#224 item 4) are implemented by [audit events](audit-events.md). `reset` still leaves an event on each
+  flat whose secrets it deletes, as `flats secret rm` does, and also writes audit events (rules 11, 12 and 30 below).
 - The console and MCP. No agent tool or API route reaches these commands.
 
 ## The recovery copy
@@ -107,7 +107,8 @@ Out of scope:
     sealed values. `restore-key` and `reset` open `flats.db` as `flats key`
     and the next start do, which may migrate a database from an older release,
     writing the `backups/flats.v<N>.<time>.db` copy a migration takes, and
-    switch it to WAL. Those are the only writes a refused command can leave.
+    switch it to WAL. Those are the only writes a refused command can leave. A command that has done its work
+    appends an audit event (rules 17 to 19 of [audit events](audit-events.md)); a refusal appends none.
     An interrupt (Ctrl-C or SIGTERM) that arrives before a command starts to
     write, also after the password or the confirmation was entered, writes
     none of these either. A write that has begun completes.
@@ -119,7 +120,9 @@ flats secret backup-key [--out PATH] [--password-file PATH] [--config PATH | --d
 ```
 
 12. The command works whether or not the host runs. It reads `secret.key`,
-    writes files, and does not open `flats.db`. The key does not change while
+    writes files, and, once the copy is written, appends the audit event `key.backup` to `flats.db` with a write of
+    its own that takes no host lock and does not migrate (rule 18 of [audit events](audit-events.md)). It opens
+    `flats.db` for nothing else. The key does not change while
     a host runs, so a copy taken from a running host is current.
 13. `secret.key` must be a regular file of 32 bytes, the check the host makes
     at start. When nothing is at the path, not even a link, the command
@@ -230,7 +233,8 @@ flats secret reset [--yes] [--config PATH | --data DIR]
     nothing. `--yes` also skips the question on a terminal.
 30. One transaction deletes the collected values and adds an event to each
     affected flat that names the deleted secret, and the command then makes
-    the transaction durable. Operator key records without a stored value stay,
+    the transaction durable. The same transaction writes the audit events of rule 14 of
+    [audit events](audit-events.md): one for each deleted value and one `key.reset`. Operator key records without a stored value stay,
     such as the record of a connected zrok account.
 31. The command does not touch `secret.key`, the recovery copy or its key ID.
     With `host.secret_key_path` the next start creates no key, and the output

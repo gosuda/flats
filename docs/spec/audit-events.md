@@ -1,6 +1,6 @@
 # Audit events
 
-Status: planned.
+Status: implemented.
 
 ## Summary
 
@@ -14,7 +14,7 @@ The value is never recorded. `flats audit ls` reads the log.
 The request is item 4 of issue #224. Item 2 (rotation) writes its own event later. The webhook and `flats audit
 export` of #225 build on this log.
 
-## Current state
+## Before this change
 
 - The `events` table (`internal/store/store.go`) holds the log of each flat. `events.flat` has no foreign key.
   `DeleteFlat` runs `DELETE FROM events WHERE flat=?`, and a rename runs `UPDATE events SET flat=?`. `Service.Event`
@@ -220,7 +220,7 @@ flats audit ls [--since TIME] [--kind KIND] [--flat SLUG] [--flat-id ID] [--limi
 27. `flats backup` copies the table with the rest of `flats.db`. `flats backup --verify` refuses a copy of another
     schema version, as it does today, so a copy from before this change needs the migration first.
 28. An existing flat, secret or key is unchanged. No event is written for what happened before the migration.
-29. The change set amends [secret key recovery](secret-key-recovery.md) when it is implemented: the scope note on audit
+29. The change amends [secret key recovery](secret-key-recovery.md): the scope note on audit
     records (they are in scope now), rule 11 (a second write that a command can leave, the append of `backup-key`), rule
     12 (`backup-key` opens `flats.db` for one append after its work, and does not otherwise), and rule 30 (the
     transaction of `reset` also writes the events of rules 9, 11 and 14). The spec index row of this page changes with the
