@@ -6,6 +6,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"github.com/gosuda/flats/internal/config"
 	"github.com/gosuda/flats/internal/durable"
@@ -18,7 +19,7 @@ const KeySetting = "host.secret_key_path"
 // read: nothing at the path, a second key at <data>/secret.key, a key that resolves into the data
 // directory, a file that is no key, or a file that cannot be read. Flats never creates a key at a
 // configured path (docs/spec/secret-key-path.md).
-var ErrKeyLocation = errors.New(KeySetting + " cannot be used")
+var ErrKeyLocation = errors.New("the configured secret key cannot be used")
 
 // KeyFile is where the host key lives: <data>/secret.key, or the file that host.secret_key_path
 // names. Everything that reads or writes the key gets its path from here.
@@ -57,6 +58,10 @@ func (k KeyFile) Check() error {
 	}
 	leftover := filepath.Join(k.dataDir, SecretKeyFile)
 	if _, err := os.Lstat(leftover); err == nil {
+		if sameFile(leftover, k.path) {
+			return fmt.Errorf("%w: %s names %s, which is the same file as %s, so the data directory holds the key; keep the key in a folder that no link reaches from the data directory",
+				ErrKeyLocation, KeySetting, k.path, leftover)
+		}
 		return fmt.Errorf("%w: %s is set, and %s exists too; move that file away, because Flats uses the configured key and a copy of the data directory would hold the old one",
 			ErrKeyLocation, KeySetting, leftover)
 	} else if !errors.Is(err, fs.ErrNotExist) {
@@ -90,10 +95,10 @@ func (k KeyFile) Read() ([]byte, error) {
 	return k.readConfigured()
 }
 
-// ReadAgain reads the key a second time without the checks of Check. A backup that compares two reads of
-// a configured key (rule 22 of the backup spec) makes those checks once, in its preflight, and a second key
-// that appears in the data directory during the copy is left out of the copy and does not fail the re-read.
-func (k KeyFile) ReadAgain() ([]byte, error) {
+// ReadUnchecked reads the key without the checks of Check. A backup makes those checks once, in its
+// preflight, and then reads the key twice (rule 22 of the backup spec). A second key that appears in the data
+// directory during the copy is left out of the copy and does not fail those reads.
+func (k KeyFile) ReadUnchecked() ([]byte, error) {
 	if !k.configured {
 		return readSecretKey(k.path)
 	}
@@ -110,8 +115,8 @@ func (k KeyFile) readConfigured() ([]byte, error) {
 			return nil, fmt.Errorf("%w: %s names %s, which is a link to nothing; repair the link or the mount, or clear the setting with `flats config unset %s`, and Flats never creates a key at a configured path",
 				ErrKeyLocation, KeySetting, k.path, KeySetting)
 		}
-		return nil, fmt.Errorf("%w: %s names %s, and nothing is there. Flats never creates a key at a configured path. Put a key there (for example `head -c 32 /dev/urandom > %s`), restore it with `flats secret restore-key`, or clear the setting with `flats config unset %s`",
-			ErrKeyLocation, KeySetting, k.path, k.path, KeySetting)
+		return nil, fmt.Errorf("%w: %s names %s, and nothing is there. Flats never creates a key at a configured path. Put a key of 32 bytes there%s, restore it with `flats secret restore-key`, or clear the setting with `flats config unset %s`",
+			ErrKeyLocation, KeySetting, k.path, newKeyHint(k.path), KeySetting)
 	}
 	b, err := readSecretKey(k.path)
 	if err != nil {
@@ -137,4 +142,23 @@ func (k KeyFile) Restore(key []byte) error {
 		return err
 	}
 	return durable.SyncDir(filepath.Dir(k.path))
+}
+
+// newKeyHint is the shell line that makes a key, for a system that has /dev/urandom. Windows gets none: the
+// docs give a PowerShell line there.
+func newKeyHint(path string) string {
+	if runtime.GOOS == "windows" {
+		return ""
+	}
+	return fmt.Sprintf(" (for example `head -c 32 /dev/urandom > %s`)", path)
+}
+
+// sameFile reports whether a and b are the same file once links are followed.
+func sameFile(a, b string) bool {
+	fa, err := os.Stat(a)
+	if err != nil {
+		return false
+	}
+	fb, err := os.Stat(b)
+	return err == nil && os.SameFile(fa, fb)
 }

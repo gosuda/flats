@@ -421,12 +421,7 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 		}
 	}
 	if err := core.CheckSecretKey(ctx, keyFile, st); err != nil {
-		// A configured key that cannot be used is a refusal too, so a service manager that does not
-		// restart on status 78 does not loop on it (docs/spec/secret-key-path.md, rule 5).
-		if errors.Is(err, core.ErrSecretKeyMissing) || errors.Is(err, core.ErrKeyLocation) {
-			return nil, &ActionError{err}
-		}
-		return nil, err
+		return nil, keyRefusal(err)
 	}
 	// Keys given to this run seed flats.db; the stored Tailscale key wins.
 	keys, err := readKeyInputs(o, s.legacy, deprecatedAuthKeyFile(cfg))
@@ -605,7 +600,7 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 		Reserved: []string{"flats"}, ReservedNames: h.consoleReserved, Logf: logf}
 	svc, err := core.New(ctx, coreCfg)
 	if err != nil {
-		return nil, err
+		return nil, keyRefusal(err)
 	}
 	h.Svc = svc
 	// The deprecated key file path goes once its key is in flats.db.
@@ -950,4 +945,14 @@ func relayLimit(n int64) int {
 		return 0
 	}
 	return int(n)
+}
+
+// keyRefusal makes a refusal of the host key an action error, which exits with status 78. A service manager
+// that does not restart on 78 does not loop on a key that is missing or cannot be used, whether the check
+// at the start or the one in core.New found it (docs/spec/secret-key-path.md, rules 5 and 8).
+func keyRefusal(err error) error {
+	if errors.Is(err, core.ErrSecretKeyMissing) || errors.Is(err, core.ErrKeyLocation) {
+		return &ActionError{err}
+	}
+	return err
 }

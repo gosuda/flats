@@ -3,6 +3,9 @@ package app
 import (
 	"bytes"
 	"context"
+	"errors"
+	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"slices"
@@ -263,5 +266,103 @@ func TestOperatorKeysReadTheConfiguredFileAtEachUse(t *testing.T) {
 	// Sealing a new operator key goes through the same location.
 	if err := core.PutHostKeyValue(ctx, h2.keyFile(), h2.Store, core.HostKeyTailscale, keyA, core.KeySourceConsole, time.Now()); err == nil {
 		t.Error("an operator key was sealed while two keys existed")
+	}
+}
+
+// The check of the key comes before any listener opens (rule 5). With both addresses already taken, a start that
+// reached a listener would fail with a listen error and not with the refusal of the key.
+func TestStartRefusesAKeyBeforeAnyListenerOpens(t *testing.T) {
+	dir := t.TempDir()
+	config := initConfig(t, dir)
+	keyPath := filepath.Join(t.TempDir(), "secret.key")
+	if err := ConfigCommand(context.Background(), []string{"set", "host.secret_key_path", keyPath, "--config", config}, &bytes.Buffer{}); err != nil {
+		t.Fatal(err)
+	}
+	var taken []string
+	for range 2 {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer ln.Close()
+		taken = append(taken, ln.Addr().String())
+	}
+	h, err := Start(context.Background(), Options{ConfigPath: config, Overrides: map[string]string{
+		"host.console_addr": taken[0], "host.local_addr": taken[1], "host.server_runtime": "false"}})
+	if err == nil {
+		h.Close()
+		t.Fatal("the host started")
+	}
+	if exitCode(err) != ExitConfig || !strings.Contains(err.Error(), "never creates a key") || strings.Contains(err.Error(), "listen") {
+		t.Errorf("err = %v (status %d), want the refusal of the key and no listen error", err, exitCode(err))
+	}
+}
+
+// A key on a read-only mount works (rule 7): a folder without write permission, and a key with mode 0444.
+func TestHostStartsWithAKeyInAReadOnlyFolder(t *testing.T) {
+	if ostest.Windows || os.Geteuid() == 0 {
+		t.Skip("needs Unix modes and a user that is not the superuser")
+	}
+	dir := t.TempDir()
+	config, key, h := hostWithSecrets(t, dir)
+	if err := h.Close(); err != nil {
+		t.Fatal(err)
+	}
+	keyPath := keyOutside(t, dir, config)
+	keyDir := filepath.Dir(keyPath)
+	if err := os.Chmod(keyPath, 0o444); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(keyDir, 0o555); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(keyDir, 0o700) })
+	h2, err := Start(context.Background(), configModeOptions(config))
+	if err != nil {
+		t.Fatalf("the host does not start with a key in a read-only folder: %v", err)
+	}
+	defer h2.Close()
+	if check, err := core.CheckKey(context.Background(), h2.Store, key); err != nil || !check.All() {
+		t.Errorf("the key opens %+v, %v", check, err)
+	}
+	if got := listed(t, keyDir); !slices.Equal(got, []string{"flats.key"}) {
+		t.Errorf("the key folder holds %v", got)
+	}
+}
+
+// flats config show lists the setting (rule 1).
+func TestConfigShowListsTheKeyPath(t *testing.T) {
+	dir := t.TempDir()
+	config := initConfig(t, dir)
+	keyPath := filepath.Join(t.TempDir(), "secret.key")
+	var out bytes.Buffer
+	if err := ConfigCommand(context.Background(), []string{"set", "host.secret_key_path", keyPath, "--config", config}, &out); err != nil {
+		t.Fatal(err)
+	}
+	out.Reset()
+	if err := ConfigCommand(context.Background(), []string{"show", "--config", config}, &out); err != nil {
+		t.Fatal(err)
+	}
+	jsonPath := strings.ReplaceAll(keyPath, `\`, `\\`) // config show prints JSON strings
+	if !strings.Contains(out.String(), "host.secret_key_path") || !strings.Contains(out.String(), jsonPath) {
+		t.Errorf("config show does not list the key path:\n%s", out.String())
+	}
+}
+
+// Every refusal of the key exits with status 78, also the one that core.New makes after the check at the start
+// (rules 5 and 8).
+func TestKeyRefusalIsAnActionError(t *testing.T) {
+	t.Parallel()
+	for name, err := range map[string]error{
+		"a configured key that cannot be used": fmt.Errorf("%w: nothing is there", core.ErrKeyLocation),
+		"a missing key over sealed values":     fmt.Errorf("%w: restore it", core.ErrSecretKeyMissing),
+	} {
+		if got := keyRefusal(err); exitCode(got) != ExitConfig || !errors.Is(got, err) {
+			t.Errorf("%s: exit status %d (%v), want %d", name, exitCode(got), got, ExitConfig)
+		}
+	}
+	other := errors.New("disk full")
+	if got := keyRefusal(other); got != other {
+		t.Errorf("another error changed: %v", got)
 	}
 }

@@ -174,7 +174,7 @@ func Run(ctx context.Context, o Options) (res *Result, err error) {
 	if err != nil {
 		return nil, err
 	}
-	key0, err := readKey(keyFile, o.ExcludeSecretKey, false)
+	key0, err := readKey(keyFile, o.ExcludeSecretKey)
 	if err != nil {
 		return nil, err
 	}
@@ -224,7 +224,7 @@ func Run(ctx context.Context, o Options) (res *Result, err error) {
 	if d := s1.diff(s2); d != "" {
 		return nil, &RerunError{fmt.Errorf("a flat was created, renamed, deleted or restored during the copy (%s)", d)}
 	}
-	key1, err := readKey(keyFile, o.ExcludeSecretKey, true)
+	key1, err := readKey(keyFile, o.ExcludeSecretKey)
 	if err != nil {
 		if keyFile.Configured() {
 			return nil, &RerunError{fmt.Errorf("the secret key at %s cannot be read any more: %w", keyFile.Path(), err)}
@@ -260,13 +260,7 @@ func Run(ctx context.Context, o Options) (res *Result, err error) {
 	if fails, _, err := verifyTree(ctx, partial, m, externalKey); err != nil {
 		return nil, err
 	} else if len(fails) > 0 {
-		err := fmt.Errorf("the copy failed its own check: %s: %s", fails[0].Path, fails[0].Reason)
-		for _, f := range fails {
-			if !f.Fixed {
-				return nil, &RerunError{err}
-			}
-		}
-		return nil, err
+		return nil, checkError(fails)
 	}
 	if err := o.hook(20); err != nil {
 		return nil, err
@@ -319,17 +313,31 @@ func checkSchema(flatsDB string) error {
 	return nil
 }
 
-// readKey returns the bytes of the host key, or nil when the key is excluded or the default file is not
-// there. A configured key must be readable, and it is not read at all when it is excluded. The second
-// read of rule 22 (again) does not repeat the checks of rule 3.
-func readKey(k core.KeyFile, excluded, again bool) ([]byte, error) {
-	switch {
-	case excluded || !k.Configured():
-		return readKeyBytes(k.DataDir(), excluded)
-	case again:
-		return k.ReadAgain()
+// checkError is the error of Run for the failures of the copy's own check. A failure that a second run cannot
+// clear is reported before one that it can, and it decides the kind: a mix of the two is not a "run it again".
+func checkError(fails []Failure) error {
+	first := fails[0]
+	for _, f := range fails {
+		if f.Fixed {
+			first = f
+			break
+		}
 	}
-	return k.Read()
+	err := fmt.Errorf("the copy failed its own check: %s: %s", first.Path, first.Reason)
+	if first.Fixed {
+		return fmt.Errorf("%w; a second run does not clear this failure", err)
+	}
+	return &RerunError{err}
+}
+
+// readKey returns the bytes of the host key, or nil when the key is excluded or the default file is not
+// there. A configured key must be readable, and it is not read at all when it is excluded. The preflight
+// made the checks of rule 3, so the two reads of rule 22 do not repeat them.
+func readKey(k core.KeyFile, excluded bool) ([]byte, error) {
+	if excluded || !k.Configured() {
+		return readKeyBytes(k.DataDir(), excluded)
+	}
+	return k.ReadUnchecked()
 }
 
 // readKeyBytes returns the bytes of secret.key, following a link as the host

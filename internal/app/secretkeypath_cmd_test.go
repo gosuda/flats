@@ -297,3 +297,61 @@ func TestBackupCommandRefusesASecondKeyAndSkipsAnUnreadableOne(t *testing.T) {
 		t.Errorf("backup with --exclude-secret-key and no key: %v\n%s", err, text)
 	}
 }
+
+// A configured path that holds no key (a directory, a file of the wrong size) gets the message of the existing
+// commands, with the path of the location (rule 15).
+func TestUnusableConfiguredKeyGetsTheMoveAwayMessage(t *testing.T) {
+	cases := map[string]func(t *testing.T, keyPath string){
+		"31 bytes": func(t *testing.T, keyPath string) {
+			if err := os.WriteFile(keyPath, bytes.Repeat([]byte{1}, 31), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		},
+		"a directory": func(t *testing.T, keyPath string) {
+			if err := os.Remove(keyPath); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Mkdir(keyPath, 0o700); err != nil {
+				t.Fatal(err)
+			}
+		},
+	}
+	for name, breakIt := range cases {
+		t.Run(name, func(t *testing.T) {
+			_, config, _, keyPath := stoppedHostWithAKeyOutside(t)
+			breakIt(t, keyPath)
+			for _, args := range [][]string{
+				{"backup-key", "--password-file", passwordFile(t, recoveryPassword)},
+				{"reset", "--yes"},
+			} {
+				_, err := runSecretKey(t, config, args...)
+				if err == nil || exitCode(err) != ExitConfig || !strings.Contains(err.Error(), "move "+keyPath+" away first") {
+					t.Errorf("%s: err = %v (status %d), want a refusal that says to move %s away", args[0], err, exitCode(err), keyPath)
+				}
+			}
+		})
+	}
+}
+
+// The key commands find the setting with --data and a configuration file in the data directory, as with --config
+// (rule 11 and the commands' preamble).
+func TestKeyCommandsFindTheSettingWithData(t *testing.T) {
+	dir, _, key, keyPath := stoppedHostWithAKeyOutside(t)
+	var out bytes.Buffer
+	err := SecretKeyCommand(context.Background(), []string{"backup-key", "--password-file", passwordFile(t, recoveryPassword), "--data", dir}, strings.NewReader(""), &out)
+	if err != nil {
+		t.Fatalf("backup-key --data: %v\n%s", err, out.String())
+	}
+	copyBytes, err := os.ReadFile(filepath.Join(dir, core.RecoveryKeyFile))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := core.OpenKeyCopy(copyBytes, strings.TrimSpace(recoveryPassword)); err != nil || !bytes.Equal(got, key) {
+		t.Errorf("the recovery copy opens to %x, %v; want the configured key", got, err)
+	}
+	out.Reset()
+	err = SecretKeyCommand(context.Background(), []string{"reset", "--yes", "--data", dir}, strings.NewReader(""), &out)
+	if err == nil || !strings.Contains(err.Error(), keyPath) || !strings.Contains(err.Error(), "opens all") {
+		t.Errorf("reset --data: err = %v, want a refusal that names the configured key", err)
+	}
+}

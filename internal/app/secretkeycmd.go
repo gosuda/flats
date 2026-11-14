@@ -70,14 +70,7 @@ func (k *secretKeyCmd) backup(args []string) error {
 	if _, err := os.Lstat(keyPath); errors.Is(err, fs.ErrNotExist) && !keyFile.Configured() {
 		return actionf("%s is missing: start the host once to create it, or restore it with `flats secret restore-key`", keyPath)
 	}
-	// With a configured path, Read makes the checks of rule 3 and names the path and the setting in each refusal.
-	key, err := keyFile.Read()
-	if keyFile.Configured() && err != nil {
-		return &ActionError{err}
-	}
-	if keyUnusable(err, keyPath) {
-		return actionf("%v: move %s away first, because the next start would stop on it", err, keyPath)
-	}
+	key, err := readHostKey(keyFile)
 	if err != nil {
 		return err
 	}
@@ -143,7 +136,26 @@ func outFile(flag, dataDir string) (string, error) {
 	return path, nil
 }
 
-// keyUnusable reports whether err from core.ReadSecretKey means that what is
+// readHostKey reads the host key for backup-key and reset. With a configured path it first makes the checks
+// of rule 3 of the spec. A key that is no key (the wrong size, a directory, a link to nothing) is a refusal
+// that names the path and says to move it away. Any other failure to read a configured key is a refusal too.
+func readHostKey(keyFile core.KeyFile) ([]byte, error) {
+	if err := keyFile.Check(); err != nil {
+		return nil, &ActionError{err}
+	}
+	key, err := keyFile.ReadUnchecked()
+	switch {
+	case err == nil:
+		return key, nil
+	case keyUnusable(err, keyFile.Path()):
+		return nil, actionf("%v: move %s away first, because the next start would stop on it", err, keyFile.Path())
+	case keyFile.Configured():
+		return nil, &ActionError{err}
+	}
+	return nil, err
+}
+
+// keyUnusable reports whether err from KeyFile.Read means that what is
 // at keyPath is no key: the wrong size or type, a target that does not exist
 // (also behind a Windows junction), or a link that leads to no file through a
 // loop or a file on its path. A permission error is not, and stays a failure
@@ -365,13 +377,7 @@ func (k *secretKeyCmd) resetAllowed(st *store.Store, keyFile core.KeyFile) (keyM
 	} else if err != nil {
 		return false, err
 	}
-	key, err := keyFile.Read()
-	if keyFile.Configured() && err != nil {
-		return false, &ActionError{err}
-	}
-	if keyUnusable(err, keyPath) {
-		return false, actionf("%v: move %s away first, because the next start would stop on it", err, keyPath)
-	}
+	key, err := readHostKey(keyFile)
 	if err != nil {
 		return false, err
 	}

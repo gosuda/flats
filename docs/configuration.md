@@ -1071,8 +1071,12 @@ credential, and for a Docker secret that is mounted into the service container
 `--out FILE` (it writes the recovered key to a new file of mode 0600 and changes
 nothing at the path), and the other key commands cannot run unless you give them
 the same mount. A plain file that the service user can read, for example
-`/etc/flats/secret.key` with mode 0400, works for every command. A drop-in for a
-system service that loads a systemd credential:
+`/etc/flats/secret.key` with mode 0400, works for every command.
+
+A systemd credential suits a system service that you wrote and that runs as its
+own user. `flats install` makes a user unit, `flats.service`, that runs as your
+own user, and a credential adds no protection there over a file with mode 0400,
+so use the plain file for it. A drop-in for a system service:
 
 ```ini
 # /etc/systemd/system/flats.service.d/key.conf
@@ -1084,8 +1088,11 @@ LoadCredential=secret.key:/etc/flats/secret.key
 flats config set host.secret_key_path /run/credentials/flats.service/secret.key --config PATH
 ```
 
-`systemd.exec(5)` names the credentials directory of a service. The path in
-`config.json` is fixed, so it cannot use `$CREDENTIALS_DIRECTORY`.
+A user unit has its drop-in in `~/.config/systemd/user/flats.service.d/key.conf`,
+and its credentials directory lies under `$XDG_RUNTIME_DIR/credentials/flats.service/`,
+for example `/run/user/1000/credentials/flats.service/secret.key` for uid 1000.
+`systemd.exec(5)` names both directories. The path in `config.json` is fixed, so
+it cannot use `$CREDENTIALS_DIRECTORY`.
 
 ### Recovering a lost secret.key
 

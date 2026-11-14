@@ -229,7 +229,7 @@ func RecoveryCopyWarning(dataDir string, key []byte) string {
 	if err == nil && strings.TrimSpace(string(b)) == KeyID(key) {
 		return ""
 	}
-	return fmt.Sprintf("%s may hold another key than %s, so it may not restore this host: run `flats secret backup-key` to write a current copy", copyPath, SecretKeyFile)
+	return fmt.Sprintf("%s may hold another key than the host key, so it may not restore this host: run `flats secret backup-key` to write a current copy", copyPath)
 }
 
 // readHead reads at most n bytes from the start of the file at path.

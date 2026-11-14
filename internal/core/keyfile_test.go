@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
@@ -84,7 +85,11 @@ func TestConfiguredKeyIsNeverCreated(t *testing.T) {
 			t.Errorf("%s: err = %v, want ErrKeyLocation", name, err)
 			continue
 		}
-		for _, want := range []string{path, KeySetting, "never creates", "head -c 32 /dev/urandom", "flats secret restore-key", "flats config unset"} {
+		wants := []string{path, KeySetting, "never creates", "flats secret restore-key", "flats config unset"}
+		if runtime.GOOS != "windows" {
+			wants = append(wants, "head -c 32 /dev/urandom") // Windows gets no shell line (the docs give a PowerShell one)
+		}
+		for _, want := range wants {
 			if !strings.Contains(err.Error(), want) {
 				t.Errorf("%s: the message lacks %q: %v", name, want, err)
 			}
@@ -260,15 +265,11 @@ func TestConfiguredKeyThatResolvesIntoTheDataDirectory(t *testing.T) {
 		if err := ostest.Symlink(t, real, data); err != nil {
 			t.Skipf("no symbolic links here: %v", err)
 		}
-		// The key is configured at its real path, which lies in what the data directory resolves to. The leftover
-		// check does not see it, because <data>/secret.key resolves to the same file, so look at it first.
-		err := readErr(NewKeyFile(data, filepath.Join(real, "elsewhere")))
-		if err == nil {
-			t.Log("the path of the key does not exist, so there is nothing to resolve")
-		}
-		err = readErr(NewKeyFile(data, filepath.Join(real, "secret.key")))
-		if !errors.Is(err, ErrKeyLocation) {
-			t.Errorf("err = %v, want ErrKeyLocation", err)
+		// The key is configured at its real path, which lies in what the data directory resolves to. <data>/secret.key
+		// is that same file, so the refusal must not tell the operator to move "that file" away: it is the only key.
+		err := readErr(NewKeyFile(data, filepath.Join(real, "secret.key")))
+		if !errors.Is(err, ErrKeyLocation) || !strings.Contains(err.Error(), "the same file") || strings.Contains(err.Error(), "move that file away") {
+			t.Errorf("err = %v, want a refusal that says the two paths are the same file and does not say to move it away", err)
 		}
 	})
 	t.Run("a key outside the data directory is fine", func(t *testing.T) {
@@ -352,9 +353,9 @@ func TestRestoreOfAConfiguredKeyInAReadOnlyFolder(t *testing.T) {
 	}
 }
 
-// ReadAgain does not repeat the checks of Check: a second key that appears in the data directory during a backup does
+// ReadUnchecked does not repeat the checks of Check: a second key that appears in the data directory during a backup does
 // not fail the re-read, and a missing file still does.
-func TestReadAgainSkipsTheChecksOfCheck(t *testing.T) {
+func TestReadUncheckedSkipsTheChecksOfCheck(t *testing.T) {
 	t.Parallel()
 	data, keyDir := t.TempDir(), t.TempDir()
 	path := filepath.Join(keyDir, "secret.key")
@@ -364,17 +365,17 @@ func TestReadAgainSkipsTheChecksOfCheck(t *testing.T) {
 	if _, err := k.Read(); !errors.Is(err, ErrKeyLocation) {
 		t.Fatalf("Read with a second key: err = %v, want ErrKeyLocation", err)
 	}
-	if got, err := k.ReadAgain(); err != nil || !bytes.Equal(got, goodKey()) {
-		t.Errorf("ReadAgain = %v, %v; want the key", got, err)
+	if got, err := k.ReadUnchecked(); err != nil || !bytes.Equal(got, goodKey()) {
+		t.Errorf("ReadUnchecked = %v, %v; want the key", got, err)
 	}
 	if err := os.Remove(path); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := k.ReadAgain(); !errors.Is(err, ErrKeyLocation) {
-		t.Errorf("ReadAgain of a missing key: err = %v, want ErrKeyLocation", err)
+	if _, err := k.ReadUnchecked(); !errors.Is(err, ErrKeyLocation) {
+		t.Errorf("ReadUnchecked of a missing key: err = %v, want ErrKeyLocation", err)
 	}
 	// A default key is read as before.
-	if got, err := NewKeyFile(data, "").ReadAgain(); err != nil || !bytes.Equal(got, goodKey()) {
-		t.Errorf("ReadAgain of the default key = %v, %v", got, err)
+	if got, err := NewKeyFile(data, "").ReadUnchecked(); err != nil || !bytes.Equal(got, goodKey()) {
+		t.Errorf("ReadUnchecked of the default key = %v, %v", got, err)
 	}
 }

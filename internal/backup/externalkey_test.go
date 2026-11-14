@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -132,8 +133,9 @@ func TestRunFailsWhenTheExternalKeyDoesNotOpenTheSealedValues(t *testing.T) {
 	o.SecretKeyPath = keyPath
 	_, err := f.run(o)
 	var rerun *RerunError
-	if err == nil || errors.As(err, &rerun) || !strings.Contains(err.Error(), "does not open with the key at host.secret_key_path") {
-		t.Fatalf("err = %v, want a failure that a second run does not clear", err)
+	if err == nil || errors.As(err, &rerun) || !strings.Contains(err.Error(), "does not open with the key at host.secret_key_path") ||
+		!strings.Contains(err.Error(), "a second run does not clear this failure") {
+		t.Fatalf("err = %v, want a failure that says a second run does not clear it", err)
 	}
 	f.nothingLeft()
 }
@@ -157,29 +159,54 @@ func TestRunFailsWhenAHardLinkHoldsTheExternalKey(t *testing.T) {
 	f.nothingLeft()
 }
 
-// A file that appears at <data>/secret.key during the copy is left out and listed (rule 16).
-func TestRunLeavesOutAKeyThatAppearsInTheDataDirectoryDuringTheCopy(t *testing.T) {
+// A file that appears at <data>/secret.key after the preflight is left out and listed (rule 16), whether it appears
+// before the survey of step 13 (after step 12) or during the copy of step 14. The reads of the key make no checks of
+// rule 3 again, so neither one fails the backup.
+func TestRunLeavesOutAKeyThatAppearsInTheDataDirectoryAfterThePreflight(t *testing.T) {
 	t.Parallel()
-	f := populated(t)
-	keyPath, key := f.externalKey()
-	o := f.options("c1")
-	o.SecretKeyPath = keyPath
-	o.afterStep = func(step int) error {
-		if step == 14 {
-			return os.WriteFile(filepath.Join(f.data, nameSecretKey), key, 0o600)
+	for _, after := range []int{12, 14} {
+		t.Run(fmt.Sprintf("after step %d", after), func(t *testing.T) {
+			t.Parallel()
+			f := populated(t)
+			keyPath, key := f.externalKey()
+			o := f.options("c1")
+			o.SecretKeyPath = keyPath
+			o.afterStep = func(step int) error {
+				if step == after {
+					return os.WriteFile(filepath.Join(f.data, nameSecretKey), key, 0o600)
+				}
+				return nil
+			}
+			res, err := f.run(o)
+			if err != nil {
+				t.Fatal(err)
+			}
+			m := readCopyManifest(t, res.Out)
+			if !slices.Contains(m.Excluded, "data/secret.key") || m.has("data/secret.key") {
+				t.Errorf("excluded %v, files has the key: %v", m.Excluded, m.has("data/secret.key"))
+			}
+			if hits := holdsBytes(t, res.Out, key); len(hits) != 0 {
+				t.Errorf("the copy holds the key in %v", hits)
+			}
+		})
+	}
+}
+
+// A failure that a second run cannot clear decides the kind of the error, also when a failure that it can clear comes
+// first (rule 16): "run the backup again" would only repeat the failure.
+func TestCheckErrorKinds(t *testing.T) {
+	t.Parallel()
+	transient := Failure{Path: "data/flats.db", Reason: "changed"}
+	fixed := Failure{Path: "data/tsnet/alias.bin", Reason: "holds the bytes of the secret key", Fixed: true}
+	var rerun *RerunError
+	if err := checkError([]Failure{transient}); !errors.As(err, &rerun) || !strings.Contains(err.Error(), "run the backup again") {
+		t.Errorf("a failure that a second run clears: err = %v, want a RerunError", err)
+	}
+	for name, fails := range map[string][]Failure{"only fixed": {fixed}, "transient first": {transient, fixed}} {
+		err := checkError(fails)
+		if err == nil || errors.As(err, &rerun) || !strings.Contains(err.Error(), "tsnet/alias.bin") || !strings.Contains(err.Error(), "a second run does not clear this failure") {
+			t.Errorf("%s: err = %v, want the fixed failure, and no RerunError", name, err)
 		}
-		return nil
-	}
-	res, err := f.run(o)
-	if err != nil {
-		t.Fatal(err)
-	}
-	m := readCopyManifest(t, res.Out)
-	if !slices.Contains(m.Excluded, "data/secret.key") || m.has("data/secret.key") {
-		t.Errorf("excluded %v, files has the key: %v", m.Excluded, m.has("data/secret.key"))
-	}
-	if hits := holdsBytes(t, res.Out, key); len(hits) != 0 {
-		t.Errorf("the copy holds the key in %v", hits)
 	}
 }
 

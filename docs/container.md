@@ -276,24 +276,30 @@ own owner and mode on the host, so give it to that user, for example
 `sudo chown 65532 flats.key && chmod 0400 flats.key`.
 
 Stop the container, move the key out of the volume, and set the path with
-one-off containers on the same volume:
+one-off containers on the same volume. The last command is the one that you
+used to create the container, with the mount of the key added:
 
 ```sh
 docker stop flats
-docker run --rm -v flats-data:/data:ro alpine cat /data/secret.key > flats.key
+(umask 077; docker run --rm -v flats-data:/data:ro alpine cat /data/secret.key > flats.key)
 docker run --rm -v flats-data:/data alpine rm /data/secret.key
 docker run --rm -v flats-data:/data ghcr.io/gosuda/flats:latest config set host.secret_key_path /run/secrets/flats.key
+sudo chown 65532 flats.key && chmod 0400 flats.key
+docker rm flats
 docker run -d --name flats --restart unless-stopped \
   -v flats-data:/data -v "$PWD/flats.key:/run/secrets/flats.key:ro" \
   ghcr.io/gosuda/flats:latest
 ```
 
-(Run `chown` and `chmod` on `flats.key` before the last command.) A new host needs
-a key first, because Flats creates none at a configured path: make it with
-`head -c 32 /dev/urandom > flats.key` and set the path before the first start.
+Add the network and port options of your first command to the last one. A new
+host needs a key first, because Flats creates none at a configured path: make it
+with `head -c 32 /dev/urandom > flats.key` and set the path before the first
+start.
 
 With Docker Compose, add the file as a secret to the `flats` service in
-`compose.yaml` (or in an override file) and set the same path:
+`compose.yaml` (or in an override file). Then stop the service, move the key out
+of the Compose volume with the container of the service, set the path, and start
+the service again:
 
 ```yaml
 services:
@@ -306,12 +312,19 @@ secrets:
 ```
 
 ```sh
+docker compose stop flats
+container=$(docker compose ps -a -q flats)
+(umask 077; docker run --rm --volumes-from "$container":ro alpine:3.22 cat /data/secret.key > flats.key)
+docker run --rm --volumes-from "$container" alpine:3.22 rm /data/secret.key
+sudo chown 65532 flats.key && chmod 0400 flats.key
 docker compose run --rm --no-deps flats config set host.secret_key_path /run/secrets/flats.key
+docker compose up -d --wait
 ```
 
-A mounted key is visible only inside the service container. A command that runs
-with `docker exec` sees it, but a one-off container and a process on the host do
-not. For those, `flats backup` needs `--exclude-secret-key`, and
+A mounted key is visible only inside the container that mounts it. A command that
+runs with `docker exec` or `docker compose run` sees it, because they use the
+service's mounts. A one-off container from `docker run` and a process on the host
+do not. For those, `flats backup` needs `--exclude-secret-key`, and
 `flats secret restore-key` needs `--out FILE`. Back up the key file apart from
 the volume, because a copy of the volume no longer holds it.
 

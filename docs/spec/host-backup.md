@@ -169,8 +169,9 @@ these steps and no other:
     A host of an older release migrates its `flats.db` when it starts, and the
     refusal says so and names the copy by hand. With `host.secret_key_path`, it
     also refuses, before it opens any database, when the checks of rule 3 of
-    [secret key path](secret-key-path.md) fail or the key cannot be read, and the
-    message names `--exclude-secret-key`. That flag skips the read. The database
+    [secret key path](secret-key-path.md) fail or the key cannot be read. Only the
+    refusal for a key that cannot be read names `--exclude-secret-key`, which skips
+    the read and not the checks. The database
     check comes last, because
     it is the only refusal that opens a database, and opening the database of a
     stopped host that left a `-wal` file and no `-shm` creates an empty `-shm`
