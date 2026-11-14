@@ -84,9 +84,6 @@ func Run(ctx context.Context, o Options) (res *Result, err error) {
 		}
 		return nil, err
 	}
-	if err := checkSchema(flatsDB); err != nil {
-		return nil, err
-	}
 	out, err := filepath.Abs(o.Out)
 	if err != nil {
 		return nil, err
@@ -112,6 +109,10 @@ func Run(ctx context.Context, o Options) (res *Result, err error) {
 	}
 	if isUnder(final, data) {
 		return nil, &RefusedError{fmt.Sprintf("the data directory %s lies inside --out %s", data, out)}
+	}
+	// Last, because it is the one refusal that opens a database, and that can create a -shm file (rule 11).
+	if err := checkSchema(flatsDB); err != nil {
+		return nil, err
 	}
 	var token [4]byte
 	if _, err := rand.Read(token[:]); err != nil {

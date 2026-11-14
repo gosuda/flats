@@ -3,18 +3,19 @@ package backup
 import (
 	"context"
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"testing"
 
 	"github.com/gosuda/flats/internal/sqliteuri"
 )
 
-// A host that stopped without a checkpoint leaves flats.db-wal with commits that
-// flats.db does not hold. The copy of that directory holds them (rule 4, rule 11).
-func TestRunOfAStoppedHostThatLeftAWalFile(t *testing.T) {
-	t.Parallel()
-	f := newFixture(t)
+// stoppedHostWithAWalFile returns a data directory as a crashed host leaves it: flats.db and a flats.db-wal
+// that holds one commit (the table wal_marker), and no -shm file.
+func stoppedHostWithAWalFile(t *testing.T, f *fixture) string {
+	t.Helper()
 	live := filepath.Join(f.data, nameFlatsDB)
 	db, err := sql.Open("sqlite", sqliteuri.File(live)+"?_pragma=wal_autocheckpoint(0)")
 	if err != nil {
@@ -41,8 +42,16 @@ func TestRunOfAStoppedHostThatLeftAWalFile(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	return stopped
+}
+
+// A host that stopped without a checkpoint leaves flats.db-wal with commits that flats.db does not hold.
+// The copy of that directory holds them (rule 4, rule 11).
+func TestRunOfAStoppedHostThatLeftAWalFile(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
 	o := f.options("c1")
-	o.DataDir, o.ConfigPath = stopped, ""
+	o.DataDir, o.ConfigPath = stoppedHostWithAWalFile(t, f), ""
 	res, err := f.run(o)
 	if err != nil {
 		t.Fatal(err)
@@ -59,5 +68,27 @@ func TestRunOfAStoppedHostThatLeftAWalFile(t *testing.T) {
 	}
 	if v, err := Verify(context.Background(), res.Out); err != nil || len(v.Failures) > 0 {
 		t.Errorf("Verify = %+v, %v", v, err)
+	}
+}
+
+// A refusal of rule 12 happens before the command opens a database, so it creates no -shm file beside the
+// database of a stopped host (rule 11 allows that file for the snapshot, not for a refusal).
+func TestRefusalLeavesTheDataDirectoryOfAStoppedHostAsItWas(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	stopped := stoppedHostWithAWalFile(t, f)
+	before := dirNames(t, stopped)
+	o := f.options("taken")
+	o.DataDir, o.ConfigPath = stopped, ""
+	if err := os.Mkdir(o.Out, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	_, err := f.run(o)
+	var refused *RefusedError
+	if !errors.As(err, &refused) {
+		t.Fatalf("err = %v, want a refusal", err)
+	}
+	if after := dirNames(t, stopped); !slices.Equal(before, after) {
+		t.Errorf("the refusal changed the data directory: %v -> %v", before, after)
 	}
 }

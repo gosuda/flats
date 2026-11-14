@@ -202,6 +202,23 @@ func TestVerifyFindsAnOutboxBehindItsCursor(t *testing.T) {
 	}
 }
 
+// store.Inspect opens a database that has a -wal file without immutable=1, which creates a -shm file. A check
+// of a copy writes nothing (rule 25), so it reports the stray file and leaves the copy as it was.
+func TestVerifyWritesNothingWhenTheCopyHoldsAWalFile(t *testing.T) {
+	t.Parallel()
+	_, out := goodCopy(t)
+	if err := os.WriteFile(filepath.Join(out, "data", nameFlatsDB+"-wal"), []byte("stray"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	before := snapshotTree(t, out)
+	fails := failuresOf(t, out)
+	wantFailure(t, fails, "data/flats.db", "flats.db-wal beside it")
+	wantFailure(t, fails, "data/flats.db-wal", "is not listed")
+	if after := snapshotTree(t, out); !slices.Equal(before, after) {
+		t.Errorf("Verify changed the copy:\nbefore %v\nafter  %v", before, after)
+	}
+}
+
 // The outbox has acknowledged entries that flats.db has not imported, so their revisions are in no
 // database of the copy.
 func TestVerifyFindsAnOutboxAheadOfItsCursor(t *testing.T) {

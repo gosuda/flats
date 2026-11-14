@@ -128,8 +128,15 @@ func (c *copier) copyOnce(src, dst string) (File, bool, error) {
 // skipsVanished reports whether a file of class cl that is gone is skipped
 // because the host removes such files on purpose (rule 8).
 func skipsVanished(rel string, cl class) bool {
-	return cl == classWriteOnce || cl == classGuest ||
+	return cl == classWriteOnce || cl == classGuest || isPreviewPath(rel) ||
 		strings.HasPrefix(rel, nameConfigHist+"/") || strings.HasPrefix(rel, "network-retirements/")
+}
+
+// isPreviewPath reports whether rel is a flat's previews directory or lies below
+// it. A preview expires while the host runs, directory and database with it.
+func isPreviewPath(rel string) bool {
+	seg := strings.Split(rel, "/")
+	return len(seg) >= 3 && seg[0] == nameFlats && seg[2] == "previews"
 }
 
 // copyFile copies rel, with the retries of rules 6 to 8 for its class.
@@ -163,6 +170,7 @@ func (c *copier) copyTo(src, dst, mp, rel string, cl class) error {
 		case stable:
 			f.Path = mp
 			c.files[mp] = f
+			delete(c.skipped, mp) // an earlier pass skipped the file, and this one copied it
 			return nil
 		}
 		if tries++; tries < maxTries {

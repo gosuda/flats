@@ -67,9 +67,18 @@ func (v *verifier) fail(path, format string, args ...any) {
 func verifyTree(ctx context.Context, root string, m *Manifest) ([]Failure, []string, error) {
 	v := &verifier{root: root, data: filepath.Join(root, "data"), m: m}
 	flatsDB := filepath.Join(v.data, nameFlatsDB)
-	flatsHere := false
+	flatsHere, sidecar := false, false
 	if _, err := os.Stat(flatsDB); err == nil {
-		flatsHere = true
+		if names := sidecarsOf(flatsDB); len(names) > 0 {
+			// store.Inspect opens a database that has a -wal or -journal file without immutable=1,
+			// which can create a -shm file. A copy of this command holds none of the three (rule 25).
+			sidecar = true
+			v.fail("data/flats.db", "has %s beside it, and a copy made by this command holds no such file", strings.Join(names, ", "))
+		} else {
+			flatsHere = true
+		}
+	}
+	if flatsHere {
 		info, err := store.Inspect(flatsDB)
 		switch {
 		case errors.Is(err, store.ErrSchemaTooNew):
@@ -84,12 +93,26 @@ func verifyTree(ctx context.Context, root string, m *Manifest) ([]Failure, []str
 	if err := v.checkFiles(ctx); err != nil {
 		return nil, nil, err
 	}
-	flatsOK := flatsHere && v.checkDatabases(ctx)
+	flatsOK := false
+	if flatsHere || sidecar {
+		flatsOK = v.checkDatabases(ctx) && flatsHere
+	}
 	if flatsOK {
 		v.checkParts(ctx)
 		v.checkKey(ctx)
 	}
 	return v.fails, v.notes, ctx.Err()
+}
+
+// sidecarsOf names the -wal, -shm and -journal files that lie beside the database.
+func sidecarsOf(db string) []string {
+	var names []string
+	for _, suffix := range []string{"-wal", "-shm", "-journal"} {
+		if _, err := os.Lstat(db + suffix); err == nil {
+			names = append(names, filepath.Base(db)+suffix)
+		}
+	}
+	return names
 }
 
 // checkFiles is the manifest check of rule 26: every listed file is there with

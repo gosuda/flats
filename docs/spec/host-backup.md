@@ -112,15 +112,18 @@ Out of scope:
    because the host writes such a file once and a partial copy of one that is
    being written is not part of a finished state. On Windows the command opens a
    file with sharing for reading, writing and deleting, as `durable.ReadFile`
-   does. The copy computes the SHA-256 of each file from the bytes it reads.
+   does. The copy computes the SHA-256 of each file from the bytes it reads. A
+   write-once file that the first pass skipped and the second pass copies is
+   listed in `files` and not in `skipped`.
 7. A guest file is copied once with the same read. When it changes during the
    copy, the command reads it again up to 3 times and keeps the last read. It
    then lists the path in `unstable`, and the backup does not fail. A flat may
    write its files all the time, and rule 33 says what that means.
 8. A file or directory that is gone when the command opens it is skipped and
    listed in `skipped` when the host removes it on purpose while it runs: a
-   write-once or guest file (pruning, the sweep, the flat itself), anything below
-   `previews/<host>/` with its database (a preview expires), a file of
+   write-once or guest file (pruning, the sweep, the flat itself), a flat's
+   `previews/` directory and anything below it (a preview expires, directory and
+   database with it), a file of
    `config-history/` (the host keeps the newest 10), and an entry of
    `network-retirements/` (a finished retirement). For `flats.db`, the
    `data/db.sqlite`, `board.db` and `notebook.db` of a flat, and every other host
@@ -164,7 +167,10 @@ these steps and no other:
     database of a host of this release, which means a file that is no Flats
     database or a `user_version` other than the one this binary expects (rule 25).
     A host of an older release migrates its `flats.db` when it starts, and the
-    refusal says so and names the copy by hand. It creates a new
+    refusal says so and names the copy by hand. This check comes last, because
+    it is the only refusal that opens a database, and opening the database of a
+    stopped host that left a `-wal` file and no `-shm` creates an empty `-shm`
+    (rule 11). It creates a new
     directory `PATH.partial-<random>` in the same folder, with mode 0700. All
     writes go there.
 13. **Survey.** For each flat directory below `flats/` it lists the directory and
@@ -302,11 +308,16 @@ flats backup --verify PATH [--json]
     `store.Open`, which migrates an older database. A `flats.db` whose
     `user_version` is not the one that this binary expects stops the command with
     a refusal that names the Flats version in the manifest and says to run
-    `--verify` with that version.
+    `--verify` with that version. A `-wal`, `-shm` or `-journal` file beside
+    `flats.db` fails the check, and the command then does not open `flats.db` in
+    a way that could create a `-shm`. A copy made by this command holds none of
+    them.
 26. **Manifest.** `manifest.json` must exist, name a format that this version
     knows (`format` is `1`), and list every file below `PATH` with its size and
     SHA-256. A listed file that is missing, a file below `PATH` that is not listed
     apart from `manifest.json`, and a size or hash that differs fail the check.
+    The manifest also records the number of attempts that rule 16 needed
+    (`attempts`).
 27. **Databases and parts.**
     - Each database that the manifest lists in `databases` passes
       `PRAGMA quick_check` with the result `ok`.
@@ -382,10 +393,11 @@ flats backup --verify PATH [--json]
   and files below `data/files/`, a flat secret and an operator key. It runs
   `flats backup` while writes to the board and the notebook run, and restores the
   result into a new data directory at the old path. The host starts, serves every
-  flat, reads the files, opens the secret and the operator key, accepts a new
-  write to the board and to the notebook, and the board continues its sequence
-  above the one that the copy had reached. `flats backup --verify` passes on the
-  copy before the restore. This test has no document and no running server flat:
+  flat, reads the files, opens the secret and the operator key, holds at least
+  the board elements and the notebook pages that the host had acknowledged before
+  the backup began, accepts a new write to the board and to the notebook, and the
+  board continues its sequence above the one that the copy had reached.
+  `flats backup --verify` passes on the copy before the restore. This test has no document and no running server flat:
   they need the docs worker and a flat process, which the unit tests do not start.
   The package tests cover the outbox database of a document and the database of a
   server flat with fixture databases. A backup of a host with a running document
@@ -422,14 +434,16 @@ flats backup --verify PATH [--json]
   missing file, an extra file, a format it does not know, a `user_version` it does
   not expect, a database that fails `quick_check`, an outbox database below or
   above its cursor (a document, a board and a notebook), a needed blob that is
-  missing, and a `flats.db` with sealed values and a key that does not open them. A
-  test runs `--verify` twice on a copy, and once on a copy with another schema
-  version, and shows that `PATH` keeps the same files with the same sizes and
-  modification times.
-- Tests show that each refusal of rules 12 and 30 writes nothing, that the exit
-  codes are 2, 78 and 1 as rule 30 says, that an interrupt at each of the steps
-  12 to 21 leaves no `PATH` and removes the partial directory, and that a `PATH`
-  that is an empty directory is refused.
+  missing, a `flats.db` with sealed values and a key that does not open them, and a
+  `-wal` file beside `flats.db`. A test runs `--verify` twice on a copy, once on a
+  copy with another schema version and once on a copy with a `-wal` file, and shows
+  that `PATH` keeps the same files with the same sizes and modification times.
+- Tests show that each refusal of rules 12 and 30 writes nothing at `PATH`, that a
+  refusal for `--out` creates no `-shm` file beside the database of a stopped host,
+  that the exit codes are 2, 78 and 1 as rule 30 says, that an interrupt at each of
+  the steps 12 to 20 leaves no `PATH` and removes the partial directory, and that a
+  `PATH` that is an empty directory is refused. Step 21 has no interrupt test: the
+  rename is the last act, and an interrupt after it leaves the complete `PATH`.
 - A test shows that `--exclude-secret-key` leaves out `secret.key`, keeps the
   recovery copy, and that a restore of that copy plus `restore-key` starts the
   host. A test shows that the copy has the modes of rule 10 on Unix, and a test

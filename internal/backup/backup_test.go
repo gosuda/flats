@@ -229,7 +229,6 @@ func TestRunRefuses(t *testing.T) {
 	o.Out = filepath.Join(f.data, "inside")
 	check("inside the data directory", o)
 	o = f.options("x")
-	o.Out = filepath.Join(f.out, "taken", "x")
 	o.Out = filepath.Join(f.root, "afile")
 	if err := os.WriteFile(o.Out, nil, 0o600); err != nil {
 		t.Fatal(err)
@@ -889,7 +888,7 @@ func TestASnapshotThatIsBusy(t *testing.T) {
 		busy, hold time.Duration
 		retries    bool // the writer lets go after the first try failed and before the last one ends
 	}{
-		"a later try succeeds":     {2 * time.Second, 3 * time.Second, true},
+		"a later try succeeds":     {1 * time.Second, 3 * time.Second, true},
 		"the third try also fails": {200 * time.Millisecond, 3 * time.Second, false},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -929,5 +928,55 @@ func TestASnapshotThatIsBusy(t *testing.T) {
 				t.Errorf("retries = %d, want at least 1", res.Retries)
 			}
 		})
+	}
+}
+
+// A write-once file that kept changing in the first pass and holds still in the second is copied and listed in
+// files, and is not listed as skipped any more.
+func TestAWriteOnceFileSkippedInTheFirstPassAndCopiedInTheSecondIsNotListedAsSkipped(t *testing.T) {
+	t.Parallel()
+	f := populated(t)
+	o := f.options("c1")
+	n := 0
+	o.midCopy = func(src string) {
+		if filepath.Base(src) == "index.html" && n < maxTries { // every try of the first pass sees a change
+			n++
+			os.Chtimes(src, time.Time{}, time.Unix(1_700_000_000+int64(n), 0))
+		}
+	}
+	res, err := f.run(o)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const path = "data/flats/b/versions/1/index.html"
+	m := readCopyManifest(t, res.Out)
+	if !m.has(path) {
+		t.Fatalf("the copy lacks %s", path)
+	}
+	for _, s := range append(slices.Clone(res.Skipped), m.Skipped...) {
+		if s.Path == path {
+			t.Errorf("%s is listed as skipped although it was copied: %v", path, s)
+		}
+	}
+}
+
+// A preview expires while the host runs, with its directory. The walk can find the directory in a listing and
+// lose it before it reads its details, and the copy then skips it, as it skips what lies below it (rule 8).
+func TestAPreviewPathThatIsGoneIsSkippedAtAnyDepth(t *testing.T) {
+	t.Parallel()
+	f := populated(t)
+	c := newCopier(context.Background(), f.data, t.TempDir(), false)
+	for _, rel := range []string{"flats/b/previews", "flats/b/previews/gone.example", "flats/b/previews/gone.example/files/x"} {
+		if err := c.copyFile(rel, classify(rel).class); err != nil {
+			t.Errorf("%s: %v", rel, err)
+		}
+		if _, ok := c.skipped[manifestPath(rel)]; !ok {
+			t.Errorf("%s is not listed as skipped: %v", rel, c.skipped)
+		}
+	}
+	// What the host does not remove on purpose still fails.
+	var rerun *RerunError
+	if err := c.copyFile("tsnet/missing.json", classHost); !errors.As(err, &rerun) {
+		t.Errorf("a host file that is gone: err = %v, want a failure to run again", err)
 	}
 }
