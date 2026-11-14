@@ -129,6 +129,53 @@ func restoreFrom(t *testing.T, dir, copyDir string) {
 	copyTree(t, filepath.Join(copyDir, "data"), dir)
 }
 
+// boardElements counts the elements of a board's current content, following every continuation.
+func boardElements(ctx context.Context, h *Host, slug string) (int64, error) {
+	var n int64
+	cursor := ""
+	for {
+		page, err := h.Svc.GetBoard(ctx, slug, 0, board.Query{Limit: 2000, Cursor: cursor})
+		if err != nil {
+			return n, err
+		}
+		n += int64(len(page.Elements))
+		if page.Next == "" {
+			return n, nil
+		}
+		cursor = page.Next
+	}
+}
+
+// notebookPages counts the pages that writeNotebook made, following every continuation.
+func notebookPages(ctx context.Context, h *Host, slug string) (int64, error) {
+	var n int64
+	query := []byte(`{}`)
+	for {
+		raw, err := h.Svc.GetNotebook(ctx, slug, 0, query)
+		if err != nil {
+			return n, err
+		}
+		var page struct {
+			Tree []struct {
+				Title string `json:"title"`
+			} `json:"tree"`
+			Next *string `json:"next"`
+		}
+		if err := json.Unmarshal(raw, &page); err != nil {
+			return n, err
+		}
+		for _, p := range page.Tree {
+			if strings.HasPrefix(p.Title, "Page ") {
+				n++
+			}
+		}
+		if page.Next == nil || *page.Next == "" {
+			return n, nil
+		}
+		query, _ = json.Marshal(map[string]string{"cursor": *page.Next})
+	}
+}
+
 func TestBackupOfARunningHostRestoresToAWorkingHost(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -162,7 +209,9 @@ func TestBackupOfARunningHostRestoresToAWorkingHost(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+	// The writes that the host acknowledged before the backup began must be in the restored host.
 	boardSeq := boardW.lastSeq.Load()
+	boardBefore, notebookBefore := boardW.acked.Load(), notebookW.acked.Load()
 
 	out := filepath.Join(t.TempDir(), "copy")
 	text, err := runBackup(t, "--out", out, "--config", path)
@@ -203,12 +252,15 @@ func TestBackupOfARunningHostRestoresToAWorkingHost(t *testing.T) {
 			t.Errorf("flat %s is missing after the restore: %v", s, names)
 		}
 	}
-	if _, err := h2.Svc.GetBoard(ctx, "pad", 0, board.Query{}); err != nil {
-		t.Errorf("the restored board does not open: %v", err)
+	elements, err := boardElements(ctx, h2, "pad")
+	if err != nil || elements < boardBefore {
+		t.Errorf("the restored board holds %d elements, %v; the host had acknowledged %d before the backup began", elements, err, boardBefore)
 	}
-	if _, err := h2.Svc.GetNotebook(ctx, "notes", 0, []byte(`{}`)); err != nil {
-		t.Errorf("the restored notebook does not open: %v", err)
+	pages, err := notebookPages(ctx, h2, "notes")
+	if err != nil || pages < notebookBefore {
+		t.Errorf("the restored notebook holds %d pages, %v; the host had acknowledged %d before the backup began", pages, err, notebookBefore)
 	}
+	t.Logf("restored: %d board elements (>= %d acknowledged before the backup), %d notebook pages (>= %d)", elements, boardBefore, pages, notebookBefore)
 	// The next write must not reuse a number that the copy had already passed.
 	seq, err := writeBoard(t, h2, "pad", 1_000_000)
 	if err != nil || seq <= boardSeq {
