@@ -942,3 +942,72 @@ func TestNothingUpdatesOrDeletesAnAuditRow(t *testing.T) {
 		t.Errorf("files that name audit_events: %v, want only %v", touching, want)
 	}
 }
+
+// failAuditWhen makes the audit inserts that match cond fail; the others succeed.
+func failAuditWhen(t *testing.T, s *Store, cond string) {
+	t.Helper()
+	if _, err := s.db.Exec(`CREATE TRIGGER audit_fail_late BEFORE INSERT ON audit_events WHEN ` + cond + ` BEGIN SELECT RAISE(ABORT, 'audit write failed late'); END`); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// When a later insert of a transaction of several fails, the whole transaction is rolled back: the earlier events of it are not
+// kept either (rule 16 for a reset and for the deletion of a flat).
+func TestAFailedLaterAuditWriteRollsBackTheWholeTransaction(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	t.Run("reset", func(t *testing.T) {
+		t.Parallel()
+		s := open(t)
+		makeFlat(t, s, "app")
+		if err := s.PutSecret(ctx, "app", sealed("ONE", 1), Audit{Via: AuditViaConsole}); err != nil {
+			t.Fatal(err)
+		}
+		k := HostKey{ID: "tailscale", Nonce: bytes.Repeat([]byte{1}, 12), Ciphertext: bytes.Repeat([]byte{2}, 30), Source: "console", UpdatedAt: time.Now()}
+		if err := s.PutHostKey(ctx, k, Audit{Via: AuditViaConsole}); err != nil {
+			t.Fatal(err)
+		}
+		before := len(allAudit(t, s))
+		failAuditWhen(t, s, "NEW.kind='key.reset'") // the last insert of the transaction
+		err := s.DeleteSealedValues(ctx, []Event{{Flat: "app", Time: time.Now(), Level: "warn", Kind: "secret", Message: "reset"}}, Audit{Via: AuditViaCommand})
+		if err == nil || !strings.Contains(err.Error(), "audit write failed late") {
+			t.Fatalf("err = %v, want the late failure", err)
+		}
+		if n := len(allAudit(t, s)); n != before {
+			t.Errorf("%d audit rows after the failed reset, want the %d from before: the earlier events of the transaction were kept", n, before)
+		}
+		if secrets, err := s.ListSecrets(ctx, "app"); err != nil || len(secrets) != 1 {
+			t.Errorf("secrets = %v, %v; want the secret kept", secrets, err)
+		}
+		if _, err := s.GetHostKey(ctx, "tailscale"); err != nil {
+			t.Errorf("the key is gone: %v", err)
+		}
+		if evs, err := s.ListEvents(ctx, "app", "secret", 0, 10); err != nil || len(evs) != 0 {
+			t.Errorf("the flat's own event of the reset was kept: %v, %v", evs, err)
+		}
+	})
+	t.Run("deletion of a flat", func(t *testing.T) {
+		t.Parallel()
+		s := open(t)
+		makeFlat(t, s, "doomed")
+		for _, n := range []string{"A_ONE", "B_TWO"} {
+			if err := s.PutSecret(ctx, "doomed", sealed(n, 1), Audit{Via: AuditViaConsole}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		before := len(allAudit(t, s))
+		failAuditWhen(t, s, "NEW.kind='secret.delete' AND NEW.name='B_TWO'") // the second event of the deletion
+		if err := s.DeleteFlat(ctx, "doomed", Audit{}); err == nil || !strings.Contains(err.Error(), "audit write failed late") {
+			t.Fatalf("err = %v, want the late failure", err)
+		}
+		if n := len(allAudit(t, s)); n != before {
+			t.Errorf("%d audit rows after the failed deletion, want %d: the first event was kept", n, before)
+		}
+		if _, err := s.GetFlat(ctx, "doomed"); err != nil {
+			t.Errorf("the flat is gone: %v", err)
+		}
+		if secrets, err := s.ListSecrets(ctx, "doomed"); err != nil || len(secrets) != 2 {
+			t.Errorf("secrets = %v, %v; want both kept", secrets, err)
+		}
+	})
+}

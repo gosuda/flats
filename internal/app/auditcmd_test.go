@@ -11,6 +11,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
 	"strings"
@@ -98,8 +99,8 @@ func TestAuditLsListsTheLogAsTextAndAsJSONLines(t *testing.T) {
 		t.Errorf("JSON line = %v", r)
 	}
 	at, err := time.Parse(time.RFC3339Nano, r["at"].(string))
-	if err != nil || at.Location() != time.UTC || !strings.HasSuffix(r["at"].(string), "Z") || time.Since(at) > time.Minute {
-		t.Errorf("at = %v, %v; want RFC 3339 in UTC with milliseconds", r["at"], err)
+	if err != nil || at.Location() != time.UTC || time.Since(at) > time.Minute || !regexp.MustCompile(`^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$`).MatchString(r["at"].(string)) {
+		t.Errorf("at = %v, %v; want RFC 3339 in UTC with exactly three fraction digits", r["at"], err)
 	}
 	_ = dir
 }
@@ -398,17 +399,19 @@ func TestAuditLsOfAStoppedHostThatLeftAWalFile(t *testing.T) {
 		t.Errorf("more than an empty -shm changed:\n%v\n%v", before, after)
 	}
 	// A folder without write permission: the open cannot create the index.
-	if ostest.Windows || runtime.GOOS == "windows" || os.Geteuid() == 0 {
-		return
-	}
-	dir, config = stoppedHost()
-	if err := os.Chmod(dir, 0o500); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.Chmod(dir, 0o700) })
-	if _, err := runAudit(t, config); err == nil || exitCode(err) != 1 {
-		t.Errorf("an unwritable folder: %v (status %d), want status 1", err, exitCode(err))
-	}
+	t.Run("a folder that cannot be written", func(t *testing.T) {
+		if ostest.Windows || runtime.GOOS == "windows" || os.Geteuid() == 0 {
+			t.Skip("needs Unix modes and a user that is not the superuser")
+		}
+		dir, config := stoppedHost()
+		if err := os.Chmod(dir, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Chmod(dir, 0o700) })
+		if _, err := runAudit(t, config); err == nil || exitCode(err) != 1 {
+			t.Errorf("an unwritable folder: %v (status %d), want status 1", err, exitCode(err))
+		}
+	})
 }
 
 // blockingWriter holds the command's first write until it is released, as a reader of a pipe that does not read would.
@@ -505,7 +508,7 @@ func TestAuditRowsAreNotReachableThroughTheHTTPSurfaces(t *testing.T) {
 		t.Fatalf("GET logs: %d", code)
 	}
 	raw, _ := json.Marshal(logs)
-	for _, bad := range []string{"secret.set", "flat_id", `"via"`, "audit"} {
+	for _, bad := range []string{"secret.set", "secret.delete", "flat_id", "audit"} {
 		if strings.Contains(string(raw), bad) {
 			t.Errorf("the log of the flat holds %q: %s", bad, raw)
 		}
