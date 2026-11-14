@@ -131,6 +131,24 @@ func TestRestoreKeyOutWritesANewFile(t *testing.T) {
 	if _, err := os.Lstat(inside); !os.IsNotExist(err) {
 		t.Errorf("--out wrote inside the data directory: %v", err)
 	}
+	// A folder below the data directory is inside it too, and so is a link to a folder there.
+	below := filepath.Join(dir, "below")
+	if err := os.Mkdir(below, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	outs := map[string]string{"below": filepath.Join(below, "recovered.key")}
+	if link := filepath.Join(t.TempDir(), "link"); ostest.Symlink(t, below, link) == nil {
+		outs["a link to a folder below"] = filepath.Join(link, "recovered.key")
+	}
+	for name, where := range outs {
+		_, err := runSecretKey(t, config, "restore-key", "--out", where, "--password-file", pw)
+		if err == nil || exitCode(err) != ExitConfig || !strings.Contains(err.Error(), "outside the data directory") {
+			t.Errorf("--out %s: %v (status %d), want a refusal", name, err, exitCode(err))
+		}
+		if _, err := os.Lstat(filepath.Join(below, "recovered.key")); !os.IsNotExist(err) {
+			t.Errorf("--out %s wrote inside the data directory: %v", name, err)
+		}
+	}
 	// A second key in the data directory is a refusal with or without --out (rule 3).
 	if err := os.WriteFile(filepath.Join(dir, core.SecretKeyFile), key, 0o600); err != nil {
 		t.Fatal(err)
