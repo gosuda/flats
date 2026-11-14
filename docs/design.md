@@ -237,7 +237,8 @@ keys are appended in path order); at most 200 `notes` keyed by
 `[A-Za-z0-9_-]{1,40}`, each with `x`, `y`, `text` (4000 characters) and
 optional `w` and `color` (`gray`, `yellow`, `blue`, `green`, `pink`,
 `purple`); and `launch`, `{"view":"canvas"}` or
-`{"view":"focused","board":<key>}`. Unknown top-level keys are kept. Every
+`{"view":"focused","board":<key>}` (validated and kept, but the canvas always
+opens whole). Unknown top-level keys are kept. Every
 problem is reported at once.
 
 **Editing guards.** People's operations carry the file's generation (`gen`,
@@ -329,7 +330,7 @@ made in the canvas app.
 
 **Frame loading.** The canvas loads an artboard only when it comes near the
 viewport, and never loads one for the first time while an artboard is open
-full window, including a design that launches focused. Every frame is a
+full window, including one opened by a link to an artboard. Every frame is a
 document in the browser's memory, and phones end the page when there are too
 many. An artboard that is already loaded still reloads when its file, the
 shared files or its capability change. An error that the full-window artboard

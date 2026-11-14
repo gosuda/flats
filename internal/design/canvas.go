@@ -49,7 +49,8 @@ type Note struct {
 	Color string  `json:"color,omitempty"`
 }
 
-// Launch selects how the canvas opens.
+// Launch is accepted and kept for older designs. The canvas app ignores it:
+// a design always opens on the whole canvas.
 type Launch struct {
 	View  string `json:"view"`
 	Board string `json:"board,omitempty"`
