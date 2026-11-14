@@ -50,6 +50,7 @@ list.
 | [Secret key recovery](secret-key-recovery.md) | implemented | `flats secret backup-key`, `restore-key` and `reset`: a password-encrypted copy of `secret.key`, its restore against the sealed values, and a reset when both are lost |
 | [Secret key path](secret-key-path.md) | implemented | `host.secret_key_path` keeps the host key outside the data directory, for example in a Docker secret or a systemd credential: the host reads it and never creates it, and the key commands and `flats backup` use it |
 | [Public instance mode](public-instance.md) | implemented | An opt-in Experiments mode in which every new flat is created Public on the default public network and no private address is handed out or served |
+| [Audit events](audit-events.md) | planned | A host-level, append-only audit log in `flats.db` for every secret and key operation, which survives the deletion of a flat, and `flats audit ls` to read it |
 | [Host backup](host-backup.md) | implemented | `flats backup --out` copies a running or stopped host into a directory with a manifest, and `flats backup --verify` checks such a copy: databases as snapshots, write-once blobs in two passes, coherence of the outbox databases of documents, boards and notebooks with `flats.db`, and a self-check that fails to be run again |
 
 ## Where the technical designs live
