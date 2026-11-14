@@ -415,11 +415,11 @@ func (h *Host) currentTailscaleKey(ctx context.Context) (string, error) {
 // It runs after the connection succeeded and must not fail it; a waiting
 // value it could not clear is cleared at the next start (clearConnected).
 func (h *Host) recordConnection(ctx context.Context, id, source string) {
-	audit := store.Audit{Via: store.AuditViaStart, Reason: "connected"}
+	audit := store.Audit{Via: store.AuditViaStart}
 	if source == core.KeySourceConsole {
 		audit = consoleAudit(ctx)
-		audit.Reason = "connected"
 	}
+	audit.Reason = "connected"
 	if err := h.Store.PutHostKey(context.WithoutCancel(ctx), store.HostKey{ID: id, Source: source, UpdatedAt: time.Now()}, audit); err != nil {
 		h.logf("record the %s connection: %v; the waiting key is removed at the next start", id, err)
 	}

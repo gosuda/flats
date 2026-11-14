@@ -126,13 +126,9 @@ func appendAudit(ctx context.Context, x executor, e AuditEvent) error {
 	return err
 }
 
-// event starts an event of this audit with its time, channel and identity.
+// event starts an event of this audit with its time, channel and identity. A zero time is now when it is written.
 func (a Audit) event(kind string) AuditEvent {
-	t := a.Time
-	if t.IsZero() {
-		t = time.Now()
-	}
-	return AuditEvent{Time: t, Kind: kind, Via: a.Via, Actor: a.Actor}
+	return AuditEvent{Time: a.Time, Kind: kind, Via: a.Via, Actor: a.Actor}
 }
 
 // flatUID returns the ID of the flat with slug, or "" when there is none.
@@ -285,7 +281,10 @@ func (r *AuditReader) FlatID(ctx context.Context, slug string) (string, bool, er
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
 	}
-	return uid.String, err == nil && uid.String != "", err
+	if err != nil {
+		return "", false, err
+	}
+	return uid.String, uid.String != "", nil
 }
 
 // Start returns the id before the first of the newest limit events that match q, so that the events with a larger id
