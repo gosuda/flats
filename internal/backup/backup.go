@@ -224,7 +224,7 @@ func Run(ctx context.Context, o Options) (res *Result, err error) {
 	if d := s1.diff(s2); d != "" {
 		return nil, &RerunError{fmt.Errorf("a flat was created, renamed, deleted or restored during the copy (%s)", d)}
 	}
-	key1, err := readKey(keyFile, o.ExcludeSecretKey)
+	key1, err := readKeyAgain(keyFile, o.ExcludeSecretKey)
 	if err != nil {
 		if keyFile.Configured() {
 			return nil, &RerunError{fmt.Errorf("the secret key at %s cannot be read any more: %w", keyFile.Path(), err)}
@@ -327,6 +327,17 @@ func readKey(k core.KeyFile, excluded bool) ([]byte, error) {
 	}
 	if k.Configured() {
 		return k.Read()
+	}
+	return readKeyBytes(k.DataDir(), false)
+}
+
+// readKeyAgain is readKey for the second read of rule 22, which does not repeat the checks of rule 3.
+func readKeyAgain(k core.KeyFile, excluded bool) ([]byte, error) {
+	if excluded {
+		return nil, nil
+	}
+	if k.Configured() {
+		return k.ReadAgain()
 	}
 	return readKeyBytes(k.DataDir(), false)
 }

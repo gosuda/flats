@@ -88,6 +88,21 @@ func (k KeyFile) Read() ([]byte, error) {
 	if err := k.Check(); err != nil {
 		return nil, err
 	}
+	return k.readConfigured()
+}
+
+// ReadAgain reads the key a second time without the checks of Check. A backup that compares two reads of
+// a configured key (rule 22 of the backup spec) makes those checks once, in its preflight, and a second key
+// that appears in the data directory during the copy is left out of the copy and does not fail the re-read.
+func (k KeyFile) ReadAgain() ([]byte, error) {
+	if !k.configured {
+		return readSecretKey(k.path)
+	}
+	return k.readConfigured()
+}
+
+// readConfigured reads the file of a configured key and names the path and the setting in every refusal.
+func (k KeyFile) readConfigured() ([]byte, error) {
 	if _, err := os.Stat(k.path); err != nil {
 		if !errors.Is(err, fs.ErrNotExist) {
 			return nil, fmt.Errorf("%w: %s names %s: %v", ErrKeyLocation, KeySetting, k.path, err)
