@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gosuda/flats/internal/backup"
 	"github.com/gosuda/flats/internal/board"
 	"github.com/gosuda/flats/internal/board/engine"
 	"github.com/gosuda/flats/internal/core"
@@ -220,10 +221,12 @@ func TestBackupOfARunningHostRestoresToAWorkingHost(t *testing.T) {
 	}
 	close(stop)
 	wg.Wait()
-	if !strings.Contains(text, "backed up") || !strings.Contains(text, "secret.key is in the copy") {
-		t.Errorf("output = %q", text)
+	for _, want := range []string{"backed up ", " files, ", " bytes", "secret.key is in the copy", " retries, ", "attempt(s)", "Keep it as protected", "flats backup --verify " + out} {
+		if !strings.Contains(text, want) {
+			t.Errorf("the output lacks %q:\n%s", want, text)
+		}
 	}
-	if text, err := runBackup(t, "--verify", out); err != nil || !strings.Contains(text, "ok:") {
+	if text, err := runBackup(t, "--verify", out); err != nil || !strings.Contains(text, "ok: ") || !strings.Contains(text, "was made by Flats") {
 		t.Fatalf("verify: %v\n%s", err, text)
 	}
 	if err := h.Close(); err != nil {
@@ -351,8 +354,39 @@ func TestBackupCommandUsageRefusalsAndFailures(t *testing.T) {
 		t.Fatal(err)
 	}
 	text, err := runBackup(t, "--verify", out)
-	if got := exitCode(err); got != 1 || !strings.Contains(text, "data/extra.txt: is not listed in the manifest") {
+	if got := exitCode(err); got != 1 || !strings.Contains(text, "data/extra.txt: is not listed in the manifest") || !strings.Contains(err.Error(), "1 checks failed") {
 		t.Errorf("a damaged copy: exit %d (%v)\n%s", got, err, text)
+	}
+}
+
+// The report lists what rule 24 of the spec names: the folder, the files and bytes, the state of secret.key, the
+// retries, each skipped path with its reason, each unstable path, and the warning about the secrets in the copy.
+func TestBackupReportListsWhatTheSpecNames(t *testing.T) {
+	res := backup.Result{
+		Out: "/copies/c1", Files: 12, Bytes: 3456, Retries: 2, Attempts: 3,
+		Skipped:  []backup.Skip{{Path: "data/flats/s/previews/h.example/db.sqlite", Reason: "gone while it was copied"}},
+		Unstable: []string{"data/flats/s/data/files/log.txt"},
+	}
+	for name, tc := range map[string]struct{ key, want string }{
+		"included": {backup.SecretKeyIncluded, "secret.key is in the copy\n"},
+		"excluded": {backup.SecretKeyExcluded, "secret.key is not in the copy; the recovery copy secret.key.recovery stays"},
+		"absent":   {backup.SecretKeyAbsent, "the host has no secret.key\n"},
+	} {
+		var out bytes.Buffer
+		b := &backupCmd{configCmd: configCmd{ctx: context.Background(), out: &out}}
+		res.SecretKey = tc.key
+		b.report("/data", &res)
+		text := out.String()
+		for _, want := range []string{
+			"backed up /data to /copies/c1\n", "  12 files, 3456 bytes\n", tc.want, "  2 retries, 3 attempt(s) at coherence\n",
+			"  skipped data/flats/s/previews/h.example/db.sqlite: gone while it was copied\n",
+			"  data/flats/s/data/files/log.txt changed while it was copied; the copy holds its last read\n",
+			"Keep it as protected as the data directory", "flats backup --verify /copies/c1",
+		} {
+			if !strings.Contains(text, want) {
+				t.Errorf("%s: the report lacks %q:\n%s", name, want, text)
+			}
+		}
 	}
 }
 

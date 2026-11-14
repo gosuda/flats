@@ -60,6 +60,12 @@ func (b *backupCmd) run(out string, exclude bool) error {
 	if err != nil {
 		return backupError(b.ctx, err)
 	}
+	b.report(dataDir, res)
+	return nil
+}
+
+// report prints what a finished backup lists (rule 24 of the spec).
+func (b *backupCmd) report(dataDir string, res *backup.Result) {
 	b.printf("backed up %s to %s\n", dataDir, res.Out)
 	b.printf("  %d files, %d bytes\n", res.Files, res.Bytes)
 	switch res.SecretKey {
@@ -79,7 +85,6 @@ func (b *backupCmd) run(out string, exclude bool) error {
 	}
 	b.printf("The copy holds the secrets of this host. Keep it as protected as the data directory, in a folder that only you can write.\n")
 	b.printf("Check it with `flats backup --verify %s` before you restore from it.\n", res.Out)
-	return nil
 }
 
 func (b *backupCmd) verify(dir string) error {

@@ -400,12 +400,12 @@ flats backup --verify PATH [--json]
   the board elements and the notebook pages that the host had acknowledged before
   the backup began, accepts a new write to the board and to the notebook, and the
   board continues its sequence above the one that the copy had reached.
-  `flats backup --verify` passes on the copy before the restore. This test has no document and no running server flat:
-  they need the docs worker and a flat process, which the unit tests do not start.
-  The package tests cover the outbox database of a document and the database of a
-  server flat with fixture databases. A backup of a host with a running document
-  and a running server flat under write load has no automatic test, and this is a
-  known gap.
+  `flats backup --verify` passes on the copy before the restore. This test has no
+  document and no running server flat: they need the docs worker and a flat
+  process, which the unit tests do not start. The package tests cover the outbox
+  database of a document and the database of a server flat with fixture
+  databases. A backup of a host with a running document and a running server flat
+  under write load has no automatic test, and this is a known gap.
 - For each kind of outbox database (a document, a board, a notebook) and for each
   order of the two snapshots, a test shows that a change between the snapshot of
   the database and the snapshot of `flats.db` that breaks the test of rule 16
