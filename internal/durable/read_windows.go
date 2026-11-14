@@ -24,6 +24,10 @@ func open(path string) (*os.File, error) {
 	return os.NewFile(uintptr(h), path), nil
 }
 
+// Open opens a file for reading, as ReadFile does, and returns it for a
+// streaming read. It shares read, write and delete access with other openers.
+func Open(path string) (*os.File, error) { return open(path) }
+
 // ReadFile is os.ReadFile for a file that another program replaces while Flats
 // runs. os.ReadFile holds the file open without delete sharing, and a
 // ReplaceFile of that file then fails: the Tailscale state store writes that

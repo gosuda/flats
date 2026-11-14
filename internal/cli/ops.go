@@ -55,6 +55,28 @@ func (a *app) serviceDir() (string, error) {
 	return winservice.DefinitionDir()
 }
 
+// backup runs `flats backup`, which works on the data directory instead of calling
+// the host. It takes --json out of the arguments, as the global flag.
+func (a *app) backup(args []string) error {
+	if Backup == nil {
+		return errors.New("backup is not wired")
+	}
+	rest := make([]string, 0, len(args))
+	for _, arg := range args {
+		if arg == "--json" || arg == "-json" {
+			a.jsonOut = true
+			continue
+		}
+		rest = append(rest, arg)
+	}
+	err := Backup(a.ctx, rest, a.out)
+	var ec exitCoder
+	if errors.As(err, &ec) && ec.ExitCode() == ExitUsage {
+		return usageError{err.Error()}
+	}
+	return err
+}
+
 // config runs `flats config` through the Config hook.
 func (a *app) config(args []string) error {
 	if Config == nil {

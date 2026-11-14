@@ -330,6 +330,7 @@ for server flats); `flats config`, `flats key`, and
 | `visibility <slug> private\|public [--access view\|edit] [--reason r]` | Request a visibility change; `--access edit` lets anyone edit a Public board |
 | `rename <slug> <new-slug>`, `delete <slug> [--reason r]` | Rename; request deletion |
 | `env`, `network`, `secret` | Manage server settings; changing `network` origins or `secret` values works only from the host itself (loopback). `secret backup-key`, `restore-key` and `reset` work on the data directory and never call the host ([Recovering a lost secret.key](configuration.md#recovering-a-lost-secretkey)) |
+| `backup --out path [--exclude-secret-key] [--config path\|--data dir]`, `backup --verify path` | Copy the data directory of a running or stopped host into a new folder with a manifest, or check such a copy. Works on the data directory and never calls the host ([What to back up](configuration.md#what-to-back-up)) |
 | `approvals [--status s]` | List approvals (read-only) |
 | `status`, `install`, `uninstall`, `connect`, `mcp`, `mcp-config` | Host and client setup ([Connecting agents](agents.md)). `connect` chooses the host the CLI and `mcp` use; `mcp-config` prints the agent setup commands |
 | `agent-setup docs [--agent a] [--scope user\|project] [--dry-run] [--yes] [--undo]` | Make Flats the document tool of Claude Code, Codex or Cursor. It prints a plan and changes files on this machine only after you confirm; `--undo` reverses it ([Use Flats for documents](agents.md#use-flats-for-documents)) |

@@ -1,5 +1,6 @@
 # Build output
 /flats
+/flats.exe
 /adapter
 /bin/
 /dist/

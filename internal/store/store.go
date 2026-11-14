@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io/fs"
 	"strings"
 	"time"
 
@@ -332,6 +333,37 @@ func Open(path string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1) // serialize writers; metadata traffic is small
 	if err := db.PingContext(ctx); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("open %s: %w", path, err)
+	}
+	return &Store{db: db, path: path}, nil
+}
+
+// ErrVersionMismatch reports that a database file has another schema version
+// than this binary expects, so OpenImmutable refuses it.
+var ErrVersionMismatch = errors.New("the database schema version is not the one this Flats expects")
+
+// OpenImmutable opens a finished copy of flats.db read-only and immutable.
+// It creates no file, changes no byte and never migrates, so a copy of an older
+// release stays as it is. It refuses a database whose schema version is not the
+// one this binary expects. The copy must have no -wal file and no writer.
+func OpenImmutable(path string) (*Store, error) {
+	info, err := Inspect(path)
+	if err != nil {
+		return nil, fmt.Errorf("open %s: %w", path, err)
+	}
+	if !info.Exists || info.New {
+		return nil, fmt.Errorf("open %s: %w", path, fs.ErrNotExist)
+	}
+	if info.Version != info.Latest {
+		return nil, fmt.Errorf("open %s: %w: version %d, expected %d", path, ErrVersionMismatch, info.Version, info.Latest)
+	}
+	db, err := sql.Open("sqlite", fileURI(path)+"?mode=ro&immutable=1&_pragma=busy_timeout(5000)")
+	if err != nil {
+		return nil, err
+	}
+	db.SetMaxOpenConns(1)
+	if err := db.PingContext(context.Background()); err != nil {
 		db.Close()
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
