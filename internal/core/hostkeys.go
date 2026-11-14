@@ -8,7 +8,6 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
-	"path/filepath"
 	"regexp"
 	"strings"
 	"time"
@@ -84,10 +83,10 @@ func hostKeyAEAD(key []byte) (cipher.AEAD, error) {
 	return cipher.NewGCM(block)
 }
 
-// SealHostKey encrypts value for id under the data directory's secret.key,
-// creating the key file when there is none yet.
-func SealHostKey(dataDir, id, value string, source string, now time.Time) (store.HostKey, error) {
-	key, err := loadOrCreateKey(filepath.Join(dataDir, "secret.key"))
+// SealHostKey encrypts value for id under the host key, creating the key file when there is none
+// yet. A configured key is never created.
+func SealHostKey(keyFile KeyFile, id, value string, source string, now time.Time) (store.HostKey, error) {
+	key, err := keyFile.LoadOrCreate()
 	if err != nil {
 		return store.HostKey{}, err
 	}
@@ -104,11 +103,11 @@ func SealHostKey(dataDir, id, value string, source string, now time.Time) (store
 }
 
 // OpenHostKey decrypts a stored key value.
-func OpenHostKey(dataDir string, k store.HostKey) (string, error) {
+func OpenHostKey(keyFile KeyFile, k store.HostKey) (string, error) {
 	if !k.HasValue() {
 		return "", errors.New("the key record holds no value")
 	}
-	key, err := readSecretKey(filepath.Join(dataDir, "secret.key"))
+	key, err := keyFile.Read()
 	if err != nil {
 		return "", err
 	}
@@ -118,13 +117,13 @@ func OpenHostKey(dataDir string, k store.HostKey) (string, error) {
 	}
 	pt, err := g.Open(nil, k.Nonce, k.Ciphertext, hostKeyAAD(k.ID))
 	if err != nil {
-		return "", fmt.Errorf("decrypt the stored %s key: %w; secret.key does not match flats.db: put back the matching secret.key, which `flats secret restore-key` restores from its recovery copy, or remove this key with `flats key rm` while the host is stopped and register it again", k.ID, err)
+		return "", fmt.Errorf("decrypt the stored %s key: %w; the key at %s does not match flats.db: put back the matching key, which `flats secret restore-key` restores from its recovery copy, or remove this key with `flats key rm` while the host is stopped and register it again", k.ID, err, keyFile.Path())
 	}
 	return string(pt), nil
 }
 
 // StoredHostKey returns the value stored for id, or "" with no stored value.
-func StoredHostKey(ctx context.Context, dataDir string, st *store.Store, id string) (string, store.HostKey, error) {
+func StoredHostKey(ctx context.Context, keyFile KeyFile, st *store.Store, id string) (string, store.HostKey, error) {
 	k, err := st.GetHostKey(ctx, id)
 	if errors.Is(err, store.ErrNotFound) {
 		return "", store.HostKey{}, nil
@@ -135,13 +134,13 @@ func StoredHostKey(ctx context.Context, dataDir string, st *store.Store, id stri
 	if !k.HasValue() {
 		return "", k, nil
 	}
-	v, err := OpenHostKey(dataDir, k)
+	v, err := OpenHostKey(keyFile, k)
 	return v, k, err
 }
 
 // PutHostKeyValue seals and stores value for id.
-func PutHostKeyValue(ctx context.Context, dataDir string, st *store.Store, id, value, source string, now time.Time) error {
-	k, err := SealHostKey(dataDir, id, value, source, now)
+func PutHostKeyValue(ctx context.Context, keyFile KeyFile, st *store.Store, id, value, source string, now time.Time) error {
+	k, err := SealHostKey(keyFile, id, value, source, now)
 	if err != nil {
 		return err
 	}

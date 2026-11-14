@@ -140,6 +140,10 @@ var specs = []spec{
 		hint: "use the lowercase UUID written by config init"},
 	{key: "host.data_dir", kind: kindString, required: true, check: checkAbsPath,
 		hint: "use an absolute path"},
+	// The host key lives at <data>/secret.key unless this names another file. With a path the
+	// host never creates the key (docs/spec/secret-key-path.md).
+	{key: "host.secret_key_path", kind: kindString, def: "", check: checkKeyPath,
+		hint: "use an absolute path outside host.data_dir, or leave it empty to keep the key in the data directory"},
 	{key: "host.console_addr", kind: kindString, def: "127.0.0.1:7878", check: checkAddr, override: true,
 		hint: "use host:port with a port from 0 to 65535, such as 127.0.0.1:7878"},
 	{key: "host.local_addr", kind: kindString, def: "127.0.0.1:7879", check: checkAddr, override: true,
@@ -494,6 +498,15 @@ func NewInstanceID() string {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", b[0:4], b[4:6], b[6:8], b[8:10], b[10:16])
 }
 
+// checkKeyPath accepts an empty value, which keeps the key in the data directory,
+// and otherwise an absolute path.
+func checkKeyPath(v any) (any, error) {
+	if v.(string) == "" {
+		return "", nil
+	}
+	return checkAbsPath(v)
+}
+
 func checkAbsPath(v any) (any, error) {
 	s := v.(string)
 	if strings.IndexByte(s, 0) >= 0 {
@@ -774,6 +787,8 @@ type HostConfig struct {
 	ConsoleAddr   string
 	LocalAddr     string
 	ServerRuntime bool
+	// SecretKeyPath is host.secret_key_path: "" keeps the key at <data>/secret.key.
+	SecretKeyPath string
 }
 
 type TailscaleConfig struct {
@@ -993,7 +1008,7 @@ func (c *Config) fill() error {
 	list := func(k string) []string { return slices.Clone(c.values[k].([]string)) }
 
 	c.Host = HostConfig{str("host.instance_id"), cleanDataDir(str("host.data_dir")), str("host.console_addr"),
-		str("host.local_addr"), flag("host.server_runtime")}
+		str("host.local_addr"), flag("host.server_runtime"), cleanKeyPath(str("host.secret_key_path"))}
 	c.Tailscale = TailscaleConfig{list("tailscale.console_hosts")}
 	c.Network = NetworkConfig{list("network.permitted"), str("network.private_backend"),
 		str("network.default_private"), str("network.default_public")}
@@ -1038,6 +1053,11 @@ func (c *Config) fill() error {
 	if p := c.Network.DefaultPublic; p != "" && !slices.Contains(c.Network.Permitted, p) {
 		errs = append(errs, fieldErr("network.default_public", fmt.Sprintf(`add %q to network.permitted or clear the default`, p),
 			"%s is not permitted", p))
+	}
+	if p := c.Host.SecretKeyPath; p != "" && InsideDir(c.Host.DataDir, p) {
+		errs = append(errs, fieldErr("host.secret_key_path",
+			"use a path outside host.data_dir, or leave it empty to keep the key in the data directory; if this file is invalid, edit config.json by hand",
+			"%s lies inside host.data_dir %s", p, c.Host.DataDir))
 	}
 	errs = append(errs, c.checkProxy()...)
 	if !c.Portal.Discovery && len(c.Portal.Relays) == 0 {

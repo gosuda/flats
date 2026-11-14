@@ -44,12 +44,6 @@ const (
 // ErrRecoveryPassword reports that a password does not open a recovery copy.
 var ErrRecoveryPassword = errors.New("the password does not open this recovery file")
 
-// ReadSecretKey reads dataDir's secret.key with the checks the host makes at
-// start.
-func ReadSecretKey(dataDir string) ([]byte, error) {
-	return readSecretKey(filepath.Join(dataDir, SecretKeyFile))
-}
-
 // KeyID identifies a key without revealing anything that helps open it: the
 // first 16 bytes of HMAC-SHA-256 over a 19-byte label, with the key as the
 // HMAC key (docs/spec/secret-key-recovery.md, rule 2). The key is the HMAC
@@ -185,15 +179,6 @@ func CheckKey(ctx context.Context, st *store.Store, key []byte) (KeyCheck, error
 	return c, nil
 }
 
-// RestoreSecretKey writes key as dataDir's secret.key. It never replaces
-// anything there: os.IsExist reports that the name is taken.
-func RestoreSecretKey(dataDir string, key []byte) error {
-	if err := publishKey(filepath.Join(dataDir, SecretKeyFile), key); err != nil {
-		return err
-	}
-	return durable.SyncDir(dataDir)
-}
-
 // WriteKeyCopy writes data, the recovery copy of key, to dataDir and then
 // the key's ID beside it, each replacing an older file, and reports whether
 // a copy was there. A crash between the two leaves an ID that does not match,
@@ -244,7 +229,7 @@ func RecoveryCopyWarning(dataDir string, key []byte) string {
 	if err == nil && strings.TrimSpace(string(b)) == KeyID(key) {
 		return ""
 	}
-	return fmt.Sprintf("%s may hold another key than %s, so it may not restore this host: run `flats secret backup-key` to write a current copy", copyPath, SecretKeyFile)
+	return fmt.Sprintf("%s may hold another key than the host key, so it may not restore this host: run `flats secret backup-key` to write a current copy", copyPath)
 }
 
 // readHead reads at most n bytes from the start of the file at path.

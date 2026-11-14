@@ -369,7 +369,8 @@ and upgrades from older hosts.
 - **Local secrets.** Secrets are encrypted with the local `secret.key`; secret
   APIs expose names only. A flat can read and return its own secrets, so
   deploy code you trust with them. Anyone who can read the data directory
-  can recover those secrets.
+  can recover those secrets, unless `host.secret_key_path` keeps the key
+  elsewhere.
 - **Back up your data.** Immutable code versions are not data backups. Back up
   the data directory, including `secret.key`; see
   [what to back up](docs/configuration.md#what-to-back-up).

@@ -233,7 +233,7 @@ func TestEffectiveDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := HostConfig{testID, cleanDataDir("/var/lib/flats"), "127.0.0.1:7878", "127.0.0.1:7879", true}
+	want := HostConfig{testID, cleanDataDir("/var/lib/flats"), "127.0.0.1:7878", "127.0.0.1:7879", true, ""}
 	if c.Host != want {
 		t.Errorf("Host = %+v, want %+v", c.Host, want)
 	}
@@ -329,7 +329,7 @@ func TestOverrides(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := HostConfig{testID, cleanDataDir("/var/lib/flats"), "127.0.0.1:18000", "[::1]:18001", false}
+	want := HostConfig{testID, cleanDataDir("/var/lib/flats"), "127.0.0.1:18000", "[::1]:18001", false, ""}
 	if c.Host != want {
 		t.Errorf("Host = %+v, want %+v", c.Host, want)
 	}

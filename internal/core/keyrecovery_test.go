@@ -178,14 +178,14 @@ func TestCheckKey(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := PutHostKeyValue(ctx, dir, s.st, HostKeyZrok, "zrok-token", KeySourceCLI, time.Now()); err != nil {
+	if err := PutHostKeyValue(ctx, NewKeyFile(dir, ""), s.st, HostKeyZrok, "zrok-token", KeySourceCLI, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	// A record of a connection holds no value and is not counted.
 	if err := s.st.PutHostKey(ctx, store.HostKey{ID: HostKeyNetbird, Source: KeySourceCLI, UpdatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	key, err := ReadSecretKey(dir)
+	key, err := NewKeyFile(dir, "").Read()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func TestRestoreSecretKeyNeverReplaces(t *testing.T) {
 	rand.Read(key)
 	dir := t.TempDir()
 	path := filepath.Join(dir, SecretKeyFile)
-	if err := RestoreSecretKey(dir, key); err != nil {
+	if err := NewKeyFile(dir, "").Restore(key); err != nil {
 		t.Fatal(err)
 	}
 	if got, err := os.ReadFile(path); err != nil || !bytes.Equal(got, key) {
@@ -230,7 +230,7 @@ func TestRestoreSecretKeyNeverReplaces(t *testing.T) {
 	}
 	other := make([]byte, 32)
 	rand.Read(other)
-	if err := RestoreSecretKey(dir, other); !os.IsExist(err) {
+	if err := NewKeyFile(dir, "").Restore(other); !os.IsExist(err) {
 		t.Fatalf("over a key: %v", err)
 	}
 	if got, _ := os.ReadFile(path); !bytes.Equal(got, key) {
@@ -241,7 +241,7 @@ func TestRestoreSecretKeyNeverReplaces(t *testing.T) {
 	if err := ostest.Symlink(t, filepath.Join(dangling, "gone"), filepath.Join(dangling, SecretKeyFile)); err != nil {
 		t.Fatal(err)
 	}
-	if err := RestoreSecretKey(dangling, key); !os.IsExist(err) {
+	if err := NewKeyFile(dangling, "").Restore(key); !os.IsExist(err) {
 		t.Fatalf("over a dangling link: %v", err)
 	}
 	if _, err := os.Lstat(filepath.Join(dangling, "gone")); !errors.Is(err, os.ErrNotExist) {
@@ -320,17 +320,17 @@ func TestMissingKeyRefusalNamesRecovery(t *testing.T) {
 	if err := s.SetSecret(ctx, "app", "API_KEY", "v", ViaCLI); err != nil {
 		t.Fatal(err)
 	}
-	err := CheckSecretKey(ctx, t.TempDir(), s.st)
+	err := CheckSecretKey(ctx, NewKeyFile(t.TempDir(), ""), s.st)
 	if !errors.Is(err, ErrSecretKeyMissing) || !strings.Contains(err.Error(), "flats secret restore-key") || !strings.Contains(err.Error(), "flats secret reset") {
 		t.Fatalf("refusal: %v", err)
 	}
 
 	// With operator keys alone, the way out is `flats key rm`, not reset.
 	keys, dir := newTestService(t)
-	if err := PutHostKeyValue(ctx, dir, keys.st, HostKeyZrok, "zrok-token", KeySourceCLI, time.Now()); err != nil {
+	if err := PutHostKeyValue(ctx, NewKeyFile(dir, ""), keys.st, HostKeyZrok, "zrok-token", KeySourceCLI, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	err = CheckSecretKey(ctx, t.TempDir(), keys.st)
+	err = CheckSecretKey(ctx, NewKeyFile(t.TempDir(), ""), keys.st)
 	if msg := fmt.Sprint(err); !errors.Is(err, ErrSecretKeyMissing) || !strings.Contains(msg, "flats secret restore-key") || !strings.Contains(msg, "flats key rm") || strings.Contains(msg, "reset") {
 		t.Fatalf("operator keys alone: %v", err)
 	}
@@ -341,10 +341,10 @@ func TestInvalidSecretKeyError(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, SecretKeyFile), []byte("short"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := ReadSecretKey(dir); !errors.Is(err, ErrInvalidSecretKey) || !strings.Contains(err.Error(), "must be 32 bytes") {
+	if _, err := NewKeyFile(dir, "").Read(); !errors.Is(err, ErrInvalidSecretKey) || !strings.Contains(err.Error(), "must be 32 bytes") {
 		t.Fatalf("short key: %v", err)
 	}
-	if _, err := ReadSecretKey(t.TempDir()); errors.Is(err, ErrInvalidSecretKey) || !errors.Is(err, os.ErrNotExist) {
+	if _, err := NewKeyFile(t.TempDir(), "").Read(); errors.Is(err, ErrInvalidSecretKey) || !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("missing key: %v", err)
 	}
 }
@@ -352,14 +352,14 @@ func TestInvalidSecretKeyError(t *testing.T) {
 // A stored operator key that the key does not open names the way out.
 func TestUnopenedHostKeyNamesRecovery(t *testing.T) {
 	dir := t.TempDir()
-	k, err := SealHostKey(dir, HostKeyTailscale, "tskey-auth-x", KeySourceCLI, time.Now())
+	k, err := SealHostKey(NewKeyFile(dir, ""), HostKeyTailscale, "tskey-auth-x", KeySourceCLI, time.Now())
 	if err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, SecretKeyFile), bytes.Repeat([]byte{1}, 32), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	_, err = OpenHostKey(dir, k)
+	_, err = OpenHostKey(NewKeyFile(dir, ""), k)
 	if err == nil || !strings.Contains(err.Error(), "does not match flats.db") || !strings.Contains(err.Error(), "flats secret restore-key") || !strings.Contains(err.Error(), "flats key rm") {
 		t.Fatalf("open: %v", err)
 	}
