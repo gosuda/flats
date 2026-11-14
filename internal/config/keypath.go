@@ -14,9 +14,9 @@ func cleanKeyPath(p string) string {
 	return filepath.Clean(p)
 }
 
-// insideDir reports whether child is dir or lies below it. It compares the two
+// InsideDir reports whether child is dir or lies below it. It compares the two
 // cleaned paths and does not resolve links. On Windows it ignores case.
-func insideDir(dir, child string) bool {
+func InsideDir(dir, child string) bool {
 	dir, child = filepath.Clean(dir), filepath.Clean(child)
 	if runtime.GOOS == "windows" {
 		dir, child = strings.ToLower(dir), strings.ToLower(child)

@@ -174,7 +174,7 @@ func Run(ctx context.Context, o Options) (res *Result, err error) {
 	if err != nil {
 		return nil, err
 	}
-	key0, err := readKey(keyFile, o.ExcludeSecretKey)
+	key0, err := readKey(keyFile, o.ExcludeSecretKey, false)
 	if err != nil {
 		return nil, err
 	}
@@ -224,7 +224,7 @@ func Run(ctx context.Context, o Options) (res *Result, err error) {
 	if d := s1.diff(s2); d != "" {
 		return nil, &RerunError{fmt.Errorf("a flat was created, renamed, deleted or restored during the copy (%s)", d)}
 	}
-	key1, err := readKeyAgain(keyFile, o.ExcludeSecretKey)
+	key1, err := readKey(keyFile, o.ExcludeSecretKey, true)
 	if err != nil {
 		if keyFile.Configured() {
 			return nil, &RerunError{fmt.Errorf("the secret key at %s cannot be read any more: %w", keyFile.Path(), err)}
@@ -320,26 +320,16 @@ func checkSchema(flatsDB string) error {
 }
 
 // readKey returns the bytes of the host key, or nil when the key is excluded or the default file is not
-// there. A configured key must be readable, and it is not read at all when it is excluded.
-func readKey(k core.KeyFile, excluded bool) ([]byte, error) {
-	if excluded {
-		return nil, nil
-	}
-	if k.Configured() {
-		return k.Read()
-	}
-	return readKeyBytes(k.DataDir(), false)
-}
-
-// readKeyAgain is readKey for the second read of rule 22, which does not repeat the checks of rule 3.
-func readKeyAgain(k core.KeyFile, excluded bool) ([]byte, error) {
-	if excluded {
-		return nil, nil
-	}
-	if k.Configured() {
+// there. A configured key must be readable, and it is not read at all when it is excluded. The second
+// read of rule 22 (again) does not repeat the checks of rule 3.
+func readKey(k core.KeyFile, excluded, again bool) ([]byte, error) {
+	switch {
+	case excluded || !k.Configured():
+		return readKeyBytes(k.DataDir(), excluded)
+	case again:
 		return k.ReadAgain()
 	}
-	return readKeyBytes(k.DataDir(), false)
+	return k.Read()
 }
 
 // readKeyBytes returns the bytes of secret.key, following a link as the host

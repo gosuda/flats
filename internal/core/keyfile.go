@@ -6,9 +6,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
-	"runtime"
-	"strings"
 
+	"github.com/gosuda/flats/internal/config"
 	"github.com/gosuda/flats/internal/durable"
 )
 
@@ -71,7 +70,7 @@ func (k KeyFile) Check() error {
 	if err != nil {
 		return nil
 	}
-	if PathInside(dataReal, real) {
+	if config.InsideDir(dataReal, real) {
 		return fmt.Errorf("%w: %s names %s, which resolves to %s inside the data directory %s; keep the key outside the data directory",
 			ErrKeyLocation, KeySetting, k.path, real, dataReal)
 	}
@@ -138,18 +137,4 @@ func (k KeyFile) Restore(key []byte) error {
 		return err
 	}
 	return durable.SyncDir(filepath.Dir(k.path))
-}
-
-// PathInside reports whether p is dir or lies below it, ignoring case on Windows. It compares paths
-// that the caller already resolved.
-func PathInside(dir, p string) bool {
-	dir, p = filepath.Clean(dir), filepath.Clean(p)
-	if runtime.GOOS == "windows" {
-		dir, p = strings.ToLower(dir), strings.ToLower(p)
-	}
-	rel, err := filepath.Rel(dir, p)
-	if err != nil {
-		return false
-	}
-	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
 }

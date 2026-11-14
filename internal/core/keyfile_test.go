@@ -352,24 +352,6 @@ func TestRestoreOfAConfiguredKeyInAReadOnlyFolder(t *testing.T) {
 	}
 }
 
-func TestPathInside(t *testing.T) {
-	t.Parallel()
-	for _, tc := range []struct {
-		dir, p string
-		want   bool
-	}{
-		{"/a/b", "/a/b", true},
-		{"/a/b", "/a/b/c", true},
-		{"/a/b", "/a/bc", false},
-		{"/a/b", "/a", false},
-		{"/a/b", "/x/a/b", false},
-	} {
-		if got := PathInside(filepath.FromSlash(tc.dir), filepath.FromSlash(tc.p)); got != tc.want {
-			t.Errorf("PathInside(%q, %q) = %v, want %v", tc.dir, tc.p, got, tc.want)
-		}
-	}
-}
-
 // ReadAgain does not repeat the checks of Check: a second key that appears in the data directory during a backup does
 // not fail the re-read, and a missing file still does.
 func TestReadAgainSkipsTheChecksOfCheck(t *testing.T) {

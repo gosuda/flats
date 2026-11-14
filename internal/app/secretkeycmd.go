@@ -14,6 +14,7 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/gosuda/flats/internal/config"
 	"github.com/gosuda/flats/internal/core"
 	"github.com/gosuda/flats/internal/prompt"
 	"github.com/gosuda/flats/internal/store"
@@ -250,7 +251,7 @@ func keyOutFile(flag, dataDir string) (string, error) {
 	}
 	dir, derr := filepath.EvalSymlinks(filepath.Dir(path))
 	data, serr := filepath.EvalSymlinks(dataDir)
-	if derr == nil && serr == nil && core.PathInside(data, dir) {
+	if derr == nil && serr == nil && config.InsideDir(data, dir) {
 		return "", actionf("--out: name a file outside the data directory %s, because a copy of the data directory would hold the key", dataDir)
 	}
 	return path, nil

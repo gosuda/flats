@@ -1054,7 +1054,7 @@ func (c *Config) fill() error {
 		errs = append(errs, fieldErr("network.default_public", fmt.Sprintf(`add %q to network.permitted or clear the default`, p),
 			"%s is not permitted", p))
 	}
-	if p := c.Host.SecretKeyPath; p != "" && insideDir(c.Host.DataDir, p) {
+	if p := c.Host.SecretKeyPath; p != "" && InsideDir(c.Host.DataDir, p) {
 		errs = append(errs, fieldErr("host.secret_key_path",
 			"use a path outside host.data_dir, or leave it empty to keep the key in the data directory; if this file is invalid, edit config.json by hand",
 			"%s lies inside host.data_dir %s", p, c.Host.DataDir))

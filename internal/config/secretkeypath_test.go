@@ -168,15 +168,15 @@ func TestInsideDir(t *testing.T) {
 		{"/a/b", "/x/a/b", false},
 	}
 	for _, tc := range cases {
-		if got := insideDir(filepath.FromSlash(tc.dir), filepath.FromSlash(tc.child)); got != tc.want {
-			t.Errorf("insideDir(%q, %q) = %v, want %v", tc.dir, tc.child, got, tc.want)
+		if got := InsideDir(filepath.FromSlash(tc.dir), filepath.FromSlash(tc.child)); got != tc.want {
+			t.Errorf("InsideDir(%q, %q) = %v, want %v", tc.dir, tc.child, got, tc.want)
 		}
 	}
 	if runtime.GOOS == "windows" {
-		if !insideDir(`C:\Data\Flats`, `c:\data\flats\SECRET.KEY`) {
+		if !InsideDir(`C:\Data\Flats`, `c:\data\flats\SECRET.KEY`) {
 			t.Error("Windows paths that differ in case only are different")
 		}
-	} else if insideDir("/Data/Flats", "/data/flats/secret.key") {
+	} else if InsideDir("/Data/Flats", "/data/flats/secret.key") {
 		t.Error("paths that differ in case are the same")
 	}
 }

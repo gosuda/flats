@@ -309,11 +309,11 @@ secrets:
 docker compose run --rm --no-deps flats config set host.secret_key_path /run/secrets/flats.key
 ```
 
-A mounted key is visible only inside the service container. `docker exec flats
-flats backup --out …` sees it, but a one-off container and a process on the host
-do not. For those, `flats backup` needs `--exclude-secret-key`, and
+A mounted key is visible only inside the service container. A command that runs
+with `docker exec` sees it, but a one-off container and a process on the host do
+not. For those, `flats backup` needs `--exclude-secret-key`, and
 `flats secret restore-key` needs `--out FILE`. Back up the key file apart from
-the volume: a copy of the volume no longer holds it.
+the volume, because a copy of the volume no longer holds it.
 
 ## Upgrading and backups
 
