@@ -214,7 +214,31 @@ func TestZrokTokenConsumptionWritesEvents(t *testing.T) {
 	ctx := context.Background()
 	f := useFakeZrok(t, false) // before the host starts, so that its own enrolment uses the fake too
 	dir := t.TempDir()
-	h, _ := consoleHostWith(t, dir, nil)
+	config := initConfig(t, dir)
+
+	// 1. A waiting token that `flats key set zrok` stored is consumed by the enrolment that the host runs after its start
+	// (channel start).
+	var out bytes.Buffer
+	if err := KeyCommand(ctx, []string{"set", "zrok", "--config", config}, strings.NewReader("zrok-token-value\n"), &out); err != nil {
+		t.Fatalf("key set zrok: %v\n%s", err, out.String())
+	}
+	h, err := Start(ctx, configModeOptions(config))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { h.Close() })
+	deadline := time.Now().Add(20 * time.Second)
+	for len(auditIn(t, dir)) < 2 && time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+	}
+	me := operatorUser()
+	want := []string{
+		"key.set zrok command actor=" + me + ` {"replaced":false}`,
+		`key.delete zrok start {"reason":"connected"}`,
+	}
+	if got := auditSummary(auditIn(t, dir)); !slices.Equal(got, want) {
+		t.Fatalf("events after the start:\n%q\nwant\n%q", got, want)
+	}
 	kf := h.keyFile()
 	putToken := func(source string) {
 		t.Helper()
@@ -227,22 +251,14 @@ func TestZrokTokenConsumptionWritesEvents(t *testing.T) {
 		k, err := h.Store.GetHostKey(ctx, core.HostKeyZrok)
 		return err == nil && k.HasValue()
 	}
-
-	// 1. The enrolment at start consumes a waiting token (channel start).
-	putToken(core.KeySourceCLI)
-	n := len(auditIn(t, dir))
-	h.enrollWaiting(ctx, keyInputs{})
 	if !f.connected || hasValue() {
 		t.Fatalf("connected = %v, value stored = %v; want the account connected and the token gone", f.connected, hasValue())
-	}
-	if got, want := auditSummary(newAudit(t, dir, n)), []string{`key.delete zrok start {"reason":"connected"}`}; !slices.Equal(got, want) {
-		t.Fatalf("enrolment events: %q, want %q", got, want)
 	}
 
 	// 2. The console connects with a token that is stored: the stored token is replaced (channel console).
 	f.connected = false
 	putToken(core.KeySourceCLI)
-	n = len(auditIn(t, dir))
+	n := len(auditIn(t, dir))
 	if err := h.connectZrok(core.WithAuditActor(ctx, "the console"), "typed-token", core.KeySourceConsole, true); err != nil {
 		t.Log("the zrok backend did not start after the connection, as expected without an account:", err)
 	}
