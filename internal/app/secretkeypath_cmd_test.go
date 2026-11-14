@@ -131,24 +131,6 @@ func TestRestoreKeyOutWritesANewFile(t *testing.T) {
 	if _, err := os.Lstat(inside); !os.IsNotExist(err) {
 		t.Errorf("--out wrote inside the data directory: %v", err)
 	}
-	// A folder below the data directory is inside it too, and so is a link to a folder there.
-	below := filepath.Join(dir, "below")
-	if err := os.Mkdir(below, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	outs := map[string]string{"below": filepath.Join(below, "recovered.key")}
-	if link := filepath.Join(t.TempDir(), "link"); ostest.Symlink(t, below, link) == nil {
-		outs["a link to a folder below"] = filepath.Join(link, "recovered.key")
-	}
-	for name, where := range outs {
-		_, err := runSecretKey(t, config, "restore-key", "--out", where, "--password-file", pw)
-		if err == nil || exitCode(err) != ExitConfig || !strings.Contains(err.Error(), "outside the data directory") {
-			t.Errorf("--out %s: %v (status %d), want a refusal", name, err, exitCode(err))
-		}
-		if _, err := os.Lstat(filepath.Join(below, "recovered.key")); !os.IsNotExist(err) {
-			t.Errorf("--out %s wrote inside the data directory: %v", name, err)
-		}
-	}
 	// A second key in the data directory is a refusal with or without --out (rule 3).
 	if err := os.WriteFile(filepath.Join(dir, core.SecretKeyFile), key, 0o600); err != nil {
 		t.Fatal(err)
@@ -402,5 +384,36 @@ func TestResetRefusesASecondKeyInTheDataDirectoryWhileTheConfiguredKeyIsMissing(
 	defer h.Close()
 	if check, err := core.CheckKey(context.Background(), h.Store, key); err != nil || !check.All() || check.Total != 2 {
 		t.Errorf("after the refused reset the key opens %+v, %v; want both values", check, err)
+	}
+}
+
+// A folder below the data directory is inside it, and so is a link to such a folder: --out refuses both (rule 13).
+func TestRestoreKeyOutRefusesAFolderBelowTheDataDirectory(t *testing.T) {
+	cases := map[string]func(t *testing.T, below string) string{
+		"below": func(t *testing.T, below string) string { return filepath.Join(below, "recovered.key") },
+		"a link to a folder below": func(t *testing.T, below string) string {
+			link := filepath.Join(t.TempDir(), "link")
+			if err := ostest.Symlink(t, below, link); err != nil {
+				t.Skipf("no symbolic links here: %v", err)
+			}
+			return filepath.Join(link, "recovered.key")
+		},
+	}
+	for name, outAt := range cases {
+		t.Run(name, func(t *testing.T) {
+			dir, config, _, _ := stoppedHostWithAKeyOutside(t)
+			mustRunSecretKey(t, config, "backup-key", "--password-file", passwordFile(t, recoveryPassword))
+			below := filepath.Join(dir, "below")
+			if err := os.Mkdir(below, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			_, err := runSecretKey(t, config, "restore-key", "--out", outAt(t, below), "--password-file", passwordFile(t, recoveryPassword))
+			if err == nil || exitCode(err) != ExitConfig || !strings.Contains(err.Error(), "outside the data directory") {
+				t.Errorf("err = %v (status %d), want a refusal that asks for a file outside the data directory", err, exitCode(err))
+			}
+			if got := listed(t, below); len(got) != 0 {
+				t.Errorf("--out wrote inside the data directory: %v", got)
+			}
+		})
 	}
 }
