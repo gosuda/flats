@@ -888,7 +888,10 @@ func TestASnapshotThatIsBusy(t *testing.T) {
 		busy, hold time.Duration
 		retries    bool // the writer lets go after the first try failed and before the last one ends
 	}{
-		"a later try succeeds":     {1 * time.Second, 3 * time.Second, true},
+		// The three tries end at about d+2 s, d+4 s and d+6 s after the lock, where d is the time that Run needs to get
+		// from step 14 to the snapshot. The lock goes at 3 s: inside the second try for any d from 0 to 1 s, a margin
+		// of 1 s on each side that does not depend on timer precision.
+		"a later try succeeds":     {2 * time.Second, 3 * time.Second, true},
 		"the third try also fails": {200 * time.Millisecond, 3 * time.Second, false},
 	} {
 		t.Run(name, func(t *testing.T) {

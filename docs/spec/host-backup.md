@@ -311,7 +311,8 @@ flats backup --verify PATH [--json]
     `--verify` with that version. A `-wal`, `-shm` or `-journal` file beside
     `flats.db` fails the check, and the command then does not open `flats.db` in
     a way that could create a `-shm`. A copy made by this command holds none of
-    them.
+    them. This failure exits with status 1, not with the refusal of status 78,
+    because the command does not read the schema version of such a database.
 26. **Manifest.** `manifest.json` must exist, name a format that this version
     knows (`format` is `1`), and list every file below `PATH` with its size and
     SHA-256. A listed file that is missing, a file below `PATH` that is not listed
@@ -349,7 +350,9 @@ flats backup --verify PATH [--json]
     the copy (rule 19), a changed key (rule 22), a failed verification, and an
     input or output error such as a full disk. A failure that a second run can
     clear says so: "run the backup again".
-31. A refusal writes nothing. A failure leaves nothing at `PATH`.
+31. A refusal writes nothing at `PATH`, and the only file that it can create
+    anywhere is the empty `-shm` that the schema refusal of rule 12 can leave
+    beside the database of a stopped host. A failure leaves nothing at `PATH`.
 
 ## Consistency and its limits
 
