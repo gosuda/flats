@@ -273,7 +273,7 @@ it as a file and name it with `host.secret_key_path`
 The host only reads that file and never creates it, so a read-only mount works.
 The container user `65532` must be able to read it. A bind-mounted file keeps its
 own owner and mode on the host, so give it to that user, for example
-`sudo chown 65532 flats.key && chmod 0400 flats.key`.
+`sudo chown 65532 flats.key && sudo chmod 0400 flats.key`.
 
 Stop the container, move the key out of the volume, and set the path with
 one-off containers on the same volume. The last command is the one that you
@@ -284,7 +284,7 @@ docker stop flats
 (umask 077; docker run --rm -v flats-data:/data:ro alpine cat /data/secret.key > flats.key)
 docker run --rm -v flats-data:/data alpine rm /data/secret.key
 docker run --rm -v flats-data:/data ghcr.io/gosuda/flats:latest config set host.secret_key_path /run/secrets/flats.key
-sudo chown 65532 flats.key && chmod 0400 flats.key
+sudo chown 65532 flats.key && sudo chmod 0400 flats.key
 docker rm flats
 docker run -d --name flats --restart unless-stopped \
   -v flats-data:/data -v "$PWD/flats.key:/run/secrets/flats.key:ro" \
@@ -316,7 +316,7 @@ docker compose stop flats
 container=$(docker compose ps -a -q flats)
 (umask 077; docker run --rm --volumes-from "$container":ro alpine:3.22 cat /data/secret.key > flats.key)
 docker run --rm --volumes-from "$container" alpine:3.22 rm /data/secret.key
-sudo chown 65532 flats.key && chmod 0400 flats.key
+sudo chown 65532 flats.key && sudo chmod 0400 flats.key
 docker compose run --rm --no-deps flats config set host.secret_key_path /run/secrets/flats.key
 docker compose up -d --wait
 ```

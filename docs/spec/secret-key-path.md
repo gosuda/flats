@@ -225,10 +225,10 @@ call it, so they still work when the location is in one of those states.
     that only the service process can see, such as a systemd `LoadCredential=`
     file under `$CREDENTIALS_DIRECTORY`, or a Docker secret that is mounted into
     the service container, is missing for a process outside the service. A
-    command that runs inside the container with `docker exec`, and a one-off
-    container from `docker compose run`, which mounts the secrets of its service,
-    sees the secret. A container from plain `docker run` and a process on the
-    host do not. For such a key, `flats backup`
+    command that runs inside the container with `docker exec` sees the secret. So
+    does a one-off container from `docker compose run`, which mounts the secrets
+    of its service. A container from plain `docker run` and a process on the host
+    do not. For such a key, `flats backup`
     needs `--exclude-secret-key`, `restore-key` needs `--out`, and the other key
     commands cannot run unless the operator gives them the same mount. The docs
     say this, and they show a deployment that works for every command, a plain

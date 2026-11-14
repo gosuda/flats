@@ -349,7 +349,7 @@ func (k *secretKeyCmd) reset(args []string) error {
 		k.printf("deleted %d values.\n", total)
 	}
 	if keyMissing && keyFile.Configured() {
-		k.printf("The next start needs a key at %s, because Flats never creates a key at a configured path. Put a new key there, for example with `head -c 32 /dev/urandom > %s`, before you start the host.\n", keyPath, keyPath)
+		k.printf("The next start needs a key at %s, because Flats never creates a key at a configured path. Put a new key of 32 bytes there%s before you start the host.\n", keyPath, core.NewKeyHint(keyPath))
 	} else if keyMissing {
 		why := "to keep a recovery copy of the new key"
 		if _, err := os.Lstat(filepath.Join(dataDir, core.RecoveryKeyFile)); err == nil {

@@ -116,7 +116,7 @@ func (k KeyFile) readConfigured() ([]byte, error) {
 				ErrKeyLocation, KeySetting, k.path, KeySetting)
 		}
 		return nil, fmt.Errorf("%w: %s names %s, and nothing is there. Flats never creates a key at a configured path. Put a key of 32 bytes there%s, restore it with `flats secret restore-key`, or clear the setting with `flats config unset %s`",
-			ErrKeyLocation, KeySetting, k.path, newKeyHint(k.path), KeySetting)
+			ErrKeyLocation, KeySetting, k.path, NewKeyHint(k.path), KeySetting)
 	}
 	b, err := readSecretKey(k.path)
 	if err != nil {
@@ -144,9 +144,9 @@ func (k KeyFile) Restore(key []byte) error {
 	return durable.SyncDir(filepath.Dir(k.path))
 }
 
-// newKeyHint is the shell line that makes a key, for a system that has /dev/urandom. Windows gets none: the
-// docs give a PowerShell line there.
-func newKeyHint(path string) string {
+// NewKeyHint is the shell line that makes a key at path, in the form " (for example `...`)", for a system
+// that has /dev/urandom. Windows gets "": the docs give a PowerShell line there.
+func NewKeyHint(path string) string {
 	if runtime.GOOS == "windows" {
 		return ""
 	}

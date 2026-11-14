@@ -355,3 +355,34 @@ func TestKeyCommandsFindTheSettingWithData(t *testing.T) {
 		t.Errorf("reset --data: err = %v, want a refusal that names the configured key", err)
 	}
 }
+
+// reset deletes values only when the key at the location is missing or opens none of them. A second key in the data
+// directory is a refusal of rule 3 first, also when the configured key is missing: the host would not start with two keys,
+// and reset must not delete values on the way (rule 14).
+func TestResetRefusesASecondKeyInTheDataDirectoryWhileTheConfiguredKeyIsMissing(t *testing.T) {
+	dir, config, key, keyPath := stoppedHostWithAKeyOutside(t)
+	if err := os.Remove(keyPath); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, core.SecretKeyFile), key, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := runSecretKey(t, config, "reset", "--yes")
+	if err == nil || exitCode(err) != ExitConfig || !strings.Contains(err.Error(), "move that file away") {
+		t.Fatalf("reset: err = %v (status %d), want the refusal of the second key", err, exitCode(err))
+	}
+	if err := os.Remove(filepath.Join(dir, core.SecretKeyFile)); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(keyPath, key, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	h, err := Start(context.Background(), configModeOptions(config))
+	if err != nil {
+		t.Fatalf("the values did not survive the refused reset: %v", err)
+	}
+	defer h.Close()
+	if check, err := core.CheckKey(context.Background(), h.Store, key); err != nil || !check.All() || check.Total != 2 {
+		t.Errorf("after the refused reset the key opens %+v, %v; want both values", check, err)
+	}
+}
