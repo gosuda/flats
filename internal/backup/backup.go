@@ -16,6 +16,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gosuda/flats/internal/notebook"
 	"github.com/gosuda/flats/internal/store"
 )
 
@@ -112,6 +113,11 @@ func Run(ctx context.Context, o Options) (res *Result, err error) {
 	}
 	// Last, because it is the one refusal that opens a database, and that can create a -shm file (rule 11).
 	if err := checkSchema(flatsDB); err != nil {
+		return nil, err
+	}
+	// Once, here, before any goroutine: the snapshots of one attempt open connections together, and the driver's
+	// table of collations is not safe against a registration that overlaps an open (a data race that CI found).
+	if err := notebook.RegisterCollation(); err != nil {
 		return nil, err
 	}
 	var token [4]byte

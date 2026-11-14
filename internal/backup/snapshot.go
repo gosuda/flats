@@ -17,7 +17,6 @@ import (
 
 	_ "modernc.org/sqlite" // pure-Go SQLite driver
 
-	"github.com/gosuda/flats/internal/notebook"
 	"github.com/gosuda/flats/internal/sqliteuri"
 )
 
@@ -93,11 +92,8 @@ func (c *copier) skipLocked(rel, reason string) {
 // creates with mode 0600 first: VACUUM INTO accepts an empty file. It opens the
 // connection first, with the busy timeout, and calls gate, when there is one, just before the statement.
 func vacuumInto(ctx context.Context, src, dst, kind string, busy time.Duration, gate func()) error {
-	if kind == KindNotebook {
-		if err := notebook.RegisterCollation(); err != nil {
-			return err
-		}
-	}
+	// It does not register the collation of a notebook database: Run does that before it starts a goroutine,
+	// because the driver's table of collations is not safe against a registration that overlaps an open.
 	if err := os.MkdirAll(filepath.Dir(dst), 0o700); err != nil {
 		return err
 	}
