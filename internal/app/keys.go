@@ -13,7 +13,6 @@ import (
 	"github.com/gosuda/flats/internal/config"
 	"github.com/gosuda/flats/internal/core"
 	"github.com/gosuda/flats/internal/expose/provider"
-	"github.com/gosuda/flats/internal/expose/zrok"
 	"github.com/gosuda/flats/internal/store"
 )
 
@@ -277,7 +276,7 @@ func (h *Host) hostKeys(ctx context.Context) ([]KeyInfo, error) {
 			k.ExternalDiffers, k.ExternalGiven = differs, given
 		case core.HostKeyZrok:
 			k.Managed = h.Config.Zrok.Environment == ""
-			a, err := zrok.Describe(h.zrokOptions.Environment)
+			a, err := zrokDescribe(h.zrokOptions.Environment)
 			if err != nil {
 				k.LastError = err.Error()
 			}
@@ -516,7 +515,7 @@ func (h *Host) zrokEnrollable() (bool, string) {
 	if h.Config.Zrok.Environment != "" {
 		return false, "zrok.environment names an environment managed with the zrok CLI"
 	}
-	a, err := zrok.Describe(h.zrokOptions.Environment)
+	a, err := zrokDescribe(h.zrokOptions.Environment)
 	if err != nil {
 		return false, err.Error()
 	}

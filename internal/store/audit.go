@@ -219,13 +219,7 @@ func OpenAuditReader(path string) (*AuditReader, error) {
 	if info.Version != info.Latest {
 		return nil, fmt.Errorf("open %s: %w: version %d, expected %d", path, ErrAuditSchema, info.Version, info.Latest)
 	}
-	query := "?mode=ro&immutable=1"
-	for _, side := range []string{path + "-wal", path + "-journal"} {
-		if _, err := os.Stat(side); err == nil {
-			query = "?mode=ro"
-		}
-	}
-	db, err := sql.Open("sqlite", fileURI(path)+query+"&_pragma=busy_timeout(5000)")
+	db, err := sql.Open("sqlite", fileURI(path)+auditReadQuery(path)+"&_pragma=busy_timeout(5000)")
 	if err != nil {
 		return nil, err
 	}
@@ -235,6 +229,17 @@ func OpenAuditReader(path string) (*AuditReader, error) {
 		return nil, fmt.Errorf("open %s: %w", path, err)
 	}
 	return &AuditReader{db: db}, nil
+}
+
+// auditReadQuery is the query of the read-only open of path (rule 22): plain, so that the write-ahead log is read,
+// whenever a -wal or -journal file exists, whatever its size, and immutable only when neither exists.
+func auditReadQuery(path string) string {
+	for _, side := range []string{path + "-wal", path + "-journal"} {
+		if _, err := os.Stat(side); err == nil {
+			return "?mode=ro"
+		}
+	}
+	return "?mode=ro&immutable=1"
 }
 
 // Close closes the reader.
