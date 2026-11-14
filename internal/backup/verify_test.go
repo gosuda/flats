@@ -255,6 +255,22 @@ func TestVerifyFindsAMissingBlob(t *testing.T) {
 	}
 }
 
+// A notebook names its blobs in the assets table of notebook.db, as a board does (rule 27).
+func TestVerifyFindsAMissingBlobOfANotebook(t *testing.T) {
+	t.Parallel()
+	f := populated(t)
+	h := f.blob("n", "revisions", "notebook asset")
+	f.sql("flats/n/notebook/notebook.db", `INSERT INTO assets(hash) VALUES('`+h+`')`)
+	_, out := f.mustRun("c1")
+	blob := filepath.Join(out, "data", "flats", "n", "revisions", "blobs", h[:2], h)
+	if err := os.Remove(blob); err != nil {
+		t.Fatal(err)
+	}
+	rehash(t, out)
+	rel, _ := filepath.Rel(out, blob)
+	wantFailure(t, failuresOf(t, out), filepath.ToSlash(rel), "needs it")
+}
+
 func TestVerifyChecksSealedValuesAgainstTheKey(t *testing.T) {
 	t.Parallel()
 	_, out := goodCopy(t)

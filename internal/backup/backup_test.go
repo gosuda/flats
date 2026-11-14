@@ -890,9 +890,10 @@ func TestASnapshotThatIsBusy(t *testing.T) {
 		retries    bool // the writer lets go after the first try failed and before the last one ends
 	}{
 		// The three tries end at about d+2 s, d+4 s and d+6 s after the lock, where d is the time that Run needs to get
-		// from step 14 to the snapshot. The lock goes at 3 s: inside the second try for any d from 0 to 1 s, a margin
-		// of 1 s on each side that does not depend on timer precision.
-		"a later try succeeds":     {2 * time.Second, 3 * time.Second, true},
+		// from step 14 to the snapshot (tens of milliseconds). The lock goes at 4 s. The first try must still fail, which
+		// holds while d < 2 s, so the margin on that side is 2 s - d. The third try must not end before the release, which
+		// holds for every d >= 0 with a margin of 2 s + d. Neither margin depends on timer precision.
+		"a later try succeeds":     {2 * time.Second, 4 * time.Second, true},
 		"the third try also fails": {200 * time.Millisecond, 3 * time.Second, false},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -982,5 +983,38 @@ func TestAPreviewPathThatIsGoneIsSkippedAtAnyDepth(t *testing.T) {
 	var rerun *RerunError
 	if err := c.copyFile("tsnet/missing.json", classHost); !errors.As(err, &rerun) {
 		t.Errorf("a host file that is gone: err = %v, want a failure to run again", err)
+	}
+}
+
+// A database that was not in the group joins it when the check finds it (rule 16). With maxGroup 1, two of the three
+// outbox databases lie outside the group and are snapshotted once, before flats.db. The flat of one of them is written
+// after that snapshot, so the first attempt fails and the retry must snapshot that database together with flats.db.
+func TestAnOutboxDatabaseOutsideTheGroupJoinsItOnTheRetry(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	for _, s := range []string{"a", "b", "c"} {
+		f.board(s, "st"+s, 3, 3)
+	}
+	o := f.options("c1")
+	o.maxGroup = 1 // the group holds a, the first flat by name; b and c are outside it
+	const rel = "flats/c/board/board.db"
+	changed := false
+	o.afterSnapshot = func(snapshotted string) {
+		if snapshotted == rel && !changed {
+			changed = true
+			f.sql(rel, `INSERT INTO outbox(created_at) VALUES(0)`, `DELETE FROM outbox`)
+			f.setCursor("c", 4)
+		}
+	}
+	res, err := f.run(o)
+	if err != nil || res.Attempts != 2 || res.Retries != 1 {
+		t.Fatalf("Run = %+v, %v; want two attempts and one retry", res, err)
+	}
+	st, err := readOutbox(context.Background(), filepath.Join(res.Out, "data", filepath.FromSlash(rel)), typeBoard)
+	if err != nil || st.last != 4 {
+		t.Errorf("the copy of c reaches %d, %v; want 4, the database snapshotted again", st.last, err)
+	}
+	if got, err := Verify(context.Background(), res.Out); err != nil || len(got.Failures) > 0 {
+		t.Errorf("Verify = %+v, %v", got, err)
 	}
 }
