@@ -38,7 +38,7 @@ func TestAnalyticsPeriodAndLifecycle(t *testing.T) {
 	if err != nil || len(pages) != 2 || pages[0].Path != "/" || pages[0].Count != 3 || pages[1].Count != 2 {
 		t.Fatalf("renamed page totals: %+v, %v", pages, err)
 	}
-	if err := s.DeleteFlat(ctx, "notes"); err != nil {
+	if err := s.DeleteFlat(ctx, "notes", Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	pages, err = s.TopPages(ctx, "notes", "2026-01-01")

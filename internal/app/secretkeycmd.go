@@ -100,11 +100,22 @@ func (k *secretKeyCmd) backup(args []string) error {
 		verb = "replaced"
 	}
 	k.printf("%s %s and its key ID in %s\n", verb, filepath.Join(dataDir, core.RecoveryKeyFile), core.RecoveryKeyIDFile)
+	var outErr error
 	if outPath != "" {
 		if err := writeNewFile(outPath, data); err != nil {
-			return fmt.Errorf("--out %s: %w; the copy in %s stays", outPath, err, dataDir)
+			outErr = fmt.Errorf("--out %s: %w; the copy in %s stays", outPath, err, dataDir)
+		} else {
+			k.printf("wrote %s\n", outPath)
 		}
-		k.printf("wrote %s\n", outPath)
+	}
+	// The event follows the work, and the work stays when the event cannot be written (rule 17).
+	ev := store.AuditEvent{Time: time.Now(), Kind: store.AuditKeyBackup, Via: store.AuditViaCommand, Actor: operatorUser(),
+		Data: store.AuditData(map[string]any{"key_id": core.KeyID(key), "out": outPath != "" && outErr == nil})}
+	if err := store.AppendAuditBeside(k.ctx, filepath.Join(dataDir, "flats.db"), ev); err != nil {
+		return errors.Join(outErr, fmt.Errorf("the recovery copy in %s was written, and the audit event %s was not recorded: %w", dataDir, ev.Kind, err))
+	}
+	if outErr != nil {
+		return outErr
 	}
 	k.printf("Flats keeps no copy of the password. Without it the recovery file opens nothing; keep it apart from this host.\n")
 	return nil
@@ -239,7 +250,7 @@ func (k *secretKeyCmd) restore(args []string) error {
 			return fmt.Errorf("--out %s: %w; nothing was written at the key path", outPath, err)
 		}
 		k.printf("wrote the recovered key to %s with mode 0600 from %s; the host reads its key at %s. Put the key there, or in the secret store behind that path, and remove %s\n", outPath, src, keyPath, outPath)
-		return nil
+		return k.auditRestore(st, key, true, check, outPath)
 	}
 	if err := keyFile.Restore(key); err != nil {
 		if os.IsExist(err) {
@@ -251,6 +262,17 @@ func (k *secretKeyCmd) restore(args []string) error {
 		return err
 	}
 	k.printf("restored %s from %s; the host can start\n", keyPath, src)
+	return k.auditRestore(st, key, false, check, keyPath)
+}
+
+// auditRestore appends the key.restore event after the key was written to file. A failure follows rule 17 of the
+// audit spec: the work stays, and the error says so.
+func (k *secretKeyCmd) auditRestore(st *store.Store, key []byte, out bool, check core.KeyCheck, file string) error {
+	ev := store.AuditEvent{Time: time.Now(), Kind: store.AuditKeyRestore, Via: store.AuditViaCommand, Actor: operatorUser(),
+		Data: store.AuditData(map[string]any{"key_id": core.KeyID(key), "out": out, "opened": check.Opened, "total": check.Total})}
+	if err := st.AppendAudit(k.ctx, ev); err != nil {
+		return fmt.Errorf("the key was written to %s, and the audit event %s was not recorded: %w", file, ev.Kind, err)
+	}
 	return nil
 }
 
@@ -337,7 +359,7 @@ func (k *secretKeyCmd) reset(args []string) error {
 	// Once the delete starts it completes and is made durable, also when an
 	// interrupt arrives meanwhile.
 	write := context.WithoutCancel(k.ctx)
-	if err := st.DeleteSealedValues(write, events); err != nil {
+	if err := st.DeleteSealedValues(write, events, commandAudit()); err != nil {
 		return err
 	}
 	// The delete has committed, so the command reports it and the next steps

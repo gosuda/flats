@@ -87,7 +87,7 @@ func hostWithSecrets(t *testing.T, dir string) (string, []byte, *Host) {
 	if err := h.Svc.SetSecret(ctx, "app", "API_KEY", "hunter2-value", core.ViaCLI); err != nil {
 		t.Fatal(err)
 	}
-	if err := core.PutHostKeyValue(ctx, core.NewKeyFile(dir, ""), h.Store, core.HostKeyZrok, "zrok-token", core.KeySourceCLI, time.Now()); err != nil {
+	if err := core.PutHostKeyValue(ctx, core.NewKeyFile(dir, ""), h.Store, core.HostKeyZrok, "zrok-token", core.KeySourceCLI, time.Now(), store.Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	key, err := os.ReadFile(filepath.Join(dir, core.SecretKeyFile))
@@ -320,7 +320,7 @@ func TestSecretReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A connected account keeps a record without a value.
-	if err := h.Store.PutHostKey(ctx, store.HostKey{ID: core.HostKeyNetbird, Source: core.KeySourceCLI, UpdatedAt: time.Now()}); err != nil {
+	if err := h.Store.PutHostKey(ctx, store.HostKey{ID: core.HostKeyNetbird, Source: core.KeySourceCLI, UpdatedAt: time.Now()}, store.Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	// reset refuses while the host runs, also with nothing at secret.key,
@@ -367,7 +367,7 @@ func TestSecretReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	bogus := store.SealedSecret{Name: "BOGUS", Nonce: make([]byte, 12), Ciphertext: make([]byte, 20), UpdatedAt: time.Now()}
-	if err := st.PutSecret(ctx, "app", bogus); err != nil {
+	if err := st.PutSecret(ctx, "app", bogus, store.Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	st.Close()
@@ -379,7 +379,7 @@ func TestSecretReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	// An operator key that does not open comes first, while stopped.
-	if err := st.PutHostKey(ctx, store.HostKey{ID: core.HostKeyTailscale, Nonce: make([]byte, 12), Ciphertext: make([]byte, 20), Source: core.KeySourceCLI, UpdatedAt: time.Now()}); err != nil {
+	if err := st.PutHostKey(ctx, store.HostKey{ID: core.HostKeyTailscale, Nonce: make([]byte, 12), Ciphertext: make([]byte, 20), Source: core.KeySourceCLI, UpdatedAt: time.Now()}, store.Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	st.Close()
@@ -391,10 +391,10 @@ func TestSecretReset(t *testing.T) {
 	if st, err = store.Open(filepath.Join(dir, "flats.db")); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.DeleteSecret(ctx, "app", "BOGUS"); err != nil {
+	if err := st.DeleteSecret(ctx, "app", "BOGUS", store.Audit{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.DeleteHostKey(ctx, core.HostKeyTailscale); err != nil {
+	if err := st.DeleteHostKey(ctx, core.HostKeyTailscale, store.Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	st.Close()

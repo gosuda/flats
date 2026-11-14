@@ -188,7 +188,7 @@ func resolveStoredKey(ctx context.Context, keyFile core.KeyFile, st *store.Store
 	}
 	switch {
 	case stored == "" && in.given():
-		if err := core.PutHostKeyValue(ctx, keyFile, st, id, in.value, in.source, now); err != nil {
+		if err := core.PutHostKeyValue(ctx, keyFile, st, id, in.value, in.source, now, store.Audit{Via: store.AuditViaStart, From: in.source}); err != nil {
 			return "", false, err
 		}
 		logf("stored the %s from %s in flats.db", keyLabel[id], in.from)
@@ -319,7 +319,7 @@ func (h *Host) SetTailscaleKey(ctx context.Context, key string) error {
 	}
 	h.keyMu.Lock()
 	defer h.keyMu.Unlock()
-	if err := core.PutHostKeyValue(ctx, h.keyFile(), h.Store, core.HostKeyTailscale, key, core.KeySourceConsole, time.Now()); err != nil {
+	if err := core.PutHostKeyValue(ctx, h.keyFile(), h.Store, core.HostKeyTailscale, key, core.KeySourceConsole, time.Now(), consoleAudit(ctx)); err != nil {
 		return err
 	}
 	h.tsKeyDiffers = h.tsKeyExternal != "" && !core.SameKey(h.tsKeyExternal, key)
@@ -337,7 +337,7 @@ func (h *Host) SetTailscaleKey(ctx context.Context, key string) error {
 func (h *Host) DeleteTailscaleKey(ctx context.Context) error {
 	h.keyMu.Lock()
 	defer h.keyMu.Unlock()
-	if err := h.Store.DeleteHostKey(ctx, core.HostKeyTailscale); err != nil {
+	if err := h.Store.DeleteHostKey(ctx, core.HostKeyTailscale, consoleAudit(ctx)); err != nil {
 		return err
 	}
 	h.tsKeyDiffers = false
@@ -362,7 +362,7 @@ func (h *Host) SetNetbirdKey(ctx context.Context, key string) error {
 		return fmt.Errorf("%w: %v", core.ErrUnavailable, err)
 	}
 	h.keyMu.Lock()
-	if err := core.PutHostKeyValue(ctx, h.keyFile(), h.Store, core.HostKeyNetbird, key, core.KeySourceConsole, time.Now()); err != nil {
+	if err := core.PutHostKeyValue(ctx, h.keyFile(), h.Store, core.HostKeyNetbird, key, core.KeySourceConsole, time.Now(), consoleAudit(ctx)); err != nil {
 		h.keyMu.Unlock()
 		return err
 	}
@@ -383,7 +383,7 @@ func (h *Host) SetNetbirdKey(ctx context.Context, key string) error {
 // peer that must register afterwards fails until a key is registered.
 func (h *Host) DeleteNetbirdKey(ctx context.Context) error {
 	h.keyMu.Lock()
-	if err := h.Store.DeleteHostKey(ctx, core.HostKeyNetbird); err != nil {
+	if err := h.Store.DeleteHostKey(ctx, core.HostKeyNetbird, consoleAudit(ctx)); err != nil {
 		h.keyMu.Unlock()
 		return err
 	}
@@ -416,7 +416,12 @@ func (h *Host) currentTailscaleKey(ctx context.Context) (string, error) {
 // It runs after the connection succeeded and must not fail it; a waiting
 // value it could not clear is cleared at the next start (clearConnected).
 func (h *Host) recordConnection(ctx context.Context, id, source string) {
-	if err := h.Store.PutHostKey(context.WithoutCancel(ctx), store.HostKey{ID: id, Source: source, UpdatedAt: time.Now()}); err != nil {
+	audit := store.Audit{Via: store.AuditViaStart, Reason: "connected"}
+	if source == core.KeySourceConsole {
+		audit = consoleAudit(ctx)
+		audit.Reason = "connected"
+	}
+	if err := h.Store.PutHostKey(context.WithoutCancel(ctx), store.HostKey{ID: id, Source: source, UpdatedAt: time.Now()}, audit); err != nil {
 		h.logf("record the %s connection: %v; the waiting key is removed at the next start", id, err)
 	}
 }
@@ -429,14 +434,14 @@ func (h *Host) clearConnected(ctx context.Context, id string) {
 		return
 	}
 	r.Nonce, r.Ciphertext, r.LastError = nil, nil, ""
-	if err := h.Store.PutHostKey(ctx, r); err != nil {
+	if err := h.Store.PutHostKey(ctx, r, store.Audit{Via: store.AuditViaStart, Reason: "connected"}); err != nil {
 		h.logf("remove the used %s key: %v", id, err)
 	}
 }
 
 // forgetConnection removes the connection record of a disconnected account.
 func (h *Host) forgetConnection(ctx context.Context, id string) {
-	if err := h.Store.DeleteHostKey(ctx, id); err != nil {
+	if err := h.Store.DeleteHostKey(ctx, id, consoleAudit(ctx)); err != nil {
 		h.logf("forget the %s connection: %v", id, err)
 	}
 }

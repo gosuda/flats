@@ -15,6 +15,7 @@ import (
 
 	"github.com/gosuda/flats/internal/core"
 	"github.com/gosuda/flats/internal/ostest"
+	"github.com/gosuda/flats/internal/store"
 )
 
 // docs/spec/secret-key-path.md: host.secret_key_path keeps the host key outside the data directory.
@@ -264,7 +265,7 @@ func TestOperatorKeysReadTheConfiguredFileAtEachUse(t *testing.T) {
 		t.Errorf("a second key in the data directory: err = %v, want a refusal", err)
 	}
 	// Sealing a new operator key goes through the same location.
-	if err := core.PutHostKeyValue(ctx, h2.keyFile(), h2.Store, core.HostKeyTailscale, keyA, core.KeySourceConsole, time.Now()); err == nil {
+	if err := core.PutHostKeyValue(ctx, h2.keyFile(), h2.Store, core.HostKeyTailscale, keyA, core.KeySourceConsole, time.Now(), store.Audit{}); err == nil {
 		t.Error("an operator key was sealed while two keys existed")
 	}
 }

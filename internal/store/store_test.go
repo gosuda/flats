@@ -53,7 +53,7 @@ func TestRenameCascadesAndRedirectWindow(t *testing.T) {
 	s.CreateFlat(ctx, Flat{Slug: "old", Name: "o", Visibility: Private, CreatedAt: now, UpdatedAt: now})
 	s.InsertVersion(ctx, Version{Flat: "old", Number: 1, Hash: "h", Kind: "static", Manifest: []byte("{}"), CreatedAt: now, Published: true})
 	s.AddEvent(ctx, Event{Flat: "old", Time: now, Level: "info", Kind: "x", Message: "m"})
-	s.PutSecret(ctx, "old", SealedSecret{Name: "K", Nonce: []byte{1}, Ciphertext: []byte{2}, UpdatedAt: now})
+	s.PutSecret(ctx, "old", SealedSecret{Name: "K", Nonce: []byte{1}, Ciphertext: []byte{2}, UpdatedAt: now}, Audit{})
 	if err := s.RenameFlat(ctx, "old", "new", now.Add(7*24*time.Hour), now); err != nil {
 		t.Fatal(err)
 	}
@@ -285,7 +285,7 @@ func TestFlatIDFollowsTheFlat(t *testing.T) {
 	if err := s.RenameFlat(ctx, "moved", "same", time.Time{}, now); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.DeleteFlat(ctx, "same"); err != nil {
+	if err := s.DeleteFlat(ctx, "same", Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	// Same slug, same millisecond: still another flat.

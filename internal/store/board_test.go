@@ -63,7 +63,7 @@ func TestBoardRevisionRows(t *testing.T) {
 	if stats, _ := s.BoardRevStats(ctx, "roadmap", 1, 2); stats[2].Added != 2 {
 		t.Fatalf("stats after rename = %v", stats)
 	}
-	if err := s.DeleteFlat(ctx, "roadmap"); err != nil {
+	if err := s.DeleteFlat(ctx, "roadmap", Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	var rows int

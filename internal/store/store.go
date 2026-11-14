@@ -574,31 +574,67 @@ func (s *Store) RenameFlat(ctx context.Context, from, to string, till, now time.
 	return tx.Commit()
 }
 
-// DeleteFlat removes a flat and everything attached to it.
-func (s *Store) DeleteFlat(ctx context.Context, slug string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	// Usage rows are keyed by the flat's ID: delete them before the flat row
-	// that names it, so a recreated slug starts with no usage.
-	if _, err := tx.ExecContext(ctx, `DELETE FROM usagedays WHERE flat_uid IN (SELECT uid FROM flats WHERE slug=? AND uid IS NOT NULL AND uid<>'')`, slug); err != nil {
-		return err
-	}
-	res, err := tx.ExecContext(ctx, `DELETE FROM flats WHERE slug=?`, slug)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return fmt.Errorf("flat %q: %w", slug, ErrNotFound)
-	}
-	for _, q := range []string{`DELETE FROM events WHERE flat=?`, `DELETE FROM pageviews WHERE flat=?`} {
-		if _, err := tx.ExecContext(ctx, q, slug); err != nil {
-			return err
+// DeleteFlat removes a flat and everything attached to it. The secrets of the flat go with it, and each one
+// writes a secret.delete audit event in the same transaction (rule 9 of docs/spec/audit-events.md), with the
+// channel flat-delete and the approval of a.Approval, when there is one.
+func (s *Store) DeleteFlat(ctx context.Context, slug string, a Audit) error {
+	_, err := s.immediate(ctx, func(x executor) (bool, error) {
+		uid, err := flatUID(ctx, x, slug)
+		if err != nil {
+			return false, err
 		}
+		names, err := secretNames(ctx, x, slug)
+		if err != nil {
+			return false, err
+		}
+		// Usage rows are keyed by the flat's ID: delete them before the flat row
+		// that names it, so a recreated slug starts with no usage.
+		if _, err := x.ExecContext(ctx, `DELETE FROM usagedays WHERE flat_uid IN (SELECT uid FROM flats WHERE slug=? AND uid IS NOT NULL AND uid<>'')`, slug); err != nil {
+			return false, err
+		}
+		res, err := x.ExecContext(ctx, `DELETE FROM flats WHERE slug=?`, slug)
+		if err != nil {
+			return false, err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return false, fmt.Errorf("flat %q: %w", slug, ErrNotFound)
+		}
+		for _, q := range []string{`DELETE FROM events WHERE flat=?`, `DELETE FROM pageviews WHERE flat=?`} {
+			if _, err := x.ExecContext(ctx, q, slug); err != nil {
+				return false, err
+			}
+		}
+		for _, name := range names {
+			e := Audit{Time: a.Time, Via: AuditViaFlatDelete}.event(AuditSecretDelete)
+			e.Flat, e.FlatID, e.Name = slug, uid, name
+			if a.Approval != "" {
+				e.Data = AuditData(map[string]any{"approval": a.Approval})
+			}
+			if err := appendAudit(ctx, x, e); err != nil {
+				return false, err
+			}
+		}
+		return true, nil
+	})
+	return err
+}
+
+// secretNames lists the names of the secrets of a flat.
+func secretNames(ctx context.Context, x executor, flat string) ([]string, error) {
+	rows, err := x.QueryContext(ctx, `SELECT name FROM secrets WHERE flat=? ORDER BY name`, flat)
+	if err != nil {
+		return nil, err
 	}
-	return tx.Commit()
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var n string
+		if err := rows.Scan(&n); err != nil {
+			return nil, err
+		}
+		out = append(out, n)
+	}
+	return out, rows.Err()
 }
 
 // --- redirects ---
@@ -1127,23 +1163,49 @@ type SealedSecret struct {
 	UpdatedAt  time.Time
 }
 
-// PutSecret stores an encrypted secret.
-func (s *Store) PutSecret(ctx context.Context, flat string, sec SealedSecret) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO secrets(flat,name,nonce,ciphertext,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(flat,name) DO UPDATE SET nonce=excluded.nonce, ciphertext=excluded.ciphertext, updated_at=excluded.updated_at`,
-		flat, sec.Name, sec.Nonce, sec.Ciphertext, unix(sec.UpdatedAt))
-	return envWriteError(err)
+// PutSecret stores an encrypted secret and writes its secret.set audit event in the same transaction.
+func (s *Store) PutSecret(ctx context.Context, flat string, sec SealedSecret, a Audit) error {
+	_, err := s.immediate(ctx, func(x executor) (bool, error) {
+		uid, err := flatUID(ctx, x, flat)
+		if err != nil {
+			return false, err
+		}
+		var existed bool
+		if err := x.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM secrets WHERE flat=? AND name=?)`, flat, sec.Name).Scan(&existed); err != nil {
+			return false, err
+		}
+		if _, err := x.ExecContext(ctx, `INSERT INTO secrets(flat,name,nonce,ciphertext,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(flat,name) DO UPDATE SET nonce=excluded.nonce, ciphertext=excluded.ciphertext, updated_at=excluded.updated_at`,
+			flat, sec.Name, sec.Nonce, sec.Ciphertext, unix(sec.UpdatedAt)); err != nil {
+			return false, envWriteError(err)
+		}
+		e := a.event(AuditSecretSet)
+		e.Flat, e.FlatID, e.Name = flat, uid, sec.Name
+		e.Data = AuditData(map[string]any{"created": !existed})
+		return true, appendAudit(ctx, x, e)
+	})
+	return err
 }
 
-// DeleteSecret removes a secret.
-func (s *Store) DeleteSecret(ctx context.Context, flat, name string) error {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM secrets WHERE flat=? AND name=?`, flat, name)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return fmt.Errorf("secret %q: %w", name, ErrNotFound)
-	}
-	return nil
+// DeleteSecret removes a secret and writes its secret.delete audit event in the same transaction. A name that does
+// not exist changes nothing and writes nothing.
+func (s *Store) DeleteSecret(ctx context.Context, flat, name string, a Audit) error {
+	_, err := s.immediate(ctx, func(x executor) (bool, error) {
+		uid, err := flatUID(ctx, x, flat)
+		if err != nil {
+			return false, err
+		}
+		res, err := x.ExecContext(ctx, `DELETE FROM secrets WHERE flat=? AND name=?`, flat, name)
+		if err != nil {
+			return false, err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return false, fmt.Errorf("secret %q: %w", name, ErrNotFound)
+		}
+		e := a.event(AuditSecretDelete)
+		e.Flat, e.FlatID, e.Name = flat, uid, name
+		return true, appendAudit(ctx, x, e)
+	})
+	return err
 }
 
 // FlatSecret is a sealed secret with the flat it belongs to.
@@ -1175,24 +1237,73 @@ func (s *Store) ListAllSecrets(ctx context.Context) ([]FlatSecret, error) {
 
 // DeleteSealedValues deletes every flat secret and every operator key record
 // that holds a value, and adds events, in one transaction. A key record that
-// only records a connection stays.
-func (s *Store) DeleteSealedValues(ctx context.Context, events []Event) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	for _, q := range []string{`DELETE FROM secrets`, `DELETE FROM host_keys WHERE ciphertext IS NOT NULL`} {
-		if _, err := tx.ExecContext(ctx, q); err != nil {
-			return err
+// only records a connection stays. Each value written off writes its own audit event
+// and one key.reset event counts them (rule 14 of docs/spec/audit-events.md).
+func (s *Store) DeleteSealedValues(ctx context.Context, events []Event, a Audit) error {
+	_, err := s.immediate(ctx, func(x executor) (bool, error) {
+		type flatSecretName struct{ flat, uid, name string }
+		var secrets []flatSecretName
+		rows, err := x.QueryContext(ctx, `SELECT s.flat, COALESCE(f.uid,''), s.name FROM secrets s LEFT JOIN flats f ON f.slug=s.flat ORDER BY s.flat, s.name`)
+		if err != nil {
+			return false, err
 		}
-	}
-	for _, e := range events {
-		if _, err := addEvent(ctx, tx, e); err != nil {
-			return err
+		for rows.Next() {
+			var v flatSecretName
+			if err := rows.Scan(&v.flat, &v.uid, &v.name); err != nil {
+				rows.Close()
+				return false, err
+			}
+			secrets = append(secrets, v)
 		}
-	}
-	return tx.Commit()
+		if err := rows.Close(); err != nil {
+			return false, err
+		}
+		var keys []string
+		krows, err := x.QueryContext(ctx, `SELECT id FROM host_keys WHERE ciphertext IS NOT NULL ORDER BY id`)
+		if err != nil {
+			return false, err
+		}
+		for krows.Next() {
+			var id string
+			if err := krows.Scan(&id); err != nil {
+				krows.Close()
+				return false, err
+			}
+			keys = append(keys, id)
+		}
+		if err := krows.Close(); err != nil {
+			return false, err
+		}
+		for _, q := range []string{`DELETE FROM secrets`, `DELETE FROM host_keys WHERE ciphertext IS NOT NULL`} {
+			if _, err := x.ExecContext(ctx, q); err != nil {
+				return false, err
+			}
+		}
+		for _, e := range events {
+			if _, err := addEvent(ctx, x, e); err != nil {
+				return false, err
+			}
+		}
+		for _, v := range secrets {
+			e := a.event(AuditSecretDelete)
+			e.Flat, e.FlatID, e.Name = v.flat, v.uid, v.name
+			if err := appendAudit(ctx, x, e); err != nil {
+				return false, err
+			}
+		}
+		for _, id := range keys {
+			e := a.event(AuditKeyDelete)
+			e.Name = id
+			e.Data = AuditData(map[string]any{"reason": "removed"})
+			if err := appendAudit(ctx, x, e); err != nil {
+				return false, err
+			}
+		}
+		reset := a.event(AuditKeyReset)
+		reset.Data = AuditData(map[string]any{"secrets": len(secrets), "keys": len(keys)})
+		return true, appendAudit(ctx, x, reset)
+	})
+	return err
 }
 
 // ListSecrets returns sealed secrets of a flat.

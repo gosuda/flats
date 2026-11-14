@@ -48,7 +48,7 @@ func (h *Host) prepareNetbird(ctx context.Context, dataDir string, keyFile core.
 	// A row without a value is the connection record of the shared peer;
 	// a row with one (a waiting enrollment) is now the stored key.
 	if row, err := st.GetHostKey(ctx, core.HostKeyNetbird); err == nil && !row.HasValue() {
-		if err := st.DeleteHostKey(ctx, core.HostKeyNetbird); err != nil {
+		if err := st.DeleteHostKey(ctx, core.HostKeyNetbird, store.Audit{Via: store.AuditViaStart}); err != nil {
 			return err
 		}
 	} else if err != nil && !errors.Is(err, store.ErrNotFound) {
