@@ -30,7 +30,7 @@ the evidence.
 | Import and export safety (decisions 7 and 8) | Limits checked on the zip directory, then while streaming. A counting pass before the first write. Text cells stay typed text in xlsx, and CSV export escapes (section 14) |
 | Compatibility (decision 9) | [Rule 16](sheet.md#formulas) with the details of section 9 |
 | Limits (decision 10) | [Rule 13](sheet.md#content) and the budgets of section 22 |
-| Large work | Import, export, a rollback, a large duplication and opening an earlier revision are jobs: off the writer, applied in slices, with progress and cancel. A host restart cancels them (section 13) |
+| Large work | Import, export, a rollback, a large duplication and opening an earlier revision are jobs: off the writer, applied in slices, with progress and cancel. A large sort plans off the writer and applies in one writer item (section 13.7). A host restart cancels them (section 13) |
 | Reads | The browser reads windows of at most 512 KiB at a writer barrier. Agent pages and History use one disk-backed snapshot reader, as the notebook does (section 16) |
 | Find | A scan of the string table, then an index from strings to cells, and an index of formulas with text results. It looks in text inputs and text results, not in numbers. No full-text index in S1 (section 20) |
 | Browser | Plain JavaScript modules and a grid of plain DOM that holds only the rows near the viewport, as S0 measured (section 19) |
@@ -373,6 +373,24 @@ filled copies of `VLOOKUP(x, $A$1:$B$90000, 2, 0)` store one range. Sharing
 is found by a lookup when a formula is stored and is not enforced: two rows
 with the same ends are allowed.
 
+A whole-column range has no end rows, and a whole-row range has no end
+columns, so a new row or column never changes it. It covers the whole grid of
+its worksheet, as in Excel ([rule 17](sheet.md#formulas)): the positions 1 to
+1,048,576, or 1 to 16,384 for a whole-row range. A position past the last row
+(or column) that the worksheet has reads as empty. A function that reads the
+range directly reads only the rows (or columns) that exist. `ROWS` and
+`COLUMNS` of such a range give the grid size, and `COUNTBLANK` counts the blank
+positions of the grid without a read of the rows that do not exist, as do
+`COUNTIF` and `COUNTIFS` with a criterion that matches blank cells. With several criteria, the count is
+over the grid positions that match all of them, computed from the rows that
+exist. `INDEX` and
+`MATCH` address the positions of the grid. An array that an expression builds
+from a whole column holds a value for each position, so it has 1,048,576
+values for each column, counts them toward the work limit of
+[rule 21](sheet.md#formulas), and costs their time. The blank flag and the
+marking of section 7.4 do not change, because they only mark more than they
+need.
+
 The parser limits a formula to 8,192 characters of A1 text, a parse tree of
 height 128, 64 nested function calls and 255 arguments per call. A typed
 formula that names ids, with `@`, `#` followed by digits, or `!nm`, is
@@ -399,14 +417,16 @@ given row or column as an end without a scan.
 |---|---|---|
 | `formulas` | `(sheet, row, col)` | One row for each formula cell, with `flags`: reads `TODAY` or `NOW` (the time flag); calls `ROW`, `COLUMN`, `ROWS` or `COLUMNS` with any argument or none, or reads a position inside a range with `INDEX`, `MATCH`, `VLOOKUP`, `HLOOKUP` or `XLOOKUP` (the position flag); reads a range other than as the direct argument of `SUM`, `PRODUCT`, `AVERAGE`, `MIN`, `MAX`, `COUNT`, `COUNTA`, `MEDIAN`, `LARGE`, `SMALL`, `STDEV` or `VAR` and their variants, so that blank cells can change its result (the blank flag) |
 | `pos_formulas` | `(ssheet, fsheet, frow, fcol)` | One row for each worksheet that a formula with the position flag reads, and one for its own worksheet when it calls `ROW` or `COLUMN` without an argument, so that a structure edit of a worksheet finds those formulas without a scan |
-| `refs` | `(ssheet, srow, scol, fsheet, frow, fcol)` | Formula f reads cell s |
+| `refs` | `(ssheet, srow, scol, fsheet, frow, fcol)` | Formula f reads cell s. A second index on `(ssheet, scol, srow, fsheet, frow, fcol)` finds the formulas that read any cell of a column without a scan, for `delete_cols` and a large sort |
 | `uses` | `(range, fsheet, frow, fcol)` | Formula f reads the range |
 
 A name is a node of these tables in worksheet 0 (section 6.4).
 
 Storing a formula writes its rows in the transaction of the edit. The cost
 depends on the references of that formula, not on the workbook. S0 measured
-61 bytes for a formula with two cell references.
+61 bytes for a formula with two cell references. The second index of `refs`
+adds about 22 bytes for them, so the design counts 83 bytes until it is
+measured (section 26).
 
 ### 6.4 Names
 
@@ -484,7 +504,7 @@ operation writes which record. The kinds are:
 | Kind | Source | Dependents that the marker marks |
 |---|---|---|
 | `cell` | One cell, by ids. The name nodes of section 6.4 are cells of worksheet 0 | The formulas that read it through `refs`, and the formulas whose range holds it (section 7.4) |
-| `ids` | Rows or columns, by id, whose cells were deleted or came back | The same, for every cell of those rows or columns, found by key prefix in `refs`, and the formulas whose range holds their keys |
+| `ids` | Rows or columns, by id, whose cells were deleted, came back, or were moved by a large sort (section 13.7) | The same, for every cell of those rows or columns, found by key prefix in `refs` for rows and by its second index for columns (section 6.3), and the formulas whose range holds their keys |
 | `range` | One range, by id, that the stab of section 7.4 found | The formulas that use it, found through `uses` |
 | `sheet` | One worksheet that was deleted or came back | The formulas that read any cell of it, found by key prefix in `refs` and `uses` |
 | `struct` | One worksheet whose rows or columns were inserted, deleted, moved or created, and a flag for edits that only add blank rows or columns | Every formula with a range over the worksheet, found through `uses`, every formula of `pos_formulas` for it (section 6.3), and every name node that reads a cell or a range of the worksheet, with all its users, whatever their flags, because a name hides what its users read. With the blank flag, the formulas found through `uses` and `pos_formulas` are only those that have the blank flag or the position flag |
@@ -526,8 +546,9 @@ its recalculation then gives the same result.
   again by the new record, because their `mseq` is lower. A `struct`, `ids`
   or `sheet` record that has not started absorbs a later record of the same
   kind for the same worksheet in the same way: the blank flag stays only if
-  both had it, the id lists are joined, and the merged record takes the greater
-  `seq` and the later `root`. A burst of structure edits then
+  both had it, the id lists are joined (an `ids` record holds row ids or column
+  ids, and absorbs only a record of the same axis), and the merged record
+  takes the greater `seq` and the later `root`. A burst of structure edits then
   costs one marking plus at most one that has started.
 - **Overload.** Two bounds keep the work list from staying open for ever.
   An edit that would leave more than 10,000 open roots is refused as
@@ -699,6 +720,7 @@ the limits of [rule 13](sheet.md#content): at most 100,000 cells and at most
 | Operation | Records written by the edit |
 |---|---|
 | `set_cells`, `clear`, `fill`, `copy`, paste, `sort`, `merge` | A `cell` record for each cell whose input or formula changed, including the cells that a merge clears and the cells that a sort moves, and a `dirty` row for each formula cell that was written, because it has no current result |
+| A large sort (section 13.7) | One `ids` record with the column ids of the sorted range, and a `dirty` row for each formula cell that it wrote. No `cell` record, so the records stay bounded by the number of columns |
 | `set_format`, `set_rows`, `set_cols` (sizes, hidden flags, formats), `set_sheet`, `move_sheet`, `add_sheet` | None. A format or a size changes no result |
 | `duplicate_sheet` | None for the existing worksheets. Every formula of kind 5 of the copy gets a `dirty` row, on both paths of section 10.2 |
 | `insert_rows`, `insert_cols`, and a write that creates blank rows or columns below or right of the last one | A `struct` record with the blank flag |
@@ -949,8 +971,10 @@ implementer needs to make the conformance corpus pass.
 
 **Values.** An evaluation works with numbers (`float64`), text, booleans,
 error values, the empty value, references to a cell or range, and arrays. An
-array exists only inside an evaluation, holds at most 1,048,576 values, and
-counts toward the work limit. A formula whose final value is an array or a
+array exists only inside an evaluation, holds at most 4,194,304 values (four
+whole columns), and counts toward the work limit. An array above that gives
+`#LIMIT!`, which differs from Excel, and each intermediate array of an
+expression counts its values toward the work limit. A formula whose final value is an array or a
 range of more than one cell gives `#VALUE!`
 ([rule 15](sheet.md#formulas)).
 
@@ -1047,7 +1071,8 @@ rows and columns it will create, delete or move. A `set_cells` below the last
 row of a worksheet creates the blank rows between, and they count. More than
 100,000 cells, or more than 100,000 rows or columns, in one action or agent
 call is refused as `sheet_capacity` with the limit named
-([rule 13](sheet.md#content)). Deleting a whole worksheet counts as one. The count of a range
+([rule 13](sheet.md#content)), except that a `sort` of up to 2,000,000 cells is a
+large sort (section 13.7). Deleting a whole worksheet counts as one. The count of a range
 operation is the number of cells that exist in the range plus the number it
 will create, read from the primary key of `cells`. It stops at the limit plus
 one, so a refused operation costs at most that many key reads.
@@ -1111,7 +1136,7 @@ changed by someone else and is left alone
 ([rule 44](sheet.md#editing-in-the-browser)). The undo of a sort is one unit:
 it is applied only if no cell of the sorted range changed after the sort, and
 otherwise it is refused whole with the notice of rule 44, so it never loses a
-value that nobody deleted.
+value that nobody deleted. A large sort stores no entry (section 13.7).
 
 A session keeps 100 entries and 64 MiB. A sheet keeps 256 MiB for all
 sessions, counted against the disk quota. An action whose inverse would pass
@@ -1145,7 +1170,10 @@ therefore waits for at most one unit. Among background units, the classes
 that have work (result batches, marker slices, load slices, maintenance) take
 turns, one unit each, so no class starves another. When foreground items keep
 arriving, one background unit still runs after every tenth foreground
-transaction, so background work always goes forward.
+transaction, so background work always goes forward. The Apply item of a
+large sort (section 13.7) is the one foreground item that holds the writer for
+longer than a unit, by decision of the requester
+([rule 41](sheet.md#editing-in-the-browser)).
 
 Receipts, sessions, exactly-once replay and the bounded 64 KiB outcome follow
 the notebook: a browser receipt is keyed by `(session, n)`, an agent command
@@ -1320,7 +1348,7 @@ dirty row file is charged as 24 bytes for each of its cells plus its text
 until it is encoded, at most 32,768 cells and their text for each file.
 
 An import reserves its whole need before its first write, from the counting
-pass. For the database: 26 bytes for each cell, 36 for each row, 61 for each
+pass. For the database: 26 bytes for each cell, 36 for each row, 83 for each
 formula, and the bytes of each distinct text once. For the revision files:
 the same terms again, but with the bytes of each text counted for every cell
 that holds it, because a revision writes the text in full (section 12.2).
@@ -1337,7 +1365,7 @@ disk itself is full.
 
 A job is work that is too long for one request: an xlsx or CSV import, an
 export, a rollback that rebuilds worksheets, the duplication of a large
-worksheet, and opening an earlier revision.
+worksheet, a sort of more than 100,000 cells, and opening an earlier revision.
 The base has no such thing: board import and data restore run inside their
 request.
 
@@ -1354,8 +1382,8 @@ request.
 - Starting a job returns its id at once. Progress goes to Private
   connections at most 4 times per second, and `get_sheet` with the job id
   reads it. Starting with an `op_id` that was used before returns that job.
-- A sheet runs one import, rollback or large duplication at a time. A second
-  start is refused as `conflict` and names the running job.
+- A sheet runs one import, rollback, large duplication or large sort at a
+  time. A second start is refused as `conflict` and names the running job.
 - Cancel is possible in every phase before the switch.
 - When the instance opens and finds a running job, it marks it interrupted,
   deletes its hidden worksheets through `garbage`, and deletes its uploaded
@@ -1463,6 +1491,50 @@ limits of [rule 13](sheet.md#content) always fits one scratch database. The
 scratch database holds each text once, and the limits keep its size below
 about 3.3 GiB (26 bytes for each of 20,000,000 cells, 36 bytes for each of
 20,000,000 rows, and at most 2 GiB of text).
+
+### 13.7 Large sort
+
+A `sort` of more than 100,000 cells and at most 2,000,000 cells
+([rule 41](sheet.md#editing-in-the-browser)) is a job. A person confirms it
+first, and the confirmation says that writes to the sheet pause during the
+apply. An agent starts it with the option `large` as the only operation of its
+call (section 18.4).
+
+| Phase | Does |
+|---|---|
+| Count | The count of section 10.2 for the range, as a read. It refuses a range of more than 2,000,000 cells as `sheet_capacity` and a range that holds part of a merged range |
+| Plan | Opens one read transaction, as an export does (section 13.4), and records the structure sequence of the worksheet. It reads the sort keys of the range, a formula by its stored result as of that transaction (a pending formula by its last result, [rule 12](sheet.md#content)), computes the order of the rows, which it keeps in memory (at most 4 MiB for 1,048,576 rows), and computes a SHA-256 digest of the keys in row order. The keys stay in memory only up to 128 MiB, and a sort with more key bytes is refused as `sheet_capacity` with that limit named. Other people keep editing |
+| Settle | If more than 8 files of the range are dirty, or sealed and not yet encoded, the job closes the open edit group as a revision once, in one writer item as the switch does ([rule 55](sheet.md#concurrency-rules)), and then waits until the encoder has encoded the files that are sealed (section 11.1). It ends as `unavailable` after 10 minutes. It closes no further group, so a stream of edits cannot fill the revision quota ([rule 70](sheet.md#revisions)). Other people keep editing. A job that ends after a Settle leaves the revision that it closed in the history and changes no content |
+| Apply | One writer item. It first counts the files of the range that are dirty or sealed and not yet encoded, and asks the bounds of section 7.2 and the quota check of [rule 79](sheet.md#lifecycle-and-access). It is put back, as an edit is (section 11.1), if that count is more than 8 or if a bound of section 7.2 refuses it, and the job ends as `unavailable` after 10 minutes put back. A refusal by the quota check ends the job at once with nothing changed. The item then reads the keys of the range again and checks four things: the worksheet is live and not deleted, its structure sequence equals the one of the Plan, the digest of the keys equals the digest of the Plan, and no merged range holds part of the range. If one fails, the job ends as `conflict` with the reason and nothing changed. Otherwise the item closes the open edit group in its own transaction, so that the revision before the sort holds the workbook as of just before the apply, and it encodes the at most 8 files that this boundary sealed and that it touches. It then moves the inputs and formats between the rows by the order, renders each moved formula as A1 text at its old place and stores it again at its new place (section 6.2), writes a `dirty` row for each formula cell that it wrote and one `ids` record with the column ids of the range (section 7.5), raises the structure sequence of the worksheet, and tells every connection to read the worksheet again |
+
+The guard is the digest, not the row `ver` of section 18.3. An edit of a cell
+that is not a key, a format change, and a change of a row height do not stop
+the sort, because the Apply moves the current content of each row. A change of
+a key cell does, and so does a new stored result of a key formula. A key
+formula that the host is still calculating, after an import or a large edit,
+can therefore end the job as `conflict` until its results are current.
+
+The Apply item holds the writer, so every other write to the sheet waits for
+it and then runs in order. It takes about 10 seconds for 2,000,000 cells
+without formulas, at 200,000 cells per second as [rule 41](sheet.md#editing-in-the-browser)
+states (one row of `cells` for each cell, section 10.2), about 1 second more to
+read 1,000,000 keys again, and about 40 seconds for 2,000,000 formulas with
+two references each. Nobody has measured these estimates (section 26). The
+marker does not run during the apply. If its work list was open before the
+apply, the 60 second bound of section 7.2 can therefore refuse edits right
+after it.
+
+The `ids` record marks the readers of every cell of its columns, not only of
+the sorted rows. A sort of a few rows in a tall column therefore marks more
+than it needs, about 4 seconds for each 1,000,000 readers (section 7.1). After
+the apply the marker works as after any record (section 7), so formulas that
+read the range show pending for seconds.
+
+A large sort has no entry in `undo`, because its inverse would pass 16 MiB
+(section 10.4). The way back is a rollback to the revision that the Apply item
+closed ([rule 71](sheet.md#revisions)). Cancel is possible in the Count, Plan
+and Settle phases. A host restart before the Apply commits leaves the sheet as
+it was.
 
 ## 14. xlsx and CSV
 
@@ -1846,6 +1918,12 @@ The tool starts the job (section 13) and returns its state, after waiting
 up to `wait_ms` for it to end. `get_sheet` with `job` reads progress and the
 import report. There is no MCP export tool, as there is none for boards.
 
+A `sort` operation with the option `large` is the only operation of its call.
+It starts the job of section 13.7 and returns its state like `import_sheet`,
+after waiting up to `wait_ms`, and `get_sheet` with `job` reads its progress. A
+`sort` of more than 100,000 cells without `large` is refused as
+`sheet_capacity`, and the message names the option.
+
 The CLI streams the file as the request body, as `flats board import` does:
 
 ```sh
@@ -2015,9 +2093,11 @@ otherwise.
 | Text cell; formula text; nesting; arguments | 32,767; 8,192 characters; 64; 255 | Excel's limits |
 | Parse tree height | 128 | Parser |
 | Cells one formula may read | 50,000,000 | `#LIMIT!` above it |
-| Values in one array inside an evaluation | 1,048,576 | Counts toward the line above |
+| Values in one array inside an evaluation | 4,194,304 | Counts toward the line above |
 | Stored data per workbook | 2 GiB | Fixed after measurement |
 | Cells changed by one action or agent call | 100,000 | Fixed after measurement (section 26) |
+| Cells in one large sort | 2,000,000 | Fixed after measurement (section 26) |
+| Sort key bytes that one large sort holds in memory | 128 MiB | Fixed after measurement |
 | Operations per call or action | 500 | Admission bound |
 | Assembled browser action; agent operation JSON | 8 MiB, 32 parts, 30 seconds; 8 MiB | Admission bound |
 | Row keys rewritten by one rebalance | 65,536 | Section 4.2 |
@@ -2098,7 +2178,7 @@ unit includes its own executable checks.
 | 6. Durability and quota | Writer, receipts, seals and the encoder, outbox, reservation formula. A revision is exact across a kill at every step |
 | 7. Core and metadata | Type registration, migration 25, creation recovery, revision import, retention, sweep, lifecycle |
 | 8. xlsx and CSV | Reader, writer, limits. The hostile corpus is refused inside the memory bound, and the round-trip corpus holds |
-| 9. Jobs | Import, switch, export, rollback, earlier revisions. A kill in each phase leaves the sheet unchanged |
+| 9. Jobs | Import, switch, export, rollback, earlier revisions, large sort. A kill in each phase leaves the sheet unchanged, and a large sort whose range is edited during its plan ends as `conflict` and changes nothing |
 | 10. Live transport and access | Windows, deltas, result refresh, receipts over reconnect, Public projection tests |
 | 11. Grid client | Grid, scroll model, selection, grid semantics for screen readers, themes, phone width |
 | 12. Editing client | Editor and composition, clipboard, fill, action series, menus, dialogs, find, History |
@@ -2188,7 +2268,7 @@ formula conformance corpus needs one manual step by the requester (section
 
 S0 found three statements whose plan was right on small data and wrong at
 1,000,000 rows. Every statement of the edit, mark, read and calculation
-paths has a test that pins its plan with `EXPLAIN QUERY PLAN`. A fixture of
+paths has a test that pins its plan with `EXPLAIN QUERY PLAN`. The lookup of the formulas that read a column, through the second index of `refs`, is one of them. A fixture of
 1,048,576 rows runs the position, edit, insert, mark and window paths in the
 memory job, without race instrumentation. A second fixture holds a chain of
 1,100,000 formulas whose links run against the key order. After an edit of
@@ -2318,7 +2398,12 @@ measurement that settles it.
    action whole, because lowering the limit would break the plan's case. The
    plan's case also needs an action size above 8 MiB for 100,000 cells of long
    text: measure the assembled size of such a paste, and either raise the
-   admission bound or state that only ordinary cells fit.
+   admission bound or state that only ordinary cells fit. The large sort of
+   section 13.7 adds two measurements: the apply time at 2,000,000 cells, without
+   formulas and with formulas, which fixes the limit of 2,000,000 cells and the
+   pause that people see, and the wait of the Apply item for the encoder when
+   it touches many sealed files (item 6). Measure also the storage and the write
+   cost that the second index of `refs` adds to a formula (section 6.3).
 4. **Long chains.** Section 8.2 replaces the stored order that S0 asked for with
    a calculator that keeps its state. Measure a chain of 1,000,000 formulas
    against the key order on the real engine. If the work for each formula

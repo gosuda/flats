@@ -108,7 +108,9 @@ review cycle. S3 and S4 do not depend on each other and can swap.
    stab). These limits do not grow with the number of formulas that read the
    edited cell. Work that is large by nature (an import, an export,
    a recalculation of a million formulas) runs in the background with
-   progress, goes forward only, and can be stopped.
+   progress, goes forward only, and can be stopped. The one exception is
+   the apply of a large sort (rule 41), which pauses writes to the sheet for
+   seconds.
 5. **A cell runs no code.** A formula uses a fixed set of built-in
    functions. A sheet holds no macros and no script, and it never requests
    an outside resource. Custom functions (S4) will get their own rules.
@@ -285,13 +287,16 @@ review cycle. S3 and S4 do not depend on each other and can swap.
     - Sort order: numbers, then text without regard to letter case, then
       `FALSE`, then `TRUE`, then error values in their existing order.
       Empty cells come last in both directions. Ties keep their order.
+    - A formula is sorted by its result as of the start of the sort. A
+      formula that is pending then counts with its last result.
     - A sort moves inputs and formats between the rows of the range. Rows
       keep their ids, so a formula outside the range that reads a cell of
       the range still reads that position and now sees the new content. A
       formula inside the range moves with its row and its relative
       references move with it, as in a copy.
-    - A sort is one action, bounded by the cell limit of one action (rule
-      13). A range that holds part of a merged range is refused.
+    - A sort is one action. A sort of at most the cell limit of one action
+      (rule 13) applies at once. A sort of more cells is a large sort (rule
+      41). A range that holds part of a merged range is refused.
 13. **Limits.** Limits apply to the current workbook, and the host refuses
     an edit or import that exceeds one, whole, with the name of the limit.
     The grid size and the cell total are decided. The other numbers are S1
@@ -312,8 +317,9 @@ review cycle. S3 and S4 do not depend on each other and can swap.
     | Distinct cell formats per workbook | 65,490 |
     | Merged ranges per worksheet | 100,000 |
     | Names per workbook | 10,000 |
-    | Stored data per workbook: the text of each cell counted once for every cell that holds it, and 26 bytes for each cell, 36 for each row and 61 for each formula | 2 GiB |
+    | Stored data per workbook: the text of each cell counted once for every cell that holds it, and 26 bytes for each cell, 36 for each row and 83 for each formula | 2 GiB |
     | Cells changed by one action or one agent call. Measurement may raise this number and may not lower it | 100,000 |
+| Cells in one large sort, which runs as a job (rule 41). Measurement may raise this number and may not lower it | 2,000,000 |
     | Rows or columns created, deleted or moved by one action or one agent call, and blank rows that a write below the last row creates | 100,000 |
     | Requests of a Public viewer over the rates that the technical design fixes. A request over a rate is refused with a retry hint | The rates of the technical design |
     | Edits waiting for the host to finish marking their dependents, and the time that this work has been open without a break. A write over either is refused with a retry hint | 10,000 edits; 60 seconds |
@@ -417,7 +423,19 @@ review cycle. S3 and S4 do not depend on each other and can swap.
       gives `#REF!`. If the deletion is undone, or the item comes back
       with its id through a rollback, the reference works again.
     - A whole column or row reference includes rows or columns added
-      later.
+      later. It covers the whole grid of the worksheet, as in Excel:
+      `ROWS(A:A)` is 1,048,576, `COLUMNS(1:1)` is 16,384, `COUNTBLANK(A:A)`
+      counts the blank cells of the whole column, and a row that does not
+      exist yet reads as empty. A function that reads the reference directly,
+      such as `SUM` or `COUNTIF`, reads only the rows that the worksheet has.
+      An array expression over a whole column, such as `A:A=""` inside
+      `SUMPRODUCT`, holds a value for each of the 1,048,576 positions and
+      costs the time of them, as in Excel. `COUNTIF` and `COUNTIFS` with a
+      criterion that matches blank cells count the blank positions of the
+      grid, as `COUNTBLANK` does. With several criteria, the count is over
+      the grid positions that match all of them, computed from the rows that
+      exist. An array of more than 4,194,304 values gives `#LIMIT!`, which
+      differs from Excel.
     - Copying or filling a formula moves its relative parts by the same
       distance and keeps its absolute parts. A relative part that would
       leave the worksheet becomes `#REF!`.
@@ -453,7 +471,9 @@ review cycle. S3 and S4 do not depend on each other and can swap.
 21. **Work limit of one formula.** A formula may read a limited number of
     cells in one calculation: 50,000,000 as the S1 target. A range counts
     the cells that exist in it, not its positions, so a sum over a whole
-    column of a large worksheet counts the cells that hold something. A formula over
+    column of a large worksheet counts the cells that hold something. An array
+    that an expression builds from a whole column counts a value for each
+    position of the grid. A formula over
     it gives `#LIMIT!`. The limit counts cells, not time, so the same
     workbook gives the same result on every host. `IFERROR` does not
     catch `#LIMIT!` or `#CIRC!`.
@@ -577,8 +597,8 @@ review cycle. S3 and S4 do not depend on each other and can swap.
     - S1 shows no rows of an import before it is complete. People keep
       seeing and editing the earlier workbook until the import replaces
       it.
-    - A sheet runs one import, rollback or large duplication at a time. A
-      second one is refused while the first runs.
+    - A sheet runs one import, rollback, large duplication or large sort
+      at a time. A second one is refused while the first runs.
     - A host restart cancels a running job. The sheet is as it was before
       the job, and the job's record says that it was interrupted.
 
@@ -657,7 +677,31 @@ Editing is available on Private routes only.
       progress and a way to stop. Stopping leaves the ranges already done. A part that the host refuses
       (a limit or the disk quota) stops the series in the same way, and the
       screen says which rows were done. One undo reverses what was done.
-    - A sort cannot be split. A sort over the cell limit is refused.
+    - A sort cannot be split. A sort of more cells than the cell limit of
+      one action, and at most the large-sort limit of rule 13, is a **large
+      sort**. It runs as a job (rule 30) after the person confirms it, and
+      the confirmation says that writes to the sheet pause. A sort of more
+      cells than the large-sort limit is refused.
+    - A large sort plans on one state of the worksheet while people keep
+      editing, and then applies in one step. The apply pauses every write to
+      the sheet, for about 5 seconds for each 1,000,000 cells, or about 20
+      seconds for each 1,000,000 cells that hold formulas. These are
+      estimates that the measurement of the technical design confirms.
+    - If a key of the sort, or the structure of the worksheet, changed
+      after the plan, or a merged range now holds part of the range, or the
+      worksheet was deleted, the job ends as `conflict` and changes no
+      content. A formula key that the host is still calculating can cause
+      this, because its stored result changes. An edit of another column
+      does not stop the sort, because the apply moves the current content of
+      each row. The person starts the sort again.
+    - A large sort closes the open edit group just before it applies, so
+      the workbook before the sort is a revision (rule 55). The host can
+      close the group once while it waits for the encoder, and a sort that
+      does not apply leaves that revision in the history. A large sort has
+      no undo entry. The way back is a rollback to the revision before the
+      sort (rule 71).
+    - An agent starts a large sort with the `sort` operation and the option
+      `large`, as the only operation of its call (rule 63).
 42. **Structure and formats.** Menus and keys insert, delete, move, resize,
     hide and show rows and columns; set the rule 7 formats; merge and
     unmerge; freeze rows and columns; sort a range; and manage worksheets
@@ -989,7 +1033,7 @@ reference data generators and the measurement scripts.
 | Scrolling | p95 frame time of 16.7 ms or less, on the reference workbook and on large workbook B. |
 | Remote display | p95 of 200 ms or less from the server receiving an edit to it showing on another editor's screen, while 5 people each edit twice per second. The formulas on that screen that the edit made pending show as pending or with their new results in a p95 of 500 ms or less. |
 | Concurrent editing | Under that load, every edit the concurrency rules say must apply stays, with the same result on every screen. |
-| Formula conformance | For a fixed corpus of xlsx files that Excel calculated and saved, every formula that uses only rule 14 syntax and rule 15 functions, and does not rely on implicit intersection, gets the result the file stores: equal text, booleans and error values, and numbers equal to 12 significant digits. The technical design fixes the generator of the corpus. |
+| Formula conformance | For a fixed corpus of xlsx files that Excel calculated and saved, every formula that uses only rule 14 syntax and rule 15 functions, does not rely on implicit intersection, and does not give `#LIMIT!` from an array over whole columns (rule 21), gets the result the file stores: equal text, booleans and error values, and numbers equal to 12 significant digits. The technical design fixes the generator of the corpus. |
 | Round trip | For a fixed corpus, rule 29 holds, and the first import report lists exactly the dropped parts and the formulas of rule 22. |
 | Import safety | A hostile corpus (zip bombs, oversized entries and texts, deep XML, encrypted files, a legacy file) is refused inside a fixed memory bound and changes nothing. |
 | Large import | Progress shows within 1 second of the host receiving the first bytes of the file. Large workbooks A and B import inside a fixed memory bound that does not depend on the row count. |
@@ -997,6 +1041,7 @@ reference data generators and the measurement scripts.
 | Large edit | On large workbook B, the host confirms an edit to the cell that 1,000,000 formulas read in a p95 of 200 ms or less. Formulas on screen that read it show new results in a p95 of 200 ms or less after that. Other people's edits are confirmed in a p95 of 200 ms or less while the host works on the rest. |
 | Large recalculation | After that edit, with no other load, every one of the 1,000,000 results is current within 120 seconds. Each of those formulas reads the edited cell and one cell of its own row. |
 | Long chain | On large workbook B, a column of 1,000,000 running balances forms a chain. After an edit of its first cell, every result is current within 600 seconds, and other people's edits are confirmed in a p95 of 200 ms or less meanwhile. |
+| Large sort | On large workbook B, a sort of 2,000,000 cells ends as `done` within 180 seconds, and its apply pauses the writes of other people for at most 60 seconds. A large sort that is refused, cancelled or interrupted, or that ends as `conflict`, changes no content. The criteria Remote display and Large edit exclude the pause of a large sort. |
 | Large export | Large workbooks A and B export inside the same memory bound. An export that starts while an edit is being marked waits for the marker and then runs. Importing each export again gives the same values in every cell, and Excel opens each file without a repair prompt and shows the same values for a fixed sample of ranges that the technical design names. |
 | Find | On large workbook B, the next match of two fixed texts, one rare and one common, shows in a p95 of 1 second or less. |
 | Reconnection | After disconnecting and reconnecting, each unconfirmed edit applies exactly once. |
@@ -1014,7 +1059,7 @@ views and filters, tables with table references, array formulas and
 results that fill several cells, `RAND`, `RANDBETWEEN`, `OFFSET` and
 `INDIRECT`, links to other workbooks, encrypted or password-protected
 files, the legacy `.xls` format, print layout and PDF, replace, find in numbers, a sort of
-more cells than one action allows, showing rows of an import before it is
+more cells than the large-sort limit, showing rows of an import before it is
 complete, an upload in parts for a file over `system.upload_max_bytes`,
 offline editing, anonymous guest editing, per-range permissions, notebook
 links (S2, S3) and custom functions (S4).
@@ -1039,9 +1084,10 @@ instead.
 ## Open questions
 
 The design made the choices of questions 3 to 17 inside what the plan left
-to it. The requester did not decide them. Each one has the design's answer as
-the proposal, and the requester confirms or changes it when the spec is
-accepted.
+to it. The requester decided them on 2026-11-14. Questions 3 to 13 and 15
+to 17 stand as written, and questions 14 and 16 changed as written below.
+The questions stay listed so that the reasons stay with the rules.
+Questions 1 and 2 are still open.
 
 1. **Limit numbers.** The limits of rule 13 that are not the grid size or
    the cell total, the work limit of rule 21 and the 120 seconds of the
@@ -1088,9 +1134,13 @@ accepted.
     point at one cell, one range or a constant, and keeps every other name
     as text. Rule 15 leaves out `RAND` and `RANDBETWEEN`, because their
     results change without an edit and without a seed.
-14. **Long chain and cell limit of a sort.** The 600 seconds of the long
-    chain criterion, and that a sort of more cells than one action allows is
-    refused, so a sort of large workbook B is not possible.
+14. **Long chain and large sort.** The 600 seconds of the long chain
+    criterion. The requester asked on 2026-11-14 that a sort may pass the
+    cell limit of one action. A sort of 100,001 to 2,000,000 cells is a large
+    sort, a job whose apply pauses every write to the sheet for seconds
+    (rule 41). A sort of more cells is refused, so a sort of large workbook
+    B (about 20,000,000 cells) is still not possible. A larger limit needs an
+    apply that does not pause writes, which S1 does not have.
 15. **Pending while marking.** After an edit of a cell with many
     dependents, formulas that the host cannot recalculate at once show as
     pending, and Public viewers see every formula as pending, while the host
@@ -1102,9 +1152,16 @@ accepted.
     stream lasts. A single edit whose marking takes longer than 60 seconds
     also causes the refusal. The alternative is to confirm the edit only
     after the marking, which fails the 200 ms criterion.
-16. **Find and whole columns.** Find does not look in numbers. A whole-column
-    reference reaches the rows that the worksheet has, so `ROWS(A:A)` is
-    the number of rows of the worksheet and not 1,048,576 as in Excel.
+16. **Whole columns and find.** The requester asked on 2026-11-14 that a
+    whole-column reference cover the whole grid, as in Excel. `ROWS(A:A)` is
+    1,048,576, `COLUMNS(1:1)` is 16,384, and a row that does not exist yet
+    reads as empty. A function that reads a whole column directly costs only
+    the rows that exist. An array expression over a whole column, such as
+    `SUMPRODUCT(--(A:A=""))`, holds all 1,048,576 positions and costs their
+    time, as in Excel. A lazy array that skips the empty positions would
+    remove that cost and is a new mechanism. Formulas that give `#LIMIT!`
+    from such an array, or from an array of more than 4,194,304 values, are
+    left out of the conformance criterion. Find does not look in numbers.
     Formulas that rely on implicit intersection give `#VALUE!`, and the
     conformance criterion leaves them out.
 17. **Many ranges in one column.** An edit that leaves a slice with more
