@@ -40,6 +40,7 @@ the full list.
 | [Design content type](spec/design-type.md) | Canvas of HTML artboards with live editing and revisions; background in [research](research/claude-artifacts-design.md) |
 | [Board content type](spec/board.md) | Infinite-canvas whiteboard people and agents edit together, with revisions; [technical design](spec/board-technical-design.md) |
 | [Notebook content type](spec/notebook.md) | Tree of pages with blocks and inline databases people and agents edit together, with revisions; [technical design](spec/notebook-technical-design.md) |
+| [Sheet content type](spec/sheet.md) | Workbook of worksheets with a cell grid, formulas, and xlsx and CSV import and export that people and agents edit together, with revisions; planned; [technical design](spec/sheet-technical-design.md) |
 
 ## Design and contracts
 
