@@ -140,8 +140,9 @@ review cycle. S3 and S4 do not depend on each other and can swap.
    position, a hidden flag, a number of frozen rows and of frozen columns,
    and a default row height and column width.
    - A name has 1 to 31 characters, none of `: \ / ? * [ ]`, and no
-     apostrophe at its start or end. Names are unique in the workbook
-     without regard to letter case.
+     apostrophe at its start or end. It is not `History`, which Excel
+     reserves, without regard to letter case. Names are unique in the
+     workbook without regard to letter case.
    - People add, rename, reorder, duplicate, hide, show and delete
      worksheets. A duplicate gets new ids and the name "<name> (2)".
      Formulas inside the duplicate that read its own source worksheet read
@@ -169,7 +170,7 @@ review cycle. S3 and S4 do not depend on each other and can swap.
    | Number | A finite IEEE 754 double. A date or a time is a number with a date or time format (rule 16) |
    | Text | Plain text of at most 32,767 characters |
    | Boolean | `TRUE` or `FALSE` |
-   | Error value | One of the seven error values of Excel in rule 16, typed or imported as a literal. `#CIRC!` and `#LIMIT!` come only from calculation and cannot be typed |
+   | Error value | One of the seven error values of rule 16, typed or imported as a literal. `#CIRC!` and `#LIMIT!` come only from calculation and cannot be typed. Excel has more error values, such as `#SPILL!` and `#GETTING_DATA` (rule 25) |
    | Formula | Formula text of at most 8,192 characters (rule 14). The cell also has a result |
 
    A cell with no input and no format is not stored. Cell text is plain
@@ -197,8 +198,18 @@ review cycle. S3 and S4 do not depend on each other and can swap.
 
    - A format comes with the value only when the cell has the General
      format. A cell that already has another format keeps it.
-   - A whole number of more than 15 digits stays text, because a double
-     would lose digits. Excel rounds such a number instead.
+   - A whole number of more than 15 digits stays text, so that no digit is
+     lost. Excel keeps 15 digits and changes every later digit to zero, so
+     `1234567890123456` becomes `1234567890123450`. Excel keeps all the
+     digits as text only when its automatic conversion of long numbers is
+     off.
+   - Three typed forms differ from Excel on purpose. A fraction such as
+     `1/2` and a date without a year, such as `JAN 1` or `11/13`, stay
+     text, so that a value never depends on the current date. Excel makes
+     them dates of the current year. A number typed into a cell with a
+     percent format keeps its typed value, so that the value of a typed
+     number never depends on the format of its cell. `10` therefore shows
+     as `1000%`, while Excel stores 0.1.
    - Leading and trailing spaces do not stop a number or date from being
      recognized. Text keeps its spaces.
    - Editing a text cell that these rules would read as something else
@@ -247,15 +258,18 @@ review cycle. S3 and S4 do not depend on each other and can swap.
    - An input written to another cell of the range is refused, for a
      person and for an agent. The editor selects the whole range and
      writes to its top-left cell.
-   - A sort (rule 12), and a move of rows or columns that would cut a
-     merged range in two or change its rectangle, is refused.
+   - The host refuses a sort whose range holds a merged range or part of
+     one (rule 12). It also refuses a move of rows or columns that would
+     cut a merged range in two or change its rectangle.
 10. **Names.** A name gives a cell, a range or a constant a word that
     formulas can use, as in `=SUM(Sales)`.
     - A name has a scope, which is the workbook or one worksheet, and is
       unique in its scope without regard to letter case. It has 1 to 255
       characters, starts with a letter, an underscore or a backslash,
       continues with letters, digits, underscores and periods, and is
-      neither a cell reference nor `TRUE` or `FALSE`.
+      not a cell reference in A1 or R1C1 form, such as `A1` or `R1C1`, not
+      `TRUE` or `FALSE`, and not one of the letters `C`, `c`, `R` and `r`.
+      Excel refuses the same names.
     - Its definition is one cell or one rectangular range of one
       worksheet, or one constant (a number, text or a boolean).
     - People add, rename, change and delete names in a Names dialog.
@@ -284,9 +298,24 @@ review cycle. S3 and S4 do not depend on each other and can swap.
 12. **Sort.** A sort orders the rows of one range by one or more of its
     columns, each ascending or descending, with an optional header row
     that does not move.
-    - Sort order: numbers, then text without regard to letter case, then
-      `FALSE`, then `TRUE`, then error values in their existing order.
-      Empty cells come last in both directions. Ties keep their order.
+    - Sort order: numbers, then text, then `FALSE`, then `TRUE`, then error
+      values in their existing order. Empty cells come last in both
+      directions. Ties keep their order.
+    - Text sorts without regard to letter case, in the order that Microsoft
+      documents for Excel. Digits come first, then the space and the other
+      ASCII punctuation in the order of Excel, then letters. This first
+      comparison reads the texts without their apostrophes and hyphens.
+    - Of two texts that differ only by a hyphen, the one with the hyphen
+      comes last, as in Excel.
+    - For other texts that the first comparison leaves equal, S1 puts the
+      text with fewer apostrophes and hyphens first. Texts that still differ
+      follow code-point order after case folding. This is an S1 choice,
+      because Microsoft documents no order for apostrophes. Every two texts
+      that differ after case folding therefore have one order.
+    - Every other character follows in code-point order, so Hangul sorts in
+      dictionary order. This part differs from Excel, whose order outside
+      ASCII depends on its region
+      ([technical design, section 9](sheet-technical-design.md#9-engine-semantics)).
     - A formula is sorted by its result as of the start of the sort. A
       formula that is pending then counts with its last result.
     - A sort moves inputs and formats between the rows of the range. Rows
@@ -296,7 +325,9 @@ review cycle. S3 and S4 do not depend on each other and can swap.
       references move with it, as in a copy.
     - A sort is one action. A sort of at most the cell limit of one action
       (rule 13) applies at once. A sort of more cells is a large sort (rule
-      41). A range that holds part of a merged range is refused.
+      41). The host refuses a range that holds a merged range or part of one.
+      Excel also sorts a range whose cells are all merged in blocks of one
+      size. S1 does not, so a sort never changes a merged range.
 13. **Limits.** Limits apply to the current workbook, and the host refuses
     an edit or import that exceeds one, whole, with the name of the limit.
     The grid size and the cell total are decided. The other numbers are S1
@@ -349,11 +380,25 @@ review cycle. S3 and S4 do not depend on each other and can swap.
       several worksheets and the space operator are not calculated (rule
       22).
     - A range where a single value is expected, as in `=A1:A10*2` in one
-      cell, gives `#VALUE!`. Excel files of earlier versions that rely on
-      implicit intersection get the same.
+      cell, gives `#VALUE!`. This differs from Excel on purpose. Earlier
+      versions of Excel use implicit intersection there. They take the cell
+      of the range in the row or column of the formula. Excel 365 spills
+      the result instead (rule 15), and keeps implicit intersection where a
+      formula shows `@`, which a file stores as `_xlfn.SINGLE`. An import
+      removes `_xlfn.SINGLE` and keeps its argument, so `@A1` reads `A1` and
+      `@A1:A10` gives `#VALUE!`. Such a formula follows this rule and not
+      rule 22. The import report counts the formulas that lost an `@`, and
+      the conformance criterion leaves them out. Export writes such a
+      formula without the `@` and with the result of S1. In a typed formula,
+      an `@` outside text in double quotes and outside a quoted worksheet
+      name does not parse, and the host refuses the formula (rule 38). So
+      `=@A1` is refused, while `="a@b"` and `='Team@ops'!A1` are valid. Text
+      that starts with `@` without `=` stays text (rule 6). A typed
+      `_xlfn.SINGLE` names a function outside rule 15 and follows rule 22.
 15. **Functions.** S1 has these 111 built-in functions. Each follows the
-    documented behavior of Excel for the same arguments, with the
-    differences listed below the table.
+    documented behavior of Excel for the same arguments. The notes below
+    the table say where S1 differs from Excel and where it keeps a
+    documented error of Excel.
 
     | Group | Functions |
     |---|---|
@@ -367,41 +412,76 @@ review cycle. S3 and S4 do not depend on each other and can swap.
     | Date and time | `DATE`, `TIME`, `YEAR`, `MONTH`, `DAY`, `HOUR`, `MINUTE`, `SECOND`, `TODAY`, `NOW`, `EDATE`, `EOMONTH`, `WEEKDAY`, `WEEKNUM`, `DATEDIF`, `DAYS`, `NETWORKDAYS`, `WORKDAY`, `DATEVALUE` |
 
     - A formula gives one value. A formula whose result would be several
-      values gives `#VALUE!`. Inside a formula, a function such as
-      `SUMPRODUCT` can still work on whole ranges.
+      values gives `#VALUE!`. Excel 365 spills such a result into the cells
+      next to it, and shows `#SPILL!` when they are not empty. S1 has no
+      spill, and the conformance criterion leaves such formulas out.
+      Inside a formula, a function such as `SUMPRODUCT` can still work on
+      whole ranges.
     - `XLOOKUP` returns one cell: its return range has one row or one
       column.
-    - A lookup that asks for the nearest match (`VLOOKUP`, `HLOOKUP` and
-      `MATCH` by default, `XLOOKUP` on request) expects keys sorted in
-      ascending order, as Excel does. For keys that are not sorted, the
-      result can differ from Excel.
-    - Criteria of the conditional totals and `SEARCH`, and the exact-match
-      lookups, take the wildcards `?`, `*` and `~`.
+    - A nearest match of `VLOOKUP`, `HLOOKUP` and `MATCH`, which is their
+      default, expects keys sorted in ascending order, or in descending
+      order for `MATCH` with -1, as Excel does. For keys that are not
+      sorted, the result can differ from Excel.
+    - `XLOOKUP` follows its own modes, as Excel does. Its default search
+      goes from the first key to the last and needs no sorted keys, also
+      for the next smaller or next larger item (match mode -1 or 1). Only
+      the binary search modes 2 and -2 expect sorted keys.
+    - Criteria of the conditional totals and `SEARCH` take the wildcards
+      `?`, `*` and `~`. So do `VLOOKUP`, `HLOOKUP` and `MATCH` in their
+      exact-match mode, and `XLOOKUP` in match mode 2 only.
     - `TEXT` shows the format codes of rule 7 and gives `#VALUE!` for a
       code that S1 cannot show. `VALUE` and `DATEVALUE` read the forms of
       rule 6.
     - `RAND`, `RANDBETWEEN`, `OFFSET` and `INDIRECT` are not in S1.
+    - `DATEDIF` with `"MD"` differs from Excel on purpose. It gives the days
+      after the last whole month. That month ends on the later of two dates.
+      One is the last date on or before the end date that has the day number
+      of the start date. The other, when there is one, is the latest last
+      day of a month that is too short for that day number and that is on
+      or before the end date. So 2026-01-31 to 2026-03-01 gives 1, and
+      2026-01-31 to 2026-03-30 gives 30.
+    - A start after the end gives `#NUM!` for `DATEDIF`, as in Excel. Excel
+      documents that its own result can be wrong for `"MD"`, so the
+      conformance criterion leaves that form out.
+    - Before 1900-03-01, `WEEKDAY` gives the day numbers of Excel, which
+      Microsoft documents as wrong for those dates, because serial 60 is a
+      day that never existed.
 16. **Compatibility rules.**
     - **Error values.** `#NULL!`, `#DIV/0!`, `#VALUE!`, `#REF!`, `#NAME?`,
-      `#NUM!` and `#N/A`, as in Excel, and two that only Flats shows:
+      `#NUM!` and `#N/A`, the classic error values of Excel, and two that
+      only Flats shows:
       `#CIRC!` for a circular reference (rule 20) and `#LIMIT!` for a
       formula over its work limit (rule 21). An error value in an operand
       or argument becomes the result, except in the functions that test
       for one. With several, the first in reading order wins. `ISERROR` gives
       `TRUE` for `#CIRC!` and `#LIMIT!`, `ISNA` and `IFNA` do not
-      treat them as `#N/A`, and `IFERROR` does not catch them.
+      treat them as `#N/A`, and `IFERROR` does not catch them. Excel 365
+      has more error values, such as `#SPILL!` and `#GETTING_DATA`. S1 never
+      gives them, and rule 25 says how an import reads them.
     - **Numbers.** IEEE 754 doubles. Two numbers are equal in a comparison
       when they agree to 15 significant digits. A result that is not
       finite is `#NUM!`.
-    - **Dates.** A date is the number of days since 1899-12-31, so
-      1900-01-01 is 1. Serial 60 is the day 1900-02-29, which never
-      existed, as in Excel. A time is a fraction of a day. In a workbook
-      with the 1904 date system, day 0 is 1904-01-01.
+    - **Dates.** In the 1900 date system, serial 1 is 1900-01-01 and serial
+      59 is 1900-02-28. Serial 60 is the day 1900-02-29, which never
+      existed, as in Excel. Serial 61 is therefore 1900-03-01, and every later
+      serial counts that day, so 2008-01-01 is 39448 and 9999-12-31 is
+      2,958,465. In a workbook with the 1904 date system, serial 0 is
+      1904-01-01 and 9999-12-31 is 2,957,003. A time is a fraction of a
+      day.
     - **Text.** Comparison has no regard to letter case. `EXACT` and `FIND`
-      do.
+      do. The operators `<`, `<=`, `>` and `>=` use the text order of rule
+      12, so `"ab"<"a-b"` and `"ab"<"a'b"` are `TRUE`. `=` is `TRUE` only for
+      texts that are equal after case folding, so `"ab"="a-b"` is `FALSE`.
+      Text criteria of the conditional totals, such as `"<b"`, use the same
+      order.
     - **Empty cells.** An empty cell is 0 in arithmetic, empty text in text
-      operations and `FALSE` in logic. Functions that count or average
-      skip it.
+      operations, and `FALSE` where a function needs one logical value,
+      such as `IF` and `NOT`. In a comparison it equals 0, `""` and `FALSE`.
+      `AND`, `OR` and `XOR` skip empty cells and text in a range or
+      reference, and give `#VALUE!` when no logical value is left. A
+      formula whose result is an empty cell shows 0. Functions that count
+      or average skip empty cells.
     - **Conversion.** Text that rule 6 reads as a number, a date or a time
       is that number in arithmetic. Other text gives `#VALUE!`. `TRUE` is 1
       and `FALSE` is 0 in arithmetic.
@@ -467,7 +547,10 @@ review cycle. S3 and S4 do not depend on each other and can swap.
     through other formulas, gives `#CIRC!`, and so does every formula of
     the cycle and every formula that reads one. A cycle never makes the
     sheet wait, and an edit that closes a cycle is not refused. When an
-    edit opens the cycle again, the cells calculate normally.
+    edit opens the cycle again, the cells calculate normally. An Excel
+    workbook can allow cycles with iterative calculation. S1 does not
+    iterate, so such a cycle gives `#CIRC!`, and the import report lists
+    the setting as dropped (rule 25).
 21. **Work limit of one formula.** A formula may read a limited number of
     cells in one calculation: 50,000,000 as the S1 target. A range counts
     the cells that exist in it, not its positions, so a sum over a whole
@@ -479,7 +562,9 @@ review cycle. S3 and S4 do not depend on each other and can swap.
     catch `#LIMIT!` or `#CIRC!`.
 22. **Formulas S1 cannot calculate.**
     - A formula that names a function outside rule 15 keeps its text,
-      follows its cells (rule 17), and shows `#NAME?`.
+      follows its cells (rule 17), and shows `#NAME?`. An imported
+      `_xlfn.SINGLE` is not such a function, because the import removes it
+      (rule 14).
     - A formula from a file that uses syntax outside rule 14 is kept as the
       text the file stores. It does not follow its cells, and a copy, fill
       or sort moves its stored result as a plain input, not the formula.
@@ -528,12 +613,22 @@ review cycle. S3 and S4 do not depend on each other and can swap.
       images and drawings, pivot tables, macros, comments and notes,
       conditional formats, data validation, filters, tables, hyperlinks,
       links to other workbooks, embedded objects, protection, outline
-      groups, print settings and rich text runs. Cells of a dropped table
+      groups, print settings, the iterative calculation setting and rich
+      text runs. Cells of a dropped table
       or pivot table stay as cells. Text with runs stays as plain text.
     - View state of the file, such as the selected cell, zoom and scroll
       position, is not imported and not reported.
+    - The import keeps a worksheet that Excel marks as very hidden as a
+      hidden worksheet with that mark, and export writes the mark back.
+      Showing the worksheet in Flats removes the mark.
+    - The import reads an error value that rule 16 does not have, such as
+      `#SPILL!` or `#GETTING_DATA`, as `#N/A`, and the report counts the
+      cells.
+    - The import gives a worksheet named `History`, which rule 3 refuses,
+      the name `History (2)`, and the report lists it.
     - The report has a second list of the formulas that follow rule 22,
-      with their number. These are formulas kept, not parts dropped.
+      with their number. These are formulas kept, not parts dropped. It
+      also counts the formulas that lost an `@` (rule 14).
     - The report stays with the revision of the import, and people with
       write access open it from History.
 26. **Import safety.** A file is a zip of XML from an untrusted source.
@@ -575,9 +670,20 @@ review cycle. S3 and S4 do not depend on each other and can swap.
     - **Export** writes the results of one worksheet: numbers in full
       precision, dates and times in ISO 8601 form, booleans as `TRUE` and
       `FALSE`, and error values as their text. It writes UTF-8 with a byte
-      order mark and CRLF line ends, so Excel reads Korean text. A text
-      cell that begins with `=`, `+`, `-`, `@`, a tab or a carriage return
-      gets an apostrophe in front.
+      order mark and CRLF line ends, so Excel reads Korean text. The export
+      puts an apostrophe in front of a text cell that begins with `=`, `+`,
+      `-`, `@`, a tab, a carriage return, a line feed, or the full-width
+      form of one of the first four (U+FF1D, U+FF0B, U+FF0D, U+FF20), so
+      that a program that opens the file does not read it as a formula
+      ([OWASP, CSV injection](https://owasp.org/www-community/attacks/CSV_Injection)). The line feed and the
+      full-width forms are a proposal (open question 5). The apostrophe does
+      not protect a file that Excel saves again, because Excel can drop it
+      then, as OWASP notes.
+    - A CSV file does not keep the kind of every cell. A text cell that rule
+      6 reads as something else comes back as that after an import, so
+      `42` comes back as a number and `'abc` as `abc`. Only xlsx keeps them.
+    - The separator is a comma in every region. Excel reads a CSV file by the
+      list separator and the date order of its own region settings.
 29. **Round trip.** Importing an xlsx file, exporting the sheet and
     importing that export gives the same workbook: the same worksheets,
     cells, formats, style table entries, sizes, hidden flags, frozen rows
@@ -659,9 +765,38 @@ Editing is available on Private routes only.
     - A paste inside the same sheet also carries formulas and formats.
       Relative references move as in rule 17. Paste values only carries
       results as plain inputs.
-    - The fill handle copies the selected cells over the range it is
-      dragged across. Two or more numbers or dates with a constant step
-      continue that step.
+    - The fill handle fills the range it is dragged across. In the cases
+      that Microsoft documents, it does what Excel does:
+      - One cell with a date continues day by day.
+      - One cell with an English weekday or month name in full, such as
+        `Monday` or `January`, continues with the next name.
+      - One cell with text that ends in a number continues the number, as
+        in `Item1`, `Item2`, `Item3`.
+      - The fill copies one cell with a plain number.
+      - Two or more numbers continue the linear best-fit trend of their
+        values, as the `TREND` function gives it. The trend is the
+        least-squares line through the values at positions 1 to n. So
+        `1, 2` gives `3, 4, 5`, `100, 95` gives `90, 85`, and `1, 2, 4` gives
+        16/3 and 41/6, which show as 5.33 and 6.83 when rounded for display.
+      - A drag up or left gives the values before them, so `1, 2` dragged
+        up over two cells gives `0` and then `-1`.
+    - For other cases S1 makes these choices, and a check in Excel confirms
+      or changes them before release
+      ([technical design, section 25.4](sheet-technical-design.md#254-file-corpora)).
+      Short weekday and month names, such as `Mon` and `Jan`, continue like
+      full ones, and weekday names include Saturday and Sunday. One time
+      continues hour by hour. S1 does not round the values of a trend. Two
+      or more dates continue their trend as
+      numbers do. A number at the end of a text keeps at least its number
+      of digits, so `Item09` gives `Item10`. Two or more texts with the same
+      text before a final number continue the trend of those numbers. A
+      drag up or left continues a date, a name or a text backward. The fill
+      copies one cell with any other input, and a formula moves its
+      relative references. S1 repeats any other selection in order.
+    - A menu after the fill switches between the sequence and a copy.
+    - S1 has no cut and no drag that moves cells. In Excel a moved formula
+      keeps its references. In S1 a copy moves its relative references
+      instead (rule 17), and a delete clears the inputs.
     - A paste or fill that goes past the last row or column adds rows or
       columns, within the limits.
     - Delete clears the inputs of the selection and keeps formats.
@@ -688,7 +823,7 @@ Editing is available on Private routes only.
       seconds for each 1,000,000 cells that hold formulas. These are
       estimates that the measurement of the technical design confirms.
     - If a key of the sort, or the structure of the worksheet, changed
-      after the plan, or a merged range now holds part of the range, or the
+      after the plan, or the range now holds a merged range or part of one, or the
       worksheet was deleted, the job ends as `conflict` and changes no
       content. A formula key that the host is still calculating can cause
       this, because its stored result changes. An edit of another column
@@ -708,8 +843,11 @@ Editing is available on Private routes only.
     and names.
 43. **Find.** People search the open worksheet or the whole workbook for a
     text. Find looks in text inputs and in the text results of formulas,
-    without regard to letter case. It does not look in numbers. It goes to the next or the previous match from the
-    selected cell.
+    without regard to letter case. It does not look in numbers, which
+    differs from Excel, because a walk over every number cell of a large
+    workbook takes too long
+    ([technical design, section 20](sheet-technical-design.md#20-find)). It
+    goes to the next or the previous match from the selected cell.
     - On a large workbook a find that must look at many cells shows that
       it is searching and how far it is, and can be stopped.
     - Replace is not in S1.
@@ -879,7 +1017,7 @@ ordinary disconnections. These rules match the notebook's.
       addresses in pages.
 63. **Write.** `update_sheet` sends a list of operations in one call, with
     the atomicity and guards of rule 56: set and clear cell inputs, set
-    formats, fill a formula over a range, copy a range, insert, delete,
+    formats, fill a range by the rules of rule 40 or as a copy, copy a range, insert, delete,
     move, resize, hide and show rows and columns, sort a range, merge and
     unmerge, manage worksheets and names, and change the settings.
     - A cell input is typed text (rule 6) or an explicit number, text,
@@ -1044,8 +1182,8 @@ reference data generators and the measurement scripts.
 | Scrolling | p95 frame time of 16.7 ms or less, on the reference workbook and on large workbook B. |
 | Remote display | p95 of 200 ms or less from the server receiving an edit to it showing on another editor's screen, while 5 people each edit twice per second. The formulas on that screen that the edit made pending show as pending or with their new results in a p95 of 500 ms or less. |
 | Concurrent editing | Under that load, every edit the concurrency rules say must apply stays, with the same result on every screen. |
-| Formula conformance | For a fixed corpus of xlsx files that Excel calculated and saved, every formula that uses only rule 14 syntax and rule 15 functions, does not rely on implicit intersection, and does not give `#LIMIT!` from an array over whole columns (rule 21), gets the result the file stores: equal text, booleans and error values, and numbers equal to 12 significant digits. The technical design fixes the generator of the corpus. |
-| Round trip | For a fixed corpus, rule 29 holds, and the first import report lists exactly the dropped parts and the formulas of rule 22. |
+| Formula conformance | For a fixed corpus of xlsx files that Excel calculated and saved, every formula that uses only rule 14 syntax and rule 15 functions, does not rely on implicit intersection or `@`, does not spill in Excel, does not use `DATEDIF` with `"MD"`, and does not give `#LIMIT!` from an array over whole columns (rule 21), gets the result the file stores: equal text, booleans and error values, and numbers equal to 12 significant digits. The technical design fixes the generator of the corpus. |
+| Round trip | For a fixed corpus, rule 29 holds, and the first import report lists exactly the dropped parts and the formulas of rule 22, and counts exactly the formulas that lost an `@` (rule 14). |
 | Import safety | A hostile corpus (zip bombs, oversized entries and texts, deep XML, encrypted files, a legacy file) is refused inside a fixed memory bound and changes nothing. |
 | Large import | Progress shows within 1 second of the host receiving the first bytes of the file. Large workbooks A and B import inside a fixed memory bound that does not depend on the row count. |
 | Large open and scroll | On large workbook B, a jump to any row shows its cells in a p95 of 200 ms or less. |
@@ -1070,7 +1208,7 @@ runs over into empty neighbor cells, saved filter
 views and filters, tables with table references, array formulas and
 results that fill several cells, `RAND`, `RANDBETWEEN`, `OFFSET` and
 `INDIRECT`, links to other workbooks, encrypted or password-protected
-files, the legacy `.xls` format, print layout and PDF, replace, find in numbers, a sort of
+files, the legacy `.xls` format, print layout and PDF, replace, find in numbers, cut and move of cells, iterative calculation, a sort of
 more cells than the large-sort limit, showing rows of an import before it is
 complete, an upload in parts for a file over `system.upload_max_bytes`,
 offline editing, anonymous guest editing, per-range permissions, notebook
@@ -1096,10 +1234,22 @@ instead.
 ## Open questions
 
 The design made the choices of questions 3 to 17 inside what the plan left
-to it. The requester decided them on 2026-11-14. Questions 3 to 13 and 15
-to 17 stand as written, and questions 14 and 16 changed as written below.
+to it. The requester decided them on 2026-11-14. Questions 3, 6 to 13 and
+15 to 17 stand as written, and questions 14 and 16 changed as written
+below. Questions 4 and 5 changed on 2026-11-16.
 The questions stay listed so that the reasons stay with the rules.
-Questions 1 and 2 are still open.
+Questions 1 and 2 are still open. On 2026-11-16 a check against the
+documentation of Excel, and against OWASP for CSV, corrected rules 3, 5, 6,
+9, 10, 12, 14 to 16, 20, 22, 25, 28, 40 and 43, and rule 63 changed to match
+rule 40. The requester decided three points. The fill cases of rule 40 that
+Microsoft documents follow Excel, and a time and short weekday and month
+names also start a sequence. The text order of rule 12 follows the order
+that Microsoft documents, with Hangul by code point. The typed forms of rule
+6 stay as they are, which question 4 now says. These choices of the design
+wait for the requester: the hour step of a time, the form of short names,
+the weekend days of weekday names, the other fill cases of rule 40, the
+order of apostrophes and of characters outside ASCII other than Hangul in
+rule 12, and the apostrophe set of question 5.
 
 1. **Limit numbers.** The limits of rule 13 that are not the grid size or
    the cell total, the work limit of rule 21 and the 120 seconds of the
@@ -1111,12 +1261,16 @@ Questions 1 and 2 are still open.
 3. **Error values and exports.** `#CIRC!` and `#LIMIT!` exist beside the
    Excel error values (rule 16), and an export writes them as `#N/A`
    (rule 27).
-4. **Numbers and formats.** A whole number of more than 15 digits stays text
-   (rule 6). Rule 7 lists which formats the grid shows and which it only
-   keeps.
+4. **Numbers and formats.** A whole number of more than 15 digits stays text,
+   and a fraction, a date without a year and a number typed into a percent
+   cell differ from Excel on purpose (rule 6). Rule 7 lists which formats
+   the grid shows and which it only keeps.
 5. **CSV.** The details of rule 28: a field is never a formula, output
    has a byte order mark and CRLF line ends, and a leading `=`, `+`,
-   `-`, `@`, tab or carriage return gets an apostrophe.
+   `-`, `@`, tab, carriage return or line feed, or a full-width form of
+   one of the first four, gets an apostrophe. The line feed and the
+   full-width forms are a proposal of 2026-11-16, from the OWASP list of
+   formula characters, and wait for the requester.
 6. **No rows before an import is complete.** People see the earlier
    workbook until the import replaces it (rule 30). Showing rows while it
    runs is not in S1.
