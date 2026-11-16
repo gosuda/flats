@@ -409,6 +409,7 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 		logf("warning: flats serve runs without --config; its flags match %s. Reinstall the service with `flats install --config %s` so it runs from the config file alone", p.path, p.path)
 	}
 	dataDir := cfg.Host.DataDir
+	keyFile := core.NewKeyFile(dataDir, cfg.Host.SecretKeyPath)
 	st := p.st
 
 	// The environment, the secret key and the credential files are checked
@@ -419,18 +420,15 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 			return nil, err
 		}
 	}
-	if err := core.CheckSecretKey(ctx, dataDir, st); err != nil {
-		if errors.Is(err, core.ErrSecretKeyMissing) {
-			return nil, &ActionError{err}
-		}
-		return nil, err
+	if err := core.CheckSecretKey(ctx, keyFile, st); err != nil {
+		return nil, keyRefusal(err)
 	}
 	// Keys given to this run seed flats.db; the stored Tailscale key wins.
 	keys, err := readKeyInputs(o, s.legacy, deprecatedAuthKeyFile(cfg))
 	if err != nil {
 		return nil, err
 	}
-	authKey, differs, err := resolveTailscaleKey(ctx, dataDir, st, keys.tailscale, time.Now(), logf)
+	authKey, differs, err := resolveTailscaleKey(ctx, keyFile, st, keys.tailscale, time.Now(), logf)
 	if err != nil {
 		return nil, err
 	}
@@ -491,7 +489,7 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 	}
 	h.netbirdOptions = provider.NetbirdConfig{Dir: filepath.Join(dataDir, "netbird"), ManagementURL: cfg.Netbird.ManagementURL,
 		SetupKey: h.currentNetbirdKey, Instance: cfg.Host.InstanceID, Logf: logf}
-	if err := h.prepareNetbird(ctx, dataDir, st, keys.netbird, logf); err != nil {
+	if err := h.prepareNetbird(ctx, dataDir, keyFile, st, keys.netbird, logf); err != nil {
 		return nil, err
 	}
 	if permits(provider.Netbird) || permits(provider.NetbirdExpose) {
@@ -596,13 +594,13 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 		return nil, fmt.Errorf("listen %s: %w", cfg.Host.ConsoleAddr, err)
 	}
 	h.console = managementConsoleURL(h.ln.Addr())
-	coreCfg := core.Config{DocsApp: core.DocsApp{FS: docsapp.FS(), Hash: docsapp.Hash(), Entry: docsapp.Entry, ContentModule: docsapp.ContentModule}, DataDir: dataDir, Store: st, Private: h.Private, Lifecycle: mgr, Runtime: rt, Settings: settings,
+	coreCfg := core.Config{DocsApp: core.DocsApp{FS: docsapp.FS(), Hash: docsapp.Hash(), Entry: docsapp.Entry, ContentModule: docsapp.ContentModule}, DataDir: dataDir, SecretKeyPath: cfg.Host.SecretKeyPath, Store: st, Private: h.Private, Lifecycle: mgr, Runtime: rt, Settings: settings,
 		ConsoleURL: h.ConsoleURL, ConsoleURLFor: h.ConsoleURLFor, PrivateBackend: cfg.Network.PrivateBackend,
 		// "flats" is the console's usual tailnet name: kept free for it, as before.
 		Reserved: []string{"flats"}, ReservedNames: h.consoleReserved, Logf: logf}
 	svc, err := core.New(ctx, coreCfg)
 	if err != nil {
-		return nil, err
+		return nil, keyRefusal(err)
 	}
 	h.Svc = svc
 	// The deprecated key file path goes once its key is in flats.db.
@@ -947,4 +945,14 @@ func relayLimit(n int64) int {
 		return 0
 	}
 	return int(n)
+}
+
+// keyRefusal makes a refusal of the host key an action error, which exits with status 78. A service manager
+// that does not restart on 78 does not loop on a key that is missing or cannot be used, whether the check
+// at the start or the one in core.New found it (docs/spec/secret-key-path.md, rules 5 and 8).
+func keyRefusal(err error) error {
+	if errors.Is(err, core.ErrSecretKeyMissing) || errors.Is(err, core.ErrKeyLocation) {
+		return &ActionError{err}
+	}
+	return err
 }

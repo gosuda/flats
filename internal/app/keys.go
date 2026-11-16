@@ -173,22 +173,22 @@ func readKeyInputs(o Options, legacy bool, deprecatedFile string) (keyInputs, er
 var keyLabel = map[string]string{core.HostKeyTailscale: "Tailscale auth key", core.HostKeyNetbird: "NetBird setup key"}
 
 // resolveTailscaleKey applies the seed rule to the Tailscale auth key.
-func resolveTailscaleKey(ctx context.Context, dataDir string, st *store.Store, in keyInput, now time.Time, logf func(string, ...any)) (key string, differs bool, err error) {
-	return resolveStoredKey(ctx, dataDir, st, core.HostKeyTailscale, in, now, logf)
+func resolveTailscaleKey(ctx context.Context, keyFile core.KeyFile, st *store.Store, in keyInput, now time.Time, logf func(string, ...any)) (key string, differs bool, err error) {
+	return resolveStoredKey(ctx, keyFile, st, core.HostKeyTailscale, in, now, logf)
 }
 
 // resolveStoredKey applies the seed rule to a key Flats keeps (Tailscale,
 // NetBird): an external value is stored only when flats.db holds no key of
 // that kind. A stored key always wins; a different external value is
 // reported. It returns the key to use.
-func resolveStoredKey(ctx context.Context, dataDir string, st *store.Store, id string, in keyInput, now time.Time, logf func(string, ...any)) (key string, differs bool, err error) {
-	stored, _, err := core.StoredHostKey(ctx, dataDir, st, id)
+func resolveStoredKey(ctx context.Context, keyFile core.KeyFile, st *store.Store, id string, in keyInput, now time.Time, logf func(string, ...any)) (key string, differs bool, err error) {
+	stored, _, err := core.StoredHostKey(ctx, keyFile, st, id)
 	if err != nil {
 		return "", false, &ActionError{err}
 	}
 	switch {
 	case stored == "" && in.given():
-		if err := core.PutHostKeyValue(ctx, dataDir, st, id, in.value, in.source, now); err != nil {
+		if err := core.PutHostKeyValue(ctx, keyFile, st, id, in.value, in.source, now); err != nil {
 			return "", false, err
 		}
 		logf("stored the %s from %s in flats.db", keyLabel[id], in.from)
@@ -319,7 +319,7 @@ func (h *Host) SetTailscaleKey(ctx context.Context, key string) error {
 	}
 	h.keyMu.Lock()
 	defer h.keyMu.Unlock()
-	if err := core.PutHostKeyValue(ctx, h.Config.Host.DataDir, h.Store, core.HostKeyTailscale, key, core.KeySourceConsole, time.Now()); err != nil {
+	if err := core.PutHostKeyValue(ctx, h.keyFile(), h.Store, core.HostKeyTailscale, key, core.KeySourceConsole, time.Now()); err != nil {
 		return err
 	}
 	h.tsKeyDiffers = h.tsKeyExternal != "" && !core.SameKey(h.tsKeyExternal, key)
@@ -362,7 +362,7 @@ func (h *Host) SetNetbirdKey(ctx context.Context, key string) error {
 		return fmt.Errorf("%w: %v", core.ErrUnavailable, err)
 	}
 	h.keyMu.Lock()
-	if err := core.PutHostKeyValue(ctx, h.Config.Host.DataDir, h.Store, core.HostKeyNetbird, key, core.KeySourceConsole, time.Now()); err != nil {
+	if err := core.PutHostKeyValue(ctx, h.keyFile(), h.Store, core.HostKeyNetbird, key, core.KeySourceConsole, time.Now()); err != nil {
 		h.keyMu.Unlock()
 		return err
 	}
@@ -408,7 +408,7 @@ func (h *Host) currentNetbirdKey() string {
 
 // currentTailscaleKey is the stored key, for a backend the console turns on.
 func (h *Host) currentTailscaleKey(ctx context.Context) (string, error) {
-	v, _, err := core.StoredHostKey(ctx, h.Config.Host.DataDir, h.Store, core.HostKeyTailscale)
+	v, _, err := core.StoredHostKey(ctx, h.keyFile(), h.Store, core.HostKeyTailscale)
 	return v, err
 }
 
@@ -455,7 +455,7 @@ func (h *Host) enrollWaiting(ctx context.Context, in keyInputs) {
 		{core.HostKeyZrok, in.zrok, h.connectZrok, h.zrokEnrollable},
 	} {
 		connected, why := e.usable()
-		stored, row, err := core.StoredHostKey(ctx, h.Config.Host.DataDir, h.Store, e.id)
+		stored, row, err := core.StoredHostKey(ctx, h.keyFile(), h.Store, e.id)
 		if err != nil {
 			h.logf("read the waiting %s key: %v", e.id, err)
 			stored = ""
@@ -521,3 +521,8 @@ func (h *Host) zrokEnrollable() (bool, string) {
 // deprecatedAuthKeyFile is credentials.tailscale_authkey_file of the config
 // this run starts from.
 func deprecatedAuthKeyFile(c *config.Config) string { return c.Credentials.TailscaleAuthKeyFile }
+
+// keyFile is where the host key lives: <data>/secret.key, or the file that host.secret_key_path names.
+func (h *Host) keyFile() core.KeyFile {
+	return core.NewKeyFile(h.Config.Host.DataDir, h.Config.Host.SecretKeyPath)
+}

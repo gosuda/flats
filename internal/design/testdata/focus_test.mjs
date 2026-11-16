@@ -70,7 +70,7 @@ class El {
 }
 
 // ---- one app instance against a fake host ----
-async function start({ launch = true, hash = '' } = {}) {
+async function start({ launch = false, hash = '' } = {}) {
   const boards = {}, order = [];
   for (let i = 0; i < 12; i++) {
     const p = `b${String(i).padStart(2, '0')}.html`;
@@ -143,11 +143,11 @@ const boardOf = (app, p) => app.S.frames.get(p);
 const errorText = (app, p) => { const f = boardOf(app, p); return f.error && f.error.parentNode ? f.error.textContent : null; };
 
 // ---- defects: no first loads behind the focus view ----
-for (const opts of [{ launch: true }, { launch: false, hash: '#b04.html' }]) {
+for (const opts of [{ hash: '#b00.html' }, { hash: '#b04.html' }]) {
   const app = await start(opts);
-  const focused = opts.launch ? 'b00.html' : 'b04.html';
-  assert.equal(app.focusPath(), focused, 'opens focused');
-  assert.deepEqual(app.loadedBoards(), [], 'a focused launch loads no canvas board');
+  const focused = opts.hash.slice(1);
+  assert.equal(app.focusPath(), focused, 'a link to an artboard opens it focused');
+  assert.deepEqual(app.loadedBoards(), [], 'a link to an artboard loads no canvas board');
   assert.equal(app.host.created.length, 1, 'only the focus frame is created');
   assert.match(app.focusIframe().getAttribute('src'), new RegExp(`^/_design/c/cap1/${focused}\\?v=`));
 
@@ -163,7 +163,7 @@ for (const opts of [{ launch: true }, { launch: false, hash: '#b04.html' }]) {
   assert.match(app.focusIframe().getAttribute('src'), /^\/_design\/c\/cap2\//, 'the focus frame takes the new capability');
 
   app.button('Next artboard').dispatch('click');
-  assert.equal(app.focusPath(), opts.launch ? 'b01.html' : 'b05.html');
+  assert.equal(app.focusPath(), focused === 'b00.html' ? 'b01.html' : 'b05.html');
   app.button('Previous artboard').dispatch('click');
   assert.equal(app.focusPath(), focused);
   await app.message(app.focusIframe().contentWindow, { type: 'navigate', href: 'b07.html' });
@@ -191,6 +191,23 @@ for (const opts of [{ launch: true }, { launch: false, hash: '#b04.html' }]) {
     assert.equal(src, `/_design/c/cap2/${p}?v=${file.hash.slice(0, 12)}g${file.gen}`, 'current bytes and capability');
   }
   assert.equal(app.location.hash, '', 'closing focus clears the hash');
+}
+
+// ---- defect: a focused launch setting made the first artboard the first view ----
+{
+  for (const hash of ['', '#%E0%A4%A']) {
+    const app = await start({ launch: true, hash });
+    assert.equal(app.host.canvas.launch.view, 'focused', 'the canvas still carries the setting');
+    assert.equal(app.S.focus, null, 'the whole canvas opens, not the launch board');
+    assert.equal(app.document.querySelector('.focus'), null);
+    assert.ok(app.S.view.z < 1, 'the view is fitted to the whole canvas');
+    assert.ok(app.loadedBoards().length > 0, 'the boards in view load');
+  }
+  // A link that names an artboard still opens it, and closing returns to the canvas.
+  const app = await start({ launch: true, hash: '#b04.html' });
+  assert.equal(app.focusPath(), 'b04.html');
+  app.button('Close (Esc)').dispatch('click');
+  assert.equal(app.S.focus, null);
 }
 
 // ---- regression: a normal canvas launch loads the boards visible after fit ----
@@ -233,17 +250,17 @@ for (const opts of [{ launch: true }, { launch: false, hash: '#b04.html' }]) {
   assert.equal(app.document.querySelector('.focus'), null);
 }
 {
-  const app = await start();
+  const app = await start({ hash: '#b00.html' });
   app.host.canvas.boards = Object.fromEntries(Object.entries(app.host.canvas.boards).filter(([p]) => p !== 'b00.html'));
   app.host.canvas.order = app.host.canvas.order.filter((p) => p !== 'b00.html');
   app.host.files = app.host.files.filter((f) => f.path !== 'b00.html');
   await app.write(['canvas.json']);
-  assert.equal(app.S.focus, null, 'a focused launch closes when its board is deleted');
+  assert.equal(app.S.focus, null, 'a linked artboard closes when its board is deleted');
   assert.ok(app.loadedBoards().length > 0, 'and the canvas loads the boards in view');
 }
 {
   // Opening a board that no longer exists (a stale link) returns to the canvas.
-  const app = await start();
+  const app = await start({ hash: '#b00.html' });
   app.run("openFocus('gone.html')");
   assert.equal(app.S.focus, null);
   assert.equal(app.document.querySelector('.focus'), null);
@@ -252,7 +269,7 @@ for (const opts of [{ launch: true }, { launch: false, hash: '#b04.html' }]) {
 
 // ---- defect: an error reported in focus marks the canvas board ----
 {
-  const app = await start();
+  const app = await start({ hash: '#b00.html' });
   await app.message(app.focusIframe().contentWindow, { type: 'error', message: 'boom' });
   assert.equal(errorText(app, 'b00.html'), 'Error: boom', 'marks the unloaded board');
   app.run('closeFocus()');
@@ -281,9 +298,9 @@ for (const opts of [{ launch: true }, { launch: false, hash: '#b04.html' }]) {
 
 // ---- replacements touch only boards loaded before focus opened ----
 {
-  // Close the focused launch at 100% zoom: only the boards near the top-left
+  // Close a linked artboard at 100% zoom: only the boards near the top-left
   // corner load, so focus reopens with loaded and unloaded boards.
-  const app = await start();
+  const app = await start({ hash: '#b00.html' });
   app.run('S.view = { x: 0, y: 0, z: 1 }; applyView(); closeFocus();');
   const loaded = app.loadedBoards().sort();
   assert.deepEqual(loaded, ['b00.html', 'b03.html'], 'a mixed set: two boards loaded, ten not');
@@ -308,15 +325,13 @@ for (const opts of [{ launch: true }, { launch: false, hash: '#b04.html' }]) {
   const app = await start({ launch: false, hash: '#%' });
   assert.equal(app.S.focus, null);
   assert.ok(app.loadedBoards().length > 0, 'a malformed fragment does not stop frame loading');
-  const launched = await start({ launch: true, hash: '#%E0%A4%A' });
-  assert.equal(launched.focusPath(), 'b00.html', 'and the configured launch still applies');
 }
 
 // ---- an error keeps the identity of the document that reported it ----
 {
   // Live focus, then a revision view opens behind it (a History request that
   // completes after focus opened). The focus frame still shows live content.
-  const app = await start();
+  const app = await start({ hash: '#b00.html' });
   const live = app.focusIframe();
   await app.run('viewRevision(1)');
   assert.equal(app.S.revision, 1);

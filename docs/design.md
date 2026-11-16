@@ -52,7 +52,9 @@ The advisory lock uses the persistent file inode; do not remove or replace it.
 Successful shutdown and process exit release it, and failed startup cleans up
 before releasing it. `secret.key` is generated into a private synced temporary
 file and atomically linked into place without replacing a concurrent winner;
-readers see either no key or all 32 bytes.
+readers see either no key or all 32 bytes. With `host.secret_key_path` the host
+generates nothing: it reads the key file that the setting names and refuses to
+start when it cannot.
 
 Shutdown drains the management server (5 s; force-close on failure), stops
 core workers, closes public then private networks, closes SQLite and releases
@@ -237,7 +239,8 @@ keys are appended in path order); at most 200 `notes` keyed by
 `[A-Za-z0-9_-]{1,40}`, each with `x`, `y`, `text` (4000 characters) and
 optional `w` and `color` (`gray`, `yellow`, `blue`, `green`, `pink`,
 `purple`); and `launch`, `{"view":"canvas"}` or
-`{"view":"focused","board":<key>}`. Unknown top-level keys are kept. Every
+`{"view":"focused","board":<key>}` (validated and kept, but the canvas always
+opens whole). Unknown top-level keys are kept. Every
 problem is reported at once.
 
 **Editing guards.** People's operations carry the file's generation (`gen`,
@@ -329,7 +332,7 @@ made in the canvas app.
 
 **Frame loading.** The canvas loads an artboard only when it comes near the
 viewport, and never loads one for the first time while an artboard is open
-full window, including a design that launches focused. Every frame is a
+full window, including one opened by a link to an artboard. Every frame is a
 document in the browser's memory, and phones end the page when there are too
 many. An artboard that is already loaded still reloads when its file, the
 shared files or its capability change. An error that the full-window artboard
@@ -566,7 +569,10 @@ and separate browser-side CORS/CSP behavior. WASI has no outbound HTTP ABI.
 ## Secrets
 
 Values are sealed with AES-256-GCM (random nonce, AAD = secret name) under
-`<data>/secret.key`. Only the console and the local CLI (`flats secret set`,
+`<data>/secret.key`, or under the file that `host.secret_key_path` names, which
+keeps the key out of the data directory and of a copy of it (the host only reads
+that file; see [Keeping the key outside the data directory](configuration.md#keeping-the-key-outside-the-data-directory)).
+Only the console and the local CLI (`flats secret set`,
 loopback only) can set or delete values; APIs and MCP return names and update
 times only. The CLI is recognized by its `X-Flats-Client: cli` header on the
 loopback listener, so this stops MCP and remote API clients, not a process

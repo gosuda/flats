@@ -27,7 +27,7 @@ const legacyPeerFile = "legacy-peer.json"
 // prepareNetbird runs at start before the NetBird backend is built: it drops
 // the shared peer of earlier versions and resolves the setup key with the
 // seed rule.
-func (h *Host) prepareNetbird(ctx context.Context, dataDir string, st *store.Store, in keyInput, logf func(string, ...any)) error {
+func (h *Host) prepareNetbird(ctx context.Context, dataDir string, keyFile core.KeyFile, st *store.Store, in keyInput, logf func(string, ...any)) error {
 	dir := filepath.Join(dataDir, "netbird")
 	if d, err := provider.LinkedNetbird(); err == nil {
 		p, found, err := d.CleanupLegacy(dir)
@@ -54,7 +54,7 @@ func (h *Host) prepareNetbird(ctx context.Context, dataDir string, st *store.Sto
 	} else if err != nil && !errors.Is(err, store.ErrNotFound) {
 		return err
 	}
-	key, differs, err := resolveStoredKey(ctx, dataDir, st, core.HostKeyNetbird, in, time.Now(), logf)
+	key, differs, err := resolveStoredKey(ctx, keyFile, st, core.HostKeyNetbird, in, time.Now(), logf)
 	if err != nil {
 		return err
 	}

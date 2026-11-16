@@ -15,7 +15,7 @@ import (
 // live instead, and the host identity keys never change on a live host: a
 // reload refuses a file that changes them.
 var restartKeys = []string{
-	"host.console_addr", "host.local_addr", "host.server_runtime",
+	"host.console_addr", "host.local_addr", "host.server_runtime", "host.secret_key_path",
 	"metrics.enabled", "metrics.expose_on", "metrics.per_flat",
 	"network.private_backend",
 	"portal.relays", "portal.discovery", "portal.max_active_relays",

@@ -114,30 +114,30 @@ func TestHostKeySealing(t *testing.T) {
 	}
 	defer st.Close()
 	const key = "tskey-auth-k123-abcdef"
-	if err := PutHostKeyValue(ctx, dir, st, HostKeyTailscale, key, KeySourceCLI, time.Now()); err != nil {
+	if err := PutHostKeyValue(ctx, NewKeyFile(dir, ""), st, HostKeyTailscale, key, KeySourceCLI, time.Now()); err != nil {
 		t.Fatal(err)
 	}
 	k, err := st.GetHostKey(ctx, HostKeyTailscale)
 	if err != nil || strings.Contains(string(k.Ciphertext), "tskey") {
 		t.Fatalf("stored %+v %v", k, err)
 	}
-	if v, _, err := StoredHostKey(ctx, dir, st, HostKeyTailscale); err != nil || v != key {
+	if v, _, err := StoredHostKey(ctx, NewKeyFile(dir, ""), st, HostKeyTailscale); err != nil || v != key {
 		t.Fatalf("StoredHostKey = %q %v", v, err)
 	}
 	// A value cannot be moved to another id.
 	k.ID = HostKeyZrok
-	if _, err := OpenHostKey(dir, k); err == nil {
+	if _, err := OpenHostKey(NewKeyFile(dir, ""), k); err == nil {
 		t.Fatal("a sealed value opened under another id")
 	}
 	// Another secret.key cannot open it.
-	if _, err := OpenHostKey(t.TempDir(), k); err == nil {
+	if _, err := OpenHostKey(NewKeyFile(t.TempDir(), ""), k); err == nil {
 		t.Fatal("opened without secret.key")
 	}
-	if v, _, err := StoredHostKey(ctx, dir, st, HostKeyNetbird); err != nil || v != "" {
+	if v, _, err := StoredHostKey(ctx, NewKeyFile(dir, ""), st, HostKeyNetbird); err != nil || v != "" {
 		t.Fatalf("missing key = %q %v", v, err)
 	}
 	// secret.key gone with a stored key: refuse, as for flat secrets.
-	if err := CheckSecretKey(ctx, t.TempDir(), st); !errors.Is(err, ErrSecretKeyMissing) || !strings.Contains(err.Error(), "flats key rm") {
+	if err := CheckSecretKey(ctx, NewKeyFile(t.TempDir(), ""), st); !errors.Is(err, ErrSecretKeyMissing) || !strings.Contains(err.Error(), "flats key rm") {
 		t.Fatalf("CheckSecretKey = %v", err)
 	}
 	// A connection record without a value does not count.
@@ -147,7 +147,7 @@ func TestHostKeySealing(t *testing.T) {
 	if err := st.PutHostKey(ctx, store.HostKey{ID: HostKeyZrok, Source: KeySourceConsole, UpdatedAt: time.Now()}); err != nil {
 		t.Fatal(err)
 	}
-	if err := CheckSecretKey(ctx, t.TempDir(), st); err != nil {
+	if err := CheckSecretKey(ctx, NewKeyFile(t.TempDir(), ""), st); err != nil {
 		t.Fatalf("connection record: %v", err)
 	}
 }

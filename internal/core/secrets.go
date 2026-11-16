@@ -35,9 +35,15 @@ func (e invalidKeyError) Error() string      { return string(e) }
 func (invalidKeyError) Is(target error) bool { return target == ErrInvalidSecretKey }
 
 // CheckSecretKey refuses to let a new key be created over existing secrets:
-// restore <dataDir>/secret.key together with flats.db from the same backup.
-func CheckSecretKey(ctx context.Context, dataDir string, st *store.Store) error {
-	path := filepath.Join(dataDir, "secret.key")
+// restore the key together with flats.db from the same backup. A configured key
+// (host.secret_key_path) is read in full, so every way that it can be unusable is a
+// refusal here, with or without sealed values: Flats never creates it.
+func CheckSecretKey(ctx context.Context, key KeyFile, st *store.Store) error {
+	if key.Configured() {
+		_, err := key.Read()
+		return err
+	}
+	path := key.Path()
 	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
 		return nil
 	}

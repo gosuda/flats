@@ -14,6 +14,7 @@ import (
 
 	"golang.org/x/term"
 
+	"github.com/gosuda/flats/internal/config"
 	"github.com/gosuda/flats/internal/core"
 	"github.com/gosuda/flats/internal/prompt"
 	"github.com/gosuda/flats/internal/store"
@@ -61,18 +62,15 @@ func (k *secretKeyCmd) backup(args []string) error {
 	if err := k.parseFlags(args); err != nil {
 		return err
 	}
-	dataDir, err := k.dataDir()
+	dataDir, keyFile, err := k.location()
 	if err != nil {
 		return err
 	}
-	keyPath := filepath.Join(dataDir, core.SecretKeyFile)
-	if _, err := os.Lstat(keyPath); errors.Is(err, fs.ErrNotExist) {
+	keyPath := keyFile.Path()
+	if _, err := os.Lstat(keyPath); errors.Is(err, fs.ErrNotExist) && !keyFile.Configured() {
 		return actionf("%s is missing: start the host once to create it, or restore it with `flats secret restore-key`", keyPath)
 	}
-	key, err := core.ReadSecretKey(dataDir)
-	if keyUnusable(err, keyPath) {
-		return actionf("%v: move %s away first, because the next start would stop on it", err, keyPath)
-	}
+	key, err := readHostKey(keyFile)
 	if err != nil {
 		return err
 	}
@@ -138,7 +136,26 @@ func outFile(flag, dataDir string) (string, error) {
 	return path, nil
 }
 
-// keyUnusable reports whether err from core.ReadSecretKey means that what is
+// readHostKey reads the host key for backup-key and reset. With a configured path it first makes the checks
+// of rule 3 of the spec. A key that is no key (the wrong size, a directory, a link to nothing) is a refusal
+// that names the path and says to move it away. Any other failure to read a configured key is a refusal too.
+func readHostKey(keyFile core.KeyFile) ([]byte, error) {
+	if err := keyFile.Check(); err != nil {
+		return nil, &ActionError{err}
+	}
+	key, err := keyFile.ReadUnchecked()
+	switch {
+	case err == nil:
+		return key, nil
+	case keyUnusable(err, keyFile.Path()):
+		return nil, actionf("%v: move %s away first, because the next start would stop on it", err, keyFile.Path())
+	case keyFile.Configured():
+		return nil, &ActionError{err}
+	}
+	return nil, err
+}
+
+// keyUnusable reports whether err from KeyFile.Read means that what is
 // at keyPath is no key: the wrong size or type, a target that does not exist
 // (also behind a Windows junction), or a link that leads to no file through a
 // loop or a file on its path. A permission error is not, and stays a failure
@@ -158,16 +175,27 @@ func (k *secretKeyCmd) restore(args []string) error {
 	f := k.flags("restore-key")
 	from := f.String("from", "", "recovery file (default: <data>/secret.key.recovery)")
 	passwordFile := f.String("password-file", "", "read the recovery password from this file")
+	outFlag := f.String("out", "", "write the recovered key to this new file instead of the key path")
 	if err := k.parseFlags(args); err != nil {
 		return err
 	}
-	dataDir, st, done, err := k.openOffline()
+	dataDir, keyFile, st, done, err := k.openOffline()
 	if err != nil {
 		return err
 	}
 	defer done()
-	keyPath := filepath.Join(dataDir, core.SecretKeyFile)
-	if _, err := os.Lstat(keyPath); err == nil {
+	keyPath := keyFile.Path()
+	// A second key at <data>/secret.key is a refusal, with or without --out.
+	if err := keyFile.Check(); err != nil {
+		return &ActionError{err}
+	}
+	outPath := ""
+	if *outFlag != "" {
+		// --out leaves the location alone, which may hold a wrong key.
+		if outPath, err = keyOutFile(*outFlag, dataDir); err != nil {
+			return err
+		}
+	} else if _, err := os.Lstat(keyPath); err == nil {
 		return actionf("%s exists, and restore-key never replaces a key: move it away first if it is wrong", keyPath)
 	} else if !errors.Is(err, fs.ErrNotExist) {
 		return &ActionError{err}
@@ -206,14 +234,39 @@ func (k *secretKeyCmd) restore(args []string) error {
 	if err := k.ctx.Err(); err != nil {
 		return interrupted(err)
 	}
-	if err := core.RestoreSecretKey(dataDir, key); err != nil {
+	if outPath != "" {
+		if err := writeNewFile(outPath, key); err != nil {
+			return fmt.Errorf("--out %s: %w; nothing was written at the key path", outPath, err)
+		}
+		k.printf("wrote the recovered key to %s with mode 0600 from %s; the host reads its key at %s. Put the key there, or in the secret store behind that path, and remove %s\n", outPath, src, keyPath, outPath)
+		return nil
+	}
+	if err := keyFile.Restore(key); err != nil {
 		if os.IsExist(err) {
 			return actionf("%s appeared while restoring, and restore-key never replaces a key; nothing was written", keyPath)
+		}
+		if keyFile.Configured() {
+			return actionf("cannot write the key at %s: %v; nothing was written. Write it to a new file with --out FILE, and put that file in your secret store", keyPath, err)
 		}
 		return err
 	}
 	k.printf("restored %s from %s; the host can start\n", keyPath, src)
 	return nil
+}
+
+// keyOutFile checks --out of restore-key: the checks of outFile, and the file may not lie
+// anywhere inside the data directory, which would put the key back into what a copy holds.
+func keyOutFile(flag, dataDir string) (string, error) {
+	path, err := outFile(flag, dataDir)
+	if err != nil {
+		return "", err
+	}
+	dir, derr := filepath.EvalSymlinks(filepath.Dir(path))
+	data, serr := filepath.EvalSymlinks(dataDir)
+	if derr == nil && serr == nil && config.InsideDir(data, dir) {
+		return "", actionf("--out: name a file outside the data directory %s, because a copy of the data directory would hold the key", dataDir)
+	}
+	return path, nil
 }
 
 func (k *secretKeyCmd) reset(args []string) error {
@@ -222,7 +275,7 @@ func (k *secretKeyCmd) reset(args []string) error {
 	if err := k.parseFlags(args); err != nil {
 		return err
 	}
-	dataDir, st, done, err := k.openOffline()
+	dataDir, keyFile, st, done, err := k.openOffline()
 	if err != nil {
 		return err
 	}
@@ -249,8 +302,8 @@ func (k *secretKeyCmd) reset(args []string) error {
 		k.printf("flats.db holds no flat secrets or operator keys; nothing to reset\n")
 		return nil
 	}
-	keyPath := filepath.Join(dataDir, core.SecretKeyFile)
-	keyMissing, err := k.resetAllowed(st, dataDir)
+	keyPath := keyFile.Path()
+	keyMissing, err := k.resetAllowed(st, keyFile)
 	if err != nil {
 		return err
 	}
@@ -295,7 +348,9 @@ func (k *secretKeyCmd) reset(args []string) error {
 	} else {
 		k.printf("deleted %d values.\n", total)
 	}
-	if keyMissing {
+	if keyMissing && keyFile.Configured() {
+		k.printf("The next start needs a key at %s, because Flats never creates a key at a configured path. Put a new key of 32 bytes there%s before you start the host.\n", keyPath, core.NewKeyHint(keyPath))
+	} else if keyMissing {
 		why := "to keep a recovery copy of the new key"
 		if _, err := os.Lstat(filepath.Join(dataDir, core.RecoveryKeyFile)); err == nil {
 			why = "because the existing " + core.RecoveryKeyFile + " holds the lost key"
@@ -309,19 +364,20 @@ func (k *secretKeyCmd) reset(args []string) error {
 	return nil
 }
 
-// resetAllowed checks what is at secret.key: reset goes on only when nothing
-// is there, or when a valid key there opens none of the sealed values.
-func (k *secretKeyCmd) resetAllowed(st *store.Store, dataDir string) (keyMissing bool, err error) {
-	keyPath := filepath.Join(dataDir, core.SecretKeyFile)
+// resetAllowed checks what is at the key's path: reset goes on only when nothing
+// is there, or when a valid key there opens none of the sealed values. With a
+// configured path it first makes the checks of rule 3 of the spec.
+func (k *secretKeyCmd) resetAllowed(st *store.Store, keyFile core.KeyFile) (keyMissing bool, err error) {
+	keyPath := keyFile.Path()
+	if err := keyFile.Check(); err != nil {
+		return false, &ActionError{err}
+	}
 	if _, err := os.Lstat(keyPath); errors.Is(err, fs.ErrNotExist) {
 		return true, nil
 	} else if err != nil {
 		return false, err
 	}
-	key, err := core.ReadSecretKey(dataDir)
-	if keyUnusable(err, keyPath) {
-		return false, actionf("%v: move %s away first, because the next start would stop on it", err, keyPath)
-	}
+	key, err := readHostKey(keyFile)
 	if err != nil {
 		return false, err
 	}
@@ -354,17 +410,18 @@ func (k *secretKeyCmd) resetAllowed(st *store.Store, dataDir string) (keyMissing
 	return false, nil
 }
 
-// dataDir resolves the data directory of the selected configuration.
-func (c *configCmd) dataDir() (string, error) {
+// location resolves the data directory and the host key of the selected
+// configuration. A missing or invalid configuration file is a refusal.
+func (c *configCmd) location() (string, core.KeyFile, error) {
 	configPath, _, err := c.paths()
 	if err != nil {
-		return "", err
+		return "", core.KeyFile{}, err
 	}
 	_, cfg, err := load(configPath)
 	if err != nil {
-		return "", err
+		return "", core.KeyFile{}, err
 	}
-	return cfg.Host.DataDir, nil
+	return cfg.Host.DataDir, core.NewKeyFile(cfg.Host.DataDir, cfg.Host.SecretKeyPath), nil
 }
 
 // password reads the recovery password from --password-file or the

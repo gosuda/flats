@@ -61,7 +61,7 @@ func KeyCommand(ctx context.Context, args []string, in io.Reader, out io.Writer)
 		}
 	}
 
-	dataDir, st, done, err := c.openOffline()
+	dataDir, keyFile, st, done, err := c.openOffline()
 	if err != nil {
 		return err
 	}
@@ -81,10 +81,10 @@ func KeyCommand(ctx context.Context, args []string, in io.Reader, out io.Writer)
 	if err := core.CheckHostKeyValue(id, value); err != nil {
 		return &ActionError{err}
 	}
-	if err := core.CheckSecretKey(ctx, dataDir, st); err != nil {
+	if err := core.CheckSecretKey(ctx, keyFile, st); err != nil {
 		return &ActionError{err}
 	}
-	if err := core.PutHostKeyValue(ctx, dataDir, st, id, value, core.KeySourceCLI, time.Now()); err != nil {
+	if err := core.PutHostKeyValue(ctx, keyFile, st, id, value, core.KeySourceCLI, time.Now()); err != nil {
 		return err
 	}
 	switch id {
@@ -101,19 +101,20 @@ func KeyCommand(ctx context.Context, args []string, in io.Reader, out io.Writer)
 // openOffline takes the host lock of the selected configuration's data
 // directory, checks that flats.db belongs to that configuration, and opens
 // it. done closes the store and releases the lock.
-func (c *configCmd) openOffline() (dataDir string, st *store.Store, done func(), err error) {
+func (c *configCmd) openOffline() (dataDir string, keyFile core.KeyFile, st *store.Store, done func(), err error) {
 	configPath, _, err := c.paths()
 	if err != nil {
-		return "", nil, nil, err
+		return "", core.KeyFile{}, nil, nil, err
 	}
 	_, cfg, err := load(configPath)
 	if err != nil {
-		return "", nil, nil, err
+		return "", core.KeyFile{}, nil, nil, err
 	}
 	dataDir = cfg.Host.DataDir
+	keyFile = core.NewKeyFile(dataDir, cfg.Host.SecretKeyPath)
 	lock, err := lockOffline(dataDir)
 	if err != nil {
-		return "", nil, nil, err
+		return "", core.KeyFile{}, nil, nil, err
 	}
 	dbPath := filepath.Join(dataDir, "flats.db")
 	info, err := inspectDB(dbPath)
@@ -125,9 +126,9 @@ func (c *configCmd) openOffline() (dataDir string, st *store.Store, done func(),
 	}
 	if err != nil {
 		lock.Close()
-		return "", nil, nil, err
+		return "", core.KeyFile{}, nil, nil, err
 	}
-	return dataDir, st, func() { st.Close(); lock.Close() }, nil
+	return dataDir, keyFile, st, func() { st.Close(); lock.Close() }, nil
 }
 
 // readKeyValue prompts without echo on a terminal.

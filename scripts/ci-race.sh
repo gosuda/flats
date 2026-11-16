@@ -5,7 +5,7 @@
 #   scripts/ci-race.sh <lane> [go test flags...]
 #
 # Together the lanes run every package and test that CI checks with -race:
-# internal/core in two lanes; the API, app, MCP, store, Portal and
+# internal/core in two lanes; the API, app, backup, MCP, store, Portal and
 # WebSocket packages, the selected runtime tests and the board engine in
 # another; internal/notebook in two lanes; internal/board in two lanes.
 # Each two-lane package is split by test name: the first lane runs the tests
@@ -63,7 +63,7 @@ core-2)
 	run go test -race "$@" -skip "$core_1" ./internal/core
 	;;
 services)
-	run go test -race "$@" ./internal/api ./internal/app ./internal/mcpx ./internal/store ./internal/expose/portal ./internal/wsconn
+	run go test -race "$@" ./internal/api ./internal/app ./internal/backup ./internal/mcpx ./internal/store ./internal/expose/portal ./internal/wsconn
 	run go test -race "$@" -run "$runtime_concurrency" ./internal/runtime
 	run env BOARD_SEEDS=$engine_seeds go test -race "$@" ./internal/board/engine ./internal/board/model ./internal/board/schema
 	;;

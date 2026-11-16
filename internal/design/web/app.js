@@ -903,8 +903,9 @@ async function boot() {
   const c = canvas();
   let hash = '';
   try { hash = decodeURIComponent(location.hash.slice(1)); } catch { /* a malformed fragment names no artboard */ }
+  // Opening the design shows the whole canvas. Only a link that names an
+  // artboard opens it full window; canvas.json's launch setting does not.
   if (hash && c.boards[hash]) openFocus(hash);
-  else if (c.launch && c.launch.view === 'focused' && c.boards[c.launch.board]) openFocus(c.launch.board);
   S.booted = true;
   fit();
 }

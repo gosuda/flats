@@ -508,6 +508,32 @@ when its predecessor has finished and no `tailscaled.state` remains. State is
 deleted only after confirmation. `Net.Close` waits for all in-flight retirement attempts,
 closes every remaining backend, and reports any retained failure.
 
+A close of a backend can end the whole process, and Flats does not prevent it.
+tailscale.com v1.104.0 dereferences a nil pointer in
+`magicsock.(*Conn).SetFilter` when a status with a network map is still in
+work as its backend closes and the connection has no node of its own: before
+its first network map, or after a logout reset it. Three parts of the library
+combine. The status handler releases the backend lock before it installs a
+network map and does not check afterwards that the backend still runs. A
+shutdown does not wait for a handler that is in work. A network map that
+reaches a closed connection sets the relay flag and not the node. v1.104.7,
+the newest release on 2026-11-13, has the same text in each of these
+functions, and the root module can carry no patched copy. The development
+branch of the library ignores the status of a control client that a logout
+replaced (commit `b9d5ff3ae` of 2026-11-10), which removes the case after a
+logout. No release holds that commit yet. The case of a backend that closes
+while it handles its first network map stays on that branch. A logout followed
+by a close meets the fault when a status is in work at that moment. A backend
+gets four or five statuses with a network map in the first 0.6 s after its
+start, the last of them 7 to 19 ms after it reports `Running`, and none in the
+4 s after that (20 starts against the test control server). The retry above
+logs out a fresh backend about 1 ms after its start, so it has the highest
+risk. The `windows` CI job met the fault once in its first 32 runs. The order
+of its log lines and the state rule of the library place that event in the
+retry, and its stack names no node. After such an end a host that runs as the
+installed service starts again, and a host that runs in the foreground stays
+down.
+
 ## Private Tailscale revocation
 
 An operator-validated revocation of Tailscale, NetBird or `proxy` confirms Manager teardown of that flat’s current, preview and redirect registrations on that provider before writing the denied permission. The rest of this section describes Tailscale. Local remains registered. The real tsnet backend uses `StopPrivate`: with a sibling Funnel request it closes only Private HTTP and retains the node and approved Funnel listener; without Funnel it retires the node normally. Private listener setup and teardown are serialized so asynchronous startup cannot reopen a revoked route or race a second teardown. An in-progress or terminally failed retirement remains fail-closed. A terminal logout failure closes the consumed backend and preserves its persistent state; the next `StopPrivate` call starts a fresh backend over that state and performs a real logout retry in the same process. Absence from the active-node map does not prove teardown completed. Legacy backends without Private-only stop support refuse if a Funnel registration shares the host. Public provider revocation continues to require an approved Public-to-Private transition.

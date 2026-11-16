@@ -146,11 +146,11 @@ func TestResolveTailscaleKeySeeds(t *testing.T) {
 	ctx := context.Background()
 	var logs []string
 	logf := func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) }
-	key, differs, err := resolveTailscaleKey(ctx, dir, st, keyInput{}, time.Now(), logf)
+	key, differs, err := resolveTailscaleKey(ctx, core.NewKeyFile(dir, ""), st, keyInput{}, time.Now(), logf)
 	if err != nil || key != "" || differs {
 		t.Fatalf("empty: %q %v %v", key, differs, err)
 	}
-	key, differs, err = resolveTailscaleKey(ctx, dir, st, keyInput{keyA, core.KeySourceEnv, "FLATS_TAILSCALE_AUTHKEY"}, time.Now(), logf)
+	key, differs, err = resolveTailscaleKey(ctx, core.NewKeyFile(dir, ""), st, keyInput{keyA, core.KeySourceEnv, "FLATS_TAILSCALE_AUTHKEY"}, time.Now(), logf)
 	if err != nil || key != keyA || differs {
 		t.Fatalf("seed: %q %v %v", key, differs, err)
 	}
@@ -158,17 +158,17 @@ func TestResolveTailscaleKeySeeds(t *testing.T) {
 		t.Fatalf("source = %q", k.Source)
 	}
 	// The console replaced it; the unchanged env value no longer wins.
-	if err := core.PutHostKeyValue(ctx, dir, st, core.HostKeyTailscale, keyB, core.KeySourceConsole, time.Now()); err != nil {
+	if err := core.PutHostKeyValue(ctx, core.NewKeyFile(dir, ""), st, core.HostKeyTailscale, keyB, core.KeySourceConsole, time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	key, differs, err = resolveTailscaleKey(ctx, dir, st, keyInput{keyA, core.KeySourceEnv, "FLATS_TAILSCALE_AUTHKEY"}, time.Now(), logf)
+	key, differs, err = resolveTailscaleKey(ctx, core.NewKeyFile(dir, ""), st, keyInput{keyA, core.KeySourceEnv, "FLATS_TAILSCALE_AUTHKEY"}, time.Now(), logf)
 	if err != nil || key != keyB || !differs {
 		t.Fatalf("stored wins: %q %v %v", key, differs, err)
 	}
 	if k, _ := st.GetHostKey(ctx, core.HostKeyTailscale); k.Source != core.KeySourceConsole {
 		t.Fatalf("the external value overwrote the stored key: %q", k.Source)
 	}
-	key, differs, _ = resolveTailscaleKey(ctx, dir, st, keyInput{keyB, core.KeySourceFlag, "--tailscale-authkey-file"}, time.Now(), logf)
+	key, differs, _ = resolveTailscaleKey(ctx, core.NewKeyFile(dir, ""), st, keyInput{keyB, core.KeySourceFlag, "--tailscale-authkey-file"}, time.Now(), logf)
 	if key != keyB || differs {
 		t.Fatalf("same value: %q %v", key, differs)
 	}
@@ -367,7 +367,7 @@ func storedTailscaleKey(t *testing.T, dir string) string {
 		t.Fatal(err)
 	}
 	defer st.Close()
-	v, _, err := core.StoredHostKey(context.Background(), dir, st, core.HostKeyTailscale)
+	v, _, err := core.StoredHostKey(context.Background(), core.NewKeyFile(dir, ""), st, core.HostKeyTailscale)
 	if err != nil {
 		t.Fatal(err)
 	}

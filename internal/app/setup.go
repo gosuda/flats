@@ -947,9 +947,10 @@ func importLegacyKey(ctx context.Context, dataDir string, st *store.Store, plan 
 	if err := core.CheckHostKeyValue(core.HostKeyTailscale, v); err != nil {
 		return actionf("%s: %v", from, err)
 	}
-	stored, _, err := core.StoredHostKey(ctx, dataDir, st, core.HostKeyTailscale)
+	keyFile := core.NewKeyFile(dataDir, "") // a legacy host has no configuration, so no configured key
+	stored, _, err := core.StoredHostKey(ctx, keyFile, st, core.HostKeyTailscale)
 	if err != nil || stored != "" {
 		return err
 	}
-	return core.PutHostKeyValue(ctx, dataDir, st, core.HostKeyTailscale, v, core.KeySourceFlag, time.Now())
+	return core.PutHostKeyValue(ctx, keyFile, st, core.HostKeyTailscale, v, core.KeySourceFlag, time.Now())
 }

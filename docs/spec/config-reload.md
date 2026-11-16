@@ -144,8 +144,9 @@ table; a key's bucket follows the table's Applies column.
 
 8. **Restart-required keys.** These keys enter the adopted document and
    apply at the next start, exactly as they do today: `host.console_addr`,
-   `host.local_addr`, `host.server_runtime`, `metrics.enabled`,
-   `metrics.expose_on`, `metrics.per_flat`, `network.private_backend`,
+   `host.local_addr`, `host.server_runtime`, `host.secret_key_path`,
+   `metrics.enabled`, `metrics.expose_on`, `metrics.per_flat`,
+   `network.private_backend`,
    `portal.relays`, `portal.discovery`, `portal.max_active_relays`,
    `zrok.environment`, `zrok.namespace`, `netbird.management_url`,
    `proxy.addr`, and the deprecated `credentials.tailscale_authkey_file`.

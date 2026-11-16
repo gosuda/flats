@@ -45,9 +45,11 @@ warning, the start-time refusal message, and the docs.
 
 Out of scope:
 
-- The key path setting and key rotation (#224 items 1 and 2). The commands use
-  the fixed path `<data>/secret.key`. When rotation ships, it must keep the
-  recovery copy and its key ID current.
+- Key rotation (#224 item 2). When rotation ships, it must keep the recovery
+  copy and its key ID current. The key path setting (#224 item 1) is
+  implemented: the commands find the key through the location that
+  [secret key path](secret-key-path.md) adds, and rules 19, 23 and 31 below apply
+  to that location. The recovery copy and its key ID stay in the data directory.
 - Audit records (#224 item 4). `reset` leaves an event on each flat whose
   secrets it deletes, as `flats secret rm` does today.
 - The console and MCP. No agent tool or API route reaches these commands.
@@ -163,7 +165,10 @@ flats secret restore-key [--from PATH] [--password-file PATH] [--config PATH | -
     runs, and checks that `flats.db` belongs to the configuration.
 19. It refuses when anything is at `<data>/secret.key`: a file, a directory or
     a link, also a link that points nowhere. It never replaces a key. A wrong
-    key must be moved away first.
+    key must be moved away first. With `host.secret_key_path`, the same holds for
+    the configured path, and a file at `<data>/secret.key` is a refusal too. With
+    `--out FILE`, the command does not look at the configured path
+    ([secret key path](secret-key-path.md), rules 12 and 13).
 20. It reads `--from PATH`, by default `<data>/secret.key.recovery`. A file
     larger than 64 KiB is refused by its size before any password is asked.
     The command then asks for the password once; rule 14 does not apply.
@@ -180,7 +185,8 @@ flats secret restore-key [--from PATH] [--password-file PATH] [--config PATH | -
     nothing to check against: the command says so and continues, so in that
     case it installs any key the password opens.
 23. It writes `secret.key` through a synced temporary file `.secret-key-*`
-    with mode 0600 in the data directory, published under the final name with
+    with mode 0600 in the folder of the key (the data directory, or the folder of
+    `host.secret_key_path`), published under the final name with
     a link that fails when the name exists, as the host does at its first
     start, and then syncs the directory. When something created `secret.key`
     after the check in rule 19, the command refuses and removes its temporary
@@ -227,7 +233,9 @@ flats secret reset [--yes] [--config PATH | --data DIR]
     the transaction durable. Operator key records without a stored value stay,
     such as the record of a connected zrok account.
 31. The command does not touch `secret.key`, the recovery copy or its key ID.
-    When nothing is at `secret.key`, the next start creates a new key, and the
+    With `host.secret_key_path` the next start creates no key, and the output
+    says that it needs a key at the path. When nothing is at `secret.key` and the
+    setting is empty, the next start creates a new key, and the
     host then warns about an existing recovery copy (rule 5). The output says
     to run `backup-key` after that start, and to set the secrets and operator
     keys again with `flats secret set`, followed by a redeploy, and

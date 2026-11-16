@@ -91,13 +91,16 @@ type Instance interface {
 
 // Config wires a Service.
 type Config struct {
-	DataDir   string
-	Store     *store.Store
-	Private   PrivateNet
-	Lifecycle LifecycleNet // optional provider manager; independent of legacy adapters
-	Public    PublicNet    // nil disables public flats
-	DocsApp   DocsApp
-	Runtime   Runtime // nil disables server flats
+	DataDir string
+	// SecretKeyPath is host.secret_key_path: "" keeps the host key at <DataDir>/secret.key, and a path
+	// is a key that the host reads and never creates.
+	SecretKeyPath string
+	Store         *store.Store
+	Private       PrivateNet
+	Lifecycle     LifecycleNet // optional provider manager; independent of legacy adapters
+	Public        PublicNet    // nil disables public flats
+	DocsApp       DocsApp
+	Runtime       Runtime // nil disables server flats
 	// Settings holds the system settings (config.json). Nil keeps the
 	// frozen defaults in memory.
 	Settings   *SettingsSource
@@ -251,10 +254,11 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 	if _, err := s.syncAutopilot(ctx); err != nil {
 		return nil, fmt.Errorf("autopilot settings: %w", err)
 	}
-	if err := CheckSecretKey(ctx, cfg.DataDir, cfg.Store); err != nil {
+	keyFile := NewKeyFile(cfg.DataDir, cfg.SecretKeyPath)
+	if err := CheckSecretKey(ctx, keyFile, cfg.Store); err != nil {
 		return nil, err
 	}
-	key, err := loadOrCreateKey(filepath.Join(cfg.DataDir, "secret.key"))
+	key, err := keyFile.LoadOrCreate()
 	if err != nil {
 		return nil, err
 	}
