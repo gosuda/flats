@@ -230,7 +230,8 @@ proposed it. The author decided 4, 5 and 6, and a reviewer can challenge them. E
     `actor` of `visibility.set` is the actor text of the console when `via` is `console`, as for every console row, and
     `core.DeciderText` of the approval's `decided_by` when `via` is `autopilot`. Both are cut at 512 bytes on a character
     boundary. The actor is empty when the change is applied without a console request, as `resumeApplying` does. The `at` of
-    each new row is taken in the store function right before its write, not when the caller built the change. For `network.set` and `provider.set` the actor is the actor text of the console for `console` and empty for
+    each new row is taken on the clock of the service immediately before the call of the store function that writes it,
+    not when the caller built the change. For `network.set` and `provider.set` the actor is the actor text of the console for `console` and empty for
     `cli`. `visibility.set` is written by `Store.CommitVisibility`. `network.set` and `provider.set` are written by the
     store functions that set the origin grants and the provider permission. Each writes its row only when its value
     changes (rule 2). `Service.SetProviderPermission` stops the routes of a revoked provider before it calls the store,

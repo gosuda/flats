@@ -582,8 +582,9 @@ snapshot. Changes apply on the next approved deployment, redeployment, rollback 
 or Flats host restart; automatic worker restarts reuse the captured settings.
 Every change of a sealed value, and every key backup, restore and reset, writes an event to the audit log in
 `flats.db`. A change of a sealed value and a reset write it in the transaction of the change; a key backup and a key
-restore change no row and append it after their work. The log is append-only and outlives the flat; no agent surface reads it
-([Audit log](configuration.md#audit-log)).
+restore change no row and append it after their work. An applied change of the visibility, of the origin grants or of a
+provider permission of a flat writes its event in the transaction of the change too. The log is append-only and outlives
+the flat; no agent surface reads it ([Audit log](configuration.md#audit-log)).
 `flats secret backup-key` keeps a copy of the key, encrypted under a recovery
 password the operator chooses, beside it, and `restore-key` and `reset` bring
 back a host whose key is lost; see
@@ -635,6 +636,16 @@ from and what it carries. Enforced:
   headers are dropped first), on a NetBird console domain `netbird:<peer
   name>` of the requesting peer. Decisions on the loopback listener are
   recorded without an identity.
+* An operator can be told about approvals and keep their record off the host.
+  The [event webhook](configuration.md#event-webhook) sends a signed POST when
+  an approval is created or decided, when a visibility change is applied and
+  when a grant of a flat changes. Its body names the flat, the operation and
+  the state, and holds no content, secret, login or address. A delivery never
+  delays the operation and ends after 4 attempts.
+  [`flats audit export`](configuration.md#audit-export) writes the approval
+  records and the audit log as JSON lines, and an approved delete stays in it
+  after the flat is gone. Only `flats key`, on the stopped host, sets the URL
+  and the signing secret, and no agent surface reads them.
 
 Not enforced: all of the console checks are request headers. A process that
 can send arbitrary HTTP from one of the operator's devices (for example an
