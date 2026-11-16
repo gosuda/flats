@@ -1,6 +1,6 @@
 # Phase gates: evidence
 
-This page lists the checks CI runs on every change and the recorded evidence
+This page lists the checks CI runs and the recorded evidence
 of the phase gates. The phase evidence names the tools of its time:
 `save_version`, `save_version_from_dir` and `publish` are removed. The current
 tools are `save_draft` / `save_draft_from_dir` for Draft content,
@@ -15,8 +15,27 @@ was not available.
 ## Pull-request baseline
 
 `.github/workflows/ci.yml` runs on every PR and push to main, with read-only
-repository permission and no secrets. It uses the Go version from `go.mod`
-and runs these checks in parallel jobs:
+repository permission and no secrets. Every main push runs the full suite.
+Pull requests first compare the tested merge with its base parent. A PR that
+changes only regular Markdown files directly in `docs/spec/` or
+`docs/research/` runs `make docs-verify`: uncached links and anchors, root
+package compilation, documentation contract tests and runtime reference
+examples. These directories hold prose, not runtime inputs; keep any new
+embedded or executable content outside this exception. The docs job restores
+the `test-other` cache without writing it.
+
+`scripts/ci-changes.py` limits this exception to lowercase ASCII filenames
+containing letters, digits and hyphens, plus `README.md`, and excludes Windows
+device names and lowercase `readme.md`. Both old and new modes must be
+non-executable regular files or absent. Renames include both paths. Empty
+diffs, nested paths, other filenames and every other changed file run the full
+suite, including `docs/agent/`, generated references, plugin skills and CI
+files. Invalid merge context or a failed comparison fails the changes job.
+No workflow-level path filter hides its result. Main skips the changes job
+and starts its full suite without waiting for a classifier runner.
+
+The full suite uses the Go version from `go.mod` and runs these checks in
+parallel jobs:
 
 ```sh
 go mod tidy                         # CI requires no go.mod/go.sum diff
@@ -59,8 +78,8 @@ CGO-free somewhere: darwin/arm64 by the `install-macos` job, darwin/amd64 by
 the `netbird` job on Linux, and linux/amd64 and linux/arm64 by the
 `container` job.
 
-`scripts/ci-race.sh` runs seven race lanes on each pull request and main
-push: the core service in two lanes; the API, app, MCP, store, Portal and
+`scripts/ci-race.sh` runs seven race lanes on each full-suite pull request and
+main push: the core service in two lanes; the API, app, MCP, store, Portal and
 WebSocket packages with the runtime's FILES, WASI and WebSocket limit tests
 and the board engine; the whole notebook package with its default model seed
 count in two lanes; and the board server in two lanes. Each two-lane package
@@ -100,7 +119,11 @@ manual dispatch. Its three independent 30-minute jobs call the existing
 `notebook-large-reader`, `notebook-large-markdown` and
 `notebook-large-source` lanes of `scripts/ci-race.sh`. The large-input race
 checks run weekly or manually; the default notebook and core race checks
-remain on every PR. Both modes share selectors in `scripts/ci-memory.sh`.
+remain on every full-suite PR. Both modes share selectors in
+`scripts/ci-memory.sh`. The weekly jobs restore the regular `race-notebook`
+cache for reader/Markdown and `race-core` for source. Main CI writes those
+package caches; the weekly jobs never write them and still force the large
+fixtures to execute with `-count=1`.
 
 The many-option Markdown fixture keeps all 5,000 options
 and 100 rows in the default run, batching schema-only continuations rather
@@ -153,7 +176,9 @@ the request limit ([Current state](spec/windows-support.md#current-state)).
 The step prints the boot time of the runner, so that a later stall can be
 compared with it. The package `internal/site` runs first, with the default
 temp directory: one of its tests needs the short (8.3) names of the system
-drive, and the temporary drive keeps none. After the tests the job runs
+drive, and the temporary drive keeps none. The final package list excludes
+that exact package so it runs only once, and keeps any site subpackages.
+After the tests the job runs
 `scripts/install-smoke.ps1` on the Windows release archive. The job runs as an
 administrator, so the check that the install needs no administrator rights
 stays manual in [Releases](release.md).
@@ -168,6 +193,10 @@ console API), a built-in docs flat saved without any approval request with its
 generated modules under `/data`, restart persistence of config, flats and data
 without a second bootstrap, and a clean SIGTERM exit, all with a read-only
 root, no capabilities and `no-new-privileges`.
+
+Release tests retain all eight shards and restore the caches written by the
+six main CI lanes. In particular, `runtime-codec` reads `test-runtime-soak`
+and `docs-soak` reads `test-docs-budget`. Release checkouts remain restore-only.
 
 Tests use disposable hosts/data and local test-control infrastructure. Portal
 relay E2E remains opt-in (`FLATS_PORTAL_E2E=1`); ordinary CI never enables it.
