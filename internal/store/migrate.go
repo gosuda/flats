@@ -62,6 +62,7 @@ var migrations = []migration{
 	{23, "public instance creation mark", addPublicInstanceMark},
 	{24, "notebook revision imports and pages", addNotebookRevisions},
 	{25, "audit events", addAuditEvents},
+	{26, "event webhook", addEventWebhook},
 }
 
 func latestVersion() int { return migrations[len(migrations)-1].version }

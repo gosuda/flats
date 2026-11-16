@@ -231,7 +231,7 @@ func TestProviderGrantDoesNotOpenUnobservedPublicSibling(t *testing.T) {
 			publicLifecycleFlat(t, s, "narrow", store.ProviderFunnel)
 			// Seed a permission whose route is absent from the last exposure,
 			// as with a previously deferred grant before this fix.
-			if err := s.st.SetProviderPermission(t.Context(), "narrow", store.ProviderPortal, true); err != nil {
+			if _, err := s.st.SetProviderPermission(t.Context(), "narrow", store.ProviderPortal, true, store.Audit{}); err != nil {
 				t.Fatal(err)
 			}
 			if err := s.SetProviderPermission(t.Context(), "narrow", string(provider), true, ViaConsole); err != nil {
@@ -254,7 +254,7 @@ func TestProviderKeyRetryDoesNotOpenUnobservedPublicTarget(t *testing.T) {
 	network := newLifecycleRouteNet()
 	s.cfg.Lifecycle = network
 	publicLifecycleFlat(t, s, "key-retry", store.ProviderFunnel)
-	if err := s.st.SetProviderPermission(t.Context(), "key-retry", store.ProviderPortal, true); err != nil {
+	if _, err := s.st.SetProviderPermission(t.Context(), "key-retry", store.ProviderPortal, true, store.Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	s.RetryProviderRoutes(t.Context(), ProviderTailscale, ProviderPortal)

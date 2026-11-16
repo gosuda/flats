@@ -135,7 +135,7 @@ func TestEnvironmentSnapshotReadsNamespacesTogether(t *testing.T) {
 	if err := s.PutSecret(ctx, "app", SealedSecret{Name: "TOKEN", Nonce: []byte{1}, Ciphertext: []byte("a"), UpdatedAt: now}, Audit{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetNetworkPolicy(ctx, "app", NetworkPolicy{Origins: []string{"a"}, UpdatedAt: now}); err != nil {
+	if _, err := s.SetNetworkPolicy(ctx, "app", NetworkPolicy{Origins: []string{"a"}, UpdatedAt: now}, Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	done := make(chan error, 1)

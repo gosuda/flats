@@ -49,7 +49,7 @@ func TestCommitVisibilityAccess(t *testing.T) {
 	next := from
 	next.Visibility, next.PublicAccess = Public, AccessEdit
 	approve("apr-a")
-	if err := s.CommitVisibility(ctx, next, from, "apr-a", []byte(`{}`)); err == nil {
+	if err := s.CommitVisibility(ctx, next, from, "apr-a", []byte(`{}`), Audit{}); err == nil {
 		t.Fatal("edit committed for a flat that is not a board")
 	}
 	if err := s.ContentTx(ctx, "plan", func(tx *ContentTx) error { return tx.InitState(ctx, "board") }); err != nil {
@@ -58,11 +58,11 @@ func TestCommitVisibilityAccess(t *testing.T) {
 	for _, bad := range []Flat{{Visibility: Private, PublicAccess: AccessView}, {Visibility: Public}} {
 		f := from
 		f.Visibility, f.PublicAccess = bad.Visibility, bad.PublicAccess
-		if err := s.CommitVisibility(ctx, f, from, "apr-a", []byte(`{}`)); err == nil {
+		if err := s.CommitVisibility(ctx, f, from, "apr-a", []byte(`{}`), Audit{}); err == nil {
 			t.Fatalf("invalid pair %s %q committed", bad.Visibility, bad.PublicAccess)
 		}
 	}
-	if err := s.CommitVisibility(ctx, next, from, "apr-a", []byte(`{}`)); err != nil {
+	if err := s.CommitVisibility(ctx, next, from, "apr-a", []byte(`{}`), Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := s.GetFlat(ctx, "plan")
@@ -73,7 +73,7 @@ func TestCommitVisibilityAccess(t *testing.T) {
 	approve("apr-b")
 	back := from
 	back.Visibility, back.PublicAccess = Public, AccessView
-	if err := s.CommitVisibility(ctx, back, from, "apr-b", []byte(`{}`)); err == nil {
+	if err := s.CommitVisibility(ctx, back, from, "apr-b", []byte(`{}`), Audit{}); err == nil {
 		t.Fatal("stale commit applied")
 	}
 	if err := s.SetPublicAccess(ctx, "plan", AccessEdit, AccessView, Event{Level: "warn", Kind: "visibility", Message: "stopped"}); err != nil {
@@ -115,7 +115,7 @@ func TestCommitVisibilityEditDocuments(t *testing.T) {
 		from, _ := s.GetFlat(ctx, slug)
 		next := from
 		next.Visibility, next.PublicAccess = Public, AccessEdit
-		return s.CommitVisibility(ctx, next, from, id, []byte(`{}`))
+		return s.CommitVisibility(ctx, next, from, id, []byte(`{}`), Audit{})
 	}
 	if err := try("notes", `{"type":"docs"}`); err != nil {
 		t.Fatalf("document without content state: %v", err)

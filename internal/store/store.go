@@ -138,6 +138,9 @@ type Approval struct {
 	ResultData     json.RawMessage `json:"result_data,omitempty"`
 	DecidedBy      string          `json:"decided_by,omitempty"`
 	AuthorizedAt   *time.Time      `json:"authorized_at,omitempty"`
+	// FlatID is the ID of the flat that the slug named when the request was made. It is never part of a response:
+	// agents do not see the ID of a flat (docs/spec/event-webhook.md, rule 28).
+	FlatID string `json:"-"`
 }
 
 // Preview is an ephemeral address for a saved version.
@@ -921,8 +924,10 @@ func (s *Store) EventFlats(ctx context.Context) ([]string, error) {
 
 // InsertApproval records a pending approval.
 func (s *Store) InsertApproval(ctx context.Context, a Approval) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO approvals(id,flat,action,params,status,via,reason,requested_at,idempotency_key) VALUES(?,?,?,?,?,?,?,?,?)`,
-		a.ID, a.Flat, a.Action, string(a.Params), a.Status, a.Via, a.Reason, unix(a.RequestedAt), nullString(a.IdempotencyKey))
+	// flat_id comes from the flat that the slug names now, so that a request for a flat that is deleted later still
+	// says which flat it was about.
+	_, err := s.db.ExecContext(ctx, `INSERT INTO approvals(id,flat,action,params,status,via,reason,requested_at,idempotency_key,flat_id) VALUES(?,?,?,?,?,?,?,?,?,COALESCE((SELECT uid FROM flats WHERE slug=?),''))`,
+		a.ID, a.Flat, a.Action, string(a.Params), a.Status, a.Via, a.Reason, unix(a.RequestedAt), nullString(a.IdempotencyKey), a.Flat)
 	return err
 }
 
@@ -932,7 +937,7 @@ func scanApproval(sc interface{ Scan(...any) error }) (Approval, error) {
 	var reason, result, idem, data, actor sql.NullString
 	var req int64
 	var dec, authorized sql.NullInt64
-	if err := sc.Scan(&a.ID, &a.Flat, &a.Action, &params, &a.Status, &a.Via, &reason, &result, &req, &dec, &idem, &data, &actor, &authorized); err != nil {
+	if err := sc.Scan(&a.ID, &a.Flat, &a.Action, &params, &a.Status, &a.Via, &reason, &result, &req, &dec, &idem, &data, &actor, &authorized, &a.FlatID); err != nil {
 		return a, err
 	}
 	a.Params = json.RawMessage(params)
@@ -951,7 +956,7 @@ func scanApproval(sc interface{ Scan(...any) error }) (Approval, error) {
 	return a, nil
 }
 
-const approvalCols = `id,flat,action,params,status,via,reason,result,requested_at,decided_at,idempotency_key,result_data,decided_by,authorized_at`
+const approvalCols = `id,flat,action,params,status,via,reason,result,requested_at,decided_at,idempotency_key,result_data,decided_by,authorized_at,flat_id`
 
 // GetApproval returns one approval.
 func (s *Store) GetApproval(ctx context.Context, id string) (Approval, error) {

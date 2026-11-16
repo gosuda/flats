@@ -26,6 +26,11 @@ const (
 	AuditKeyRestore   = "key.restore"
 	AuditKeyReset     = "key.reset"
 	AuditKeyRotate    = "key.rotate" // reserved: nothing writes it yet
+
+	// The kinds of docs/spec/event-webhook.md, rule 21.
+	AuditVisibilitySet = "visibility.set"
+	AuditNetworkSet    = "network.set"
+	AuditProviderSet   = "provider.set"
 )
 
 // Channels of audit events (rule 4).
@@ -36,6 +41,7 @@ const (
 	AuditViaStart      = "start"
 	AuditViaMigration  = "migration"
 	AuditViaFlatDelete = "flat-delete"
+	AuditViaAutopilot  = "autopilot" // an agent decided an approval under Autopilot (visibility.set only)
 )
 
 // Limits of one row (rule 7).

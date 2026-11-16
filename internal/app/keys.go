@@ -259,8 +259,8 @@ func (h *Host) hostKeys(ctx context.Context) ([]KeyInfo, error) {
 	h.nbMu.Lock()
 	nbDiffers, nbGiven := h.nbKeyDiffers, h.nbKeyExternal != ""
 	h.nbMu.Unlock()
-	out := make([]KeyInfo, 0, len(core.HostKeyIDs))
-	for _, id := range core.HostKeyIDs {
+	out := make([]KeyInfo, 0, len(core.ProviderKeyIDs))
+	for _, id := range core.ProviderKeyIDs {
 		k := KeyInfo{ID: id, Managed: true}
 		row, has := byID[id]
 		if has {

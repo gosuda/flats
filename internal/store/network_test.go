@@ -34,7 +34,7 @@ func TestNetworkPolicyMigrationLifecycle(t *testing.T) {
 		t.Fatalf("migration default: %+v %v", p, err)
 	}
 	origins := []string{"https://api.example.com"}
-	if err := s.SetNetworkPolicy(t.Context(), "app", NetworkPolicy{Origins: origins, UpdatedAt: now}); err != nil {
+	if _, err := s.SetNetworkPolicy(t.Context(), "app", NetworkPolicy{Origins: origins, UpdatedAt: now}, Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	vars, _, snapshot, err := s.RuntimeSettingsSnapshot(t.Context(), "app")

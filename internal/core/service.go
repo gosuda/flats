@@ -178,6 +178,8 @@ type Service struct {
 	// ap caches the stored Autopilot settings for readers.
 	ap autopilotCache
 	pi publicInstanceCache
+	// notifier receives the webhook events (webhook.go). The host sets it after New returns.
+	notifier atomic.Pointer[notifierBox]
 }
 
 // redirect owns an old slug while its route is served or provider teardown is
@@ -1954,13 +1956,7 @@ func (s *Service) requestApproval(ctx context.Context, slugName, action string, 
 // ApprovalURL is the console address where the operator decides approval
 // id, on the console domain the request came through when there is one.
 func (s *Service) ApprovalURL(ctx context.Context, id string) string {
-	base := ""
-	if s.cfg.ConsoleURLFor != nil {
-		base = s.cfg.ConsoleURLFor(ctx)
-	} else {
-		base = s.cfg.ConsoleURL()
-	}
-	return strings.TrimSuffix(base, "/") + "/approvals/" + id
+	return s.consoleBase(ctx) + "/approvals/" + id
 }
 
 // SetVisibility requests a private or public change. Both directions, from
@@ -2092,7 +2088,9 @@ func (s *Service) deleteLocked(ctx context.Context, slugName string, via Via, ex
 	if pend, err := s.st.ListApprovals(ctx, "pending"); err == nil {
 		for _, a := range pend {
 			if a.Flat == slugName && a.ID != exceptApproval {
-				_ = s.st.DecideApproval(ctx, a.ID, "failed", "the flat was deleted", s.now())
+				if err := s.st.DecideApproval(ctx, a.ID, "failed", "the flat was deleted", s.now()); err == nil {
+					s.notifyApproval(ctx, eventApprovalDecided, "failed", a)
+				}
 			}
 		}
 	}
@@ -2201,7 +2199,11 @@ func (s *Service) decide(ctx context.Context, id string, approve bool, agent *Ag
 			return refused(err)
 		}
 		s.Event(ctx, a.Flat, "info", "approval", a.Action+" rejected by "+decider, nil)
-		return s.st.GetApproval(ctx, id)
+		out, err := s.st.GetApproval(ctx, id)
+		if err == nil {
+			s.notifyApproval(ctx, eventApprovalDecided, "rejected", out)
+		}
+		return out, err
 	}
 	switch a.Status {
 	case "approved":

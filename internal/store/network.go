@@ -39,17 +39,43 @@ func (s *Store) NetworkPolicy(ctx context.Context, flat string) (NetworkPolicy, 
 	return NetworkPolicy{Origins: origins, UpdatedAt: fromUnix(at)}, err
 }
 
-// SetNetworkPolicy atomically replaces the entire allowlist; an empty list revokes it.
-func (s *Store) SetNetworkPolicy(ctx context.Context, flat string, p NetworkPolicy) error {
+// SetNetworkPolicy atomically replaces the entire allowlist; an empty list revokes it. It reports whether the list
+// changed (no row counts as the empty list). A change and its network.set audit event (docs/spec/event-webhook.md,
+// rule 21) are one transaction, and a write of the list that the flat has writes no event.
+func (s *Store) SetNetworkPolicy(ctx context.Context, flat string, p NetworkPolicy, a Audit) (bool, error) {
 	if p.Origins == nil {
 		p.Origins = []string{}
 	}
 	b, err := json.Marshal(p.Origins)
 	if err != nil {
-		return err
+		return false, err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO network_settings(flat,origins,updated_at) VALUES(?,?,?) ON CONFLICT(flat) DO UPDATE SET origins=excluded.origins,updated_at=excluded.updated_at`, flat, string(b), unix(p.UpdatedAt))
-	return err
+	changed := false
+	_, err = s.immediate(ctx, func(x executor) (bool, error) {
+		was := "[]"
+		if err := x.QueryRowContext(ctx, `SELECT origins FROM network_settings WHERE flat=?`, flat).Scan(&was); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return false, err
+		}
+		if _, err := x.ExecContext(ctx, `INSERT INTO network_settings(flat,origins,updated_at) VALUES(?,?,?) ON CONFLICT(flat) DO UPDATE SET origins=excluded.origins,updated_at=excluded.updated_at`, flat, string(b), unix(p.UpdatedAt)); err != nil {
+			return false, err
+		}
+		if was == string(b) {
+			return true, nil
+		}
+		uid, err := flatUID(ctx, x, flat)
+		if err != nil {
+			return false, err
+		}
+		e := a.event(AuditNetworkSet)
+		e.Flat, e.FlatID = flat, uid
+		e.Data = AuditData(map[string]any{"origins": p.Origins})
+		if err := appendAudit(ctx, x, e); err != nil {
+			return false, err
+		}
+		changed = true
+		return true, nil
+	})
+	return changed && err == nil, err
 }
 
 func addNetworkSettings(ctx context.Context, x executor) error {
