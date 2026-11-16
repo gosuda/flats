@@ -1,6 +1,6 @@
 # Audit events
 
-Status: partly implemented.
+Status: implemented.
 
 ## Summary
 
@@ -41,12 +41,6 @@ export` of #225 build on this log.
   renames, and different for a flat that is created again under a deleted slug.
 - Approvals survive the deletion of a flat and record `decided_by` and `via`. Decisions on the loopback listener have
   no identity, and #139 covers that part.
-
-## Current state
-
-The log, its migration, the events of rules 8 to 15 and `flats audit ls` are implemented. The three kinds
-`visibility.set`, `network.set` and `provider.set` of [event webhook](event-webhook.md) (rule 21) are specified in the table
-and are not written yet. This page returns to `implemented` in the change that writes them.
 
 ## Scope
 
@@ -195,7 +189,9 @@ flats audit ls [--since TIME] [--kind KIND] [--flat SLUG] [--flat-id ID] [--limi
     `--limit 0` returns every match. A flag value that does not parse is a usage mistake with status 2.
 21. The text output is one line for each event with the time, the kind, the slug and name, `via`, `actor` and `data`.
     With `--json` it is one JSON object per line (JSON lines) with the fields of rule 1 (`data` as an object, `at` as an
-    RFC 3339 time in UTC with milliseconds), which is the format that `flats audit export` of #225 extends. The ID of a
+    RFC 3339 time in UTC with milliseconds), which is the format that `flats audit export` of #225 extends. A character that the
+    output filter of the command line rewrites (DEL, a C1 control or a bidi override) is a JSON escape in the line, so the
+    line stays valid JSON. The ID of a
     flat is shown to the operator here, as it is in no other output.
 22. The command opens `flats.db` read-only, takes no host lock, never calls the host and writes no row. The open is
     never immutable while a host may write: it is a plain read-only open, which sees the write-ahead log, whenever a

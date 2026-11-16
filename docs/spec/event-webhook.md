@@ -1,6 +1,6 @@
 # Event webhook and audit export
 
-Status: planned.
+Status: implemented.
 
 ## Summary
 
@@ -266,7 +266,8 @@ flats audit export [--since TIME] [--config PATH | --data DIR]
     `decided_by` is the stored value, cut at 512 bytes on a character boundary. It can hold a login, a peer name or the
     address of an agent. `reason` is text that an agent wrote, and `result` can be an error text of the host (a path, a
     runtime message). The host does not filter either, and both are cut at 1 KiB on a character boundary. The docs say so.
-    No line has `params`, `result_data`, `authorized_at` or a secret value. Each line holds the `id` of its approval and
+    No line has `params`, `result_data`, `authorized_at` or a secret value. A character that the output filter of the command
+    line rewrites (DEL, a C1 control or a bidi override) is a JSON escape in the line, so the line stays valid JSON. Each line holds the `id` of its approval and
     the `flat_id` of the row, which joins it to the audit rows. A rename rewrites `approvals.flat`, so an old approval line
     carries the new slug while an old audit row keeps the old one. `flat_id` is empty for a row that was written before
     schema 26 and whose flat was already gone at the migration (rule 28).
