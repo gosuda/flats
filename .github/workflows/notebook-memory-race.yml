@@ -19,13 +19,18 @@ jobs:
       fail-fast: false
       matrix:
         lane: [notebook-large-reader, notebook-large-markdown, notebook-large-source]
+        include:
+          - {lane: notebook-large-reader, cache: notebook}
+          - {lane: notebook-large-markdown, cache: notebook}
+          - {lane: notebook-large-source, cache: core}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-go
         with:
-          cache-key: race-${{ matrix.lane }}
-          restore-fallback: race
+          # Main's routine race lanes compile the same package test binaries.
+          cache-key: race-${{ matrix.cache }}
+          save-build: "false"
       - name: Races
         run: scripts/ci-race.sh "${{ matrix.lane }}"

@@ -65,6 +65,10 @@ jobs:
       fail-fast: false
       matrix:
         shard: [runtime-soak, runtime-codec, runtime, docs-soak, docs-budget, docs, board, other]
+        # CI writes one cache for each lane, including its grouped shards.
+        include:
+          - {shard: runtime-codec, cache: runtime-soak}
+          - {shard: docs-soak, cache: docs-budget}
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
@@ -102,10 +106,10 @@ jobs:
       - uses: actions/cache/restore@v4
         with:
           path: ${{ steps.cache-paths.outputs.build }}
-          key: go-build-v2-${{ runner.os }}-${{ runner.arch }}-go${{ steps.go.outputs.go-version }}-test-${{ matrix.shard }}-root--${{ hashFiles('go.mod', 'go.sum') }}--read-only
+          key: go-build-v2-${{ runner.os }}-${{ runner.arch }}-go${{ steps.go.outputs.go-version }}-test-${{ matrix.cache || matrix.shard }}-root--${{ hashFiles('go.mod', 'go.sum') }}--read-only
           restore-keys: |
-            go-build-v2-${{ runner.os }}-${{ runner.arch }}-go${{ steps.go.outputs.go-version }}-test-${{ matrix.shard }}-root--${{ hashFiles('go.mod', 'go.sum') }}--
-            go-build-v2-${{ runner.os }}-${{ runner.arch }}-go${{ steps.go.outputs.go-version }}-test-${{ matrix.shard }}-root--
+            go-build-v2-${{ runner.os }}-${{ runner.arch }}-go${{ steps.go.outputs.go-version }}-test-${{ matrix.cache || matrix.shard }}-root--${{ hashFiles('go.mod', 'go.sum') }}--
+            go-build-v2-${{ runner.os }}-${{ runner.arch }}-go${{ steps.go.outputs.go-version }}-test-${{ matrix.cache || matrix.shard }}-root--
       - name: Vet
         if: matrix.shard == 'other'
         run: go vet ./...

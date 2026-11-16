@@ -14,7 +14,43 @@ concurrency:
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  changes:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      full: ${{ steps.select.outputs.full }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Select checks from the tested merge
+        id: select
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/ci-changes.py
+
+  docs:
+    needs: changes
+    if: needs.changes.outputs.full == 'false'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-go
+        with:
+          cache-key: test-other
+          save-build: "false"
+      - name: Documentation links, compilation and contracts
+        run: make docs-verify
+
+  # Main always runs the full suite, even though its changes job is skipped.
+  # Job-level conditions keep CI visible for spec/research-only pull requests.
   docs-web:
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     defaults:
@@ -35,6 +71,8 @@ jobs:
   # budget tests (listed first) still have the runner to themselves.
   test:
     name: test (${{ matrix.lane }})
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') }}
     strategy:
       fail-fast: false
       matrix:
@@ -93,6 +131,8 @@ jobs:
   # NetBird is a separate module (./netbird) because its client needs replace
   # directives; go test ./... above does not reach it.
   netbird:
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -134,6 +174,8 @@ jobs:
   # The race tests in parallel lanes; see scripts/ci-race.sh.
   race:
     name: race (${{ matrix.lane }})
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') }}
     strategy:
       fail-fast: false
       matrix:
@@ -162,6 +204,8 @@ jobs:
         run: scripts/ci-race.sh "${{ matrix.lane }}"
 
   notebook-memory:
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -184,6 +228,8 @@ jobs:
   # It leaves out the docs-budget shard, whose wall-clock budgets belong to the
   # Linux shard, and internal/devreview, whose run command is Unix only.
   windows:
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') }}
     runs-on: windows-latest
     timeout-minutes: 75
     defaults:
@@ -223,7 +269,7 @@ jobs:
             scripts/ci-test.sh "$shard" -v -timeout 30m || failed=1
           done
           # shellcheck disable=SC2046 # one argument per package path.
-          go test -v -timeout 30m $(go list ./... | grep -v -E 'internal/(runtime|apps/docs|board|devreview)') || failed=1
+          go test -v -timeout 30m $(go list ./... | grep -v -E '/internal/((runtime|apps/docs|site)$|(board|devreview)(/|$))') || failed=1
           exit "$failed"
       # Runs after a failed test step too: the two answer different questions.
       - name: Install, crash, stop and uninstall the service
@@ -234,6 +280,8 @@ jobs:
   # Native macOS: launchd service install smoke and its release archive.
   # The Linux install smoke runs in the container job, on its archives.
   install-macos:
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') }}
     runs-on: macos-latest
     timeout-minutes: 20
     steps:
@@ -262,6 +310,8 @@ jobs:
         run: scripts/install-smoke.sh "$RUNNER_TEMP/dist" v0.0.0-ci
 
   container:
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
