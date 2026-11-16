@@ -49,7 +49,8 @@ In scope: the table and its migration, the events of rules 8 to 15 and where eac
 
 Out of scope:
 
-- The webhook, `flats audit export` and the approval records in an export (#225).
+- The webhook, `flats audit export` and the approval records in an export. They are in [event webhook](event-webhook.md)
+  (#225), which also adds three kinds to this log.
 - The writer of the rotation event. This spec reserves the kind `key.rotate` (rule 15). The rotation spec gives its
   fields and writes it.
 - A console view, an MCP tool or an API route for the log. Agents cannot read it.
@@ -75,7 +76,7 @@ Out of scope:
    `flats backup` replaces `flats.db` and so drops the rows that were written after the copy; the docs say so. A person
    who can write `flats.db` can still change the rows, as "Scope" says.
 3. No row holds a secret value, an operator key value, key bytes, a recovery password or the recovery copy. A name is
-   not a value. `data` holds only the fields that rules 8 to 15 name. The key ID of rules 12 and 13 is the one that
+   not a value. `data` holds only the fields that rules 8 to 15 and rule 21 of [event webhook](event-webhook.md) name. The key ID of rules 12 and 13 is the one that
    [secret key recovery](secret-key-recovery.md) defines. It reveals nothing that opens the key.
 4. `via` says which channel made the change. It is one of
    - `console`: a route of the console API (the web console);
@@ -85,7 +86,9 @@ Out of scope:
    - `start`: an input that the host read at its start (a key file flag, a `FLATS_*` variable, or the deprecated
      `credentials.tailscale_authkey_file`), and the zrok enrolment and clean-up that the host runs after its start;
    - `migration`: the import of a legacy key file when an older installation moves to a configuration file;
-   - `flat-delete`: the deletion of a flat removed its secrets.
+   - `flat-delete`: the deletion of a flat removed its secrets;
+   - `autopilot`: an agent decided an approval under [Autopilot](autopilot.md) (the kind `visibility.set` of
+     [event webhook](event-webhook.md) only).
 5. `actor` is the identity that the channel knows. For `console` it is the actor text that `consoleActor`
    (`internal/api/experiments.go`) derives from the request: a tailnet user or node, a NetBird peer, the external
    origin, or the socket address of the caller. For `command` it is the name of the operating-system user that ran the
@@ -111,6 +114,7 @@ Out of scope:
 | `key.restore` (13) | none | none | `{"key_id": ..., "out": true or false, "opened": N, "total": M}` | `command` |
 | `key.reset` (14) | none | none | `{"secrets": N, "keys": M}` | `command` |
 | `key.rotate` (15) | none | none | reserved | reserved |
+| `visibility.set`, `network.set`, `provider.set` | the flat | none, none, the provider | [event webhook](event-webhook.md), rule 21 | `console`, `cli`, `autopilot` |
 
 8. `secret.set` is written for each successful set of a flat secret, whether the name is new (`created` true) or
    replaced. A set that fails validation or the name check changes nothing and writes nothing. `flat` and `flat_id`
