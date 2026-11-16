@@ -51,7 +51,8 @@ type ZrokAccountAdmin interface {
 // KeyAdmin is a System whose console manages the operator keys. Values are
 // sent once and never returned.
 type KeyAdmin interface {
-	// HostKeys describes every operator key, never with its value.
+	// HostKeys describes the keys of the network providers, never with their values. The two webhook keys are
+	// not in it: only `flats key` reads and sets them.
 	HostKeys(ctx context.Context) (any, error)
 	SetTailscaleKey(ctx context.Context, key string) error
 	DeleteTailscaleKey(ctx context.Context) error

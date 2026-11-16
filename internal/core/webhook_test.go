@@ -7,7 +7,9 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/gosuda/flats/internal/store"
 	"github.com/gosuda/flats/internal/webhook"
@@ -387,4 +389,42 @@ func TestEventsAreOffWithoutANotifier(t *testing.T) {
 	var n *recorder
 	s.SetNotifier(n) // a typed nil still counts as a notifier; the recorder handles it by not being called
 	_ = fmt.Sprint(n)
+}
+
+// The time of a visibility.set row is taken immediately before the store writes it, after the exposure was prepared, and
+// not when the approval built its change. The export relies on that: a row whose time is before its cutoff is committed
+// already (rules 21 and 25).
+func TestTheVisibilityAuditTimeIsTakenAtTheWrite(t *testing.T) {
+	t.Parallel()
+	s, dir, rec := webhookService(t)
+	s.cfg.Lifecycle = newLifecycleRouteNet()
+	makeLive(t, s, rec, "notes")
+	if err := s.SetProviderPermission(t.Context(), "notes", store.ProviderPortal, true, ViaConsole); err != nil {
+		t.Fatal(err)
+	}
+	req, err := s.SetVisibility(t.Context(), "notes", store.Public, ViaAPI, "")
+	if err != nil || req.Approval == nil {
+		t.Fatalf("SetVisibility = %+v, %v", req, err)
+	}
+	// Every reading of the clock is one second later than the one before it.
+	base := time.Date(2026, 11, 16, 10, 0, 0, 0, time.UTC)
+	var tick atomic.Int64
+	s.now = func() time.Time { return base.Add(time.Duration(tick.Add(1)) * time.Second) }
+	if _, err := s.Decide(t.Context(), req.Approval.ID, true); err != nil {
+		t.Fatal(err)
+	}
+	f, err := s.st.GetFlat(t.Context(), "notes")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range auditOf(t, dir) {
+		if e.Kind != store.AuditVisibilitySet {
+			continue
+		}
+		if !e.Time.After(f.UpdatedAt) {
+			t.Errorf("the row has the time %s, which is not after the time %s at which the approval built its change", e.Time, f.UpdatedAt)
+		}
+		return
+	}
+	t.Fatal("no visibility.set row")
 }
