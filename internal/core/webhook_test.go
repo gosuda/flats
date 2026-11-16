@@ -3,7 +3,6 @@ package core
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"slices"
 	"strings"
 	"sync"
@@ -386,9 +385,9 @@ func TestEventsAreOffWithoutANotifier(t *testing.T) {
 	if err := s.SetNetworkPolicy(context.Background(), "notes", []string{"https://api.example.com"}, ViaConsole); err != nil {
 		t.Fatal(err)
 	}
-	var n *recorder
-	s.SetNotifier(n) // a typed nil still counts as a notifier; the recorder handles it by not being called
-	_ = fmt.Sprint(n)
+	if _, err := s.SetVisibility(context.Background(), "notes", store.Public, ViaAPI, ""); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // The time of a visibility.set row is taken immediately before the store writes it, after the exposure was prepared, and

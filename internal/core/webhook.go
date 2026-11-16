@@ -65,13 +65,10 @@ func decidedWord(decidedBy string) string {
 
 // consoleBase is the console address of the request, or the one of the host without a request (rule 4, console_url).
 func (s *Service) consoleBase(ctx context.Context) string {
-	base := ""
 	if s.cfg.ConsoleURLFor != nil {
-		base = s.cfg.ConsoleURLFor(ctx)
-	} else if s.cfg.ConsoleURL != nil {
-		base = s.cfg.ConsoleURL()
+		return strings.TrimSuffix(s.cfg.ConsoleURLFor(ctx), "/")
 	}
-	return strings.TrimSuffix(base, "/")
+	return strings.TrimSuffix(s.cfg.ConsoleURL(), "/")
 }
 
 // notifyApproval sends approval.created (state pending) or approval.decided (state approved, rejected or failed) for
