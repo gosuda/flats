@@ -1,6 +1,6 @@
 # Audit events
 
-Status: implemented.
+Status: partly implemented.
 
 ## Summary
 
@@ -41,6 +41,12 @@ export` of #225 build on this log.
   renames, and different for a flat that is created again under a deleted slug.
 - Approvals survive the deletion of a flat and record `decided_by` and `via`. Decisions on the loopback listener have
   no identity, and #139 covers that part.
+
+## Current state
+
+The log, its migration, the events of rules 8 to 15 and `flats audit ls` are implemented. The three kinds
+`visibility.set`, `network.set` and `provider.set` of [event webhook](event-webhook.md) (rule 21) are specified in the table
+and are not written yet. This page returns to `implemented` in the change that writes them.
 
 ## Scope
 
@@ -94,7 +100,8 @@ Out of scope:
    origin, or the socket address of the caller. For `command` it is the name of the operating-system user that ran the
    command, or empty when the system gives none. Under `sudo` that user is `root`, and the docs say so. For `cli`,
    `start`, `migration` and `flat-delete` it is empty: the `cli` header is a client's claim and not an identity
-   ([design](../design.md), "Secrets"), and the others have no person. #139 may fill `actor` for `cli` later. The log
+   ([design](../design.md), "Secrets"), and the others have no person. #139 may fill `actor` for `cli` later. For `visibility.set` with `via` `autopilot` it is the
+   text that `core.DeciderText` gives for the approval ([event webhook](event-webhook.md), rule 21). The log
    holds these identities and is never trimmed. The docs say so, because #225 ships the log off the host.
 6. A row never changes the meaning of an existing per-flat event. The events `secret NAME set via VIA` and the events of
    `flats secret reset` stay as they are.
