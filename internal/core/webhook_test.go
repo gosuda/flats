@@ -287,9 +287,17 @@ func TestOriginGrantChangeSendsItsEvent(t *testing.T) {
 func TestDeletingAFlatSendsTheDecisionsItCauses(t *testing.T) {
 	t.Parallel()
 	s, _, rec := webhookService(t)
+	s.cfg.Lifecycle = newLifecycleRouteNet()
 	f := makeLive(t, s, rec, "doomed")
+	if err := s.SetProviderPermission(t.Context(), "doomed", store.ProviderPortal, true, ViaConsole); err != nil {
+		t.Fatal(err)
+	}
 	lifecycleSave(t, s, "doomed", "two")
 	pendingPublish := lifecycleRequest(t, s, "doomed")
+	pendingVisibility, err := s.SetVisibility(t.Context(), "doomed", store.Public, ViaAPI, "")
+	if err != nil || pendingVisibility.Approval == nil {
+		t.Fatalf("SetVisibility = %+v, %v", pendingVisibility, err)
+	}
 	req, err := s.Delete(t.Context(), "doomed", ViaMCP, "")
 	if err != nil || req.Approval == nil {
 		t.Fatalf("Delete = %+v, %v", req, err)
@@ -299,14 +307,18 @@ func TestDeletingAFlatSendsTheDecisionsItCauses(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := rec.take()
-	if want := []string{"approval.decided create_version failed", "approval.decided delete approved by operator"}; !slices.Equal(shorts(got), want) {
-		t.Fatalf("events = %v, want %v", shorts(got), want)
+	if len(got) != 3 {
+		t.Fatalf("events = %v, want a failed decision for each of the two pending approvals and the approved delete", shorts(got))
 	}
-	if got[0].ApprovalID != pendingPublish.Approval.ID || got[0].DecidedBy != "" {
-		t.Errorf("failed event = %+v", got[0])
+	failed := []string{short(got[0]) + " " + got[0].ApprovalID, short(got[1]) + " " + got[1].ApprovalID}
+	slices.Sort(failed)
+	wantFailed := []string{"approval.decided create_version failed " + pendingPublish.Approval.ID, "approval.decided set_visibility failed " + pendingVisibility.Approval.ID}
+	slices.Sort(wantFailed)
+	if !slices.Equal(failed, wantFailed) || got[0].DecidedBy != "" || got[1].DecidedBy != "" {
+		t.Errorf("failed events = %v, want %v with no decider", failed, wantFailed)
 	}
-	if got[1].Flat.Slug != "doomed" || got[1].Flat.ID != f.ID || got[1].ApprovalID != req.Approval.ID {
-		t.Errorf("delete event = %+v, want the slug and the ID %s of the flat that is gone", got[1], f.ID)
+	if short(got[2]) != "approval.decided delete approved by operator" || got[2].Flat.Slug != "doomed" || got[2].Flat.ID != f.ID || got[2].ApprovalID != req.Approval.ID {
+		t.Errorf("delete event = %+v, want the slug and the ID %s of the flat that is gone", got[2], f.ID)
 	}
 	if _, err := s.st.GetFlat(t.Context(), "doomed"); err == nil {
 		t.Error("the flat is still there")

@@ -530,15 +530,35 @@ func TestMoreDropsThanNotesAreCounted(t *testing.T) {
 	h.stop()
 	lines := h.log.snapshot()
 	const dropped = total - 2
-	if len(lines) != maxNotes+1 {
-		t.Fatalf("%d log lines, want %d with an ID and one with the count of the rest", len(lines), maxNotes)
+	// Rule 16 gives the number: 64 drops keep their ID.
+	const logged = 64
+	if len(lines) != logged+1 {
+		t.Fatalf("%d log lines, want %d with an ID and one with the count of the rest", len(lines), logged)
 	}
-	for i, line := range lines[:maxNotes] {
+	for i, line := range lines[:logged] {
 		if !strings.Contains(line, eventID(i+1)) {
 			t.Errorf("log line %d = %q, want the id %s", i, line, eventID(i+1))
 		}
 	}
-	if want := fmt.Sprintf("%d more events dropped", dropped-maxNotes); !strings.Contains(lines[maxNotes], want) {
-		t.Errorf("the last line = %q, want %q", lines[maxNotes], want)
+	if want := fmt.Sprintf("%d more events dropped", dropped-logged); !strings.Contains(lines[logged], want) {
+		t.Errorf("the last line = %q, want %q", lines[logged], want)
+	}
+}
+
+// TestDefaultsAreTheNumbersOfTheSpec pins the defaults that the host uses
+// (rules 13, 14 and 16): at most 4 attempts with waits of 5 seconds, 30
+// seconds and 2 minutes, 10 seconds for an attempt, 256 waiting events and 4
+// deliveries at once.
+func TestDefaultsAreTheNumbersOfTheSpec(t *testing.T) {
+	t.Parallel()
+	s := New(Config{Keys: keysFor("http://127.0.0.1:1/")})
+	if want := []time.Duration{5 * time.Second, 30 * time.Second, 2 * time.Minute}; !slices.Equal(s.waits, want) {
+		t.Errorf("waits = %v, want %v", s.waits, want)
+	}
+	if s.limit != 10*time.Second {
+		t.Errorf("the limit of an attempt = %s, want 10s", s.limit)
+	}
+	if s.size != 256 || s.workers != 4 {
+		t.Errorf("queue %d and workers %d, want 256 and 4", s.size, s.workers)
 	}
 }

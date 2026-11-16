@@ -68,6 +68,15 @@ func TestMigrationFromVersion25AddsTheWebhookSupport(t *testing.T) {
 		if err := s.PutHostKey(ctx, k, Audit{Via: AuditViaCommand}); err != nil {
 			t.Fatal(err)
 		}
+		// A grant and a list of origins from before the migration, written without the functions that audit now.
+		for _, q := range []string{
+			`INSERT INTO flat_providers(flat, provider, permitted) VALUES('keep', 'tailscale', 1)`,
+			`INSERT INTO network_settings(flat, origins, updated_at) VALUES('keep', '["https://api.example.com"]', 1000)`,
+		} {
+			if _, err := s.db.Exec(q); err != nil {
+				t.Fatal(err)
+			}
+		}
 		if err := s.Close(); err != nil {
 			t.Fatal(err)
 		}
@@ -82,6 +91,13 @@ func TestMigrationFromVersion25AddsTheWebhookSupport(t *testing.T) {
 	defer s.Close()
 	if info, err := Inspect(path); err != nil || info.Version != 26 || info.Version != latestVersion() {
 		t.Fatalf("after: %+v, %v", info, err)
+	}
+	// The migration writes no row for what happened before it (rule 30): the grant and the origins of the old database
+	// get none of the three new kinds.
+	for _, e := range allAudit(t, s) {
+		if e.Kind == AuditVisibilitySet || e.Kind == AuditNetworkSet || e.Kind == AuditProviderSet {
+			t.Errorf("the migration wrote a %s row", e.Kind)
+		}
 	}
 	if k, err := s.GetHostKey(ctx, "tailscale"); err != nil || !k.HasValue() || k.Source != "cli" {
 		t.Errorf("the Tailscale key after the rebuild: %+v, %v", k, err)

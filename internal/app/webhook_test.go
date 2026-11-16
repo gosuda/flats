@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -526,5 +527,48 @@ func TestAnApprovedAgentDeleteIsInTheExportAfterTheFlatIsGone(t *testing.T) {
 	}
 	if deletes != 2 {
 		t.Errorf("%d secret.delete lines of the deleted flat with the approval, want 2", deletes)
+	}
+}
+
+// The line that the host logs at its start names the key that is missing, whichever of the two is stored, and a host with
+// both keys or with none logs nothing (rule 6).
+func TestTheStartLineNamesTheMissingWebhookKey(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		stored []string
+		want   string
+	}{
+		"only the URL":    {[]string{core.HostKeyWebhookURL}, "the webhook-secret key is not stored"},
+		"only the secret": {[]string{core.HostKeyWebhookSecret}, "the webhook-url key is not stored"},
+		"both":            {[]string{core.HostKeyWebhookURL, core.HostKeyWebhookSecret}, ""},
+		"none":            {nil, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			dir := t.TempDir()
+			st, err := store.Open(filepath.Join(dir, "flats.db"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer st.Close()
+			for _, id := range tc.stored {
+				value := "https://example.com/hook"
+				if id == core.HostKeyWebhookSecret {
+					value = hookSecret
+				}
+				if err := core.PutHostKeyValue(ctx, core.NewKeyFile(dir, ""), st, id, value, core.KeySourceCLI, time.Now(), store.Audit{Via: store.AuditViaCommand}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var lines []string
+			logLonelyWebhookKey(ctx, st, func(format string, args ...any) { lines = append(lines, fmt.Sprintf(format, args...)) })
+			switch {
+			case tc.want == "" && len(lines) != 0:
+				t.Errorf("log = %q, want no line", lines)
+			case tc.want != "" && (len(lines) != 1 || !strings.Contains(lines[0], tc.want)):
+				t.Errorf("log = %q, want one line with %q", lines, tc.want)
+			}
+		})
 	}
 }
