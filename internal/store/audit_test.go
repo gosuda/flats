@@ -912,7 +912,8 @@ func TestTheReservedKeyRotateKindIsListed(t *testing.T) {
 	}
 }
 
-// No code but the audit code touches audit_events, and that code only creates, inserts and selects (rule 2). The scan covers
+// No code but the audit code, its export reader and the migration that adds an index names audit_events, and that code only
+// creates, inserts and selects (rule 2). The scan covers
 // every path that could change a row: retention, the sweep, a flat's deletion or rename, a restore of a flat's data, and the
 // reset (a migration may create the table).
 func TestNothingUpdatesOrDeletesAnAuditRow(t *testing.T) {
@@ -941,7 +942,7 @@ func TestNothingUpdatesOrDeletesAnAuditRow(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if want := []string{"../../internal/store/audit.go"}; !slices.Equal(touching, want) {
+	if want := []string{"../../internal/store/audit.go", "../../internal/store/auditexport.go", "../../internal/store/webhook.go"}; !slices.Equal(touching, want) {
 		t.Errorf("files that name audit_events: %v, want only %v", touching, want)
 	}
 }
