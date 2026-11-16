@@ -1181,11 +1181,12 @@ example after `reset` let the start create a new key.
 ### Audit log
 
 Every change of a sealed value, every key backup, key restore and reset, every change of the visibility of a flat that an
-approval applies, and every change of the origin grants or of a provider permission of a flat writes one event to the
-audit log in
+approval applies, and every change of the origin grants or of a provider permission of a flat that the console or
+`flats network set` makes writes one event to the audit log in
 `flats.db` (the table `audit_events`, schema version 25). It is separate from the log of a flat, which Flats
 trims to `system.events_keep` events and removes with the flat. The audit log is append-only, is never trimmed,
-and the deletion or rename of a flat does not change it. Agents cannot read it: no MCP tool and no API route
+and the deletion or rename of a flat does not change it. The grants that a new flat starts with, and the Tailscale grant
+that the upgrade of a legacy service adds, write no event. Agents cannot read it: no MCP tool and no API route
 returns it, and `get_logs` shows only the log of the flat. The value of a secret or key is never recorded, only
 its name.
 
@@ -1284,7 +1285,8 @@ exported 1820 lines through 2026-11-16T09:31:10.456Z
 
 Run the next export with `--since` and that time. The line at the boundary can appear in both exports, so a reader
 ignores a second line with the same `record`, `event` and `id`. A write of the host that takes more than 30 seconds
-between its time stamp and its commit can be missed. Lines are ordered by `at`. Lines with the same `at` come as audit
+between its time stamp and its commit can be missed. To be safe against that, give `--since` a time a few minutes before
+the printed one and ignore the repeated lines. Lines are ordered by `at`. Lines with the same `at` come as audit
 lines by `id`, then `created` lines, then `decided` lines.
 
 Anyone who can write `flats.db` can change what the export shows. A restore of the host from `flats backup` drops the
@@ -1384,7 +1386,8 @@ For the secret `whsec_0123456789abcdef0123456789abcdef`, the timestamp `17000000
 `v1=edecf23a0b88e1b94a9e5c0e5534118dcd61eeaf578b04fa0696a8a3f9b79919`.
 
 A delivery succeeds on a status 200 to 299. Flats does not follow a redirect and always verifies the certificate of an
-`https` receiver. It connects to the receiver itself and ignores `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`. An attempt has 10 seconds. Flats tries an event at most 4 times, and waits 5 seconds, 30 seconds and
+`https` receiver. It connects to the receiver itself and ignores `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`, so a host
+that reaches the network only through a proxy cannot deliver the webhook. An attempt has 10 seconds. Flats tries an event at most 4 times, and waits 5 seconds, 30 seconds and
 2 minutes between the attempts, after a network or certificate error, a timeout, and a status 408, 429 or 5xx. Any other
 status, and a redirect, end the event at once. A failed event leaves one line in the host log with the ID of the event,
 its type and a class (`connect`, `timeout`, `tls`, `status NNN` or `other`), never the URL or the secret.

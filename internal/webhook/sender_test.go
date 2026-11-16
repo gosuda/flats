@@ -211,6 +211,8 @@ func TestNotifyNeverBlocks(t *testing.T) {
 	if got := maxInflight.Load(); got != workers {
 		t.Errorf("at most %d deliveries at once, want exactly %d", got, workers)
 	}
+	// The log is read after Run returned: a worker that took the notes may not have written every line yet.
+	h.stop()
 	lines := h.log.snapshot()
 	if len(lines) != dropped {
 		t.Fatalf("%d log lines at the end, want only the %d for dropped events", len(lines), dropped)
@@ -507,4 +509,36 @@ func TestNotifyDoesNotWaitForTheLog(t *testing.T) {
 			s.Notify(sampleEvent(eventID(i)))
 		}
 	})
+}
+
+// TestMoreDropsThanNotesAreCounted drops more events than the sender keeps
+// log lines for: the log has the IDs of the first 64 drops and one line with
+// the count of the rest (rule 16).
+func TestMoreDropsThanNotesAreCounted(t *testing.T) {
+	t.Parallel()
+	srv, _ := statusServer(t, http.StatusOK)
+	client, _ := newCountingClient(t)
+	h := newHarness(t, Config{
+		Keys: keysFor(srv.URL), Client: client, Workers: 1, QueueSize: 2, Waits: []time.Duration{}, Now: fixedClock,
+	})
+	const total = 100
+	for i := 1; i <= total; i++ {
+		h.sender.Notify(sampleEvent(eventID(i)))
+	}
+	h.start(t.Context())
+	h.wait(2)
+	h.stop()
+	lines := h.log.snapshot()
+	const dropped = total - 2
+	if len(lines) != maxNotes+1 {
+		t.Fatalf("%d log lines, want %d with an ID and one with the count of the rest", len(lines), maxNotes)
+	}
+	for i, line := range lines[:maxNotes] {
+		if !strings.Contains(line, eventID(i+1)) {
+			t.Errorf("log line %d = %q, want the id %s", i, line, eventID(i+1))
+		}
+	}
+	if want := fmt.Sprintf("%d more events dropped", dropped-maxNotes); !strings.Contains(lines[maxNotes], want) {
+		t.Errorf("the last line = %q, want %q", lines[maxNotes], want)
+	}
 }

@@ -294,22 +294,23 @@ func TestWebhookCredentialsFollowTheStoredKeys(t *testing.T) {
 	if _, err := webhookCredentials(ctx, keyFile, st); !errors.Is(err, webhook.ErrOff) {
 		t.Fatalf("no key: %v, want ErrOff", err)
 	}
-	put(core.HostKeyWebhookSecret, hookSecret)
+	put(core.HostKeyWebhookURL, "https://example.com/hook")
 	if _, err := webhookCredentials(ctx, keyFile, st); !errors.Is(err, webhook.ErrOff) {
-		t.Fatalf("only the secret: %v, want ErrOff", err)
+		t.Fatalf("only the URL: %v, want ErrOff", err)
 	}
-	// With one key the webhook is off and an event reads no key file: a key file that is gone changes nothing.
+	// With one key the webhook is off and an event reads no key file: a key file that is gone changes nothing. Code that
+	// opened the stored URL before it looked for the secret would fail here.
 	keyPath, movedPath := filepath.Join(dir, core.SecretKeyFile), filepath.Join(dir, "moved.key")
 	if err := os.Rename(keyPath, movedPath); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := webhookCredentials(ctx, keyFile, st); !errors.Is(err, webhook.ErrOff) {
-		t.Fatalf("only the secret and no key file: %v, want ErrOff", err)
+		t.Fatalf("only the URL and no key file: %v, want ErrOff", err)
 	}
 	if err := os.Rename(movedPath, keyPath); err != nil {
 		t.Fatal(err)
 	}
-	put(core.HostKeyWebhookURL, "https://example.com/hook")
+	put(core.HostKeyWebhookSecret, hookSecret)
 	if c, err := webhookCredentials(ctx, keyFile, st); err != nil || c.URL != "https://example.com/hook" || c.Secret != hookSecret {
 		t.Fatalf("both keys: %+v, %v", c, err)
 	}

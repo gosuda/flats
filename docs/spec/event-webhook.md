@@ -203,7 +203,9 @@ proposed it. The author decided 4, 5 and 6, and a reviewer can challenge them. E
     waits for the receiver.
 16. The sender keeps at most 256 events that are not yet delivered, and runs at most 4 deliveries at once. When a new
     event finds the queue full, the sender drops the oldest event that no delivery has started. A goroutine of the sender logs the
-    ID of the dropped event: the hand-over writes no log line itself, so a log that blocks does not block the operation. Deliveries start in the order in which the events were made. Four run at once and a retry waits, so a
+    ID of the dropped event: the hand-over writes no log line itself, so a log that blocks does not block the operation. The line
+    can come late, when a goroutine of the sender is free or when the sender stops. At most 64 drops wait for their line: a
+    burst that drops more is logged as those 64 IDs and one line with the count of the rest. Deliveries start in the order in which the events were made. Four run at once and a retry waits, so a
     receiver can see the events in another order. An agent that creates many approvals can push earlier events out of the
     queue, and the docs say so.
 17. The sender is owned by the host. The host builds it after `core.New` returns and sets it on the service before the
@@ -349,7 +351,8 @@ registry up to version 25. The export reads its clock through a function variabl
   `Close` (rule 17).
 - Queue. With a receiver that never answers and 300 events made, at most 4 are in flight and at most 256 wait, the oldest
   ones are dropped with their IDs in the log, and no operation waited. With a log that blocks, a hand-over to a full queue
-  still returns, because a goroutine of the sender writes the line. The default client asks for no proxy. `Close` returns without waiting for a delivery.
+  still returns, because a goroutine of the sender writes the line. A burst of more than 64 drops logs 64 IDs and one line
+  with the count of the rest. The default client asks for no proxy. `Close` returns without waiting for a delivery.
 - Configuration. With only one key, with a refused URL (`ftp:`, a name with `http:`, a fragment, 2049 bytes) and with a short
   secret, `flats key set` refuses or the webhook stays off, and nothing is sent. Both keys on: an event arrives. The audit
   rows `key.set` and `key.delete` name the keys and hold no value. `flats key ls`, `set` and `rm` print the texts of

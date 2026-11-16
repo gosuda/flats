@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net/http"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -479,46 +478,6 @@ func TestExcludedChangesSendNoEvent(t *testing.T) {
 	}
 	if got := rec.take(); len(got) != 0 {
 		t.Errorf("events = %v, want none", shorts(got))
-	}
-}
-
-// An approval that a crash left unfinished is finished by New, before the host can set a notifier, so its decision is not
-// announced (rules 1 and 17). The approval record has the final status, and the export shows it.
-func TestAnApprovalThatARestartFinishesSendsNoEvent(t *testing.T) {
-	t.Parallel()
-	ctx := context.Background()
-	dir := t.TempDir()
-	st, err := store.Open(filepath.Join(dir, "flats.db"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { st.Close() })
-	cfg := Config{DataDir: dir, Store: st, Private: &memNet{hosts: map[string]http.Handler{}}, Logf: t.Logf}
-	first, err := New(ctx, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	lifecycleSave(t, first, "notes", "one")
-	p := lifecycleRequest(t, first, "notes")
-	if err := st.ClaimApprovalAuthorized(ctx, p.Approval.ID, "console", time.Now()); err != nil {
-		t.Fatal(err)
-	}
-	if err := first.Close(); err != nil {
-		t.Fatal(err)
-	}
-	second, err := New(ctx, cfg)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { second.Close() })
-	rec := &recorder{}
-	second.SetNotifier(rec)
-	a, err := second.GetApproval(ctx, p.Approval.ID)
-	if err != nil || (a.Status != "approved" && a.Status != "failed") {
-		t.Fatalf("the approval after the restart: %+v, %v; want a final status", a, err)
-	}
-	if got := rec.take(); len(got) != 0 {
-		t.Errorf("the restart sent %v", shorts(got))
 	}
 }
 

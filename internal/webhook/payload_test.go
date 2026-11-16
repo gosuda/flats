@@ -289,6 +289,8 @@ func TestOversizeBodyIsDropped(t *testing.T) {
 	if n := capt.count(); n != 1 {
 		t.Errorf("%d attempts, want only the small event", n)
 	}
+	// The log is read after Run returned: a worker that took the note may not have written its line yet.
+	h.stop()
 	lines := h.log.snapshot()
 	if len(lines) != 1 || !strings.Contains(lines[0], "evt_big") || !strings.Contains(lines[0], "approval.created") {
 		t.Fatalf("log = %q, want one line with the id and the type", lines)
