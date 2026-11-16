@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -256,6 +257,14 @@ func TestWebhookKeysAreCheckedAndRemoved(t *testing.T) {
 	if out, err := keyCmd(t, config, "", "rm", "webhook-secret"); err != nil || out != "removed the webhook secret; the webhook is off\n" {
 		t.Errorf("key rm webhook-secret = %q, %v", out, err)
 	}
+	var rows []string
+	for _, e := range auditIn(t, dir) {
+		rows = append(rows, e.Kind+" "+e.Name+" "+e.Via)
+	}
+	slices.Sort(rows)
+	if want := []string{"key.delete webhook-secret command", "key.delete webhook-url command", "key.set webhook-secret command", "key.set webhook-url command"}; !slices.Equal(rows, want) {
+		t.Errorf("audit rows = %v, want %v", rows, want)
+	}
 	if _, err := keyCmd(t, config, "x", "set", "webhook"); err == nil || !strings.Contains(err.Error(), "webhook-url or webhook-secret") {
 		t.Errorf("an unknown key: %v", err)
 	}
@@ -288,6 +297,17 @@ func TestWebhookCredentialsFollowTheStoredKeys(t *testing.T) {
 	put(core.HostKeyWebhookSecret, hookSecret)
 	if _, err := webhookCredentials(ctx, keyFile, st); !errors.Is(err, webhook.ErrOff) {
 		t.Fatalf("only the secret: %v, want ErrOff", err)
+	}
+	// With one key the webhook is off and an event reads no key file: a key file that is gone changes nothing.
+	keyPath, movedPath := filepath.Join(dir, core.SecretKeyFile), filepath.Join(dir, "moved.key")
+	if err := os.Rename(keyPath, movedPath); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := webhookCredentials(ctx, keyFile, st); !errors.Is(err, webhook.ErrOff) {
+		t.Fatalf("only the secret and no key file: %v, want ErrOff", err)
+	}
+	if err := os.Rename(movedPath, keyPath); err != nil {
+		t.Fatal(err)
 	}
 	put(core.HostKeyWebhookURL, "https://example.com/hook")
 	if c, err := webhookCredentials(ctx, keyFile, st); err != nil || c.URL != "https://example.com/hook" || c.Secret != hookSecret {
@@ -351,6 +371,9 @@ func TestABlockedReceiverDelaysNeitherAnApprovalNorTheStop(t *testing.T) {
 	if err != nil || a.Status != "approved" {
 		t.Fatalf("Decide with a blocked receiver = %+v, %v; want approved", a, err)
 	}
+	if err := h.Svc.SetNetworkPolicy(ctx, "app", []string{"https://api.example.com"}, core.ViaConsole); err != nil {
+		t.Fatalf("a grant change with a blocked receiver: %v", err)
+	}
 	closed := make(chan error, 1)
 	go func() { closed <- h.Close() }()
 	select {
@@ -360,5 +383,147 @@ func TestABlockedReceiverDelaysNeitherAnApprovalNorTheStop(t *testing.T) {
 		}
 	case <-time.After(60 * time.Second):
 		t.Fatal("Close waited for a delivery that the receiver holds")
+	}
+}
+
+// An approval that a crash left unfinished is finished when the host starts, inside core.New, before the sender exists.
+// Its decision is not sent, and the first event that the receiver gets after the restart is one of a later change
+// (rules 1 and 17).
+func TestAnApprovalThatTheStartFinishesIsNotSent(t *testing.T) {
+	clearKeyEnv(t)
+	ctx := context.Background()
+	dir := t.TempDir()
+	config := initConfig(t, dir)
+	srv, got := receiver(t)
+	for id, value := range map[string]string{"webhook-url": srv.URL + "/hook", "webhook-secret": hookSecret} {
+		if _, err := keyCmd(t, config, value, "set", id); err != nil {
+			t.Fatalf("key set %s: %v", id, err)
+		}
+	}
+	first, err := Start(ctx, configModeOptions(config))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := first.Svc.SaveVersion(ctx, "app", []bundle.File{{Path: "index.html", Data: []byte("x")}}, core.SaveMeta{}, core.ViaAPI); err != nil {
+		first.Close()
+		t.Fatal(err)
+	}
+	req, err := first.Svc.Publish(ctx, "app", 0, "", core.ViaAPI)
+	if err != nil || req.Approval == nil {
+		first.Close()
+		t.Fatalf("Publish = %+v, %v", req, err)
+	}
+	select {
+	case d := <-got:
+		if d.header.Get("X-Flats-Event") != "approval.created" {
+			t.Errorf("the first event is %s, want approval.created", d.header.Get("X-Flats-Event"))
+		}
+	case <-time.After(30 * time.Second):
+		first.Close()
+		t.Fatal("approval.created did not arrive")
+	}
+	// The operator approved and the host stopped before it applied the approval.
+	if err := first.Store.ClaimApprovalAuthorized(ctx, req.Approval.ID, "console", time.Now()); err != nil {
+		first.Close()
+		t.Fatal(err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	second, err := Start(ctx, configModeOptions(config))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { second.Close() })
+	if a, err := second.Svc.GetApproval(ctx, req.Approval.ID); err != nil || (a.Status != "approved" && a.Status != "failed") {
+		t.Fatalf("the approval after the restart: %+v, %v; want a final status", a, err)
+	}
+	if err := second.Svc.SetNetworkPolicy(ctx, "app", []string{"https://api.example.com"}, core.ViaConsole); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case d := <-got:
+		if typ := d.header.Get("X-Flats-Event"); typ != "network.changed" {
+			t.Errorf("the first event after the restart is %s (%s), want network.changed: the decision that the start made must not be sent", typ, d.body)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("network.changed did not arrive")
+	}
+	// Close waits for the sender, so no delivery can still be on its way after it.
+	if err := second.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for {
+		select {
+		case d := <-got:
+			if d.header.Get("X-Flats-Event") == "approval.decided" {
+				t.Errorf("the decision that the start made was sent: %s", d.body)
+			}
+			continue
+		default:
+		}
+		break
+	}
+}
+
+// The delete that an agent requested and the operator approved through the service is in the export after the flat is
+// gone, with the events of its secrets (rule 26 and the "Done when" of the issue).
+func TestAnApprovedAgentDeleteIsInTheExportAfterTheFlatIsGone(t *testing.T) {
+	clearKeyEnv(t)
+	ctx := context.Background()
+	dir := t.TempDir()
+	config := initConfig(t, dir)
+	h, err := Start(ctx, configModeOptions(config))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { h.Close() })
+	if _, err := h.Svc.SaveVersion(ctx, "doomed", []bundle.File{{Path: "index.html", Data: []byte("x")}}, core.SaveMeta{}, core.ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"A_ONE", "B_TWO"} {
+		if err := h.Svc.SetSecret(ctx, "doomed", name, "a-secret-value", core.ViaConsole); err != nil {
+			t.Fatal(err)
+		}
+	}
+	flat, err := h.Store.GetFlat(ctx, "doomed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	req, err := h.Svc.Delete(ctx, "doomed", core.ViaMCP, "the project ended")
+	if err != nil || req.Approval == nil {
+		t.Fatalf("Delete = %+v, %v", req, err)
+	}
+	if a, err := h.Svc.Decide(core.WithActor(ctx, "ann@example.org"), req.Approval.ID, true); err != nil || a.Status != "approved" {
+		t.Fatalf("Decide = %+v, %v", a, err)
+	}
+	if _, err := h.Store.GetFlat(ctx, "doomed"); err == nil {
+		t.Fatal("the flat is still there")
+	}
+	// The export stops 30 seconds before its clock, so the clock of this export is one minute ahead.
+	lines, _ := mustExport(t, config, time.Now().Add(time.Minute))
+	var created, decided map[string]any
+	deletes := 0
+	for _, l := range lines {
+		switch {
+		case l["record"] == "approval" && l["id"] == req.Approval.ID && l["event"] == "created":
+			created = l
+		case l["record"] == "approval" && l["id"] == req.Approval.ID && l["event"] == "decided":
+			decided = l
+		case l["record"] == "audit" && l["kind"] == "secret.delete" && l["via"] == "flat-delete":
+			if data, _ := l["data"].(map[string]any); data["approval"] == req.Approval.ID && l["flat_id"] == flat.ID {
+				deletes++
+			}
+		}
+	}
+	if created == nil || created["action"] != "delete" || created["flat"] != "doomed" || created["flat_id"] != flat.ID || created["via"] != "mcp" || created["reason"] != "the project ended" {
+		t.Errorf("created line = %v", created)
+	}
+	if decided == nil || decided["action"] != "delete" || decided["state"] != "approved" || decided["decided_by"] != "ann@example.org" || decided["flat"] != "doomed" || decided["flat_id"] != flat.ID {
+		t.Errorf("decided line = %v", decided)
+	}
+	if deletes != 2 {
+		t.Errorf("%d secret.delete lines of the deleted flat with the approval, want 2", deletes)
 	}
 }

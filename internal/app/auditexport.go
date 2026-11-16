@@ -18,7 +18,8 @@ import (
 // lines, oldest first.
 
 // exportLag is how far behind the clock an export stops (rule 25). The host takes the time of a record before it
-// writes it, and a write waits at most 5 seconds for the lock, so a record that is this old has been committed.
+// writes it. The write then waits for the connection of the store and for the lock, which is short on a host that is
+// not overloaded, so a record that is this old has been committed. A write that is queued for longer can be missed.
 const exportLag = 30 * time.Second
 
 // Limits of the text of an approval line (rule 23), in bytes.

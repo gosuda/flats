@@ -139,11 +139,17 @@ func TestChangeShapes(t *testing.T) {
 		},
 		{
 			"origins",
-			Change{Grant: "origins", Origins: []string{"https://a.example", "https://b.example"}},
-			`{"grant":"origins","origins":["https://a.example","https://b.example"]}`,
+			Change{Grant: "origins", Count: 2, Origins: []string{"https://a.example", "https://b.example"}},
+			`{"grant":"origins","count":2,"origins":["https://a.example","https://b.example"]}`,
 		},
-		{"origins empty", Change{Grant: "origins", Origins: []string{}}, `{"grant":"origins","origins":[]}`},
-		{"origins nil", Change{Grant: "origins"}, `{"grant":"origins","origins":[]}`},
+		{
+			// A list that the caller cut says so and keeps the count of the whole list.
+			"origins truncated",
+			Change{Grant: "origins", Count: 32, Origins: []string{"https://a.example"}, Truncated: true},
+			`{"grant":"origins","count":32,"origins":["https://a.example"],"truncated":true}`,
+		},
+		{"origins empty", Change{Grant: "origins", Origins: []string{}}, `{"grant":"origins","count":0,"origins":[]}`},
+		{"origins nil", Change{Grant: "origins"}, `{"grant":"origins","count":0,"origins":[]}`},
 		{
 			"provider permitted",
 			Change{Grant: "provider", Provider: "tailscale", Permitted: true},
@@ -158,10 +164,10 @@ func TestChangeShapes(t *testing.T) {
 			// Fields of the other kind must not leak into a change.
 			"origins with stray fields",
 			Change{
-				Grant: "origins", Origins: []string{"https://a.example"}, Provider: "zrok", Permitted: true,
+				Grant: "origins", Count: 1, Origins: []string{"https://a.example"}, Provider: "zrok", Permitted: true,
 				From: &Access{"private", "view"}, To: &Access{"public", "view"},
 			},
-			`{"grant":"origins","origins":["https://a.example"]}`,
+			`{"grant":"origins","count":1,"origins":["https://a.example"]}`,
 		},
 		{
 			"provider with stray fields",
@@ -267,12 +273,9 @@ func TestOversizeBodyIsDropped(t *testing.T) {
 	big := sampleEvent("evt_big")
 	big.ConsoleURL = "http://127.0.0.1/" + strings.Repeat("x", maxBody)
 	h.sender.Notify(big)
-	lines := h.log.snapshot()
-	if len(lines) != 1 || !strings.Contains(lines[0], "evt_big") || !strings.Contains(lines[0], "approval.created") {
-		t.Fatalf("log = %q, want one line with the id and the type", lines)
-	}
-	if strings.Contains(lines[0], "xxxx") || strings.Contains(lines[0], "127.0.0.1") {
-		t.Errorf("the log line quotes the body: %q", lines[0])
+	// Notify writes no log line itself: a worker logs the drop.
+	if lines := h.log.snapshot(); len(lines) != 0 {
+		t.Fatalf("Notify wrote a log line: %q", lines)
 	}
 
 	// A body at the limit is accepted: build one that is a few bytes short.
@@ -285,5 +288,12 @@ func TestOversizeBodyIsDropped(t *testing.T) {
 	}
 	if n := capt.count(); n != 1 {
 		t.Errorf("%d attempts, want only the small event", n)
+	}
+	lines := h.log.snapshot()
+	if len(lines) != 1 || !strings.Contains(lines[0], "evt_big") || !strings.Contains(lines[0], "approval.created") {
+		t.Fatalf("log = %q, want one line with the id and the type", lines)
+	}
+	if strings.Contains(lines[0], "xxxx") || strings.Contains(lines[0], "127.0.0.1") {
+		t.Errorf("the log line quotes the body: %q", lines[0])
 	}
 }

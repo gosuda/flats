@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 
 	"github.com/gosuda/flats/internal/buildinfo"
 	"github.com/gosuda/flats/internal/core"
@@ -25,21 +26,28 @@ func (h *Host) startWebhook(ctx context.Context, keyFile core.KeyFile, st *store
 }
 
 // webhookCredentials reads and opens the two webhook keys. A missing key is webhook.ErrOff, which drops the event
-// without a log line. A value that does not open is an error, which logs one line (rule 11).
+// without a log line. A value that does not open is an error, which logs one line (rule 11). Both rows are read before
+// either is opened, so a host with the webhook off, also one that holds only one of the keys, reads no key file and
+// decrypts nothing for an event.
 func webhookCredentials(ctx context.Context, keyFile core.KeyFile, st *store.Store) (webhook.Credentials, error) {
-	url, _, err := core.StoredHostKey(ctx, keyFile, st, core.HostKeyWebhookURL)
+	var rows [2]store.HostKey
+	for i, id := range []string{core.HostKeyWebhookURL, core.HostKeyWebhookSecret} {
+		k, err := st.GetHostKey(ctx, id)
+		if errors.Is(err, store.ErrNotFound) || err == nil && !k.HasValue() {
+			return webhook.Credentials{}, webhook.ErrOff
+		}
+		if err != nil {
+			return webhook.Credentials{}, err
+		}
+		rows[i] = k
+	}
+	url, err := core.OpenHostKey(keyFile, rows[0])
 	if err != nil {
 		return webhook.Credentials{}, err
 	}
-	if url == "" {
-		return webhook.Credentials{}, webhook.ErrOff
-	}
-	secret, _, err := core.StoredHostKey(ctx, keyFile, st, core.HostKeyWebhookSecret)
+	secret, err := core.OpenHostKey(keyFile, rows[1])
 	if err != nil {
 		return webhook.Credentials{}, err
-	}
-	if secret == "" {
-		return webhook.Credentials{}, webhook.ErrOff
 	}
 	return webhook.Credentials{URL: url, Secret: secret}, nil
 }

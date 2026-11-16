@@ -68,7 +68,13 @@ func (s *Store) SetNetworkPolicy(ctx context.Context, flat string, p NetworkPoli
 		}
 		e := a.event(AuditNetworkSet)
 		e.Flat, e.FlatID = flat, uid
-		e.Data = AuditData(map[string]any{"origins": p.Origins})
+		data := map[string]any{"count": len(p.Origins)}
+		kept, truncated := FitOrigins(p.Origins)
+		data["origins"] = kept
+		if truncated {
+			data["truncated"] = true
+		}
+		e.Data = AuditData(data)
 		if err := appendAudit(ctx, x, e); err != nil {
 			return false, err
 		}
@@ -76,6 +82,28 @@ func (s *Store) SetNetworkPolicy(ctx context.Context, flat string, p NetworkPoli
 		return true, nil
 	})
 	return changed && err == nil, err
+}
+
+// maxOriginsText is the largest JSON text of the origin list of an audit row or a webhook event, in bytes. The longest
+// list that the host accepts (32 origins with the longest host names) has more than 8 KiB, and a row holds at most 4 KiB
+// of data, as the body of an event does.
+const maxOriginsText = 3000
+
+// FitOrigins returns the first origins whose JSON list has at most maxOriginsText bytes, and whether it left any out
+// (docs/spec/event-webhook.md, rules 4 and 21). A list of ordinary length is returned whole.
+func FitOrigins(origins []string) (kept []string, truncated bool) {
+	size := 2 // the brackets
+	for i, o := range origins {
+		b, _ := json.Marshal(o)
+		size += len(b)
+		if i > 0 {
+			size++ // the comma
+		}
+		if size > maxOriginsText {
+			return origins[:i], true
+		}
+	}
+	return origins, false
 }
 
 func addNetworkSettings(ctx context.Context, x executor) error {

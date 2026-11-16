@@ -109,10 +109,12 @@ func (s *Service) notifyOrigins(ctx context.Context, f store.Flat, origins []str
 	if !s.notifying() {
 		return
 	}
+	// The longest list that the host accepts does not fit in a body, so the event carries what fits and says so.
+	kept, truncated := store.FitOrigins(origins)
 	s.notify(webhook.Payload{
 		Type: eventNetworkChange, Flat: webhook.FlatRef{Slug: f.Slug, ID: f.ID}, Operation: "set_network_origins", State: "applied",
 		ConsoleURL: s.consoleBase(ctx) + "/flats/" + f.Slug,
-		Change:     &webhook.Change{Grant: "origins", Origins: origins},
+		Change:     &webhook.Change{Grant: "origins", Count: len(origins), Origins: kept, Truncated: truncated},
 	})
 }
 

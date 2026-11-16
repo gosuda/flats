@@ -645,3 +645,17 @@ func TestDrainIsBounded(t *testing.T) {
 		t.Errorf("the sender read %d bytes of the response, want at most %d", n, maxDrain)
 	}
 }
+
+// TestDefaultClientUsesNoProxy checks that the proxy variables of the
+// environment do not reach the sender: a proxy would see the URL of a
+// plain-http receiver, with the token that the URL can hold.
+func TestDefaultClientUsesNoProxy(t *testing.T) {
+	t.Parallel()
+	tr, ok := newDefaultClient().Transport.(*http.Transport)
+	if !ok {
+		t.Fatal("the default transport is not an *http.Transport")
+	}
+	if tr.Proxy != nil {
+		t.Error("the default client asks for a proxy")
+	}
+}

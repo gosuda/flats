@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"path/filepath"
 	"slices"
@@ -195,8 +196,13 @@ func TestAutopilotDecisionIsAnnouncedAsAutopilot(t *testing.T) {
 	if err != nil || req.Approval == nil {
 		t.Fatalf("SetVisibility = %+v, %v", req, err)
 	}
-	if _, err := s.DecideAsAgent(t.Context(), req.Approval.ID, true, bot); err != nil {
+	// The stored record of the decision holds the name, the address and the login of the agent. No body may hold them.
+	agent := AgentDecision{Agent: "agent-CANARY", Arrival: Arrival{Network: "local", IP: "100.99.98.97", Login: "canary-login@example.org"}}
+	if _, err := s.DecideAsAgent(t.Context(), req.Approval.ID, true, agent); err != nil {
 		t.Fatal(err)
+	}
+	if a, err := s.st.GetApproval(t.Context(), req.Approval.ID); err != nil || !strings.Contains(a.DecidedBy, "100.99.98.97") || !strings.Contains(a.DecidedBy, "canary-login") {
+		t.Fatalf("the stored record of the decision is %q, %v; the test needs the address and the login in it", a.DecidedBy, err)
 	}
 	got := rec.take()
 	if want := []string{"approval.created set_visibility pending", "visibility.changed set_visibility applied by autopilot", "approval.decided set_visibility approved by autopilot"}; !slices.Equal(shorts(got), want) {
@@ -211,13 +217,13 @@ func TestAutopilotDecisionIsAnnouncedAsAutopilot(t *testing.T) {
 			rows = append(rows, e)
 		}
 	}
-	if len(rows) != 1 || rows[0].Via != store.AuditViaAutopilot || rows[0].Actor != botText {
-		t.Fatalf("rows = %+v, want one with via autopilot and the Autopilot text %q", rows, botText)
+	if len(rows) != 1 || rows[0].Via != store.AuditViaAutopilot || rows[0].Actor != DeciderText(EncodeAgentDecider(agent)) {
+		t.Fatalf("rows = %+v, want one with via autopilot and the Autopilot text %q", rows, DeciderText(EncodeAgentDecider(agent)))
 	}
 	for _, p := range got {
 		raw, _ := json.Marshal(p)
-		if strings.Contains(string(raw), "bot") || strings.Contains(string(raw), "Local") {
-			t.Errorf("the body names the agent: %s", raw)
+		if strings.Contains(string(raw), "CANARY") || strings.Contains(string(raw), "100.99.98.97") || strings.Contains(string(raw), "canary-login") || strings.Contains(string(raw), "Local") {
+			t.Errorf("the body names the agent, its address or its login: %s", raw)
 		}
 	}
 }
@@ -241,7 +247,7 @@ func TestOriginGrantChangeSendsItsEvent(t *testing.T) {
 	}
 	got := rec.take()
 	if len(got) != 1 || got[0].Type != "network.changed" || got[0].Operation != "set_network_origins" || got[0].State != "applied" || got[0].Flat.ID != stored.ID ||
-		got[0].Change == nil || got[0].Change.Grant != "origins" || !slices.Equal(got[0].Change.Origins, origins) {
+		got[0].Change == nil || got[0].Change.Grant != "origins" || got[0].Change.Count != 1 || got[0].Change.Truncated || !slices.Equal(got[0].Change.Origins, origins) {
 		t.Fatalf("origin grant sent %+v", got)
 	}
 	if err := s.SetNetworkPolicy(t.Context(), "notes", origins, ViaConsole); err != nil {
@@ -347,6 +353,22 @@ func TestEventBodiesHoldNoContentAndNoSecret(t *testing.T) {
 	if len(got) < 7 {
 		t.Fatalf("only %d events: %v", len(got), shorts(got))
 	}
+	approvals, err := s.st.ListApprovals(t.Context(), "")
+	if err != nil || len(approvals) < 3 {
+		t.Fatalf("approvals = %d, %v", len(approvals), err)
+	}
+	var texts []string
+	for _, a := range approvals {
+		if len(a.Params) > 2 {
+			texts = append(texts, string(a.Params))
+		}
+		if a.Result != "" {
+			texts = append(texts, a.Result)
+		}
+	}
+	if len(texts) < 4 {
+		t.Fatalf("only %d params and results to look for: %q", len(texts), texts)
+	}
 	allowed := map[string][]string{
 		"approval.created":   {"id", "type", "at", "flat", "operation", "state", "approval_id", "via", "console_url"},
 		"approval.decided":   {"id", "type", "at", "flat", "operation", "state", "approval_id", "decided_by", "console_url"},
@@ -364,6 +386,11 @@ func TestEventBodiesHoldNoContentAndNoSecret(t *testing.T) {
 		}
 		if strings.Contains(string(raw), canary) || strings.Contains(string(raw), "API_KEY") {
 			t.Errorf("the body of %s holds content, a secret or an approval text: %s", p.Type, raw)
+		}
+		for _, text := range texts {
+			if strings.Contains(string(raw), text) {
+				t.Errorf("the body of %s holds the params or the result of an approval (%q): %s", p.Type, text, raw)
+			}
 		}
 		var fields map[string]json.RawMessage
 		if err := json.Unmarshal(raw, &fields); err != nil {
@@ -422,8 +449,11 @@ func TestTheVisibilityAuditTimeIsTakenAtTheWrite(t *testing.T) {
 		if e.Kind != store.AuditVisibilitySet {
 			continue
 		}
-		if !e.Time.After(f.UpdatedAt) {
-			t.Errorf("the row has the time %s, which is not after the time %s at which the approval built its change", e.Time, f.UpdatedAt)
+		// The row has a reading of the replaced clock: whole seconds after the base, later than the reading of the
+		// approval's change and not later than the last reading. A row with the time of the machine fails this.
+		last := base.Add(time.Duration(tick.Load()) * time.Second)
+		if !e.Time.After(f.UpdatedAt) || e.Time.After(last) || e.Time.Sub(base)%time.Second != 0 {
+			t.Errorf("the row has the time %s; want a reading of the replaced clock after %s and not after %s", e.Time, f.UpdatedAt, last)
 		}
 		return
 	}
@@ -489,5 +519,84 @@ func TestAnApprovalThatARestartFinishesSendsNoEvent(t *testing.T) {
 	}
 	if got := rec.take(); len(got) != 0 {
 		t.Errorf("the restart sent %v", shorts(got))
+	}
+}
+
+// The longest list of origins that the host accepts is stored whole, and its event fits in a body: it carries the count
+// of the whole list and the first origins that fit, and says that the list is cut (rule 4).
+func TestTheLongestOriginListIsStoredAndItsEventIsCut(t *testing.T) {
+	t.Parallel()
+	s, _, rec := webhookService(t)
+	if _, err := s.CreateFlat(t.Context(), "notes", "", ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	origins := make([]string, 32)
+	for i := range origins {
+		label := func(size int) string { return fmt.Sprintf("h%02d", i) + strings.Repeat("a", size-3) }
+		origins[i] = "https://" + label(63) + "." + label(63) + "." + label(63) + "." + label(61)
+	}
+	if err := s.SetNetworkPolicy(t.Context(), "notes", origins, ViaConsole); err != nil {
+		t.Fatalf("the longest list of origins was refused: %v", err)
+	}
+	stored, err := s.NetworkPolicy(t.Context(), "notes")
+	if err != nil || len(stored.Origins) != 32 {
+		t.Fatalf("stored %d origins, %v; want 32", len(stored.Origins), err)
+	}
+	got := rec.take()
+	if len(got) != 1 || got[0].Change == nil {
+		t.Fatalf("events = %+v", got)
+	}
+	c := got[0].Change
+	if c.Count != 32 || !c.Truncated || len(c.Origins) == 0 || len(c.Origins) >= 32 || !slices.Equal(c.Origins, stored.Origins[:len(c.Origins)]) {
+		t.Errorf("change: count %d, truncated %t, %d origins; want 32, true and the first origins that fit", c.Count, c.Truncated, len(c.Origins))
+	}
+	p := got[0]
+	p.ID = "evt_abcdefghijklmnopqrstuvwxyz"
+	p.ConsoleURL = "https://" + strings.Repeat("c", 253) + "/flats/" + strings.Repeat("s", 63)
+	raw, err := json.Marshal(p)
+	if err != nil || len(raw) > 4096 {
+		t.Errorf("the body has %d bytes with the longest console address, %v; want at most 4096", len(raw), err)
+	}
+}
+
+// When the audit write fails, the change does not happen and no event of the change is sent (rule 21): the origin
+// grants and the provider permission stay as they were, and a visibility approval fails with the flat still Private.
+func TestAFailedAuditWriteStopsTheChangeAndItsEvent(t *testing.T) {
+	t.Parallel()
+	s, dir, rec := webhookService(t)
+	s.cfg.Lifecycle = newLifecycleRouteNet()
+	makeLive(t, s, rec, "notes")
+	ctx := t.Context()
+	if err := s.SetProviderPermission(ctx, "notes", store.ProviderPortal, true, ViaConsole); err != nil {
+		t.Fatal(err)
+	}
+	req, err := s.SetVisibility(ctx, "notes", store.Public, ViaAPI, "")
+	if err != nil || req.Approval == nil {
+		t.Fatalf("SetVisibility = %+v, %v", req, err)
+	}
+	rec.take()
+	boardExecDB(t, filepath.Join(dir, "flats.db"), "CREATE TRIGGER audit_fail BEFORE INSERT ON audit_events BEGIN SELECT RAISE(ABORT, 'audit write failed'); END")
+
+	if err := s.SetNetworkPolicy(ctx, "notes", []string{"https://api.example.com"}, ViaConsole); err == nil || !strings.Contains(err.Error(), "audit write failed") {
+		t.Fatalf("SetNetworkPolicy = %v, want the audit failure", err)
+	}
+	if p, err := s.NetworkPolicy(ctx, "notes"); err != nil || len(p.Origins) != 0 {
+		t.Errorf("origins after the failed write = %v, %v; want none", p.Origins, err)
+	}
+	if err := s.SetProviderPermission(ctx, "notes", store.ProviderPortal, false, ViaConsole); err == nil || !strings.Contains(err.Error(), "audit write failed") {
+		t.Fatalf("SetProviderPermission = %v, want the audit failure", err)
+	}
+	if ok, err := s.st.ProviderPermitted(ctx, "notes", store.ProviderPortal); err != nil || !ok {
+		t.Errorf("the permission after the failed revocation = %t, %v; want it kept", ok, err)
+	}
+	a, _ := s.Decide(ctx, req.Approval.ID, true)
+	if a.Status != "failed" || !strings.Contains(a.Result, "audit write failed") {
+		t.Errorf("the visibility approval = %s (%s), want failed with the audit failure", a.Status, a.Result)
+	}
+	if f, err := s.st.GetFlat(ctx, "notes"); err != nil || f.Visibility.Canonical() != store.Private {
+		t.Errorf("visibility after the failed commit = %s, %v; want private", f.Visibility, err)
+	}
+	if got := shorts(rec.take()); !slices.Equal(got, []string{"approval.decided set_visibility failed by operator"}) {
+		t.Errorf("events = %v, want only the failed decision", got)
 	}
 }

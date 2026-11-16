@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -338,7 +339,7 @@ func TestNetworkPolicyAuditsOnlyAChange(t *testing.T) {
 	}
 	evs := allAudit(t, s)
 	if len(evs) != 1 || evs[0].Kind != AuditNetworkSet || evs[0].Flat != "app" || evs[0].FlatID != f.ID || evs[0].Name != "" || evs[0].Via != AuditViaCLI ||
-		!jsonEqual(dataOf(t, evs[0]), map[string]any{"origins": []string{"https://api.example.com"}}) {
+		!jsonEqual(dataOf(t, evs[0]), map[string]any{"count": 1, "origins": []string{"https://api.example.com"}}) {
 		t.Fatalf("rows after the first list: %+v", evs)
 	}
 	if set([]string{"https://api.example.com"}) {
@@ -347,7 +348,7 @@ func TestNetworkPolicyAuditsOnlyAChange(t *testing.T) {
 	if !set([]string{}) {
 		t.Error("clearing the list reported no change")
 	}
-	if evs := allAudit(t, s); len(evs) != 2 || string(evs[1].Data) != `{"origins":[]}` {
+	if evs := allAudit(t, s); len(evs) != 2 || string(evs[1].Data) != `{"count":0,"origins":[]}` {
 		t.Fatalf("rows after clearing: %+v", evs)
 	}
 	if got, err := s.NetworkPolicy(ctx, "app"); err != nil || len(got.Origins) != 0 {
@@ -360,5 +361,54 @@ func TestNetworkPolicyAuditsOnlyAChange(t *testing.T) {
 	}
 	if got, err := s.NetworkPolicy(ctx, "app"); err != nil || len(got.Origins) != 0 {
 		t.Errorf("policy after the failed write = %+v, %v; want it unchanged", got, err)
+	}
+}
+
+// longOrigins returns n origins of the longest form that the host accepts: a host name of 253 characters.
+func longOrigins(n int) []string {
+	out := make([]string, n)
+	for i := range out {
+		label := func(size int) string { return fmt.Sprintf("h%02d", i) + strings.Repeat("a", size-3) }
+		out[i] = "https://" + label(63) + "." + label(63) + "." + label(63) + "." + label(61)
+	}
+	return out
+}
+
+// The longest list of origins that the host accepts is stored whole, as it was before the audit row existed. Its row
+// holds the count of the whole list and the first origins that fit, and says that it is cut (rule 21).
+func TestTheLongestOriginListIsStoredAndItsRowIsCut(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	s := open(t)
+	makeFlat(t, s, "app")
+	origins := longOrigins(32)
+	changed, err := s.SetNetworkPolicy(ctx, "app", NetworkPolicy{Origins: origins, UpdatedAt: time.Now()}, Audit{Via: AuditViaConsole})
+	if err != nil || !changed {
+		t.Fatalf("SetNetworkPolicy of the longest list = %t, %v", changed, err)
+	}
+	if got, err := s.NetworkPolicy(ctx, "app"); err != nil || !slices.Equal(got.Origins, origins) {
+		t.Fatalf("stored %d origins, %v; want all %d", len(got.Origins), err, len(origins))
+	}
+	evs := allAudit(t, s)
+	if len(evs) != 1 || len(evs[0].Data) > MaxAuditData {
+		t.Fatalf("rows = %d, data of %d bytes; want one row within %d bytes", len(evs), len(evs[0].Data), MaxAuditData)
+	}
+	var data struct {
+		Count     int
+		Origins   []string
+		Truncated bool
+	}
+	if err := json.Unmarshal(evs[0].Data, &data); err != nil {
+		t.Fatal(err)
+	}
+	if data.Count != 32 || !data.Truncated || len(data.Origins) == 0 || len(data.Origins) >= 32 || !slices.Equal(data.Origins, origins[:len(data.Origins)]) {
+		t.Errorf("row data: count %d, truncated %t, %d origins; want 32, true and the first origins that fit", data.Count, data.Truncated, len(data.Origins))
+	}
+	// A list of ordinary length is not cut.
+	if kept, truncated := FitOrigins(origins[:5]); truncated || len(kept) != 5 {
+		t.Errorf("FitOrigins of 5 long origins = %d, %t", len(kept), truncated)
+	}
+	if kept, truncated := FitOrigins(nil); truncated || len(kept) != 0 {
+		t.Errorf("FitOrigins(nil) = %v, %t", kept, truncated)
 	}
 }

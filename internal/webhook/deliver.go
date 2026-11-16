@@ -178,11 +178,13 @@ func noRedirect(*http.Request, []*http.Request) error {
 // newDefaultClient builds the client of rule 13. It verifies certificates
 // with the system roots and has no setting that turns that off, it follows no
 // redirect, and it carries no time limit of its own because every attempt has
-// a context deadline.
+// a context deadline. It connects to the receiver itself and ignores the proxy
+// variables of the environment: a proxy would get the URL of a plain-http
+// receiver on the local network, with the token that the URL can hold.
 func newDefaultClient() *http.Client {
 	return &http.Client{
 		Transport: &http.Transport{
-			Proxy:                  http.ProxyFromEnvironment,
+			Proxy:                  nil,
 			DialContext:            (&net.Dialer{KeepAlive: 30 * time.Second}).DialContext,
 			ForceAttemptHTTP2:      true,
 			TLSClientConfig:        &tls.Config{MinVersion: tls.VersionTLS12},

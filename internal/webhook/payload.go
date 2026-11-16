@@ -9,7 +9,8 @@ import (
 )
 
 // maxBody is the largest body of an event in bytes. A body above it is
-// dropped, which valid input never reaches.
+// dropped. The caller keeps an event below it: every field is short except
+// the list of origins, which the caller cuts and marks as truncated.
 const maxBody = 4096
 
 // atLayout is RFC 3339 in UTC with exactly three fraction digits. A layout
@@ -52,16 +53,23 @@ type Access struct {
 
 // Change describes what a visibility.changed or network.changed event
 // changed. Only the fields of its kind are written: From and To for a
-// visibility change, Grant "origins" with Origins, or Grant "provider" with
-// Provider and Permitted.
+// visibility change, Grant "origins" with Count, Origins and Truncated, or
+// Grant "provider" with Provider and Permitted.
 type Change struct {
 	// From and To are the access before and after a visibility change.
 	From, To *Access
 	// Grant is "origins" or "provider" for a network change and empty for a
 	// visibility change.
 	Grant string
-	// Origins is the list after the change. It is written as [] when empty.
+	// Count is how many origins the list has after the change.
+	Count int
+	// Origins is the list after the change, or its first entries when the
+	// whole list would make the body too large. It is written as [] when
+	// empty.
 	Origins []string
+	// Truncated says that Origins is not the whole list. It is written only
+	// when true.
+	Truncated bool
 	// Provider is the provider of a "provider" grant.
 	Provider string
 	// Permitted is whether the provider is permitted. It is always written
@@ -79,9 +87,11 @@ func (c Change) MarshalJSON() ([]byte, error) {
 			origins = []string{}
 		}
 		return json.Marshal(struct {
-			Grant   string   `json:"grant"`
-			Origins []string `json:"origins"`
-		}{c.Grant, origins})
+			Grant     string   `json:"grant"`
+			Count     int      `json:"count"`
+			Origins   []string `json:"origins"`
+			Truncated bool     `json:"truncated,omitempty"`
+		}{c.Grant, c.Count, origins, c.Truncated})
 	case "provider":
 		return json.Marshal(struct {
 			Grant     string `json:"grant"`

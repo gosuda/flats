@@ -81,8 +81,8 @@ Revision contents are content-addressed: a revision adds only the files that
 changed, and blobs no revision refers to any more are removed after
 retention deletes revisions.
 
-Operator keys (the Tailscale auth key, the NetBird setup key, and a zrok token
-waiting to be used) are kept in `flats.db`, encrypted with `secret.key`; see
+Operator keys (the Tailscale auth key, the NetBird setup key, a zrok token
+waiting to be used, and the URL and signing secret of the event webhook) are kept in `flats.db`, encrypted with `secret.key`; see
 [Operator keys](#operator-keys). `config.json` holds no key. It holds a path to
 the key file only when you set `host.secret_key_path`.
 
@@ -1180,8 +1180,9 @@ example after `reset` let the start create a new key.
 
 ### Audit log
 
-Every change of a sealed value, every key backup, key restore and reset, and every applied change of the visibility or
-of a network grant of a flat writes one event to the audit log in
+Every change of a sealed value, every key backup, key restore and reset, every change of the visibility of a flat that an
+approval applies, and every change of the origin grants or of a provider permission of a flat writes one event to the
+audit log in
 `flats.db` (the table `audit_events`, schema version 25). It is separate from the log of a flat, which Flats
 trims to `system.events_keep` events and removes with the flat. The audit log is append-only, is never trimmed,
 and the deletion or rename of a flat does not change it. Agents cannot read it: no MCP tool and no API route
@@ -1198,11 +1199,11 @@ its name.
 | `key.restore` | `flats secret restore-key` wrote the key | `key_id`, `out`, and how many sealed values the key `opened` of the `total` |
 | `key.reset` | `flats secret reset` deleted the stored values | how many `secrets` and `keys`; each value also has its own delete event |
 | `visibility.set` | an approval applied a change of the visibility or of the public access level of a flat | `from` and `to`, each with `visibility` and `access`, and the `approval` |
-| `network.set` | the list of origins that the server code of a flat may fetch changed | `origins`: the list after the change |
+| `network.set` | the list of origins that the server code of a flat may fetch changed | `count` and `origins`: the list after the change. A list whose JSON text has more than 3000 bytes is cut to its first origins, with `truncated` |
 | `provider.set` | the permission of a flat to use a network provider changed (the provider is the name of the event) | `permitted` |
 
 Each event has a time, the slug and the ID of the flat when it concerns one, the name of the secret or key, the
-channel (`via`) and the actor. The channel is `console`, `cli` (`flats secret set` or `rm` through the loopback
+channel (`via`) and the actor. The channel is `console`, `cli` (`flats secret set` or `rm`, or `flats network set`, through the loopback
 API), `command` (a command that you ran on the host), `start` (an input that the host read at start, or the zrok
 enrolment after it), `migration` (the import of a legacy key), `flat-delete`, or `autopilot` (an agent decided the approval of a visibility
 change under [Autopilot](#autopilot-settings); the actor is then the Autopilot record of that agent). The actor is the identity that the
@@ -1252,8 +1253,8 @@ It writes no row.
 There are three kinds of line. Each has `record` and `at`, an RFC 3339 time in UTC with milliseconds.
 
 ```json
-{"record":"audit","id":12,"at":"2026-11-16T09:30:00.123Z","kind":"secret.delete","flat":"notes","flat_id":"754f…","name":"API_KEY","via":"flat-delete","actor":"","data":{"approval":"apr-3765ym6bd21w"}}
 {"record":"approval","event":"created","at":"2026-11-16T09:29:40.002Z","id":"apr-3765ym6bd21w","flat":"notes","flat_id":"754f…","action":"delete","via":"mcp","reason":"the project ended"}
+{"record":"audit","id":12,"at":"2026-11-16T09:30:00.118Z","kind":"secret.delete","flat":"notes","flat_id":"754f…","name":"API_KEY","via":"flat-delete","actor":"","data":{"approval":"apr-3765ym6bd21w"}}
 {"record":"approval","event":"decided","at":"2026-11-16T09:30:00.120Z","id":"apr-3765ym6bd21w","flat":"notes","flat_id":"754f…","action":"delete","state":"approved","decided_by":"ann@example.org","result":"flat notes was permanently deleted"}
 ```
 
@@ -1296,11 +1297,15 @@ changes, and when a grant of a flat's network access changes. The webhook is off
 [operator keys](#operator-keys) while the host is stopped:
 
 ```sh
-printf '%s' 'https://hooks.example.com/flats?token=…' | flats key set webhook-url
-openssl rand -hex 32 | flats key set webhook-secret
+umask 077
+openssl rand -hex 32 > webhook-secret.txt      # the receiver needs this value too
+flats key set webhook-secret --from-file webhook-secret.txt
+flats key set webhook-url --from-file webhook-url.txt   # a file that holds only the URL
 ```
 
-The next start sends events. `flats key rm webhook-url` or `flats key rm webhook-secret` turns the webhook off, and a
+Flats never shows a stored value again, so keep the secret for the receiver, and delete the two files when both sides
+have it. A value on a command line can stay in the shell history, which is why the URL comes from a file or from
+standard input. The next start sends events. `flats key rm webhook-url` or `flats key rm webhook-secret` turns the webhook off, and a
 host that has only one of the two keys logs that at its start and sends nothing. There is no console page for the
 webhook, and no MCP tool, API route or log of a flat shows the URL, the secret or that a webhook is on. Both values are
 sealed in `flats.db` like the other operator keys, because a webhook URL often holds a token.
@@ -1346,7 +1351,7 @@ The body is a JSON object of at most 4 KiB:
 | `approval_id` | the approval, when there is one |
 | `via` | for `approval.created`, the channel that asked (`mcp`, `cli`, `api` or `console`) |
 | `decided_by` | `operator` or `autopilot`. Absent for an approval that nobody decided |
-| `change` | for `visibility.changed`, `from` and `to`, each with `visibility` and `access`. For `network.changed`, `{"grant":"origins","origins":[…]}` or `{"grant":"provider","provider":…,"permitted":true}` |
+| `change` | for `visibility.changed`, `from` and `to`, each with `visibility` and `access`. For `network.changed`, `{"grant":"origins","count":2,"origins":[…]}` or `{"grant":"provider","provider":…,"permitted":true}`. A list of origins whose JSON text has more than 3000 bytes is cut to its first origins, with `"truncated":true`; `count` is the size of the whole list |
 | `console_url` | the page of the approval or of the flat in the console |
 
 The body never holds the content of a flat, a secret or its name, the reason, parameters or result of an approval, a
@@ -1371,12 +1376,15 @@ its own clock. It ignores an event whose `X-Flats-Event-Id` it has handled alrea
 printf '%s.' "$TIMESTAMP" | cat - body.json | openssl dgst -sha256 -hmac "$SECRET" -hex
 ```
 
+`body.json` must hold the exact bytes of the request body, with no added line end. `openssl` prints a label and then the
+hex digits. The digits must equal the header value after `v1=`.
+
 For the secret `whsec_0123456789abcdef0123456789abcdef`, the timestamp `1700000000` and the body
 `{"id":"evt_test","type":"approval.created"}`, the signature is
 `v1=edecf23a0b88e1b94a9e5c0e5534118dcd61eeaf578b04fa0696a8a3f9b79919`.
 
 A delivery succeeds on a status 200 to 299. Flats does not follow a redirect and always verifies the certificate of an
-`https` receiver. An attempt has 10 seconds. Flats tries an event at most 4 times, and waits 5 seconds, 30 seconds and
+`https` receiver. It connects to the receiver itself and ignores `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`. An attempt has 10 seconds. Flats tries an event at most 4 times, and waits 5 seconds, 30 seconds and
 2 minutes between the attempts, after a network or certificate error, a timeout, and a status 408, 429 or 5xx. Any other
 status, and a redirect, end the event at once. A failed event leaves one line in the host log with the ID of the event,
 its type and a class (`connect`, `timeout`, `tls`, `status NNN` or `other`), never the URL or the secret.

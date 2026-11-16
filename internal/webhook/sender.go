@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"sync"
@@ -106,9 +107,13 @@ type Sender struct {
 	// on it, and a worker that leaves events behind passes the token on.
 	wake chan struct{}
 
-	mu    sync.Mutex // guards state and q, and is never held across a call out
+	mu    sync.Mutex // guards state, q and the notes, and is never held across a call out
 	state int
 	q     fifo
+	// notes holds the drops that Notify recorded and that a worker has still
+	// to log; notesMore counts the ones beyond maxNotes.
+	notes     []dropNote
+	notesMore int
 }
 
 // New returns a Sender that has not started. Events handed to it before Run
@@ -171,8 +176,8 @@ func (s *Sender) logf(format string, args ...any) {
 // worker. It does no I/O and never waits for a delivery, so any goroutine can
 // call it at any time: before Run, while Run delivers, and after Run returned,
 // when it drops the event without a log line. When the queue is full it drops
-// the oldest event that no delivery has started and logs its ID. A nil Sender
-// drops the event too.
+// the oldest event that no delivery has started and records the drop, and a
+// worker logs its ID. A nil Sender drops the event too.
 func (s *Sender) Notify(p Payload) {
 	if s == nil {
 		return
@@ -185,11 +190,11 @@ func (s *Sender) Notify(p Payload) {
 	}
 	body, err := json.Marshal(&p)
 	if err != nil {
-		s.logf("webhook: event %s (%s) dropped: it could not be encoded", p.ID, p.Type)
+		s.note(dropNote{p.ID, p.Type, "it could not be encoded"})
 		return
 	}
 	if len(body) > maxBody {
-		s.logf("webhook: event %s (%s) dropped: the body has %d bytes, over the limit of %d", p.ID, p.Type, len(body), maxBody)
+		s.note(dropNote{p.ID, p.Type, fmt.Sprintf("the body has %d bytes, over the limit of %d", len(body), maxBody)})
 		return
 	}
 	ev := &event{id: p.ID, typ: p.Type, body: body}
@@ -199,16 +204,55 @@ func (s *Sender) Notify(p Payload) {
 		s.mu.Unlock()
 		return
 	}
-	var dropped *event
 	if s.q.len() >= s.size {
-		dropped = s.q.pop()
+		dropped := s.q.pop()
+		s.addNoteLocked(dropNote{dropped.id, dropped.typ, "the queue is full"})
 	}
 	s.q.push(ev)
 	s.mu.Unlock()
 
 	s.signal()
-	if dropped != nil {
-		s.logf("webhook: event %s (%s) dropped: the queue is full", dropped.id, dropped.typ)
+}
+
+// dropNote is one dropped event that waits for its log line.
+type dropNote struct{ id, typ, why string }
+
+// maxNotes bounds the drops that wait for their log line. A burst that drops
+// more is counted and logged as one line.
+const maxNotes = 64
+
+// note records a drop and wakes a worker to log it. Notify does no I/O, so it
+// never writes the log line itself: a log that blocks must not block the
+// operation that made the event.
+func (s *Sender) note(n dropNote) {
+	s.mu.Lock()
+	if s.state != stateStopped {
+		s.addNoteLocked(n)
+	}
+	s.mu.Unlock()
+	s.signal()
+}
+
+func (s *Sender) addNoteLocked(n dropNote) {
+	if len(s.notes) >= maxNotes {
+		s.notesMore++
+		return
+	}
+	s.notes = append(s.notes, n)
+}
+
+// flushNotes writes the log lines of the drops that Notify recorded. Only the
+// goroutines of the sender call it.
+func (s *Sender) flushNotes() {
+	s.mu.Lock()
+	notes, more := s.notes, s.notesMore
+	s.notes, s.notesMore = nil, 0
+	s.mu.Unlock()
+	for _, n := range notes {
+		s.logf("webhook: event %s (%s) dropped: %s", n.id, n.typ, n.why)
+	}
+	if more > 0 {
+		s.logf("webhook: %d more events dropped", more)
 	}
 }
 
@@ -253,6 +297,8 @@ func (s *Sender) Run(ctx context.Context) {
 	s.state = stateStopped
 	s.q.reset()
 	s.mu.Unlock()
+	// The drops that no worker logged yet are logged here, so that none is lost.
+	s.flushNotes()
 	// Idle connections hold goroutines of the transport. The sender is done
 	// with them, and a later start of the host builds its own.
 	s.client.CloseIdleConnections()
@@ -262,6 +308,7 @@ func (s *Sender) Run(ctx context.Context) {
 // waits of that event.
 func (s *Sender) worker(ctx context.Context) {
 	for ctx.Err() == nil {
+		s.flushNotes()
 		ev, more := s.next()
 		if ev == nil {
 			select {

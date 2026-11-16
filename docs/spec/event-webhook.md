@@ -126,7 +126,7 @@ proposed it. The author decided 4, 5 and 6, and a reviewer can challenge them. E
    | `approval_id` | The approval, for the approval types and for a `visibility.changed` that an approval applied. Absent otherwise. |
    | `via` | For `approval.created` the channel that requested the approval, as the row records it. Absent for the others. |
    | `decided_by` | For `approval.decided` and for `visibility.changed`: `operator` for a decision of the operator and `autopilot` for a decision of an agent. Absent when the row has no `decided_by` (a pending approval that a flat deletion failed) and for the other types. |
-   | `change` | For `visibility.changed` `{"from": {"visibility": ..., "access": ...}, "to": {...}}`. For `network.changed` `{"grant": "origins", "origins": [...]}` with the list after the change, or `{"grant": "provider", "provider": ..., "permitted": true or false}`. Absent for the approval types. |
+   | `change` | For `visibility.changed` `{"from": {"visibility": ..., "access": ...}, "to": {...}}`. For `network.changed` `{"grant": "origins", "count": N, "origins": [...]}` with the count and the list after the change, or `{"grant": "provider", "provider": ..., "permitted": true or false}`. The host accepts a list of origins whose JSON text is larger than a body. When that text has more than 3000 bytes, `origins` holds the first origins that fit and the object has `"truncated": true`. Absent for the approval types. |
    | `console_url` | `<console>/approvals/<id>` for the approval types and `<console>/flats/<slug>` for the others. The console address is the one of the request that caused the event, or, without a request, the one of `Host.ConsoleURL` (the preferred console, else the first console domain that is served, else the loopback address). The address is chosen when the event is made. |
 
 5. The body holds no flat content and no secret value. It holds none of the fields `params`, `reason`, `result` and
@@ -165,8 +165,9 @@ proposed it. The author decided 4, 5 and 6, and a reviewer can challenge them. E
 
 11. The sender reads and opens the two keys from `flats.db` when it makes the first attempt of an event, and uses those
     values for every attempt of that event. It does not cache them across events. An event that finds either key missing
-    is dropped with no log line (the webhook is off), so while the webhook is off an event costs one hand-over and one read
-    of `host_keys` in the goroutine of the sender, and nothing else. An event that finds the keys unreadable (the key file
+    is dropped with no log line (the webhook is off), so while the webhook is off an event costs one hand-over and at most two
+    reads of `host_keys` in the goroutine of the sender, and nothing else: both rows are read before either is opened, so
+    there is no read of the key file and no decryption. An event that finds the keys unreadable (the key file
     is gone, or a value does not open) is dropped with one log line.
 12. Each attempt is a `POST` of the body with these headers:
 
@@ -186,7 +187,9 @@ proposed it. The author decided 4, 5 and 6, and a reviewer can challenge them. E
     compare in constant time, refuse a timestamp that is more than five minutes from the receiver's clock, and ignore a
     second event with the same ID.
 13. An attempt succeeds on a status 200 to 299. It does not follow a redirect: a 3xx is a failure. It verifies the
-    certificate of an `https` URL and has no way to skip that. It has a time limit of 10 seconds for the whole attempt. It
+    certificate of an `https` URL and has no way to skip that. It connects to the receiver itself and ignores the proxy
+    variables of the environment (`HTTP_PROXY`, `HTTPS_PROXY`, `NO_PROXY`): a proxy would get the URL of a plain `http`
+    receiver, with the token that the URL can hold. It has a time limit of 10 seconds for the whole attempt. It
     reads and drops at most 4 KiB of the response. The retry rules are:
     - a network error (a refused connection, a failed TLS handshake or certificate check, a timeout), a status 408, a
       status 429 and a status 5xx are retried;
@@ -199,8 +202,8 @@ proposed it. The author decided 4, 5 and 6, and a reviewer can challenge them. E
     The sender reads the database and calls the receiver only in its own goroutines, and holds no transaction while it
     waits for the receiver.
 16. The sender keeps at most 256 events that are not yet delivered, and runs at most 4 deliveries at once. When a new
-    event finds the queue full, the sender drops the oldest event that no delivery has started, and logs the ID of the
-    dropped event. Deliveries start in the order in which the events were made. Four run at once and a retry waits, so a
+    event finds the queue full, the sender drops the oldest event that no delivery has started. A goroutine of the sender logs the
+    ID of the dropped event: the hand-over writes no log line itself, so a log that blocks does not block the operation. Deliveries start in the order in which the events were made. Four run at once and a retry waits, so a
     receiver can see the events in another order. An agent that creates many approvals can push earlier events out of the
     queue, and the docs say so.
 17. The sender is owned by the host. The host builds it after `core.New` returns and sets it on the service before the
@@ -224,7 +227,7 @@ proposed it. The author decided 4, 5 and 6, and a reviewer can challenge them. E
     | Kind | `flat` | `name` | `data` | `via` |
     | --- | --- | --- | --- | --- |
     | `visibility.set` | the flat | none | `{"from": {"visibility": ..., "access": ...}, "to": {...}, "approval": ID}` | `console` (decided in the console) or `autopilot` (decided by an agent) |
-    | `network.set` | the flat | none | `{"origins": [...]}` with the list after the change | `console` or `cli` |
+    | `network.set` | the flat | none | `{"count": N, "origins": [...]}` with the count and the list after the change, cut as rule 4 says with `"truncated": true` | `console` or `cli` |
     | `provider.set` | the flat | the provider | `{"permitted": true or false}` | `console` |
 
     `actor` of `visibility.set` is the actor text of the console when `via` is `console`, as for every console row, and
@@ -275,10 +278,12 @@ flats audit export [--since TIME] [--config PATH | --data DIR]
     approval `id`, `decided` lines by approval `id`. The implementation merges three ascending streams (the audit rows, the
     `created` lines and the `decided` lines), each read in pages of at most 500 rows by `(at, id)`.
 25. The command takes its cutoff when it starts: the host clock time in milliseconds minus 30 seconds. It writes no line
-    with a larger `at`. The host takes the `at` of a record before it starts the write, and the write waits at most the busy
-    timeout of the store (5 seconds) for the lock (a write that waits longer fails and leaves no row), so a record whose
-    `at` is not later than the cutoff has been committed already. A record that a running host writes after the cutoff is left for the next export. A write that
-    stalls for more than 30 seconds between taking `at` and its commit can still be missed, and the docs say so. When the
+    with a larger `at`. The host takes the `at` of a record on the clock of the service before its write. The write then waits for
+    the one connection of the store and, for up to 5 seconds, for the lock of the database. On a host that is not overloaded
+    that takes far less than the lag, so a record whose `at` is not later than the cutoff has been committed. A record that a
+    running host writes after the cutoff is left for the next export. A write that is queued for more than 30 seconds
+    between its `at` and its commit (many writers behind a lock that another process holds) can be missed, and the docs
+    say so. When the
     command ends it prints to stderr one line, `exported N lines through TIME`, where TIME is the cutoff. A later export
     with `--since TIME` continues from there. The boundary line can appear in both exports, and a reader deduplicates on
     `record`, `event` and `id`.
@@ -343,7 +348,8 @@ registry up to version 25. The export reads its clock through a function variabl
   no log line. A hand-over after `Close` returns at once and sends nothing, and no goroutine of the sender is left after
   `Close` (rule 17).
 - Queue. With a receiver that never answers and 300 events made, at most 4 are in flight and at most 256 wait, the oldest
-  ones are dropped with their IDs in the log, and no operation waited. `Close` returns without waiting for a delivery.
+  ones are dropped with their IDs in the log, and no operation waited. With a log that blocks, a hand-over to a full queue
+  still returns, because a goroutine of the sender writes the line. The default client asks for no proxy. `Close` returns without waiting for a delivery.
 - Configuration. With only one key, with a refused URL (`ftp:`, a name with `http:`, a fragment, 2049 bytes) and with a short
   secret, `flats key set` refuses or the webhook stays off, and nothing is sent. Both keys on: an event arrives. The audit
   rows `key.set` and `key.delete` name the keys and hold no value. `flats key ls`, `set` and `rm` print the texts of
@@ -353,7 +359,8 @@ registry up to version 25. The export reads its clock through a function variabl
 - Audit kinds. A visibility change decided in the console, one decided by Autopilot, an origin grant change through the
   console and through the CLI header, and a provider permission change write the rows of rule 21 with the right `via`
   and `actor`, in the transaction of the change: with a failing audit write the change does not happen, and the
-  revocation of a provider keeps the order of rule 21. A change that alters nothing writes no row. With a replaced clock, the `at` of a `visibility.set` row is the time of its
+  revocation of a provider keeps the order of rule 21. A change that alters nothing writes no row. The longest list of origins that the host accepts (32 origins with host names
+  of 253 characters) is stored whole, and its row and its event carry the count and a cut list with `truncated`. With a replaced clock, the `at` of a `visibility.set` row is the time of its
   write and not the time at which the approval applied its change.
 - Export. After an approved agent delete of a flat with two secrets, `flats audit export` prints the `created` and
   `decided` lines of the approval and the two `secret.delete` rows, and the flat is gone. After a console delete of a flat

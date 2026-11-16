@@ -77,6 +77,12 @@ func TestFullQueueDropsTheOldest(t *testing.T) {
 	for i := 1; i <= 10; i++ {
 		h.sender.Notify(sampleEvent(eventID(i)))
 	}
+	// Notify writes no log line itself: a worker logs the drops, so that a log that blocks cannot block an operation.
+	if lines := h.log.snapshot(); len(lines) != 0 {
+		t.Fatalf("Notify wrote %d log lines %q", len(lines), lines)
+	}
+	h.start(t.Context())
+	h.wait(4)
 	lines := h.log.snapshot()
 	if len(lines) != 6 {
 		t.Fatalf("%d log lines %q, want 6 for the 6 dropped events", len(lines), lines)
@@ -86,8 +92,6 @@ func TestFullQueueDropsTheOldest(t *testing.T) {
 			t.Errorf("log line %d = %q, want the id %s and the type", i, line, eventID(i+1))
 		}
 	}
-	h.start(t.Context())
-	h.wait(4)
 	var got []string
 	for _, r := range capt.all() {
 		got = append(got, r.header.Get("X-Flats-Event-Id"))
@@ -177,15 +181,9 @@ func TestNotifyNeverBlocks(t *testing.T) {
 	}
 	// The oldest waiting events were dropped: the ones after the four in flight.
 	dropped := total - workers - queue
-	lines := h.log.snapshot()
-	if len(lines) != dropped {
-		t.Fatalf("%d log lines, want %d (one for each dropped event)", len(lines), dropped)
-	}
-	for i, line := range lines {
-		id := eventID(workers + 1 + i)
-		if !strings.Contains(line, id) || !strings.Contains(line, "approval.created") {
-			t.Errorf("log line %d = %q, want the id %s and the type", i, line, id)
-		}
+	// Notify wrote no log line itself, and the receiver holds every worker, so no drop is logged yet.
+	if lines := h.log.snapshot(); len(lines) != 0 {
+		t.Fatalf("%d log lines while every worker waits; Notify must write none", len(lines))
 	}
 
 	releaseAll()
@@ -213,8 +211,15 @@ func TestNotifyNeverBlocks(t *testing.T) {
 	if got := maxInflight.Load(); got != workers {
 		t.Errorf("at most %d deliveries at once, want exactly %d", got, workers)
 	}
-	if got := len(h.log.snapshot()); got != dropped {
-		t.Errorf("%d log lines at the end, want only the %d for dropped events", got, dropped)
+	lines := h.log.snapshot()
+	if len(lines) != dropped {
+		t.Fatalf("%d log lines at the end, want only the %d for dropped events", len(lines), dropped)
+	}
+	for i, line := range lines {
+		id := eventID(workers + 1 + i)
+		if !strings.Contains(line, id) || !strings.Contains(line, "approval.created") {
+			t.Errorf("log line %d = %q, want the id %s and the type", i, line, id)
+		}
 	}
 }
 
@@ -462,4 +467,44 @@ func TestFifo(t *testing.T) {
 	if f.len() != 0 || f.pop() != nil {
 		t.Error("a reset queue is not empty")
 	}
+}
+
+// TestNotifyDoesNotWaitForTheLog fills the queue of a sender whose log blocks:
+// Notify still returns, because a worker writes the log line of a drop
+// (rule 15). The blocked log holds only that worker.
+func TestNotifyDoesNotWaitForTheLog(t *testing.T) {
+	t.Parallel()
+	srv, _ := statusServer(t, http.StatusOK)
+	client, _ := newCountingClient(t)
+	blocked := make(chan struct{})
+	entered := make(chan struct{}, 1)
+	logf := func(string, ...any) {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-blocked
+	}
+	s := New(Config{Keys: keysFor(srv.URL), Client: client, Workers: 1, QueueSize: 2, Waits: []time.Duration{}, Now: fixedClock, Logf: logf})
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() { defer close(done); s.Run(ctx) }()
+	t.Cleanup(func() {
+		close(blocked)
+		cancel()
+		recv(t, done, "Run to return")
+	})
+	// More events than the queue holds, so that the sender drops some and has log lines to write.
+	within(t, "Notify with a full queue and a log that blocks", func() {
+		for i := 1; i <= 50; i++ {
+			s.Notify(sampleEvent(eventID(i)))
+		}
+	})
+	recv(t, entered, "the worker to start the log line of a drop")
+	// The worker is held by the log now. Notify still returns.
+	within(t, "Notify while the log holds the worker", func() {
+		for i := 51; i <= 100; i++ {
+			s.Notify(sampleEvent(eventID(i)))
+		}
+	})
 }
