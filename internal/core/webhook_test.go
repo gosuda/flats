@@ -3,6 +3,8 @@ package core
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
@@ -426,4 +428,66 @@ func TestTheVisibilityAuditTimeIsTakenAtTheWrite(t *testing.T) {
 		return
 	}
 	t.Fatal("no visibility.set row")
+}
+
+// The changes that rule 1 leaves out send nothing: the creation of a flat, a secret, and a rename.
+func TestExcludedChangesSendNoEvent(t *testing.T) {
+	t.Parallel()
+	s, _, rec := webhookService(t)
+	ctx := t.Context()
+	if _, err := s.CreateFlat(ctx, "app", "", ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetSecret(ctx, "app", "API_KEY", "a-secret-value", ViaConsole); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteSecret(ctx, "app", "API_KEY", ViaConsole); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RenameSlug(ctx, "app", "renamed", ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	if got := rec.take(); len(got) != 0 {
+		t.Errorf("events = %v, want none", shorts(got))
+	}
+}
+
+// An approval that a crash left unfinished is finished by New, before the host can set a notifier, so its decision is not
+// announced (rules 1 and 17). The approval record has the final status, and the export shows it.
+func TestAnApprovalThatARestartFinishesSendsNoEvent(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	dir := t.TempDir()
+	st, err := store.Open(filepath.Join(dir, "flats.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { st.Close() })
+	cfg := Config{DataDir: dir, Store: st, Private: &memNet{hosts: map[string]http.Handler{}}, Logf: t.Logf}
+	first, err := New(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lifecycleSave(t, first, "notes", "one")
+	p := lifecycleRequest(t, first, "notes")
+	if err := st.ClaimApprovalAuthorized(ctx, p.Approval.ID, "console", time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if err := first.Close(); err != nil {
+		t.Fatal(err)
+	}
+	second, err := New(ctx, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { second.Close() })
+	rec := &recorder{}
+	second.SetNotifier(rec)
+	a, err := second.GetApproval(ctx, p.Approval.ID)
+	if err != nil || (a.Status != "approved" && a.Status != "failed") {
+		t.Fatalf("the approval after the restart: %+v, %v; want a final status", a, err)
+	}
+	if got := rec.take(); len(got) != 0 {
+		t.Errorf("the restart sent %v", shorts(got))
+	}
 }

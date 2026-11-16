@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/gosuda/flats/internal/bundle"
 	"github.com/gosuda/flats/internal/core"
 	"github.com/gosuda/flats/internal/store"
 	"github.com/gosuda/flats/internal/webhook"
@@ -307,5 +308,57 @@ func TestWebhookCredentialsFollowTheStoredKeys(t *testing.T) {
 	}
 	if _, err := webhookCredentials(ctx, keyFile, st); !errors.Is(err, webhook.ErrOff) {
 		t.Fatalf("after a reset: %v, want ErrOff", err)
+	}
+}
+
+// A receiver that does not answer delays neither the decision of an approval nor the stop of the host (rules 15 and 17).
+func TestABlockedReceiverDelaysNeitherAnApprovalNorTheStop(t *testing.T) {
+	clearKeyEnv(t)
+	ctx := context.Background()
+	dir := t.TempDir()
+	config := initConfig(t, dir)
+	entered := make(chan struct{}, 16)
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		entered <- struct{}{}
+		<-release
+	}))
+	// The handlers end before the server closes, because Close of the server waits for them.
+	t.Cleanup(func() { close(release); srv.Close() })
+	for id, value := range map[string]string{"webhook-url": srv.URL + "/hook", "webhook-secret": hookSecret} {
+		if _, err := keyCmd(t, config, value, "set", id); err != nil {
+			t.Fatalf("key set %s: %v", id, err)
+		}
+	}
+	h, err := Start(ctx, configModeOptions(config))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { h.Close() })
+	if _, err := h.Svc.SaveVersion(ctx, "app", []bundle.File{{Path: "index.html", Data: []byte("x")}}, core.SaveMeta{}, core.ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	req, err := h.Svc.Publish(ctx, "app", 0, "", core.ViaAPI)
+	if err != nil || req.Approval == nil {
+		t.Fatalf("Publish = %+v, %v", req, err)
+	}
+	select {
+	case <-entered: // the receiver holds the delivery of approval.created
+	case <-time.After(30 * time.Second):
+		t.Fatal("no delivery reached the receiver")
+	}
+	a, err := h.Svc.Decide(ctx, req.Approval.ID, true)
+	if err != nil || a.Status != "approved" {
+		t.Fatalf("Decide with a blocked receiver = %+v, %v; want approved", a, err)
+	}
+	closed := make(chan error, 1)
+	go func() { closed <- h.Close() }()
+	select {
+	case err := <-closed:
+		if err != nil {
+			t.Errorf("Close: %v", err)
+		}
+	case <-time.After(60 * time.Second):
+		t.Fatal("Close waited for a delivery that the receiver holds")
 	}
 }
