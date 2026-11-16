@@ -278,8 +278,10 @@ a row's cells for a window are one range of the primary key of `cells`.
 
 ### 4.4 Sizes and flags
 
-Widths are stored in hundredths of the character unit of an xlsx file and
-heights in hundredths of a point, so an import and an export do not drift.
+Widths are stored in 1/256 of the character unit of an xlsx file, the
+precision that Excel keeps, so an import and an export keep each width.
+Heights are stored in hundredths of a point, and the round-trip corpus
+checks that they keep their value (section 25.4).
 The browser turns them into pixels. `flags` holds the hidden bit.
 
 ## 5. Cells, text and formats
@@ -396,8 +398,10 @@ need.
 
 The parser limits a formula to 8,192 characters of A1 text, a parse tree of
 height 128, 64 nested function calls and 255 arguments per call. A typed
-formula that names ids, with `@`, `#` followed by digits, or `!nm`, is
-refused, so a person cannot forge a reference.
+formula that names ids, with `@`, `#` followed by digits, or `!nm`, outside
+text in double quotes and outside a quoted worksheet name, is refused, as
+[rule 14](sheet.md#formulas) says for `@`, so a person cannot forge a
+reference.
 
 ### 6.2 What a structure edit does
 
@@ -979,28 +983,63 @@ whole columns), and counts toward the work limit. An array above that gives
 `#LIMIT!`, which differs from Excel, and each intermediate array of an
 expression counts its values toward the work limit. A formula whose final value is an array or a
 range of more than one cell gives `#VALUE!`
-([rule 15](sheet.md#formulas)).
+([rule 15](sheet.md#formulas)). Excel 365 spills such a value, and earlier
+Excel takes the cell of the range in the row or column of the formula
+([rule 14](sheet.md#formulas)). The reader reads `_xlfn.SINGLE(x)`, the `@`
+of Excel 365, as `x`, so such a formula gives `#VALUE!` where `x` is a range.
+It is not a function outside rule 15, so the formula is kind 5 and not kind 6.
+The writer writes the formula without it, and Excel 365 then shows the `@`
+again, because it marks every place in an older formula where implicit
+intersection can occur.
 
 **Numbers.** A comparison rounds both numbers to 15 significant digits
 first, as S0 did. Sums use the `total()` aggregate, not `sum()`, so a column
 of large whole numbers cannot overflow an integer. A whole number of 2^53 or
 more is stored as a real.
 
-**Text.** Comparison folds letter case with Unicode simple case folding and
-then compares code points. This is not a locale collation: the order of two
-texts can differ from Excel outside ASCII letters and digits. Hangul
-syllables sort in dictionary order by code point. The conformance corpus
-orders only texts for which both agree.
+**Text.** Sort and comparison fold letter case with Unicode simple case
+folding and then use one fixed order, the one that Microsoft documents for
+the sort of Excel ([rule 12](sheet.md#content)):
+
+```text
+0 1 2 3 4 5 6 7 8 9 (space) ! " # $ % & ( ) * , . / : ; ? @ [ \ ] ^ _ ` { | } ~ + < = > A B C ... Z
+```
+
+Every other character follows by code point, so Hangul syllables sort in
+dictionary order. This first comparison reads the texts without their
+apostrophes and hyphens. Of two texts that
+are equal without them, the one with fewer of them comes first, which is
+the rule of Excel for a hyphen and an S1 choice otherwise. Then code-point
+order after case folding decides, so every two texts that differ after case
+folding have one order. Two texts are
+equal in a comparison only when they are equal after case folding, so
+`"ab"="a-b"` is `FALSE`. This is not a locale collation. The order of Excel
+depends on its region, and outside ASCII it can differ. Microsoft documents
+the order for sorting only. The conformance corpus has comparison cases
+with punctuation, hyphens and apostrophes, and the checks by hand in Excel
+have the sort cases (section 25.4).
 
 **Dates.** Serial numbers follow the 1900 system with serial 60, or the 1904
-system of the workbook. Date functions accept serials from 0 to 2,958,465
-(9999-12-31) and give `#NUM!` outside. `WEEKDAY`, `WEEKNUM`, `DATEDIF`,
-`NETWORKDAYS` and `WORKDAY` take the argument forms that Excel documents.
+system of the workbook ([rule 16](sheet.md#formulas)). Date functions accept
+serials from 0 to 2,958,465 in the 1900 system and from 0 to 2,957,003 in
+the 1904 system, which are 9999-12-31 in both, and give `#NUM!` outside.
+Serial 0 of the 1900 system is the day before 1900-01-01, which Excel shows
+as 1900-01-00, so `YEAR`, `MONTH` and `DAY` of 0 give 1900, 1 and 0. The
+functions count days on the serial, as Excel does, so before 1900-03-01
+`WEEKDAY` follows the day numbers of Excel and not the calendar. `WEEKDAY`,
+`WEEKNUM`, `DATEDIF`, `NETWORKDAYS` and `WORKDAY` take the argument forms
+that Excel documents. `DATEDIF` with `"MD"` follows
+[rule 15](sheet.md#formulas), which differs from Excel on purpose.
 
 **Input parsing.** One Go function implements
 [rule 6](sheet.md#content). Typed cell input, typed input from agents, CSV
 fields, `VALUE`, `DATEVALUE` and the conversion of text in arithmetic all
-call it, so they cannot disagree.
+call it, so they cannot disagree. Excel reads typed dates and the text of
+`VALUE` and `DATEVALUE` by its region settings, and rule 6 has none. The
+conformance corpus therefore records the region of the Excel that saved
+it, and its `VALUE` and `DATEVALUE` cases use the forms of rule 6 that do
+not depend on the region: year-first dates, times with a colon and plain
+numbers.
 
 **Number formats.** One Go renderer turns a value and a format code into the
 text a cell shows. It handles General, digit placeholders with a decimal
@@ -1014,9 +1053,12 @@ in the grid and `#VALUE!` in `TEXT`.
 **Lookups.** An exact lookup asks SQL for candidates in a window of about
 1e-14 relative around a number, or by string id for text, and lets the Go
 comparison decide, because SQL equality and the 15-digit rule differ. A
-nearest-match lookup does a binary search over the positions of the range,
-which reads a logarithmic number of cells. Wildcard criteria become one scan
-of the range.
+nearest match of `VLOOKUP`, `HLOOKUP` and `MATCH`, and `XLOOKUP` in search
+mode 2 or -2, does a binary search over the positions of the range, which
+reads a logarithmic number of cells. `XLOOKUP` in its default search mode
+scans the whole range for the next smaller or larger key, as Excel does
+([rule 15](sheet.md#formulas)). Wildcard criteria become one scan of the
+range.
 
 **Aggregates.** `SUM`, `COUNT`, `MIN`, `MAX` and `AVERAGE` over a range run
 as SQL aggregates. A range of whole columns skips the join through row
@@ -1027,10 +1069,14 @@ formulas over one shared range at 372 cells per second without that and
 2,218 with it.
 
 **Function names in files.** Excel stores newer functions with the prefix
-`_xlfn.`, for example `_xlfn.XLOOKUP`. The reader removes the prefix from
-the functions of rule 15 and the writer adds it back for the functions that
-need it. A function that S1 does not have keeps its prefix in the stored
-text.
+`_xlfn.`, for example `_xlfn.XLOOKUP`. The
+[MS-XLSX list of future functions](https://learn.microsoft.com/en-us/openspecs/office_standards/ms-xlsx/5d1b6d44-6fc1-4ecd-8fef-0b27406cc2bf)
+names them, and from rule 15 it names, for example, `XLOOKUP`, `IFS`,
+`TEXTJOIN`, `CONCAT`, `STDEV.S` and `DAYS`. The reader removes the prefix
+from the functions of rule 15. The writer adds it to exactly the functions
+of rule 15 that the list names, and a test checks that set against the
+list. A function that S1 does not have keeps its prefix in the stored text.
+The reader handles `_xlfn.SINGLE` as the Values paragraph above says.
 
 **Determinism.** The same inputs give the same results on every host, except
 for `TODAY` and `NOW`. No result depends on a time budget, on the order of
@@ -1048,7 +1094,7 @@ computes structure from the current state.
 | `set_cells` | Writes inputs to cells: typed text, or an explicit number, text, boolean, error value or formula |
 | `clear` | Removes inputs, formats or both from a range |
 | `set_format` | Changes named fields of the format of a range, of rows or of columns |
-| `fill` | Repeats a source range over a target range, or one formula over a range, with relative references moved |
+| `fill` | Fills a target range from a source range by the rules of [rule 40](sheet.md#editing-in-the-browser), or as a copy when the call asks for one, with relative references moved |
 | `copy` | Copies a range to a place: inputs and formats, values only, or formats only |
 | `insert_rows`, `insert_cols` | Adds rows or columns before a row or column, or at the end |
 | `delete_rows`, `delete_cols` | Removes rows or columns and their cells |
@@ -1593,10 +1639,10 @@ call (section 18.4).
 
 | Phase | Does |
 |---|---|
-| Count | The count of section 10.2 for the range, as a read. It refuses a range of more than 2,000,000 cells as `sheet_capacity` and a range that holds part of a merged range |
+| Count | The count of section 10.2 for the range, as a read. It refuses a range of more than 2,000,000 cells as `sheet_capacity` and a range that holds a merged range or part of one |
 | Plan | Opens one read transaction, as an export does (section 13.4), and records the structure sequence of the worksheet. It reads the sort keys of the range, a formula by its stored result as of that transaction (a pending formula by its last result, [rule 12](sheet.md#content)), computes the order of the rows, which it keeps in memory (at most 4 MiB for 1,048,576 rows), and computes a SHA-256 digest of the keys in row order. The keys stay in memory only up to 128 MiB, and a sort with more key bytes is refused as `sheet_capacity` with that limit named. Other people keep editing |
 | Settle | If more than 8 files of the range are dirty, or sealed and not yet encoded, the job closes the open edit group as a revision once, in one writer item as the switch does ([rule 55](sheet.md#concurrency-rules)), and then waits until the encoder has encoded the files that are sealed (section 11.1). It ends as `unavailable` after 10 minutes. It closes no further group, so a stream of edits cannot fill the revision quota ([rule 70](sheet.md#revisions)). Other people keep editing. A job that ends after a Settle leaves the revision that it closed in the history and changes no content |
-| Apply | One writer item. It first counts the files of the range that are dirty or sealed and not yet encoded, and asks the bounds of section 7.2 and the quota check of [rule 79](sheet.md#lifecycle-and-access). It is put back, as an edit is (section 11.1), if that count is more than 8 or if a bound of section 7.2 refuses it, and the job ends as `unavailable` after 10 minutes put back. A refusal by the quota check ends the job at once with nothing changed. The item then reads the keys of the range again and checks four things: the worksheet is live and not deleted, its structure sequence equals the one of the Plan, the digest of the keys equals the digest of the Plan, and no merged range holds part of the range. If one fails, the job ends as `conflict` with the reason and nothing changed. Otherwise the item closes the open edit group in its own transaction, so that the revision before the sort holds the workbook as of just before the apply, and it encodes the at most 8 files that this boundary sealed and that it touches. It then moves the inputs and formats between the rows by the order, renders each moved formula as A1 text at its old place and stores it again at its new place (section 6.2), writes a `dirty` row for each formula cell that it wrote and one `ids` record with the column ids of the range (section 7.5), raises the structure sequence of the worksheet, sets the job to `done` in the same transaction as the moves, and tells every connection to read the worksheet again |
+| Apply | One writer item. It first counts the files of the range that are dirty or sealed and not yet encoded, and asks the bounds of section 7.2 and the quota check of [rule 79](sheet.md#lifecycle-and-access). It is put back, as an edit is (section 11.1), if that count is more than 8 or if a bound of section 7.2 refuses it, and the job ends as `unavailable` after 10 minutes put back. A refusal by the quota check ends the job at once with nothing changed. The item then reads the keys of the range again and checks four things: the worksheet is live and not deleted, its structure sequence equals the one of the Plan, the digest of the keys equals the digest of the Plan, and the range holds no merged range and no part of one. If one fails, the job ends as `conflict` with the reason and nothing changed. Otherwise the item closes the open edit group in its own transaction, so that the revision before the sort holds the workbook as of just before the apply, and it encodes the at most 8 files that this boundary sealed and that it touches. It then moves the inputs and formats between the rows by the order, renders each moved formula as A1 text at its old place and stores it again at its new place (section 6.2), writes a `dirty` row for each formula cell that it wrote and one `ids` record with the column ids of the range (section 7.5), raises the structure sequence of the worksheet, sets the job to `done` in the same transaction as the moves, and tells every connection to read the worksheet again |
 
 The guard is the digest, not the row `ver` of section 18.3. An edit of a cell
 that is not a key, a format change, and a change of a row height do not stop
@@ -1674,7 +1720,7 @@ Checked on the zip directory, before any part is read:
 |---|---|
 | File size | `system.upload_max_bytes` |
 | Zip entries | 10,000. The reader reads the end-of-central-directory record first, with the count and size of the directory, and refuses a count over 10,000 or a directory over 4 MiB before it calls `zip.NewReader`, which allocates one record for every entry |
-| A file that starts with the compound-file signature | Refused as encrypted or legacy |
+| A file that starts with the compound-file signature | Refused. It is encrypted when its compound file holds the streams `EncryptionInfo` and `EncryptedPackage` (MS-OFFCRYPTO), and legacy otherwise, and the refusal says which |
 | Entry names | No absolute path, no `..`, no duplicate |
 | Worksheets | 200 |
 
@@ -1697,11 +1743,33 @@ target outside the zip.
 ### 14.3 What the reader maps
 
 - Cell types `n`, `s`, `b`, `e`, `str`, `inlineStr` and `d`. A number with a
-  date format is still a number; the format carries the meaning.
+  date format is still a number, and the format carries the meaning. The
+  built-in number formats need no format code in the file. Ids 14 to 22 and
+  45 to 47 are dates and times, and 49 is text (ECMA-376 Part 1, 18.8.30).
+  Ids 27 to 36 and 50 to 58 are dates and times whose code depends on the
+  East Asian region of Excel. The reader maps them by the table for the
+  Korean region in the same clause, for example 34 and 52 to `yyyy-mm-dd`,
+  and writes the id back. A test reads one id of each group. Excel shows
+  these ids by the language of its interface, so S1 differs from an Excel
+  in another East Asian language.
+  Id 14 is the short date of the region of Excel. S1 shows it as
+  `yyyy-mm-dd`, as for the year-first forms of rule 6, and writes id 14
+  back.
+- The reader reads an error value that rule 16 does not have, such as
+  `#SPILL!` or `#GETTING_DATA`, as `#N/A`, and the import report counts
+  the cells ([rule 25](sheet.md#files)).
+- Worksheet states `hidden` and `veryHidden`. A very hidden worksheet is
+  hidden and keeps that mark for export until a person or an agent shows
+  it. A worksheet named `History`, which rule 3 refuses, gets the name
+  `History (2)`, and the report lists it.
+- The iterative calculation setting of the workbook (`calcPr`) is not
+  read. When it is on, the import report lists it as dropped
+  ([rule 20](sheet.md#formulas)).
 - Shared formulas: each cell of a shared group gets the group's formula
   moved to its place.
 - A formula that parses becomes kind 5. With a function outside rule 15 it
-  becomes kind 6, and with syntax outside rule 14, or as an array formula,
+  becomes kind 6. `_xlfn.SINGLE` is not such a function, because the reader
+  removes it first (section 9). With syntax outside rule 14, or as an array formula,
   kind 7. Kinds 6 and 7 keep the cached value of the file as their stored
   result ([rule 22](sheet.md#formulas)). Kind 5 keeps it as its last result
   and is dirty.
@@ -1725,8 +1793,17 @@ target outside the zip.
 - `styles.xml`: the kept style table with one new entry for each format
   whose rule 7 fields differ from its base, or a generated table when there
   is none ([rule 8](sheet.md#content)).
-- Sizes, hidden flags, frozen panes, merged ranges, defined names and the
-  date system.
+- Sizes, hidden flags and the very hidden mark, frozen panes, merged
+  ranges, defined names and the date system.
+- The package parts `[Content_Types].xml`, `_rels/.rels`, `xl/workbook.xml`,
+  `xl/_rels/workbook.xml.rels`, `xl/styles.xml`, one part for each
+  worksheet, and the kept theme and source parts. No `calcChain.xml`, which
+  the round-trip test checks that Excel accepts.
+- The children of each worksheet part in the order of `CT_Worksheet` in
+  ECMA-376: `sheetPr`, `dimension`, `sheetViews`, `sheetFormatPr`, `cols`,
+  `sheetData`, `mergeCells`, and then the later elements that S1 writes. A
+  test validates every exported file against the ECMA-376 schema before
+  the Excel run (section 25.4).
 
 ### 14.5 CSV
 
@@ -2041,7 +2118,7 @@ step. Every `.js` file declares `'use strict';`.
 | `grid.js` | Rows and cells near the viewport, scroll model, frozen regions, grid semantics |
 | `select.js` | Selection, keyboard movement |
 | `editor.js` | Cell editor and formula bar, composition, reference picking, function hints |
-| `clip.js`, `fill.js` | Clipboard, fill handle, the series of [rule 41](sheet.md#editing-in-the-browser) |
+| `clip.js`, `fill.js` | Clipboard, the fill handle of [rule 40](sheet.md#editing-in-the-browser), and the series of actions of [rule 41](sheet.md#editing-in-the-browser) |
 | `menu.js`, `dialogs.js` | Menus; Names, Sort, Find, Import, Export and History |
 
 **Grid.** The grid is plain DOM that holds only the rows and cells near the
@@ -2452,12 +2529,53 @@ These tests also run:
   version and date. The test imports each file and compares every result
   with the cached one by the criterion's tolerance. The files hold no real
   data. Until they exist, unit 1 uses hand-worked vectors, and the
-  conformance criterion is not met.
+  conformance criterion is not met. The manifest also records the region
+  of that Excel. The corpus has cases for what the check against the
+  documentation of Excel on 2026-11-16 could not settle: `VALUE` and
+  `DATEVALUE` forms, empty cells in comparisons, in `IF` and `NOT` and in
+  `AND`, `OR` and `XOR`, text comparisons with punctuation, hyphens and
+  apostrophes (`"ab"` against `"a-b"` and `"a'b"`), serials 0, 59, 60 and 61
+  and the last serial of each date system, `WEEKDAY` before 1900-03-01,
+  `XLOOKUP` in each match and search mode over keys that are not sorted,
+  the first of several error values, text criteria such as `"<b"` in
+  `COUNTIF`, and comparisons at 15 significant digits.
+- **Checks by hand in Excel.** A file stores the values that typed input, a
+  fill or a sort leaves in cells, but not what a person typed or did. The
+  generator therefore writes a workbook with three worksheets. The requester
+  completes it in the Excel of the corpus, in the Korean region, and saves
+  it, and a test reads the saved file:
+  - Typed input. Column A holds each form of [rule 6](sheet.md#content) as
+    text, and the requester types the same text into column B. In the row
+    of the percent case, column B has a percent format before the requester
+    types. The test compares the value and the kind in column B with what
+    rule 6 makes of the text in column A. The forms that differ on purpose (`1/2`, `JAN 1`,
+    `11/13`, and `10` in a percent cell) must differ. Any other form that
+    this Excel reads in another way than rule 6 is recorded, and the
+    requester decides whether rule 6 changes.
+  - Fill. Each vector has its start cells in a column of its own, and the
+    requester drags it down over four cells. The requester also drags a
+    copy of it up over two cells. The copy is in a second column of its
+    own and starts four rows lower than the vector, so the two drags do not
+    overlap.
+    The vectors are one date, two dates a week apart, `Monday`, `Mon`,
+    `January`, `Jan`, one time, `Item1`, `Item09`, `abc`, the formula
+    `=A1+1`, one number, `1, 2`, `1, 2, 4`, `100, 95`, `Item1, Item3` and
+    `a, 1`.
+  - Sort. Column A holds the text-order cases, and column B holds a copy
+    that the requester sorts in Excel. The test sorts column A by
+    [rule 12](sheet.md#content) and compares the result with column B.
+
+  When a result of these checks, or a corpus case for an S1 choice of rule
+  12 or 16, differs from the rule, the rule changes, or the difference
+  becomes a stated one that the requester approves.
 - **Round trip.** Generated files that use every kept feature and every
   dropped kind, and the conformance files, with files whose import drops a
   table, a link to another workbook or an array formula. The test checks
   [rule 29](sheet.md#files) and the exact import report, and that each
-  exported file opens in Excel without a repair prompt.
+  exported file opens in Excel without a repair prompt. It compares sizes
+  with the source file, not only between two imports. Before the Excel
+  run, every exported file passes a validation against the ECMA-376
+  schema.
 - **Hostile.** A script builds a zip bomb, an entry over the ratio, a text
   over the limit, deep XML, a document type declaration, 10,001 entries, a
   duplicate entry name, an entry name with `..`, a shared-string table with an
