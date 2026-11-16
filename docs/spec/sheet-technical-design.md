@@ -25,7 +25,7 @@ the evidence.
 | Value groups (decision 3) | Twelve fixed groups, [rule 48](sheet.md#concurrency-rules). Writes of absolute values, ordered by one writer queue (section 10) |
 | Results (decision 4) | A revision stores inputs. Results are a cache in `sheet.db`. An edit writes open records for the cells, rows and worksheets it changed, and a marker turns them into marks in bounded slices after the edit is confirmed. A reader returns a result as current only if no record is open and the formula has no `dirty` row, or if it calculated the result from the inputs at its own snapshot (sections 7 and 8) |
 | Calculation order | Not stored. The host calculator is a long-lived task that keeps its place, resolves precedents depth-first with an explicit stack, and stores each result as it goes. This replaces the stored order that S0 step 3 asked for (section 8) |
-| Storage (decision 5) | `flats/<slug>/sheet/sheet.db` is the only current-state source of truth. A durable outbox in the same transaction as the edit, imported idempotently into shared revision metadata and blobs. Revision files split each worksheet into row buckets by id and order chunks by content (section 12) |
+| Storage (decision 5) | `flats/<slug>/sheet/sheet.db` is the only current-state source of truth. A durable outbox in the same transaction as the edit, imported idempotently into shared revision metadata and blobs. Revision files split each worksheet into row buckets by id and order chunks by content (section 12). `flats backup` copies `sheet.db` as an outbox database (section 12.5) |
 | xlsx reader and writer (decision 6) | A reader and a writer in a new package on `archive/zip` with a small scanner for worksheet XML. No new module (section 14) |
 | Import and export safety (decisions 7 and 8) | Limits checked on the zip directory, then while streaming. A counting pass before the first write. Text cells stay typed text in xlsx, and CSV export escapes (section 14) |
 | Compatibility (decision 9) | [Rule 16](sheet.md#formulas) with the details of section 9 |
@@ -180,7 +180,10 @@ measurements happen before queue admission.
 Rename, deletion and stop refuse new work with `unavailable`, cancel running
 jobs, snapshot readers and scratch databases, delete their files, and close
 sockets before moving or removing storage. Creation uses the existing durable
-`content_state` initialization phases. It creates one empty worksheet and its
+`content_state` initialization phases. It commits the flat row and the first
+phase in `flats.db` before it makes `sheet/` and `sheet.db`, as for a notebook,
+and a restart finishes or undoes an unfinished phase (pending-init recovery,
+section 23). It creates one empty worksheet and its
 initial revision, then marks the flat ready. A refused first write or import
 to a new slug leaves no adopted sheet, partial shell or temporary database
 ([rules 1](sheet.md#content) and [61](sheet.md#agents)).
@@ -1329,12 +1332,14 @@ hashes, check that every new blob is stored, insert the revision and its
 rows in one `flats.db` transaction, then acknowledge to the sheet writer.
 Every crash between steps can replay without a second revision.
 
-Host migration 25 appends after migration 24. It creates `sheet_imports`
-keyed by `(flat, store, outbox_seq)`, `sheet_rev_sheets` keyed by
+A new host migration creates `sheet_imports` keyed by
+`(flat, store, outbox_seq)`, `sheet_rev_sheets` keyed by
 `(flat, revision, sheet)` with the change and the names before and after,
 and `sheet_rev_reports` keyed by `(flat, revision)` with the hash and size of
 an import report. Composite revision foreign keys cascade on update and
 delete. The blob sweep counts a report as referenced while its row exists.
+The migration takes the next free number when the sheet is implemented, so
+this design fixes no number.
 
 ### 12.4 Disk quota
 
@@ -1358,6 +1363,86 @@ for a generated file. The reservation is released as real bytes replace it.
 A rollback is exempt from quota admission. It still needs free space on the
 disk for the worksheets it rebuilds, and fails without a change when the
 disk itself is full.
+
+### 12.5 Backup
+
+[Host backup](host-backup.md) copies a running host with `flats backup` and
+checks the copy. It finds each store by its path, so the pull request that
+delivers the sheet also adds the sheet to the backup. That pull request
+changes rules 2, 3, 4, 5, 8, 13, 15, 16, 19 and 27 of the host backup spec,
+the kinds of its manifest and `docs/configuration.md` (section 23). Until
+then the backup copies a `sheet/` directory as host files. The bullets below
+say what holds after that pull request. In this section, rule numbers are
+those of the host backup spec, and section numbers are those of this design.
+
+- **Database.** `flats/<slug>/sheet/sheet.db` is a database of kind `sheet`
+  (rules 2 and 4). The backup copies it as a snapshot and leaves out its
+  `-wal`, `-shm` and `-journal` files. It has no custom collation, so the
+  backup needs no registration step to open it. If a later index needs a
+  collation, the backup registers it first, as it calls
+  `notebook.RegisterCollation` for a notebook.
+- **Outbox.** `sheet.db` is an outbox database (rule 5). `content_state`
+  holds its cursor with the type `sheet`. The store id is the `store` column
+  of the singleton `meta` row, as for a notebook. The table `outbox` numbers
+  its entries with its own counter, `seq INTEGER PRIMARY KEY AUTOINCREMENT`,
+  so the numbers have no gaps. An entry records the boundary sequence S of
+  section 11.1 in a column of its own, and S is never the outbox number. The
+  sheet writer deletes an entry when core acknowledges it (section 12.3).
+  Rule 16 then reads the highest number from `sqlite_sequence`, and it takes
+  the lowest entry that is left, minus one, as the last acknowledged one.
+  The group of rule 15 and the coherence test of rule 16 apply to the sheet
+  as to a notebook.
+- **Open.** When the instance opens, it runs the upper half of that test, as
+  a notebook does (`checkImportCursor`). The check runs before the writer
+  starts, before the job recovery of section 13.1, before any background
+  unit, before creation recovery and before any boundary, so the instance
+  writes nothing to `sheet.db` before it. When the outbox of `sheet.db` ends
+  below the cursor in `flats.db`, the host refuses the open, the sheet does
+  not start, and the log names both numbers. The refusal holds across
+  restarts until a matching store is back.
+- **Directories.** When `sheet.db` is gone, the backup tries again and then
+  fails, as for `notebook.db` (rule 8). The surveys of rules 13 and 19 list
+  `sheet/`. Rule 19 fails when a flat directory appears or disappears during
+  the copy. A `sheet/` directory that appears below a flat directory that
+  existed at the first survey is not a failure. A creation that runs during
+  the copy is in the copy as an unfinished `content_state` phase, which the
+  restored host finishes or undoes as after a restart (section 3.1).
+- **Jobs.** A job that runs during the copy, such as an import, a rollback
+  or a large sort, is `running` in the snapshot of `sheet.db`. A restored
+  sheet marks it `interrupted` and deletes its hidden worksheets and its
+  files, as after a restart (section 13.1).
+- **Uploads.** The backup leaves out the directory `sheet/import/`, which
+  holds the uploads of running imports, and lists it in `excluded` (rule 3).
+  A copy of an upload that grows during the copy would fail rule 6, and an
+  upload that its job deletes would fail rule 8. The restored sheet does not
+  need the uploads, because it marks their jobs `interrupted`. When it
+  deletes the files of such a job, a file that is not there is not an error.
+- **Blobs.** The blobs that a sheet needs (rule 27) are those that
+  `content_head`, `revision_files` and `content_sources` name in `flats.db`,
+  the import report that each row of `sheet_rev_reports` names, every hash
+  in the `files` table of `sheet.db`, and every hash and import report that
+  an entry left in its `outbox` names. An entry that core has not imported
+  can name a blob that no other table names, because a later encoding of the
+  same file replaced its hash in `files`. The blob sweep keeps such a blob.
+  As for a notebook ([blob sweep](../revision-store.md#blob-sweep), step 2),
+  it imports the outbox of the sheet first, skips the flat when that fails,
+  and then keeps every hash that `files` and the entries left in `outbox`
+  name. Section 23 lists this step of the sweep.
+- **Scratch files.** The host keeps them under `<data dir>/cache/`, which
+  rule 3 leaves out. They are the spills of the snapshot reader (section 16),
+  export files (section 13.4), the scratch databases of earlier revisions
+  (section 13.6) and those of the calculator (section 8.1). No scratch file
+  is under `flats/<slug>/`.
+- **Long read.** A snapshot of `sheet.db` is a reader outside the instance,
+  and the sheet does not bound it. While it runs, the WAL cannot shrink, and
+  its real size counts against the quota, as for an export (section 13.4).
+  If that puts the sheet over its quota, the sheet refuses every edit
+  ([rule 79](sheet.md#lifecycle-and-access)). The WAL shrinks only when a
+  truncation by the maintenance of section 11 succeeds, so the refusals can
+  last after the snapshot ends. Item 16 of section 26 decides whether the
+  WAL allowance of section 12.4 must cover a snapshot of large workbook B.
+
+Section 25.3 lists the tests.
 
 ## 13. Jobs
 
@@ -1385,10 +1470,11 @@ request.
 - A sheet runs one import, rollback, large duplication or large sort at a
   time. A second start is refused as `conflict` and names the running job.
 - Cancel is possible in every phase before the switch.
-- When the instance opens and finds a running job, it marks it interrupted,
-  deletes its hidden worksheets through `garbage`, and deletes its uploaded
-  and scratch files ([rule 30](sheet.md#files)). Finished job rows expire
-  after 24 hours.
+- After the check of its import cursor (section 12.5), an instance that
+  opens and finds a running job marks it interrupted, deletes its hidden
+  worksheets through `garbage`, and deletes its uploaded files and its
+  scratch files under `<data dir>/cache/` ([rule 30](sheet.md#files)).
+  Finished job rows expire after 24 hours.
 
 ### 13.2 Import
 
@@ -1424,6 +1510,11 @@ The switch is one writer item:
 4. Raise the structure sequence of every worksheet, set `built_seq` of the new
    worksheets to the sequence of the switch, clear undo, and tell every
    connection to read again.
+5. Set the job to `done` with its revision and its report reference.
+
+Step 5 commits in the same transaction as steps 2 to 4. A copy of `sheet.db`
+or a crash therefore shows either the earlier workbook with a `running` job
+or the new workbook with a `done` job.
 
 The switch writes no record. The job gave every formula of kind 5 of the new worksheets
 a `dirty` row before the switch, and the earlier worksheets, with their
@@ -1505,7 +1596,7 @@ call (section 18.4).
 | Count | The count of section 10.2 for the range, as a read. It refuses a range of more than 2,000,000 cells as `sheet_capacity` and a range that holds part of a merged range |
 | Plan | Opens one read transaction, as an export does (section 13.4), and records the structure sequence of the worksheet. It reads the sort keys of the range, a formula by its stored result as of that transaction (a pending formula by its last result, [rule 12](sheet.md#content)), computes the order of the rows, which it keeps in memory (at most 4 MiB for 1,048,576 rows), and computes a SHA-256 digest of the keys in row order. The keys stay in memory only up to 128 MiB, and a sort with more key bytes is refused as `sheet_capacity` with that limit named. Other people keep editing |
 | Settle | If more than 8 files of the range are dirty, or sealed and not yet encoded, the job closes the open edit group as a revision once, in one writer item as the switch does ([rule 55](sheet.md#concurrency-rules)), and then waits until the encoder has encoded the files that are sealed (section 11.1). It ends as `unavailable` after 10 minutes. It closes no further group, so a stream of edits cannot fill the revision quota ([rule 70](sheet.md#revisions)). Other people keep editing. A job that ends after a Settle leaves the revision that it closed in the history and changes no content |
-| Apply | One writer item. It first counts the files of the range that are dirty or sealed and not yet encoded, and asks the bounds of section 7.2 and the quota check of [rule 79](sheet.md#lifecycle-and-access). It is put back, as an edit is (section 11.1), if that count is more than 8 or if a bound of section 7.2 refuses it, and the job ends as `unavailable` after 10 minutes put back. A refusal by the quota check ends the job at once with nothing changed. The item then reads the keys of the range again and checks four things: the worksheet is live and not deleted, its structure sequence equals the one of the Plan, the digest of the keys equals the digest of the Plan, and no merged range holds part of the range. If one fails, the job ends as `conflict` with the reason and nothing changed. Otherwise the item closes the open edit group in its own transaction, so that the revision before the sort holds the workbook as of just before the apply, and it encodes the at most 8 files that this boundary sealed and that it touches. It then moves the inputs and formats between the rows by the order, renders each moved formula as A1 text at its old place and stores it again at its new place (section 6.2), writes a `dirty` row for each formula cell that it wrote and one `ids` record with the column ids of the range (section 7.5), raises the structure sequence of the worksheet, and tells every connection to read the worksheet again |
+| Apply | One writer item. It first counts the files of the range that are dirty or sealed and not yet encoded, and asks the bounds of section 7.2 and the quota check of [rule 79](sheet.md#lifecycle-and-access). It is put back, as an edit is (section 11.1), if that count is more than 8 or if a bound of section 7.2 refuses it, and the job ends as `unavailable` after 10 minutes put back. A refusal by the quota check ends the job at once with nothing changed. The item then reads the keys of the range again and checks four things: the worksheet is live and not deleted, its structure sequence equals the one of the Plan, the digest of the keys equals the digest of the Plan, and no merged range holds part of the range. If one fails, the job ends as `conflict` with the reason and nothing changed. Otherwise the item closes the open edit group in its own transaction, so that the revision before the sort holds the workbook as of just before the apply, and it encodes the at most 8 files that this boundary sealed and that it touches. It then moves the inputs and formats between the rows by the order, renders each moved formula as A1 text at its old place and stores it again at its new place (section 6.2), writes a `dirty` row for each formula cell that it wrote and one `ids` record with the column ids of the range (section 7.5), raises the structure sequence of the worksheet, sets the job to `done` in the same transaction as the moves, and tells every connection to read the worksheet again |
 
 The guard is the digest, not the row `ver` of section 18.3. An edit of a cell
 that is not a key, a format change, and a change of a row height do not stop
@@ -1740,8 +1831,9 @@ one read transaction at a writer barrier streams the range into a spill file
 in host scratch storage, the transaction ends with the capture, and every
 later page reads the spill. A cursor binds a random token, the query hash
 and an offset to the flat and store identity. A capture must add 1 MiB to
-its spill in every 10 seconds. Sheets use their own spill directory with the
-same manager and budgets.
+its spill in every 10 seconds. Sheets use their own spill directory under
+`<data dir>/cache/`, outside the flat root, with the same manager and
+budgets.
 
 Before the capture, a range read runs the pull of section 8.3 for its
 `wait_ms`. Cells that are dirty at the barrier, and, while a record is open,
@@ -2112,7 +2204,7 @@ otherwise.
 | Agent range read; page | 1,000,000 cells; 5,000 cells or 1 MiB | Section 16 |
 | Guarded range | 100,000 rows | Section 18.3 |
 | Find step | 200 ms | Section 20 |
-| Snapshot-reader spills | The notebook's budgets, in a sheet directory | Section 16 |
+| Snapshot-reader spills | The notebook's budgets, in a sheet directory under `<data dir>/cache/` | Section 16 |
 | Export file | Kept 10 minutes; at least 1 MiB written in every 10 seconds | Section 13.4 |
 | Scratch databases of earlier revisions | 2 for one sheet, 4 GiB for the host, 10 minutes idle | Section 13.6 |
 | Kept style table; theme | 8 MiB; 1 MiB | Section 5.3 |
@@ -2142,9 +2234,10 @@ which lists what the notebook changed.
 |---|---|
 | `internal/contenttype`, `internal/bundle` | Add the `Sheet` constant, its `Types()` entry and Revision-model membership. Admit an explicit sheet shell, reject content bundles and type changes |
 | `internal/core/service.go`, `flattype.go`, `lifecycle.go`, `version.go`, new `sheet*.go` | Creation, adoption, pending-init recovery, in-process build, stop before a storage move, and every Version-model refusal path |
-| `internal/core/design.go`, `docsrev.go`, storage lifecycle | Extend catch-up, rollback holds, sweep preparation, import tick, retention and remeasurement to sheets. The sweep counts import reports as referenced |
+| `internal/core/design.go`, `docsrev.go`, storage lifecycle | Extend catch-up, rollback holds, sweep preparation, import tick, retention and remeasurement to sheets. The sweep counts import reports as referenced. Its preparation imports the outbox of a sheet first, skips the flat when that fails, and then keeps the hashes of section 12.5, as for a notebook |
 | `internal/core/settings.go`, `reload.go`, `publicedit.go` | Remeasure the sheet quota on changes. Keep sheets out of anonymous edit eligibility |
-| `internal/store/content.go`, new sheet metadata, `migrate.go` | Migration 25 (section 12.3), with rename, deletion and retention cascades. Test the upgrade from 24, backup, failure and restart |
+| `internal/store/content.go`, new sheet metadata, `migrate.go` | The new host migration (section 12.3), with rename, deletion and retention cascades. Test the upgrade from the version before it, the copy of `flats.db` that the host takes before a migration, failure and restart |
+| `internal/backup` (`layout.go`, `outbox.go`, `survey.go`, `verify.go`) and its tests | The kind `sheet`, the outbox read, the survey of `sheet/`, the excluded `sheet/import/` and the blobs that a sheet needs (section 12.5). The tests of section 25.3 |
 | New `internal/sheet`, `internal/sheet/formula`, `internal/sheet/web`, `internal/xlsx` | This design |
 | `internal/mcpx/tools.go`, new sheet adapter | Register `get_sheet`, `update_sheet` and `import_sheet`, the creation enum, strict operation schemas and actionable refusals. Test both Autopilot states |
 | `internal/api`, `internal/cli` | Sheet management routes with a streamed import body and a ranged export download; `flats sheet get`, `apply`, `import`, `export` |
@@ -2153,7 +2246,7 @@ which lists what the notebook changed.
 | `docs/agent/topics/index.md`, new `sheet.md` topic, references, `refusals.md`, `runtime_reference.go` | `topic.sheet`, the two refusal sections, topic order and content-type sections, when the feature ships |
 | `docs/instructions.go`, Autopilot overlays, MCP llms and reference renderers | Extend Revision-model wording without changing visibility and deletion approvals. Keep initialize instructions within their size test |
 | Generated references, plugin catalogs | Regenerate from `docs/agent`. A guide-only edit does not raise the bootstrap revision |
-| README, documentation and spec indexes, `design.md`, `surfaces.md`, `revision-store.md`, `configuration.md`, lifecycle and metrics docs | Publish the type when implemented, and fold this page into the architecture docs at shipping |
+| README, documentation and spec indexes, `design.md`, `surfaces.md`, `revision-store.md`, `configuration.md` (the data directory, What to back up and Copying by hand), `host-backup.md`, lifecycle and metrics docs | Publish the type when implemented, and fold this page into the architecture docs at shipping |
 | `scripts/ci-test.sh`, `ci-race.sh`, `ci-memory.sh`, workflows | Discover sheet Go tests, keep race coverage and plain-JavaScript checks on every PR, run the large fixtures without race instrumentation |
 | `internal/lifecyclecheck/gate.py`, discovery and lifecycle tests | Add sheet valid payloads and wrong-type outcomes |
 | Networking docs, provider lifecycle, `internal/app` proxy and host tests | Reuse host startup, origin rewriting, trusted route decisions and Public withdrawal on every supported provider. No new listener or worker. Test with the server runtime disabled |
@@ -2176,14 +2269,14 @@ unit includes its own executable checks.
 | 4. Dependencies, marker and pending mode | Reference tables, open records, slices, the stab of ranges. No read returns a stale result as current under random pauses of the marker |
 | 5. Calculator and budgets | Pull, cycles, work limit, result batches, time record. Lazy results equal a calculation from scratch |
 | 6. Durability and quota | Writer, receipts, seals and the encoder, outbox, reservation formula. A revision is exact across a kill at every step |
-| 7. Core and metadata | Type registration, migration 25, creation recovery, revision import, retention, sweep, lifecycle |
+| 7. Core and metadata | Type registration, the host migration, creation recovery, revision import, retention, sweep, lifecycle, and `flats backup` of a sheet that people edit |
 | 8. xlsx and CSV | Reader, writer, limits. The hostile corpus is refused inside the memory bound, and the round-trip corpus holds |
 | 9. Jobs | Import, switch, export, rollback, earlier revisions, large sort. A kill in each phase leaves the sheet unchanged, and a large sort whose range is edited during its plan ends as `conflict` and changes nothing |
 | 10. Live transport and access | Windows, deltas, result refresh, receipts over reconnect, Public projection tests |
 | 11. Grid client | Grid, scroll model, selection, grid semantics for screen readers, themes, phone width |
 | 12. Editing client | Editor and composition, clipboard, fill, action series, menus, dialogs, find, History |
 | 13. Host interfaces and discovery | MCP, management API, CLI, console, categories, metrics, guide topic, generated references |
-| 14. Integrated acceptance | Crash and race suites, browser workflows, the conformance corpus saved by Excel, measured success criteria, documentation gates and review corrections |
+| 14. Integrated acceptance | Crash and race suites, browser workflows, the conformance corpus saved by Excel, measured success criteria, the backup tests of section 25.3 that need jobs or agent reads, documentation gates and review corrections |
 
 Units 1 to 5 need no host integration and can be reviewed as a library. The
 formula conformance corpus needs one manual step by the requester (section
@@ -2292,6 +2385,61 @@ collection and the encoder of a sealed file, and edits and new worksheets that
 arrive in each phase of a rollback, after which the live workbook equals R's.
 Quota tests cover refusal before fanout, an import refused before its first
 write, and a rollback at full quota.
+
+Backup tests follow the completion criteria of
+[host backup](host-backup.md#completion-criteria) for a sheet (section 12.5).
+One schedule serves these tests and the Backup criterion. Three sheets run
+on one host:
+
+- Sheet A holds the reference workbook. 5 people each edit it twice per
+  second, and no job runs in it.
+- Sheet B receives an import of large workbook A.
+- Sheet C holds large workbook B, and it gets a large sort of 2,000,000
+  cells. Nobody edits sheet C, so the test expects the sort to end as `done`
+  on the host.
+
+The test runs `flats backup` 5 times. Before each run, it waits until the
+jobs of the previous run have ended, and then starts a new import in sheet B
+and a new large sort in sheet C, so that both jobs can run during the copy.
+A start that a sheet refuses fails that run. For a run that makes a copy,
+the test records the attempts from the manifest. A failed run leaves no
+manifest, and the test records it as failed with no count. Each run makes a
+copy within the attempts of rule 16 of host backup, or it fails with nothing
+at its output path and asks to run it again. At least 4 of the 5 runs make a
+copy, and each copy passes `flats backup --verify`. A restore of each copy
+gives these results:
+
+- Sheet A holds every edit that the host confirmed before the run that made
+  the copy began. It accepts new edits and makes new revisions that continue
+  the sequence of the copy.
+- Sheets B and C each hold the state that their job has in the copy. A job
+  that is `running` in the copy ends as `interrupted`, and the live workbook
+  is the one from before the job. After a `done` import, the live workbook of
+  sheet B equals large workbook A, and its import report is in the copy.
+  After a `done` sort, the rows of sheet C are in the order of a reference
+  sort of the same range. Any other state of a job in the copy fails the
+  run. A job sets `done` in the transaction of its switch or its Apply
+  (sections 13.3 and 13.7), so the result does not depend on whether that
+  transaction came before or after the snapshot of `sheet.db`.
+
+These tests also run:
+
+- For each order of the two snapshots, a change between them that breaks
+  the coherence test of host backup fails the first attempt and passes the
+  next.
+- `--verify` fails on a sheet outbox below its cursor, on one above it, on a
+  missing blob of an import report, and on a missing blob that only an
+  unimported outbox entry names.
+- The host refuses the open of a `sheet.db` whose outbox ends below the
+  cursor, while an edit group is due and a job is `running`. No row of
+  `sheet.db` changes. The test compares every table of `sheet.db` and the
+  revision count before and after, and the log names both numbers.
+- Many edits between two boundaries take no outbox number, and a backup of
+  that host passes the coherence test.
+- A backup passes while an agent range read holds a spill, and the copy
+  holds no file of the spill.
+- A `sheet/` directory that appears during the copy, below a flat directory
+  that existed at the first survey, does not fail the backup.
 
 ### 25.4 File corpora
 
@@ -2451,3 +2599,7 @@ measurement that settles it.
 15. **Quota reservation.** The import estimate was 10 percent high for one
    generated file. The test suite must show that it bounds real growth for
    text-heavy and formula-heavy files before release.
+16. **Backup snapshot.** A `flats backup` snapshot of `sheet.db` holds one
+    read while it runs (section 12.5). Measure its time for large workbook B
+    and the growth of the WAL while 5 people edit. The result decides whether
+    the WAL allowance of section 12.4 must cover such a snapshot.

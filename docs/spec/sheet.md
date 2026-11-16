@@ -999,6 +999,17 @@ unchanged.
     settings for a sheet.
 81. **No server runtime needed.** A sheet runs inside the host. It works on
     a host whose server runtime is disabled.
+82. **Backup.** [`flats backup`](host-backup.md) copies a sheet while the
+    host runs and people edit, as it copies a notebook. The copy holds
+    `sheet.db` as a snapshot that fits the revisions in `flats.db`, and the
+    revision contents. It leaves out `sheet/import/`, which holds the uploads
+    of running imports. A job that runs during the copy ends as interrupted
+    in the restored sheet, as after a restart, and the live workbook is the
+    one from before the job. To finish such an import, a person imports the
+    file again. `flats backup --verify` checks the outbox
+    of a sheet against `flats.db`, and the blobs that its revisions, its
+    import reports and its unimported outbox entries need
+    ([technical design, section 12.5](sheet-technical-design.md#125-backup)).
 
 ## Success criteria
 
@@ -1046,6 +1057,7 @@ reference data generators and the measurement scripts.
 | Find | On large workbook B, the next match of two fixed texts, one rare and one common, shows in a p95 of 1 second or less. |
 | Reconnection | After disconnecting and reconnecting, each unconfirmed edit applies exactly once. |
 | Recovery | Every worksheet and cell of a retained revision can be viewed and restored. Rollback succeeds with the disk quota full. |
+| Backup | While 5 people each edit the reference workbook twice per second, and an import and a large sort run in two other sheets, at least 4 of 5 runs of `flats backup` make a copy. Each copy passes `flats backup --verify`, and each run that fails leaves nothing at its output path. A restore of a copy starts all three sheets. The edited sheet holds every edit that the host confirmed before the run that made the copy began, accepts new edits and makes new revisions. Each job ends as the copy recorded it, as `interrupted` or as `done`. The technical design fixes the schedule. |
 | Refusal | On a Public route, writes, presence, history access, import and export are all refused, and a read starts no calculation. An edit over the disk quota is refused before other participants see it. |
 | Dependencies | Runs from the single Flats binary with the server runtime disabled, with no outside service, account or separate server. |
 
