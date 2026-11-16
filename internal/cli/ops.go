@@ -77,8 +77,8 @@ func (a *app) backup(args []string) error {
 	return err
 }
 
-// audit runs `flats audit ls`, which reads flats.db instead of calling the host. A --json argument also
-// makes a failure print as JSON, as for the global flag.
+// audit runs `flats audit ls` and `flats audit export`, which read flats.db instead of calling the host. A --json
+// argument also makes a failure print as JSON, as for the global flag.
 func (a *app) audit(args []string) error {
 	if Audit == nil {
 		return errors.New("audit is not wired")
