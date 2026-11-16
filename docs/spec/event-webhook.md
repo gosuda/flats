@@ -39,7 +39,8 @@ records stay when a flat is deleted, and the export contains them.
   (`Service.SetProviderPermission`, console only), the per-flat outbound origin grants of a flat's `fetch`
   (`Service.SetNetworkPolicy`, the `/flats/{slug}/network` route), and the host-wide `network.permitted` list in
   `config.json`. None of the three writes `audit_events`. The first two write a flat event of kind `provider` or `network`
-  after the commit. `PreserveLegacyTailscale` inserts a per-flat grant outside the setters, in a migration.
+  after the commit. `PreserveLegacyTailscale` inserts a per-flat grant outside the setters, at the start of a legacy service that names
+  `--network tailscale`.
 - Operator keys are sealed values of `host_keys`. The table has `CHECK (id IN ('tailscale','zrok','netbird'))`, so a new
   key needs a migration. `flats key set` and `rm` work while the host is stopped. Two lists of key IDs exist in the
   code: `core.HostKeyIDs`, which `flats key` accepts and `flats key ls` iterates, and the console's `hostKeys`, which
@@ -124,7 +125,7 @@ proposed it. The author decided 4, 5 and 6, and a reviewer can challenge them. E
    | `state` | `pending` for `approval.created`. `approved`, `rejected` or `failed` for `approval.decided`. `applied` for the other two. |
    | `approval_id` | The approval, for the approval types and for a `visibility.changed` that an approval applied. Absent otherwise. |
    | `via` | For `approval.created` the channel that requested the approval, as the row records it. Absent for the others. |
-   | `decided_by` | For `approval.decided` and for `visibility.changed`: `operator` for a decision of the operator and `autopilot` for a decision of an agent. Absent otherwise. |
+   | `decided_by` | For `approval.decided` and for `visibility.changed`: `operator` for a decision of the operator and `autopilot` for a decision of an agent. Absent when the row has no `decided_by` (a pending approval that a flat deletion failed) and for the other types. |
    | `change` | For `visibility.changed` `{"from": {"visibility": ..., "access": ...}, "to": {...}}`. For `network.changed` `{"grant": "origins", "origins": [...]}` with the list after the change, or `{"grant": "provider", "provider": ..., "permitted": true or false}`. Absent for the approval types. |
    | `console_url` | `<console>/approvals/<id>` for the approval types and `<console>/flats/<slug>` for the others. The console address is the one of the request that caused the event, or, without a request, the one of `Host.ConsoleURL` (the preferred console, else the first console domain that is served, else the loopback address). The address is chosen when the event is made. |
 
@@ -228,7 +229,8 @@ proposed it. The author decided 4, 5 and 6, and a reviewer can challenge them. E
 
     `actor` of `visibility.set` is the actor text of the console when `via` is `console`, as for every console row, and
     `core.DeciderText` of the approval's `decided_by` when `via` is `autopilot`. Both are cut at 512 bytes on a character
-    boundary. For `network.set` and `provider.set` the actor is the actor text of the console for `console` and empty for
+    boundary. The actor is empty when the change is applied without a console request, as `resumeApplying` does. The `at` of
+    each new row is taken in the store function right before its write, not when the caller built the change. For `network.set` and `provider.set` the actor is the actor text of the console for `console` and empty for
     `cli`. `visibility.set` is written by `Store.CommitVisibility`. `network.set` and `provider.set` are written by the
     store functions that set the origin grants and the provider permission. Each writes its row only when its value
     changes (rule 2). `Service.SetProviderPermission` stops the routes of a revoked provider before it calls the store,
@@ -272,8 +274,8 @@ flats audit export [--since TIME] [--config PATH | --data DIR]
     `created` lines and the `decided` lines), each read in pages of at most 500 rows by `(at, id)`.
 25. The command takes its cutoff when it starts: the host clock time in milliseconds minus 30 seconds. It writes no line
     with a larger `at`. The host takes the `at` of a record before it starts the write, and the write waits at most the busy
-    timeout of the store (5 seconds) before it commits, so a record whose `at` is not later than the cutoff has been
-    committed already. A record that a running host writes after the cutoff is left for the next export. A write that
+    timeout of the store (5 seconds) for the lock (a write that waits longer fails and leaves no row), so a record whose
+    `at` is not later than the cutoff has been committed already. A record that a running host writes after the cutoff is left for the next export. A write that
     stalls for more than 30 seconds between taking `at` and its commit can still be missed, and the docs say so. When the
     command ends it prints to stderr one line, `exported N lines through TIME`, where TIME is the cutoff. A later export
     with `--since TIME` continues from there. The boundary line can appear in both exports, and a reader deduplicates on
@@ -349,7 +351,8 @@ registry up to version 25. The export reads its clock through a function variabl
 - Audit kinds. A visibility change decided in the console, one decided by Autopilot, an origin grant change through the
   console and through the CLI header, and a provider permission change write the rows of rule 21 with the right `via`
   and `actor`, in the transaction of the change: with a failing audit write the change does not happen, and the
-  revocation of a provider keeps the order of rule 21. A change that alters nothing writes no row.
+  revocation of a provider keeps the order of rule 21. A change that alters nothing writes no row. With a replaced clock, the `at` of a `visibility.set` row is the time of its
+  write and not the time at which the approval applied its change.
 - Export. After an approved agent delete of a flat with two secrets, `flats audit export` prints the `created` and
   `decided` lines of the approval and the two `secret.delete` rows, and the flat is gone. After a console delete of a flat
   with a pending approval, the `decided` line with state `failed` and the secret rows are there. `--since` with a time and
@@ -369,3 +372,7 @@ registry up to version 25. The export reads its clock through a function variabl
   the privacy of `decided_by`, `reason` and `result` in the export, the export lines, the `--since` continuation and the
   30 second lag, and the downgrade; `docs/design.md` (Approvals), `docs/surfaces.md` (the CLI table) and the spec index
   change; `flats help audit` lists `export`; the checks of the documentation pass.
+
+## Open questions
+
+None.
