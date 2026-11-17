@@ -45,8 +45,8 @@ func indexesOf(t *testing.T, s *Store, table string) []string {
 	return out
 }
 
-// A flats.db of version 25 migrates to 26: host_keys takes the two webhook ids and keeps its rows, an approval gets the ID
-// of its flat when the flat exists, the indexes exist, and an older binary refuses the result.
+// A flats.db of version 25 migrates through 26 to the latest schema: host_keys takes the two webhook ids and keeps its
+// rows, an approval gets the ID of its flat when the flat exists, the indexes exist, and an older binary refuses the result.
 func TestMigrationFromVersion25AddsTheWebhookSupport(t *testing.T) {
 	ctx := context.Background()
 	path := filepath.Join(t.TempDir(), "flats.db")
@@ -64,8 +64,9 @@ func TestMigrationFromVersion25AddsTheWebhookSupport(t *testing.T) {
 				t.Fatal(err)
 			}
 		}
-		k := HostKey{ID: "tailscale", Nonce: bytes.Repeat([]byte{1}, 12), Ciphertext: bytes.Repeat([]byte{2}, 30), Source: "cli", UpdatedAt: time.Now()}
-		if err := s.PutHostKey(ctx, k, Audit{Via: AuditViaCommand}); err != nil {
+		// The schema is the one of version 25, before the key IDs, so the key is written as the code of that time wrote it.
+		if _, err := s.db.Exec(`INSERT INTO host_keys(id,nonce,ciphertext,source,updated_at) VALUES('tailscale',?,?,'cli',?)`,
+			bytes.Repeat([]byte{1}, 12), bytes.Repeat([]byte{2}, 30), unix(time.Now())); err != nil {
 			t.Fatal(err)
 		}
 		// A grant and a list of origins from before the migration, written without the functions that audit now.
@@ -89,7 +90,7 @@ func TestMigrationFromVersion25AddsTheWebhookSupport(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if info, err := Inspect(path); err != nil || info.Version != 26 || info.Version != latestVersion() {
+	if info, err := Inspect(path); err != nil || info.Version != 27 || info.Version != latestVersion() {
 		t.Fatalf("after: %+v, %v", info, err)
 	}
 	// The migration writes no row for what happened before it (rule 30): the grant and the origins of the old database

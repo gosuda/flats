@@ -25,7 +25,7 @@ const (
 	AuditKeyBackup    = "key.backup"
 	AuditKeyRestore   = "key.restore"
 	AuditKeyReset     = "key.reset"
-	AuditKeyRotate    = "key.rotate" // reserved: nothing writes it yet
+	AuditKeyRotate    = "key.rotate"
 
 	// The kinds of docs/spec/event-webhook.md, rule 21.
 	AuditVisibilitySet = "visibility.set"
@@ -213,6 +213,30 @@ type AuditReader struct {
 func OpenAuditReader(path string) (*AuditReader, error) {
 	// The version is read through the same open as the log: Inspect opens immutable while the -wal file is empty,
 	// which a host that started and has not written yet leaves.
+	db, err := openBeside(path)
+	if err != nil {
+		return nil, err
+	}
+	var version int
+	if err := db.QueryRowContext(context.Background(), `PRAGMA user_version`).Scan(&version); err != nil {
+		db.Close()
+		return nil, fmt.Errorf("open %s: %w", path, err)
+	}
+	switch {
+	case version > latestVersion():
+		db.Close()
+		return nil, fmt.Errorf("open %s: %w: schema %d, supported %d", path, ErrSchemaTooNew, version, latestVersion())
+	case version < latestVersion():
+		db.Close()
+		return nil, fmt.Errorf("open %s: %w: version %d, expected %d", path, ErrAuditSchema, version, latestVersion())
+	}
+	return &AuditReader{db: db}, nil
+}
+
+// openBeside opens the flats.db at path read-only for a reader that works beside a host: it creates no database,
+// runs no migration and checks no version. A missing file, and an empty one that was never made a database, is
+// fs.ErrNotExist.
+func openBeside(path string) (*sql.DB, error) {
 	fi, err := os.Stat(path)
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", path, err)
@@ -233,20 +257,7 @@ func OpenAuditReader(path string) (*AuditReader, error) {
 		return nil, err
 	}
 	db.SetMaxOpenConns(1)
-	var version int
-	if err := db.QueryRowContext(context.Background(), `PRAGMA user_version`).Scan(&version); err != nil {
-		db.Close()
-		return nil, fmt.Errorf("open %s: %w", path, err)
-	}
-	switch {
-	case version > latestVersion():
-		db.Close()
-		return nil, fmt.Errorf("open %s: %w: schema %d, supported %d", path, ErrSchemaTooNew, version, latestVersion())
-	case version < latestVersion():
-		db.Close()
-		return nil, fmt.Errorf("open %s: %w: version %d, expected %d", path, ErrAuditSchema, version, latestVersion())
-	}
-	return &AuditReader{db: db}, nil
+	return db, nil
 }
 
 // auditReadQuery is the query of the read-only open of path (rule 22): plain, so that the write-ahead log is read,
