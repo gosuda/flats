@@ -247,6 +247,20 @@ func TestRotateKeyNeedsAKeyThatOpensEveryValue(t *testing.T) {
 		}
 		check("the refusal")
 	})
+	// Values that carry the ID of the key at the key path and do not open are damaged. No file of a rotation with
+	// --out holds their key, so the refusal does not name that run.
+	t.Run("the key opens no value, and the values carry its own key ID", func(t *testing.T) {
+		h := newRotHost(t)
+		sqlExec(t, h.dir, `UPDATE secrets SET ciphertext=x'0000000000000000000000000000000000000000'`,
+			`UPDATE host_keys SET ciphertext=x'0000000000000000000000000000000000000000' WHERE ciphertext IS NOT NULL`)
+		check := frozen(t, h)
+		_, err := h.rotate(t, "--yes")
+		refusedWith(t, "rotate-key", err, "opens 0 of the 5 sealed values", "The values that do not open carry the key ID "+core.KeyID(h.key), ". Ways out: ")
+		if strings.Contains(err.Error(), "--out FILE") {
+			t.Errorf("the refusal names a run with --out although the values carry the ID of the key that the command tried: %v", err)
+		}
+		check("the refusal")
+	})
 	// The run with the same file finishes only when one key sealed every value. A refusal for values of which the
 	// key opens some names their key ID, and not that run.
 	t.Run("the key opens some values, and the others carry a key ID", func(t *testing.T) {
@@ -427,6 +441,31 @@ func TestRotateKeyRefusesAnOutFile(t *testing.T) {
 		_, err := h.rotate(t, "--yes", "--out", filepath.Join(link, "new.key"))
 		refusedWith(t, "--out through a link", err, "outside the data directory")
 		check("--out through a link")
+
+		// A FILE that exists. Its name is outside the data directory, and a link leads into it: the folder of the
+		// name, or the name itself. And a name in the data directory that is a link to a file outside.
+		inside := filepath.Join(below, "existing.key")
+		mustWrite(t, inside, bytes.Repeat([]byte{5}, 32))
+		fileLink := filepath.Join(t.TempDir(), "file-link.key")
+		if err := ostest.Symlink(t, inside, fileLink); err != nil {
+			t.Fatal(err)
+		}
+		linkOut := filepath.Join(below, "link-out.key")
+		if err := ostest.Symlink(t, sealedNothing, linkOut); err != nil {
+			t.Fatal(err)
+		}
+		for what, file := range map[string]string{
+			"through a folder that is a link":                filepath.Join(link, "existing.key"),
+			"a link to a file in the data directory":         fileLink,
+			"a link in the data directory to a file outside": linkOut,
+		} {
+			_, err := h.rotate(t, "--yes", "--out", file)
+			refusedWith(t, "--out with a FILE that exists, "+what, err, file+" exists and lies inside the data directory", "do not remove "+file)
+			if saysToRemove(err.Error()) {
+				t.Errorf("--out %s: the refusal says to remove the file: %v", what, err)
+			}
+			check("--out with a FILE that exists, " + what)
+		}
 	})
 }
 
@@ -442,14 +481,24 @@ func saysToRemove(msg string) bool {
 // command then finishes nothing: it refuses for the key (rule 8), reports nothing durable, writes nothing, and does
 // not say to remove FILE.
 func TestRotateKeyOutWithTheKeyInUseFinishesNothing(t *testing.T) {
+	missing := func(h *rotHost) []string {
+		return []string{"restore " + h.keyPath + " with `flats secret restore-key`"}
+	}
+	missingConfigured := func(h *rotHost) []string {
+		return []string{"host.secret_key_path names " + h.keyPath + ", and nothing is there", "A key that only the service process sees"}
+	}
+	damaged := func(h *rotHost) []string {
+		return []string{"secret key must be 32 bytes", "move " + h.keyPath + " away first"}
+	}
 	for name, tc := range map[string]struct {
 		outside bool
 		hide    func(t *testing.T, h *rotHost)
+		want    func(h *rotHost) []string // the refusal of rule 8 for the case
 	}{
-		"nothing at the default key path":     {false, func(t *testing.T, h *rotHost) { mustRemove(t, h.keyPath) }},
-		"nothing at a configured key path":    {true, func(t *testing.T, h *rotHost) { mustRemove(t, h.keyPath) }},
-		"a damaged file at the key path":      {false, func(t *testing.T, h *rotHost) { mustWrite(t, h.keyPath, []byte("no key")) }},
-		"a damaged file at a configured path": {true, func(t *testing.T, h *rotHost) { mustWrite(t, h.keyPath, []byte("no key")) }},
+		"nothing at the default key path":     {false, func(t *testing.T, h *rotHost) { mustRemove(t, h.keyPath) }, missing},
+		"nothing at a configured key path":    {true, func(t *testing.T, h *rotHost) { mustRemove(t, h.keyPath) }, missingConfigured},
+		"a damaged file at the key path":      {false, func(t *testing.T, h *rotHost) { mustWrite(t, h.keyPath, []byte("no key")) }, damaged},
+		"a damaged file at a configured path": {true, func(t *testing.T, h *rotHost) { mustWrite(t, h.keyPath, []byte("no key")) }, damaged},
 	} {
 		t.Run(name, func(t *testing.T) {
 			h := newRotHost(t)
@@ -463,9 +512,7 @@ func TestRotateKeyOutWithTheKeyInUseFinishesNothing(t *testing.T) {
 			events := len(eventsOf(t, h.dir, store.AuditKeyRotate))
 			check := frozen(t, h, source)
 			out, err := h.rotate(t, "--yes", "--out", source)
-			if err == nil || exitCode(err) != ExitConfig {
-				t.Fatalf("rotate-key --out with the key in use: %v (status %d), want a refusal\n%s", err, exitCode(err), out)
-			}
+			refusedWith(t, "rotate-key --out with the key in use", err, tc.want(h)...)
 			text := strings.ToLower(out + "\n" + err.Error())
 			// The words of a finish. The paths of the test hold its name, so the list has whole phrases.
 			for _, wrong := range []string{"durable", "made no new key", "finishing a rotation", "finished a rotation", "remove " + strings.ToLower(source)} {

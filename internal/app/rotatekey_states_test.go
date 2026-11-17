@@ -592,7 +592,7 @@ func TestRotateKeyOutStatesGAndH(t *testing.T) {
 		t.Fatalf("the finish with the same FILE: %v\n%s", err, out)
 	}
 	for _, want := range []string{"made no new key", "under the key with the ID " + core.KeyID(newKey) + ", which " + file + " holds",
-		"the key at " + h.keyPath + " (key ID " + core.KeyID(h.key) + ") sealed none of them", "the re-seal is durable now",
+		"the key at " + h.keyPath + " (key ID " + core.KeyID(h.key) + ") sealed none of them", "flats.db is durable now", "If a rotation with --out made this state, its re-seal is durable",
 		"The key of " + file + " must be put at " + h.keyPath, "Remove " + file + " only after that, and only when the key path does not get the key from that file"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("the output of the finish with the same FILE lacks %q:\n%s", want, out)
@@ -641,7 +641,7 @@ func TestRotateKeyOutStoppedAfterTheCommit(t *testing.T) {
 			}
 			mustRefuseStart(t, h.config, core.KeyID(h.key), core.KeyID(newKey))
 			out, err := h.rotate(t, "--out", file)
-			if err != nil || !strings.Contains(out, "the re-seal is durable") {
+			if err != nil || !strings.Contains(out, "flats.db is durable now") {
 				t.Fatalf("the finish: %v\n%s", err, out)
 			}
 			if n := len(eventsOf(t, h.dir, store.AuditKeyRotate)); n != 1 {

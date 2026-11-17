@@ -232,15 +232,16 @@ func TestRotateKeyAFailedCheckpoint(t *testing.T) {
 		if !bytes.Equal(h.keyAt(t), h.key) {
 			t.Fatal("the key path changed")
 		}
-		// The second run with the same FILE: while its checkpoint fails, it gives the message again and does not
-		// report the re-seal durable.
+		// The second run with the same FILE makes no new key. While its checkpoint fails, it says that flats.db is
+		// not durable, and does not report anything durable.
 		out, err := rotateWith(t, h.config, failAt(rotateCheckpoint, busy), "--out", file)
-		failedWith(t, "the checkpoint of the second run", err, want...)
+		failedWith(t, "the checkpoint of the second run", err, "the command could not make flats.db durable", busy.Error(),
+			"Run `flats secret rotate-key --out "+file+"` again with the same file", "keep the key at "+h.keyPath, "a loss of power can still take a commit back")
 		if strings.Contains(out, "durable") || strings.Contains(out, "must be put at") {
 			t.Errorf("the second run reported the re-seal durable although its checkpoint failed:\n%s", out)
 		}
 		out, err = h.rotate(t, "--out", file)
-		if err != nil || !strings.Contains(out, "the re-seal is durable") || !strings.Contains(out, "The key of "+file+" must be put at "+h.keyPath) {
+		if err != nil || !strings.Contains(out, "flats.db is durable now") || !strings.Contains(out, "The key of "+file+" must be put at "+h.keyPath) {
 			t.Fatalf("the third run: %v\n%s", err, out)
 		}
 		if n := len(eventsOf(t, h.dir, store.AuditKeyRotate)); n != 1 {

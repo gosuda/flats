@@ -134,7 +134,7 @@ func (k *secretKeyCmd) rotate(args []string) error {
 		return err
 	}
 	if !check.All() {
-		return r.unopenedRefusal("the key at "+keyPath, check)
+		return r.unopenedRefusal("the key at "+keyPath, key, check)
 	}
 
 	// Point 4: the place of the new key.
@@ -269,7 +269,7 @@ func (r *rotation) checkpoint() error {
 	return reached(rotateCheckpointed)
 }
 
-// notDurableOut is the failure of the checkpoint with --out (step 2 of rule 16, and the third case of rule 19).
+// notDurableOut is the failure of the checkpoint of a rotation with --out (step 2 of rule 16).
 func (r *rotation) notDurableOut(err error, outPath string) error {
 	return fmt.Errorf("the values are sealed under the new key, but %w, so the re-seal is not durable yet. Run `flats secret rotate-key --out %s` again with the same file, and keep the old key at %s until that run succeeds, because a loss of power can still take the re-seal back", err, outPath, r.keyFile.Path())
 }
@@ -300,8 +300,8 @@ func (r *rotation) hostKey() ([]byte, error) {
 	return nil, err // any other failure to read the key: status 1
 }
 
-// unopenedRefusal is the refusal of rule 9 for a key that does not open every sealed value. subject names the key.
-func (r *rotation) unopenedRefusal(subject string, c core.KeyCheck) error {
+// unopenedRefusal is the refusal of rule 9 for key, which does not open every sealed value. subject names the key.
+func (r *rotation) unopenedRefusal(subject string, key []byte, c core.KeyCheck) error {
 	var keys, secrets []string
 	for _, n := range c.Unopened {
 		if n.Flat == "" {
@@ -325,9 +325,10 @@ func (r *rotation) unopenedRefusal(subject string, c core.KeyCheck) error {
 			carry = "the key IDs " + strings.Join(c.UnopenedKeyIDs, ", ")
 		}
 		fmt.Fprintf(&b, ". The values that do not open carry %s", carry)
-		// The state after a rotation with --out, whose file finishes it: the key opens nothing, and one key sealed
-		// every value. That run comes before the other ways out, with its condition (state G of rule 18).
-		if _, oneKey := r.ids.Single(); c.Opened == 0 && oneKey {
+		// The state after a rotation with --out, whose file finishes it: the key opens nothing, and one other key
+		// sealed every value. That run comes before the other ways out, with its condition (state G of rule 18).
+		// Values that carry the ID of this key and do not open are damaged: no other file holds their key.
+		if id, oneKey := r.ids.Single(); c.Opened == 0 && oneKey && id != core.KeyID(key) {
 			b.WriteString(". After a rotation with `--out`, the file that it wrote holds that key: run `flats secret rotate-key --out FILE` again with the same file, and put the key of that file at the key path only after that run reported the re-seal durable")
 			ways = ". Other ways out"
 		}
@@ -602,7 +603,7 @@ func (r *rotation) finishInputs(subject string, key []byte) (check core.KeyCheck
 		return check, nil, err
 	}
 	if !check.All() {
-		return check, nil, r.unopenedRefusal(subject, check)
+		return check, nil, r.unopenedRefusal(subject, key, check)
 	}
 	password, hasCopy, err := r.recoveryPassword()
 	if err != nil {
@@ -673,12 +674,12 @@ func (r *rotation) finishOut(out outTarget) error {
 		return err
 	}
 	if err := r.checkpoint(); err != nil {
-		return r.notDurableOut(err, out.path)
+		return fmt.Errorf("the command could not make flats.db durable: %w. The values are under the key in %s, and that state is not durable yet. Run `flats secret rotate-key --out %s` again with the same file, and keep the key at %s until that run succeeds, because a loss of power can still take a commit back", err, out.path, out.path, r.keyFile.Path())
 	}
 	if err := r.ctx.Err(); err != nil {
 		return interrupted(err)
 	}
-	r.printf("made no new key: the %s in flats.db are under the key with the ID %s, which %s holds, and the key at %s (key ID %s) sealed none of them. That is the state after a rotation with --out, and the re-seal is durable now\n",
+	r.printf("made no new key: the %s in flats.db are under the key with the ID %s, which %s holds, and the key at %s (key ID %s) sealed none of them. flats.db is durable now. If a rotation with --out made this state, its re-seal is durable\n",
 		counted(check.Total, "sealed value", "sealed values"), core.KeyID(out.key), out.path, r.keyFile.Path(), out.keyID)
 	r.printf("%s\n", putInPlace(out.path, r.keyFile.Path()))
 	err = r.writeCopy(out.key, copyData, true)
