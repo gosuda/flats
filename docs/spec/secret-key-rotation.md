@@ -141,8 +141,8 @@ flats secret rotate-key [--out FILE] [--password-file PATH] [--yes] [--config PA
    - when the key opens no value: `flats secret reset`.
 
    When the values that do not open carry a key ID, the message names it before these ways out. When the key also
-   opens no value and the values carry one key ID, which is the state after a rotation with `--out` (state G of rule
-   18), the message then says that the file of that rotation holds that key, that the operator runs
+   opens no value and every value carries the ID of one other key, which is the state after a rotation with `--out`
+   (state G of rule 18), the message then says that the file of that rotation holds that key, that the operator runs
    `rotate-key --out FILE` again with the same file, and that the key of that file goes to the key path only after
    that run reported the re-seal durable. It names the other ways out after that. With no sealed value there is
    nothing to check, and the command still makes a new key.
@@ -332,10 +332,14 @@ flats secret rotate-key [--out FILE] [--password-file PATH] [--yes] [--config PA
       refusal of rule 8 applies, and the refusal for `FILE` says not to remove it (rule 14). In state G, the key in
       `FILE` must open every sealed value, else the command refuses with the numbers of rule 9. The command asks
       for the recovery password as rule 20 says, makes `flats.db` durable with a complete checkpoint, and does step
-      4 of rule 16. When the checkpoint fails, the command gives the message of step 2 of rule 16 again. When it
-      succeeds, the output says what the command found and does not say that this run rotated a key: it made no
-      new key, the values are under the key in `FILE` with its key ID, the key at the key path with its key ID
-      sealed none of them, and the re-seal is durable. It says that the key in `FILE` must be put at the key path.
+      4 of rule 16. The command states what it read and what it made durable, and does not say that a re-seal or a
+      new key exists, because the same state can come from a key file that was put at the key path by mistake. When
+      the checkpoint fails, it says that it could not make `flats.db` durable, to run the command again with the
+      same `FILE`, and to keep the key at the key path until that run succeeds. When the checkpoint succeeds, the
+      output says that the command made no new key, that the values are under the key in `FILE` with its key ID,
+      that the key at the key path with its key ID sealed none of them, and that `flats.db` is durable. It adds that
+      the re-seal of a rotation with `--out` is durable, if such a rotation made this state. It says that the key in
+      `FILE` must be put at the key path.
       It says to remove `FILE` only after that, and only when the key path does not get the key from that file.
 
     A finish writes no second `key.rotate` event and asks no confirmation. The output of the first two cases says
@@ -413,8 +417,8 @@ flats secret rotate-key [--out FILE] [--password-file PATH] [--yes] [--config PA
     missing or is not of the schema of the binary, or when the read of the key IDs fails for any cause: a file that
     is no database, a file that the user may not read, or a read that the system refuses. It then writes the copy
     as before this change, because a copy of the key helps most beside a database that is damaged. A pending key
-    file is still looked at, so the first state of rule 22 and the errors of rule 17 can still stop the command
-    when a value without a label is all that the command knows.
+    file is still looked at, so the errors of rule 17 can still stop the command. Neither state of rule 22 refuses
+    then: without key IDs no pending key waits.
 26. `flats backup`:
     - It never copies `<data>/secret.key.next`, and never a temporary key file `<data>/.secret-key-*`, which the
       creation of a key at the first start and `flats secret restore-key` can leave after a crash. The manifest
@@ -575,7 +579,8 @@ names its reason. No criterion depends on time, apart from the checkpoint test, 
 - Tests show a rotation with `--out`: the key path is not written, `FILE` holds the key that opens every value, the
   start refuses with the key IDs until that key is at the key path, and then starts. They show the cases of an
   existing `FILE` (rules 14 and 19), and that no refusal says to remove `FILE` when it is the key file, when the key
-  path reaches it through a link, or when it lies inside the data directory. A test shows that a name that cannot
+  path reaches it through a link, or when it lies inside the data directory, by its name or through a link. A test
+  shows that a name that cannot
   be looked at is refused with its cause. One test uses a key file that cannot be opened for writing. A test shows
   that `--out` with a `FILE` that holds the key in use finishes nothing when the command cannot read a valid key at
   the key path, for the default path and for a configured path: it refuses for the key, reports nothing durable,
