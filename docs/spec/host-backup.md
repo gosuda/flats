@@ -194,7 +194,9 @@ these steps and no other:
     The command reads the key IDs for this refusal from `flats.db` without the
     host lock and without a migration, so the refusal comes after the database
     check, and after the refusal for a configured key that cannot be read, also
-    while a pending key waits. With `--exclude-secret-key` the command reads no key for the second
+    while a pending key waits. That earlier refusal names the pending key file
+    and `flats secret rotate-key` when a file is at the pending name. With
+    `--exclude-secret-key` the command reads no key for the second
     state and makes the copy there. For the first state it still reads the
     pending key file when one exists. When a sealed value carries the ID of
     that key, it reads the key file too, only to compare the two, and a key

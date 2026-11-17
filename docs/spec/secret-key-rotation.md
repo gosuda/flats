@@ -140,9 +140,12 @@ flats secret rotate-key [--out FILE] [--password-file PATH] [--yes] [--config PA
      and `flats secret rm`;
    - when the key opens no value: `flats secret reset`.
 
-   When the values that do not open carry a key ID, the message names it, and says that the file of an earlier
-   `rotate-key --out` can hold that key. With no sealed value there is nothing to check, and the command still makes
-   a new key.
+   When the values that do not open carry a key ID, the message names it before these ways out. When the key also
+   opens no value and the values carry one key ID, which is the state after a rotation with `--out` (state G of rule
+   18), the message then says that the file of that rotation holds that key, that the operator runs
+   `rotate-key --out FILE` again with the same file, and that the key of that file goes to the key path only after
+   that run reported the re-seal durable. It names the other ways out after that. With no sealed value there is
+   nothing to check, and the command still makes a new key.
 10. The command asks for a confirmation, because it cannot be reversed: the old key is gone after it. On a terminal
     it shows the number of values that it will seal again, the file that gets the new key, and the note of rule 29,
     and asks the operator to type `rotate`. When a pending key is left over, it also says that the file is left over
@@ -168,11 +171,12 @@ flats secret rotate-key [--out FILE] [--password-file PATH] [--yes] [--config PA
     key file is `<key path>.next`, which is `<data>/secret.key.next` for the default path. The command creates it
     with a call that fails when the name exists, with mode 0600, writes the 32 bytes, syncs the file and then syncs
     the folder. It makes no temporary file and no hard link. When it cannot create the file, it refuses, names
-    `--out`, and has changed nothing but the removal of rule 21. A write or a sync that fails after the creation is
-    the same refusal. The file then stays, and the next run treats it as left over. For a configured path, the folder
-    of the pending key must not lie inside the data directory after the system resolved every link. Such a folder is
-    a refusal at point 4 of rule 7, which names `--out` and writes nothing. On Unix the pending key belongs to the
-    user that runs the command. The command removes it at the end of step 3.
+    `--out`, and has changed nothing but the removal of rule 21. When the file is created and its write or a sync
+    then fails, the refusal says that: no value was changed, the incomplete file stays, and the next run treats it as
+    left over and removes it (rule 21). For a configured path, the folder of the pending key must not lie inside the
+    data directory after the system resolved every link. Such a folder is a refusal at point 4 of rule 7, which names
+    `--out` and writes nothing. On Unix the pending key belongs to the user that runs the command. The command
+    removes it at the end of step 3.
 14. With `--out FILE`, the command writes the new key to `FILE` and does not open the key path for writing, so the key
     path can be read-only. `FILE` passes the checks of `flats secret restore-key --out`: it does not exist, its
     folder exists, and it does not lie inside the data directory, also through a link. The command creates it with a
@@ -182,10 +186,18 @@ flats secret rotate-key [--out FILE] [--password-file PATH] [--yes] [--config PA
     so. While `flats.db` holds sealed values, the start refuses until the operator puts the new key at the key path
     (rule 22). With no sealed value the host starts with the old key, and the new key has no effect until it is at
     the key path. When `FILE` exists, the command refuses, with one exception, the finish of rule 19. The refusal says
-    which case it found:
-    - `FILE` holds the key that the key path holds too: the key is in place, and `FILE` must be removed;
-    - in every other case, such as a file that is no valid key, or a key whose ID no sealed value carries: remove
-      it, or name another file.
+    which case it found. It never tells the operator to remove the key file or a file of the data directory:
+    - `FILE` is the key file, by the name of the key path or because the key path reaches it through a link: the
+      refusal says to name a file that does not exist, and not to remove `FILE`;
+    - `FILE` lies inside the data directory, by its name or through a link: the same;
+    - `FILE` is another file that holds the key that the key path holds too: the key is in place, and `FILE` is a
+      second file with it, which the operator can remove;
+    - in every other case, such as a file that is no valid key, or a key whose ID no sealed value carries: name a
+      file that does not exist, and remove `FILE` only when it is a key file that an earlier run of the command
+      left.
+
+    When the name cannot be looked at, because a folder in the path is a file or the user may not search it, the
+    refusal names that cause and does not say that `FILE` exists.
 
 ## The re-seal
 
@@ -252,6 +264,15 @@ flats secret rotate-key [--out FILE] [--password-file PATH] [--yes] [--config PA
     The error is a refusal: the start and the commands exit with status 78, and `flats backup` refuses as its
     preflight does. `flats secret reset` makes this check before it counts the values, so the file also stops it on
     a host without sealed values.
+
+    A key path that is a symbolic link which leads to the pending key file stops every reader in the same way. The
+    key path then gives the bytes of the pending key, as a duplicate does. But the pending key file is the only file
+    with them, and its removal at the end of a rotation would leave a link to nothing. So no reader classifies the
+    pending key, nothing removes it, and the error says to put a real copy of the file at the key path in place of
+    the link, and to run the command. A hard link is a second name of the same file. It keeps the key when the
+    pending name goes, so it is a duplicate. This refusal also stops a host that had such a link before this change,
+    with a key file that the operator named `<key path>.next`: it does not start until the operator renames the
+    file, or puts a real copy at the key path.
 18. After a stop at any point (a crash, a kill, a loss of power), the files are in one of these states. In each of
     them one file holds the key that opens every sealed value: the key path in A, B, D, E, F and H, the pending key
     in C, and `FILE` in G.
@@ -288,7 +309,8 @@ flats secret rotate-key [--out FILE] [--password-file PATH] [--yes] [--config PA
       of rule 16 does, and stops without a change when that fails. Then it makes the check of rule 12 on the key
       file. When that check fails, or when something is at the key path that is no file after links are followed,
       the command stops with status 1 and gives the two ways of step 3 of rule 16. It does not name `--out`, which a
-      finish refuses. Then it does steps 3 and 4 of rule 16. When nothing is at the key path, step 3 creates the key
+      finish refuses. It does not open a thing that is no file: the open of a named pipe would wait for a reader.
+      Then it does steps 3 and 4 of rule 16. When nothing is at the key path, step 3 creates the key
       file with mode 0600, and syncs the file and its folder before it removes the pending key. That file belongs to
       the user that runs the command. The output says that the operator must give it the owner and the access that
       the host needs, as for a key that `flats secret restore-key` wrote.
@@ -337,7 +359,11 @@ flats secret rotate-key [--out FILE] [--password-file PATH] [--yes] [--config PA
 21. A pending key that is left over is removed at the start of step 1 of a new rotation, with or without `--out`,
     and the output says so. Nothing removes it earlier: a refusal of points 3 to 6 of rule 7 leaves it where it is.
     The command never removes a pending key in the run that wrote it, except at the end of step 3. When the removal
-    of a pending key that is left over fails, the command stops with status 1 and has changed nothing.
+    of a pending key that is left over fails, the command stops with status 1 and has changed nothing. When the file
+    is removed and the sync of its folder then fails, the command stops with status 1 too, and says that the file is
+    removed and that the removal is not durable. The removal at the end of step 3 has the same two results: its
+    message says either that the pending key could not be removed, or that it was removed and that the removal is
+    not durable, and step 4 runs in both.
 
 ## The start and the other commands
 
@@ -371,8 +397,9 @@ flats secret rotate-key [--out FILE] [--password-file PATH] [--yes] [--config PA
 25. `flats secret restore-key`, `flats key ls` and `flats key rm` do not change, and they are safe in every state of
     rule 18. `flats secret backup-key` refuses in the states of rule 22, because a copy of a key that sealed none of
     the values restores nothing, and in state G it would replace the copy of the new key. It reads the key IDs for
-    that check without the host lock and without a migration, and makes no check when `flats.db` is not of the
-    schema of the binary.
+    that check without the host lock and without a migration. It makes no check of the key IDs when `flats.db` is
+    missing, is not of the schema of the binary, or cannot be read as a database, and it then writes the copy as
+    before this change: a copy of the key helps most beside a database that is damaged.
 26. `flats backup`:
     - It never copies `<data>/secret.key.next`, and never a temporary key file `<data>/.secret-key-*`, which the
       creation of a key at the first start and `flats secret restore-key` can leave after a crash. The manifest
@@ -381,8 +408,11 @@ flats secret rotate-key [--out FILE] [--password-file PATH] [--yes] [--config PA
       writes nothing. This covers the states C and G. It reads the key IDs as `flats secret backup-key` does (rule
       25). The refusals of rule 12 of [host backup](host-backup.md) for a configured key come first, because they
       open no database. So with `host.secret_key_path` and a key file that is missing or damaged, which state C
-      allows, the command gives the refusal for a key that cannot be read, which names `--exclude-secret-key`. With
-      that flag it then gives the refusal of the first state. With `--exclude-secret-key` the command copies no key
+      allows, the command gives the refusal for a key that cannot be read, which names `--exclude-secret-key`. That
+      refusal cannot tell whether a pending key waits, because it has no key IDs. When a file is at the pending
+      name, it also names that file and `flats secret rotate-key`, which finishes a rotation that stopped, and says
+      that the backup refuses until then. With the flag the command then gives the refusal of the first state. With
+      `--exclude-secret-key` the command copies no key
       and reads none for the second state of rule 22, so in state G such a copy is made: it holds `flats.db` under
       the new key and the recovery copy that step 4 wrote, when one exists. For the first state the command needs
       the bytes of two files, for the default path and for a configured path alike. It reads the pending key file
@@ -505,24 +535,32 @@ names its reason. No criterion depends on time, apart from the checkpoint test, 
 - Tests show each refusal of rules 6, 8, 9, 12, 13, 14, 17, 19 and 20, and a declined confirmation and the missing
   `--yes` of rule 10. A test shows the sentence of rule 10 for a pending key that is left over. Each creates no
   pending key and no `FILE`, writes nothing that rule 11 of [secret key recovery](secret-key-recovery.md) excludes,
-  and leaves a pending key or a `FILE` that existed before the same, byte for byte. The one exception is the refusal
-  of rule 13 at step 1, which can come after the removal of a pending key that was left over. A test shows that an
+  and leaves a pending key or a `FILE` that existed before the same, byte for byte. The exceptions are of rule 13
+  at step 1: its refusal can come after the removal of a pending key that was left over, and a write that fails
+  after the creation leaves an incomplete pending key. A test shows that a finish with a named pipe at the key path
+  stops with status 1 and does not wait; it runs on Unix. A test shows that an
   interrupt before step 1 writes nothing, and that an interrupt after step 1 began does not stop steps 2 to 4. A
   test shows the same for a finish.
 - A test shows that a pending file that the user cannot read, and a link at the pending name, stop the command, the
   start, `flats key set`, `flats secret reset`, `flats secret backup-key` and `flats backup --out` with an error that
-  names the file. The test of the file that cannot be read skips for root and on Windows.
+  names the file. The test of the file that cannot be read skips for root and on Windows. A test shows the same for
+  a key path that is a symbolic link to the pending key file: every reader stops, the pending key keeps its bytes,
+  and the command finishes after a real copy took the place of the link. A test shows that a hard link of the
+  pending key file at the key path is a duplicate, and that the key path keeps the key after the finish.
 - Tests show `flats secret backup-key` in state G, and `--out` and `flats secret reset` in state D. A test rotates a
   key path that is a link, and the file that the link names gets the new key. A test shows that the finish of a
   duplicate does not remove the pending key when its checkpoint fails. A test changes `host.secret_key_path` while a
-  pending key waits, and the start then gives the second refusal of rule 22.
+  pending key waits, and the start then gives the second refusal of rule 22. A test shows that
+  `flats secret backup-key` writes the copy beside a `flats.db` that cannot be read as a database.
 - A test shows that the recovery password opens the new key after a rotation, through `flats secret restore-key`, and
   that the start does not warn. Tests show the wrong password with its advice, a password shorter than 12
   characters that opens a copy made by hand, the usage error without a terminal, `--password-file` without a
   recovery copy, and each of the two failures of step 4 with its message.
 - Tests show a rotation with `--out`: the key path is not written, `FILE` holds the key that opens every value, the
-  start refuses with the key IDs until that key is at the key path, and then starts. They show the three cases of an
-  existing `FILE` (rules 14 and 19). One test uses a key file that cannot be opened for writing.
+  start refuses with the key IDs until that key is at the key path, and then starts. They show the cases of an
+  existing `FILE` (rules 14 and 19), and that no refusal says to remove `FILE` when it is the key file, when the key
+  path reaches it through a link, or when it lies inside the data directory. A test shows that a name that cannot
+  be looked at is refused with its cause. One test uses a key file that cannot be opened for writing.
 - Tests show rule 22 for its excluded states: a database with a value without a key ID starts with a wrong key as
   before, and so does one with values of two keys of which one is the key at the key path. Tests show rule 23 (the
   ID in the refusal of a missing key, for both kinds of path) and rule 24 (the ID before the confirmation of
@@ -536,8 +574,9 @@ names its reason. No criterion depends on time, apart from the checkpoint test, 
   no agent tool and not `flats key ls` gives a key ID (rule 4).
 - Tests show that `flats backup` leaves `secret.key.next` and `.secret-key-*` out and lists them, that
   `flats backup --out` refuses in the states C and G with the message of rule 22, that it makes a copy in the states
-  B and D, and that with `--exclude-secret-key` it refuses in state C and makes a copy in the states D and G. A test
-  shows that a new host treats `secret.key.next` as Flats data (rule 27).
+  B and D, and that with `--exclude-secret-key` it refuses in state C and makes a copy in the states D and G. With a
+  configured key path and nothing at it in state C, the refusal without the flag names the flag, the pending key
+  file and the command. A test shows that a new host treats `secret.key.next` as Flats data (rule 27).
 - A migration test shows schema 27 on a database of schema 26 that the registry builds, with values sealed under a
   known key: the values keep their bytes, have an empty key ID, and open. The tests that pin the schema version
   move to 27, and a test shows that `OpenImmutable`, `OpenAuditReader` and `AppendAuditBeside` refuse a database of

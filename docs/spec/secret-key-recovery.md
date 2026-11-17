@@ -136,9 +136,10 @@ flats secret backup-key [--out PATH] [--password-file PATH] [--config PATH | --d
     and every sealed value carries the key ID of another key. A copy of a key
     that sealed none of the values restores nothing, and after a rotation with
     `--out` it would replace the copy of the new key. The command reads the key
-    IDs for that check without the host lock and without a migration, and makes
-    no check when `flats.db` is not of the schema of the binary (rule 25
-    there). Because the command takes no host lock, it can run at the same time
+    IDs for that check without the host lock and without a migration. It makes
+    no check of the key IDs when `flats.db` is missing, is not of the schema of
+    the binary or cannot be read as a database, and then writes the copy (rule
+    25 there). Because the command takes no host lock, it can run at the same time
     as `flats secret rotate-key`. The data directory can then end with a copy of
     the old key and the ID of the new key, and the start does not report it.
     This is a limit, and the docs say to run one key command at a time (rule 20

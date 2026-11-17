@@ -1277,9 +1277,13 @@ values, and names the ways out. The first is the right key, with
 removes an operator key that it does not open, and `flats secret rm` removes a
 flat secret once the host runs. When the key opens no value,
 `flats secret reset` deletes them all. When the values that do not open carry a
-key ID, the message names it and says that the file of an earlier
-`rotate-key --out` can hold that key. With no sealed value there is nothing to
-check, and the command still makes a new key.
+key ID, the message names it before these ways out. When the key also opens no
+value and the values carry one key ID, the message names one more way first,
+for the state after a rotation with `--out`. The file of that rotation holds
+that key: run `rotate-key --out FILE` again with the same file, and put the key
+of that file at the key path only after that run reported the re-seal durable.
+With no sealed value there is nothing to check, and the command still makes a
+new key.
 
 The output gives the number of flat secrets and of operator keys that the
 command sealed again, the key ID of the old key and of the new key, each file
@@ -1310,7 +1314,8 @@ When such copies must stay readable, copy the old key away before you rotate.
 Make a real copy and not a link. The command writes the new key into the key
 file, so every name of that file gets the new key, a hard link included. For
 the same reason, a rotation of a key file that two hosts use changes the key of
-both. The command says this in its confirmation and in its output.
+both. The confirmation and the output of the command say that every name of
+the key file gets the new key.
 
 After the rotation, store the new key apart again. Run
 `flats secret backup-key --out PATH` again, and take a new backup.
@@ -1483,10 +1488,10 @@ missing.
 | After a rotation with `--out`, the start refuses and names the ID of the key at the key path and the key IDs of the values | The values are under the new key, which `FILE` holds. The key path still holds the old key | When the command told you to put the new key at the key path, do that and remove `FILE`. When it stopped before, run `flats secret rotate-key --out FILE` again with the same file. Put the key of `FILE` at the key path only after that run reported the re-seal durable, and keep the old key there until then, because a loss of power can still take the re-seal back |
 | The start refuses with the same message, and no file of `--out` holds the key of the values | The key at the key path is valid, and it sealed none of the values | Restore the key that has the ID of the values with `flats secret restore-key`. When no such key is left, delete the stored values with `flats secret reset` |
 | The command stops with status 1 at the re-seal, and names a file that stays or says to run it again | The re-seal failed, or the command could not make it durable. The file is the pending key or `FILE` | Run the command again, with the same `FILE` when you used `--out`. It reads the key IDs of the values to tell whether the re-seal took place. Then it finishes the rotation, starts a new one, or refuses a `FILE` that sealed no value, which you remove. With `--out`, keep the old key at the key path until that run succeeds |
-| The command fails while it writes the key file | The re-seal is durable, and the pending key file holds the key of the values. The key file can be damaged, and the start refuses as in the first row | Remove the cause that the message names and run the command again. Or copy the bytes of the pending key into the key file by hand and run the command again, which then removes the pending key. Copy by hand only when the command named this way or reported the re-seal durable. Before that, a loss of power can still take the re-seal back |
+| The command fails while it writes the key file | The re-seal is durable, and the pending key file holds the key of the values. The key file can be damaged, and the start refuses as in the first row | Remove the cause that the message names and run the command again. Or copy the bytes of the pending key into the key file by hand and run the command again, which then removes the pending key. Make a real copy, and not a symbolic link to the pending key file, because the command removes that file. Copy by hand only when the command named this way or reported the re-seal durable. Before that, a loss of power can still take the re-seal back |
 | The command says that it could not write the recovery copy, or the start warns that the recovery copy holds another key | The rotation is complete. The recovery copy still holds the old key, or it holds the new key beside an ID file that is out of date | Run `flats secret backup-key`, which writes both files. After `--out`, run it when the new key is at the key path, because it refuses before |
-| `rotate-key --out FILE` refuses because `FILE` exists | A run that stopped left `FILE`, or the key of `FILE` is in place already | The message says which case it found. When `FILE` holds the key that the key path holds too, the key is in place, and you remove `FILE`. In every other case, such as a file that is no valid key or a key that sealed no value, remove it or name another file |
-| The start or a key command stops with an error that names the pending key file | Something at that name is no regular file, or the user cannot read it. A run of `rotate-key` as another user leaves a pending key that the user of the host cannot read | Make a file that can be a pending key readable for the user of the host, or run `flats secret rotate-key` as the user that wrote it. Such a file can hold the key of the values. Move away anything else at that name, such as a folder or a link |
+| `rotate-key --out FILE` refuses because `FILE` exists | A run that stopped left `FILE`, the key of `FILE` is in place already, or `FILE` is a file that the command must not use | The message says which case it found. When `FILE` is the key file, also through a link, or lies inside the data directory, name a new file and do not remove `FILE`. When `FILE` is a second file with the key that the key path holds, the key is in place, and you can remove `FILE`. In every other case name a file that does not exist, and remove `FILE` only when it is a key file that an earlier run of the command left |
+| The start or a key command stops with an error that names the pending key file | Something at that name is no regular file, or the user cannot read it. A run of `rotate-key` as another user leaves a pending key that the user of the host cannot read. Or the key path is a symbolic link to the pending key file | Make a file that can be a pending key readable for the user of the host, or run `flats secret rotate-key` as the user that wrote it. Such a file can hold the key of the values. Move away anything else at that name, such as a folder or a link. When the key path is a link to the pending key file, put a real copy of that file at the key path in place of the link, and run `flats secret rotate-key` |
 
 On a host without a sealed value, a stop while the command writes the key file
 can leave a damaged key file. No value is sealed, so nothing is lost. The start

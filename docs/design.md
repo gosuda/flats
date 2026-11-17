@@ -590,10 +590,11 @@ password the operator chooses, beside it, and `restore-key` and `reset` bring
 back a host whose key is lost; see
 [Recovering a lost secret.key](configuration.md#recovering-a-lost-secretkey).
 
-The key has this life. Flats creates it, 32 random bytes, only at
+The key has this life. The host creates the first key, 32 random bytes, only at
 `<data>/secret.key` and only when no file is there: at a start, when
 `flats key set` stores the first operator key, and when the import of a legacy
-host stores a key. At a configured path the operator makes it. Each sealed
+host stores a key. At a configured path the operator makes the first key. A
+rotation makes each later key, at either kind of path (see below). Each sealed
 value carries a key ID, which is the ID of the key that sealed it. The ID is a
 label. It is not part of the associated data, and the host never uses it to
 decide whether it tries to open a value. It tries the key. The start and the
