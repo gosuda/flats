@@ -178,11 +178,11 @@ func TestCheckKey(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if err := PutHostKeyValue(ctx, NewKeyFile(dir, ""), s.st, HostKeyZrok, "zrok-token", KeySourceCLI, time.Now()); err != nil {
+	if err := PutHostKeyValue(ctx, NewKeyFile(dir, ""), s.st, HostKeyZrok, "zrok-token", KeySourceCLI, time.Now(), store.Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	// A record of a connection holds no value and is not counted.
-	if err := s.st.PutHostKey(ctx, store.HostKey{ID: HostKeyNetbird, Source: KeySourceCLI, UpdatedAt: time.Now()}); err != nil {
+	if err := s.st.PutHostKey(ctx, store.HostKey{ID: HostKeyNetbird, Source: KeySourceCLI, UpdatedAt: time.Now()}, store.Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	key, err := NewKeyFile(dir, "").Read()
@@ -206,7 +206,7 @@ func TestCheckKey(t *testing.T) {
 		t.Fatalf("unopened: %s", got)
 	}
 	// A row whose nonce has the wrong size opens nothing and does not panic.
-	if err := s.st.PutSecret(ctx, "app", store.SealedSecret{Name: "BROKEN", Nonce: []byte{1}, Ciphertext: []byte{2}, UpdatedAt: time.Now()}); err != nil {
+	if err := s.st.PutSecret(ctx, "app", store.SealedSecret{Name: "BROKEN", Nonce: []byte{1}, Ciphertext: []byte{2}, UpdatedAt: time.Now()}, store.Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	if c, err := CheckKey(ctx, s.st, key); err != nil || c.Opened != 3 || c.Total != 4 || len(c.Unopened) != 1 || c.Unopened[0].Name != "BROKEN" {
@@ -327,7 +327,7 @@ func TestMissingKeyRefusalNamesRecovery(t *testing.T) {
 
 	// With operator keys alone, the way out is `flats key rm`, not reset.
 	keys, dir := newTestService(t)
-	if err := PutHostKeyValue(ctx, NewKeyFile(dir, ""), keys.st, HostKeyZrok, "zrok-token", KeySourceCLI, time.Now()); err != nil {
+	if err := PutHostKeyValue(ctx, NewKeyFile(dir, ""), keys.st, HostKeyZrok, "zrok-token", KeySourceCLI, time.Now(), store.Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	err = CheckSecretKey(ctx, NewKeyFile(t.TempDir(), ""), keys.st)

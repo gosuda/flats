@@ -48,7 +48,7 @@ func TestNetworkPolicyMigrationLifecycle(t *testing.T) {
 	if err != nil || !slices.Equal(p.Origins, origins) || !p.UpdatedAt.Equal(now) {
 		t.Fatalf("rename: %+v %v", p, err)
 	}
-	if err := s.DeleteFlat(t.Context(), "renamed"); err != nil {
+	if err := s.DeleteFlat(t.Context(), "renamed", Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	p, err = s.NetworkPolicy(t.Context(), "renamed")

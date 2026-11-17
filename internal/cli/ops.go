@@ -77,6 +77,25 @@ func (a *app) backup(args []string) error {
 	return err
 }
 
+// audit runs `flats audit ls`, which reads flats.db instead of calling the host. A --json argument also
+// makes a failure print as JSON, as for the global flag.
+func (a *app) audit(args []string) error {
+	if Audit == nil {
+		return errors.New("audit is not wired")
+	}
+	for _, arg := range args {
+		if arg == "--json" || arg == "-json" {
+			a.jsonOut = true
+		}
+	}
+	err := Audit(a.ctx, args, a.out)
+	var ec exitCoder
+	if errors.As(err, &ec) && ec.ExitCode() == ExitUsage {
+		return usageError{err.Error()}
+	}
+	return err
+}
+
 // config runs `flats config` through the Config hook.
 func (a *app) config(args []string) error {
 	if Config == nil {

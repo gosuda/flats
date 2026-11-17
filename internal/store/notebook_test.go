@@ -94,7 +94,7 @@ func TestNotebookRevisionRows(t *testing.T) {
 	if got, err := s.NotebookRevPages(ctx, "notes", 1, 2); err != nil || len(got) != 0 {
 		t.Fatalf("old slug summaries = %+v, %v", got, err)
 	}
-	if err := s.DeleteFlat(ctx, "renamed"); err != nil {
+	if err := s.DeleteFlat(ctx, "renamed", Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	var remaining int
@@ -286,7 +286,7 @@ func TestNotebookMigrationPreservesSchema21(t *testing.T) {
 				t.Fatal(err)
 			}
 			t.Cleanup(func() { s.Close() })
-			if info, err := Inspect(path); err != nil || info.Version != 24 {
+			if info, err := Inspect(path); err != nil || info.Version != latestVersion() {
 				t.Fatalf("upgraded schema = %+v, %v", info, err)
 			}
 			if got, err := s.GetFlat(ctx, "board"); err != nil || !reflect.DeepEqual(got, flat) {
@@ -408,7 +408,7 @@ func TestNotebookMigrationPreservesPublicInstance(t *testing.T) {
 	if err := s.ContentTx(ctx, "notes", func(tx *ContentTx) error { return tx.PutNotebookImport(ctx, "store", 1, "op", 1) }); err != nil {
 		t.Fatal(err)
 	}
-	if info, err := Inspect(path); err != nil || info.Version != 24 {
+	if info, err := Inspect(path); err != nil || info.Version != latestVersion() {
 		t.Fatalf("notebook schema = %+v, %v", info, err)
 	}
 }
@@ -423,7 +423,8 @@ func TestNotebookMigrationRollsBack(t *testing.T) {
 	boom := errors.New("notebook migration failed")
 	t.Run("failed migration", func(t *testing.T) {
 		broken := slices.Clone(migrations)
-		broken[len(broken)-1].up = func(ctx context.Context, x executor) error {
+		i := slices.IndexFunc(broken, func(m migration) bool { return m.version == 24 })
+		broken[i].up = func(ctx context.Context, x executor) error {
 			if err := addNotebookRevisions(ctx, x); err != nil {
 				return err
 			}
@@ -447,7 +448,7 @@ func TestNotebookMigrationRollsBack(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if info, err := Inspect(path); err != nil || info.Version != 24 {
+	if info, err := Inspect(path); err != nil || info.Version != latestVersion() {
 		t.Fatalf("retried migration = %+v, %v", info, err)
 	}
 	if a, err := s.GetApproval(context.Background(), "keep"); err != nil || a.Status != "pending" {

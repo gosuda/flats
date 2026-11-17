@@ -100,13 +100,50 @@ func (s *Store) ListHostKeys(ctx context.Context) ([]HostKey, error) {
 	return out, rows.Err()
 }
 
-// PutHostKey replaces the record of k.ID.
-func (s *Store) PutHostKey(ctx context.Context, k HostKey) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO host_keys (id, nonce, ciphertext, source, updated_at, last_error) VALUES (?,?,?,?,?,?)
+// PutHostKey replaces the record of k.ID. A record that stores or replaces a sealed value writes a key.set audit
+// event, and one that removes the value of the old record writes a key.delete event, in the same transaction
+// (rules 10 and 11 of docs/spec/audit-events.md). A record that holds no value, over one that held none, writes nothing.
+func (s *Store) PutHostKey(ctx context.Context, k HostKey, a Audit) error {
+	_, err := s.immediate(ctx, func(x executor) (bool, error) {
+		old, err := getHostKey(ctx, x, k.ID)
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			return false, err
+		}
+		had := err == nil && old.HasValue()
+		if _, err := x.ExecContext(ctx, `INSERT INTO host_keys (id, nonce, ciphertext, source, updated_at, last_error) VALUES (?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET nonce=excluded.nonce, ciphertext=excluded.ciphertext, source=excluded.source,
   updated_at=excluded.updated_at, last_error=excluded.last_error`,
-		k.ID, k.Nonce, k.Ciphertext, k.Source, unix(k.UpdatedAt), k.LastError)
+			k.ID, k.Nonce, k.Ciphertext, k.Source, unix(k.UpdatedAt), k.LastError); err != nil {
+			return false, err
+		}
+		switch {
+		case k.HasValue():
+			e := a.event(AuditKeySet)
+			e.Name = k.ID
+			fields := map[string]any{"replaced": had}
+			if a.From != "" {
+				fields["from"] = a.From
+			}
+			e.Data = AuditData(fields)
+			return true, appendAudit(ctx, x, e)
+		case had:
+			return true, appendKeyDelete(ctx, x, a, k.ID)
+		}
+		return true, nil
+	})
 	return err
+}
+
+// appendKeyDelete writes the key.delete event of the value of id.
+func appendKeyDelete(ctx context.Context, x executor, a Audit, id string) error {
+	e := a.event(AuditKeyDelete)
+	e.Name = id
+	reason := a.Reason
+	if reason == "" {
+		reason = "removed"
+	}
+	e.Data = AuditData(map[string]any{"reason": reason})
+	return appendAudit(ctx, x, e)
 }
 
 // SetHostKeyError records the last failed use of id's waiting value.
@@ -115,9 +152,23 @@ func (s *Store) SetHostKeyError(ctx context.Context, id, msg string) error {
 	return err
 }
 
-// DeleteHostKey removes the record of id; a missing one is not an error.
-func (s *Store) DeleteHostKey(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM host_keys WHERE id=?`, id)
+// DeleteHostKey removes the record of id; a missing one is not an error. A record that held a sealed value writes
+// a key.delete audit event in the same transaction, and one that held none writes nothing.
+func (s *Store) DeleteHostKey(ctx context.Context, id string, a Audit) error {
+	_, err := s.immediate(ctx, func(x executor) (bool, error) {
+		old, err := getHostKey(ctx, x, id)
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			return false, err
+		}
+		had := err == nil && old.HasValue()
+		if _, err := x.ExecContext(ctx, `DELETE FROM host_keys WHERE id=?`, id); err != nil {
+			return false, err
+		}
+		if had {
+			return true, appendKeyDelete(ctx, x, a, id)
+		}
+		return true, nil
+	})
 	return err
 }
 

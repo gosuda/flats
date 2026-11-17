@@ -39,7 +39,7 @@ func TestPortalListing(t *testing.T) {
 	if m, err := s.PortalListing(ctx, "journal"); err != nil || m != ListingHidden {
 		t.Fatalf("after rename = %q %v", m, err)
 	}
-	if err := s.DeleteFlat(ctx, "journal"); err != nil {
+	if err := s.DeleteFlat(ctx, "journal", Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.CreateFlat(ctx, Flat{Slug: "journal", Name: "Journal", Visibility: Private, CreatedAt: now, UpdatedAt: now}); err != nil {

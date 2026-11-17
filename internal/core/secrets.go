@@ -171,7 +171,7 @@ func (s *Service) SetSecret(ctx context.Context, slugName, name, value string, v
 		return err
 	}
 	ct := g.Seal(nil, nonce, []byte(value), []byte(name))
-	if err := s.st.PutSecret(ctx, slugName, store.SealedSecret{Name: name, Nonce: nonce, Ciphertext: ct, UpdatedAt: s.now()}); err != nil {
+	if err := s.st.PutSecret(ctx, slugName, store.SealedSecret{Name: name, Nonce: nonce, Ciphertext: ct, UpdatedAt: s.now()}, s.audit(ctx, via)); err != nil {
 		if errors.Is(err, store.ErrEnvCollision) {
 			return invalidf("secret %q conflicts with an existing environment variable", name)
 		}
@@ -186,7 +186,7 @@ func (s *Service) DeleteSecret(ctx context.Context, slugName, name string, via V
 	if via != ViaConsole && via != ViaCLI {
 		return forbiddenf("only the operator can delete secrets")
 	}
-	if err := s.st.DeleteSecret(ctx, slugName, name); err != nil {
+	if err := s.st.DeleteSecret(ctx, slugName, name, s.audit(ctx, via)); err != nil {
 		return err
 	}
 	s.Event(ctx, slugName, "info", "secret", fmt.Sprintf("secret %s deleted via %s; redeploy to apply", name, via), nil)

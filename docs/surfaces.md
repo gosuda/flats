@@ -307,7 +307,7 @@ writes and logs nothing. Neither route changes Autopilot.
 `flats <command>` calls the HTTP API (the CLI sends `X-Flats-Client: cli`).
 `flats serve` runs the host itself (`flats worker` is the process it starts
 for server flats); `flats config`, `flats key`, and
-`flats secret restore-key` and `reset` edit the host while it is stopped
+`flats secret restore-key` and `reset` edit the host while it is stopped, and `flats audit ls` reads its audit log
 ([Configuration and storage](configuration.md)).
 
 | Command | Effect |
@@ -330,6 +330,7 @@ for server flats); `flats config`, `flats key`, and
 | `visibility <slug> private\|public [--access view\|edit] [--reason r]` | Request a visibility change; `--access edit` lets anyone edit a Public board |
 | `rename <slug> <new-slug>`, `delete <slug> [--reason r]` | Rename; request deletion |
 | `env`, `network`, `secret` | Manage server settings; changing `network` origins or `secret` values works only from the host itself (loopback). `secret backup-key`, `restore-key [--out file]` and `reset` work on the data directory and never call the host. They find the key at `host.secret_key_path` when it is set, and `restore-key --out` writes the recovered key to a new file instead ([Recovering a lost secret.key](configuration.md#recovering-a-lost-secretkey), [Keeping the key outside the data directory](configuration.md#keeping-the-key-outside-the-data-directory)) |
+| `audit ls [--since time] [--kind kind] [--flat slug] [--flat-id id] [--limit n] [--json] [--config path\|--data dir]` | List the audit log of secret and key operations, oldest first. Works on the data directory, with the host running or stopped, and never calls the host ([Audit log](configuration.md#audit-log)) |
 | `backup --out path [--exclude-secret-key] [--config path\|--data dir]`, `backup --verify path` | Copy the data directory of a running or stopped host into a new folder with a manifest, or check such a copy. With `host.secret_key_path` the key is outside the copy. Works on the data directory and never calls the host ([What to back up](configuration.md#what-to-back-up)) |
 | `approvals [--status s]` | List approvals (read-only) |
 | `status`, `install`, `uninstall`, `connect`, `mcp`, `mcp-config` | Host and client setup ([Connecting agents](agents.md)). `connect` chooses the host the CLI and `mcp` use; `mcp-config` prints the agent setup commands |

@@ -138,13 +138,13 @@ func StoredHostKey(ctx context.Context, keyFile KeyFile, st *store.Store, id str
 	return v, k, err
 }
 
-// PutHostKeyValue seals and stores value for id.
-func PutHostKeyValue(ctx context.Context, keyFile KeyFile, st *store.Store, id, value, source string, now time.Time) error {
+// PutHostKeyValue seals and stores value for id, and writes the key.set audit event of audit in the same transaction.
+func PutHostKeyValue(ctx context.Context, keyFile KeyFile, st *store.Store, id, value, source string, now time.Time, audit store.Audit) error {
 	k, err := SealHostKey(keyFile, id, value, source, now)
 	if err != nil {
 		return err
 	}
-	return st.PutHostKey(ctx, k)
+	return st.PutHostKey(ctx, k, audit)
 }
 
 // SameKey compares two key values in constant time.

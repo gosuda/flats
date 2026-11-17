@@ -2056,7 +2056,7 @@ func (s *Service) deleteLocked(ctx context.Context, slugName string, via Via, ex
 		restoreErr = errors.Join(restoreErr, s.restoreDeletePreviews(restoreCtx, previews))
 		return ActionResult{}, errors.Join(err, restoreErr)
 	}
-	if err := s.st.DeleteFlat(ctx, slugName); err != nil {
+	if err := s.st.DeleteFlat(ctx, slugName, store.Audit{Time: s.now(), Approval: exceptApproval}); err != nil {
 		journalErr := s.finishStorageOperation(op)
 		restoreCtx := context.WithoutCancel(ctx)
 		restoreErr := s.ensureExposure(restoreCtx, flat)

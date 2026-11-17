@@ -952,5 +952,5 @@ func importLegacyKey(ctx context.Context, dataDir string, st *store.Store, plan 
 	if err != nil || stored != "" {
 		return err
 	}
-	return core.PutHostKeyValue(ctx, keyFile, st, core.HostKeyTailscale, v, core.KeySourceFlag, time.Now())
+	return core.PutHostKeyValue(ctx, keyFile, st, core.HostKeyTailscale, v, core.KeySourceFlag, time.Now(), store.Audit{Via: store.AuditViaMigration, From: core.KeySourceFlag})
 }

@@ -84,7 +84,7 @@ func KeyCommand(ctx context.Context, args []string, in io.Reader, out io.Writer)
 	if err := core.CheckSecretKey(ctx, keyFile, st); err != nil {
 		return &ActionError{err}
 	}
-	if err := core.PutHostKeyValue(ctx, keyFile, st, id, value, core.KeySourceCLI, time.Now()); err != nil {
+	if err := core.PutHostKeyValue(ctx, keyFile, st, id, value, core.KeySourceCLI, time.Now(), commandAudit()); err != nil {
 		return err
 	}
 	switch id {
@@ -204,7 +204,7 @@ func removeKey(ctx context.Context, st *store.Store, id string, out io.Writer) e
 	if !r.HasValue() {
 		return actionf("%s is connected and keeps no key in flats.db; disconnect it in the console (Settings > Keys)", id)
 	}
-	if err := st.DeleteHostKey(ctx, id); err != nil {
+	if err := st.DeleteHostKey(ctx, id, commandAudit()); err != nil {
 		return err
 	}
 	switch id {

@@ -51,7 +51,7 @@ func (f *fixture) seal(dataDir, keyPath string) {
 		f.t.Fatal(err)
 	}
 	defer st.Close()
-	if err := st.PutHostKey(context.Background(), k); err != nil {
+	if err := st.PutHostKey(context.Background(), k, store.Audit{}); err != nil {
 		f.t.Fatal(err)
 	}
 	if err := st.Sync(context.Background()); err != nil {
@@ -92,7 +92,7 @@ func TestRunWithAnExternalKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.DeleteHostKey(context.Background(), core.HostKeyZrok); err != nil {
+	if err := st.DeleteHostKey(context.Background(), core.HostKeyZrok, store.Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	st.Close()

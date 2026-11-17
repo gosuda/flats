@@ -47,6 +47,9 @@ var SecretKey func(ctx context.Context, args []string, in io.Reader, out io.Writ
 // copy without calling the host, wired like Serve.
 var Backup func(ctx context.Context, args []string, out io.Writer) error
 
+// Audit runs `flats audit ls`, which reads the audit log in flats.db without calling the host, wired like Serve.
+var Audit func(ctx context.Context, args []string, out io.Writer) error
+
 // KeyUsage is the usage of `flats key`, wired like Serve.
 var KeyUsage = "key <subcommand> [args]"
 
@@ -148,6 +151,7 @@ func init() {
 		{"mcp", "relay the host's MCP tools over stdio (what the agent plugins run)", "mcp [--url url]", (*app).mcpBridge},
 		{"mcp-config", "print setup commands for Claude Code, Codex and Cursor", "mcp-config [--url url]", (*app).mcpConfig},
 		{"agent-setup", "make Flats your agents' document tool (opt-in, with a preview)", "agent-setup docs [--agent claude|codex|cursor|all] [--scope user|project] [--dry-run] [--yes] [--undo]", (*app).agentSetup},
+		{"audit", "list the audit log of secret and key operations", "audit ls [--since time] [--kind kind] [--flat slug] [--flat-id id] [--limit n] [--json] [--config path | --data dir]", (*app).audit},
 		{"backup", "copy the host's data into a new folder while it runs, or check such a copy", "backup --out path [--exclude-secret-key] [--config path | --data dir]\n       flats backup --verify path", (*app).backup},
 		{"config", "manage the host configuration (config.json)", "", (*app).config},
 		{"key", "manage the host's Tailscale, zrok and NetBird keys while it is stopped", "", (*app).key},
