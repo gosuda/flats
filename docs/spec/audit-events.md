@@ -9,10 +9,11 @@ with the flat. Operator keys and the host key have no record at all. This spec a
 `flats.db`. It is append-only, it is not trimmed, and the deletion or rename of a flat does not change it. Every
 change of a sealed value (a flat secret or an operator key value), and every key backup, key restore and reset, writes
 one event: what happened, to which flat and name, when, through which channel, and by whom when the channel knows.
-The value is never recorded. `flats audit ls` reads the log.
+The value is never recorded. `flats audit ls` reads the log. A key rotation replaces every sealed value. It writes one
+`key.rotate` event for all of them and no `key.set`.
 
-The request is item 4 of issue #224. Item 2 (rotation) writes its own event later. The webhook and `flats audit
-export` of #225 build on this log.
+The request is item 4 of issue #224. Item 2 (rotation) writes its own event, `key.rotate`
+([secret key rotation](secret-key-rotation.md)). The webhook and `flats audit export` of #225 build on this log.
 
 ## Before this change
 
@@ -51,8 +52,9 @@ Out of scope:
 
 - The webhook, `flats audit export` and the approval records in an export. They are in [event webhook](event-webhook.md)
   (#225), which also adds three kinds to this log.
-- The writer of the rotation event. This spec reserves the kind `key.rotate` (rule 15). The rotation spec gives its
-  fields and writes it.
+- The writer of the rotation event. This spec reserved the kind `key.rotate` (rule 15).
+  [Secret key rotation](secret-key-rotation.md) gives its fields and writes it, in the transaction that seals every
+  value again.
 - A console view, an MCP tool or an API route for the log. Agents cannot read it.
 - Tamper evidence (a hash chain or a signature), a way to trim the log, and shipping it off the host. A person who can
   write `flats.db` can edit the log. Shipping the events off the host is the purpose of #225.
@@ -76,13 +78,13 @@ Out of scope:
    `flats backup` replaces `flats.db` and so drops the rows that were written after the copy; the docs say so. A person
    who can write `flats.db` can still change the rows, as "Scope" says.
 3. No row holds a secret value, an operator key value, key bytes, a recovery password or the recovery copy. A name is
-   not a value. `data` holds only the fields that rules 8 to 15 and rule 21 of [event webhook](event-webhook.md) name. The key ID of rules 12 and 13 is the one that
-   [secret key recovery](secret-key-recovery.md) defines. It reveals nothing that opens the key.
+   not a value. `data` holds only the fields that rules 8 to 15 and rule 21 of [event webhook](event-webhook.md) name. The key IDs of rules 12, 13 and 15 are the ones that
+   [secret key recovery](secret-key-recovery.md) defines. They reveal nothing that opens the key.
 4. `via` says which channel made the change. It is one of
    - `console`: a route of the console API (the web console);
    - `cli`: `flats secret set` or `rm` through the loopback API with the header `X-Flats-Client: cli`;
    - `command`: a command that the operator ran on the host and that works on the data directory
-     (`flats key set` and `rm`, `flats secret backup-key`, `restore-key` and `reset`);
+     (`flats key set` and `rm`, `flats secret backup-key`, `restore-key`, `rotate-key` and `reset`);
    - `start`: an input that the host read at its start (a key file flag, a `FLATS_*` variable, or the deprecated
      `credentials.tailscale_authkey_file`), and the zrok enrolment and clean-up that the host runs after its start;
    - `migration`: the import of a legacy key file when an older installation moves to a configuration file;
@@ -114,7 +116,7 @@ Out of scope:
 | `key.backup` (12) | none | none | `{"key_id": ..., "out": true or false}` | `command` |
 | `key.restore` (13) | none | none | `{"key_id": ..., "out": true or false, "opened": N, "total": M}` | `command` |
 | `key.reset` (14) | none | none | `{"secrets": N, "keys": M}` | `command` |
-| `key.rotate` (15) | none | none | reserved | reserved |
+| `key.rotate` (15) | none | none | `{"from": ..., "to": ..., "secrets": N, "keys": M, "out": true or false}` | `command` |
 | `visibility.set`, `network.set`, `provider.set` | the flat | none, none, the provider | [event webhook](event-webhook.md), rule 21 | `console`, `cli`, `autopilot` |
 
 8. `secret.set` is written for each successful set of a flat secret, whether the name is new (`created` true) or
@@ -129,6 +131,8 @@ Out of scope:
     or `migration` event came from (`flag`, `env` or `config`, the `source` of the key input), not the name of the
     flag or variable. A start input that is ignored because a key of that kind is stored already (the
     seed rule of [operator keys](../configuration.md#operator-keys)) changes nothing and writes nothing.
+    `flats secret rotate-key` replaces every sealed value in one transaction. It writes one `key.rotate` event (rule
+    15) and no `key.set`, because it changes how a value is sealed and not the value.
 11. `key.delete` is written whenever a sealed operator key value is removed. The paths are
     - the console routes and `flats key rm` (`reason` `removed`, `via` `console` and `command`);
     - `flats secret reset` (`reason` `removed`, `via` `command`);
@@ -142,19 +146,28 @@ Out of scope:
     value changes.
 12. `key.backup` is written when `flats secret backup-key` has written the recovery copy and its ID file. `key_id` is
     the ID of the key in the copy. `out` says that `--out` wrote a second copy. The path is not recorded.
+    `flats secret rotate-key` writes the event too when it has written the recovery copy and its ID file, with the ID
+    of the new key and `out` false ([secret key rotation](secret-key-rotation.md), rule 31).
 13. `key.restore` is written when `flats secret restore-key` has written the key to the key location or, with `--out`,
     to the new file. `key_id` is the ID of the restored key, and `opened` and `total` are the numbers of sealed values
     that the key opened and that `flats.db` holds.
 14. `key.reset` is written by `flats secret reset` once, in the transaction that deletes the values, together with one
     `secret.delete` or `key.delete` for each value (rules 9 and 11). `secrets` and `keys` count them.
-15. `key.rotate` is reserved for `flats secret rotate-key`. This change writes it nowhere. The readers accept the kind and
-    show its fields as they are.
+15. `key.rotate` is written by `flats secret rotate-key`, in the transaction that seals every value again, also when
+    `flats.db` holds no sealed value ([secret key rotation](secret-key-rotation.md), rule 30). `from` and `to` are the
+    IDs of the old key and of the new key. `secrets` and `keys` count the flat secrets and the operator key values that
+    were sealed again. `out` is true for a rotation with `--out`. The event records the re-seal in `flats.db`, after
+    which the old key opens nothing there. It does not record when the new key became the host key: the run that
+    finishes a rotation that stopped writes no second event, and the placement of the `--out` file by the operator
+    writes none. This spec reserved the kind before that spec wrote it. The readers show its fields as they are.
 
 ## When an event is written
 
 16. A change of `flats.db` and its event are one SQLite transaction: a set or delete of a flat secret, a store or removal
-    of an operator key value, the deletion of a flat (with the `secret.delete` events of rule 9), and `flats secret
-    reset`. When the event cannot be written, the change does not happen and the operation returns the error. There is
+    of an operator key value, the deletion of a flat (with the `secret.delete` events of rule 9), `flats secret
+    reset`, and the re-seal of `flats secret rotate-key` with its `key.rotate` event (rule 15 of
+    [secret key rotation](secret-key-rotation.md)). When the event cannot be written, the change does not happen and
+    the operation returns the error. There is
     no change of a sealed value without an event. The consumption of a zrok token (rule 11) has a change outside
     `flats.db`, the connected account, and that is not undone. Its row change and its event are one transaction too.
     When the transaction fails, the host logs the failure, the stored token stays, and the next start removes it with
@@ -169,7 +182,7 @@ Out of scope:
     database is missing, the version is another one, or the transaction cannot start, it follows rule 17. The write creates `flats.db-wal` and `-shm` when a stopped host left
     none, so the docs say to run the command as the user that runs the host, as for `flats key`, `restore-key` and
     `reset`.
-19. The other commands that write an event (`flats key set` and `rm`, `restore-key`, `reset`) already open `flats.db`
+19. The other commands that write an event (`flats key set` and `rm`, `restore-key`, `reset`, `rotate-key`) already open `flats.db`
     under the host lock. They write the event through that connection.
 
 ## Reading the log

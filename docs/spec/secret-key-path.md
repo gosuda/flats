@@ -48,10 +48,17 @@ reload, the docs.
 Out of scope:
 
 - Key rotation, key IDs, audit events and injected `fetch` secrets (items 2 to
-  4 of #224). A rotation that replaces the file during a run has no defined
-  effect until a restart.
-- A check at start that the key opens the stored values. The default path has
-  none either, and a wrong key shows when a value is used.
+  4 of #224). [Secret key rotation](secret-key-rotation.md) adds the rotation
+  and the key IDs. `flats secret rotate-key` refuses while a host runs, so a
+  rotation never replaces the file during a run. A file that someone replaces
+  by hand during a run has no defined effect beyond rule 8 until a restart.
+- A check at start that the key opens the stored values. This spec adds none,
+  and the default path has none either. Rule 22 of
+  [secret key rotation](secret-key-rotation.md) adds a check of the key IDs for
+  both kinds of path. The start refuses while a pending key of a rotation
+  waits. It also refuses while the key path holds a valid key, every sealed
+  value carries a key ID, and none carries the ID of that key. In every other
+  state a wrong key shows when a value is used.
 - An environment variable, a `flats serve` flag or a console field for the
   path. The setting is in `config.json` and is changed with `flats config`.
 - A command that moves an existing key or makes a new one. The docs give the
@@ -104,7 +111,11 @@ Out of scope:
    or cannot be read, and in the cases of rule 3. It holds when `flats.db` has no
    sealed value too. Each refusal is an action error that exits with status 78,
    so a service manager that does not restart on 78 does not loop on it. The
-   refusal names the path and the setting.
+   refusal names the path and the setting. The first state of rule 22 of
+   [secret key rotation](secret-key-rotation.md), a pending key that waits,
+   comes before these refusals of a configured key. The start then names
+   `flats secret rotate-key`, which finishes the rotation, whatever the key path
+   holds: the old key, nothing, or a file that is no valid key.
 6. The refusal for a missing file says that Flats never creates a key at a
    configured path. It names three ways out. The first is to put a key there; the
    docs show `head -c 32 /dev/urandom > PATH`. The second is to restore it with
@@ -112,7 +123,9 @@ Out of scope:
    `flats config unset host.secret_key_path`. For a link to nothing, the message
    names the link and says to repair the link or the mount, or to clear the
    setting, and it does not name `restore-key`, which refuses anything at the
-   path (rule 12).
+   path (rule 12). When nothing is at the path, no pending key of a rotation
+   waits, and every sealed value carries one key ID, the refusal names that ID
+   ([secret key rotation](secret-key-rotation.md), rule 23).
 7. With the setting, the host never creates, writes, renames or deletes the key
    file, and it creates no temporary file beside it. A key on a read-only mount,
    in a read-only folder or with mode 0444 works. The host does not check the mode
@@ -123,7 +136,14 @@ Out of scope:
    with their copies, the move of `network-provider.json` into `backups/`, and the
    writes of an interrupted init or legacy migration, as rule 11 of
    [secret key recovery](secret-key-recovery.md) lists them and as `prepare` makes
-   them. The setting adds no write to them.
+   them. The setting adds no write to them. This rule holds for the host. Two
+   commands write a key at a configured path for the operator. The first is
+   `flats secret restore-key` (rule 12). The second is
+   `flats secret rotate-key`: it writes the new key into the file that is
+   there, it keeps the pending key `<key path>.next` beside it until then, and
+   its finish of a rotation that stopped creates the file when nothing is at
+   the path ([secret key rotation](secret-key-rotation.md), rules 12, 13 and
+   19).
 8. Flat secrets use the key that `core.New` read at start and keeps in memory,
    as now. Operator keys do not. `SealHostKey` and `OpenHostKey` read the key
    file at each use, as now, for the console, `currentTailscaleKey` and the
@@ -148,12 +168,12 @@ Out of scope:
 
 ## The commands
 
-`flats key set`, `rm` and `ls`, and `flats secret backup-key`, `restore-key` and
-`reset` find the data directory with `--config PATH` or `--data DIR`. Both ways
+`flats key set`, `rm` and `ls`, and `flats secret backup-key`, `restore-key`,
+`reset` and `rotate-key` find the data directory with `--config PATH` or `--data DIR`. Both ways
 load the configuration file that they resolve. A missing or invalid file is a
 refusal with status 78, as today, so the setting applies in both ways. Every
 command of this list that reads or writes the key (`key set`, `backup-key`,
-`restore-key` and `reset`) gets the location from the function of rule 3 and
+`restore-key`, `reset` and `rotate-key`) gets the location from the function of rule 3 and
 refuses in the cases of rule 3. `key ls` and `key rm` touch no key and do not
 call it, so they still work when the location is in one of those states.
 
@@ -233,7 +253,19 @@ call it, so they still work when the location is in one of those states.
     commands cannot run unless the operator gives them the same mount. The docs
     say this, and they show a deployment that works for every command, a plain
     file that the service user can read, for example `/etc/flats/secret.key` with
-    mode 0400.
+    mode 0400. `flats secret rotate-key` must read the key and, without `--out`,
+    write it, so it has steps of its own for each kind of key file, and the docs
+    give them ([secret key rotation](secret-key-rotation.md), rule 36). A plain
+    file that the user can write, in a folder where the user can create a file,
+    is rotated in place. A file or a folder that the user cannot write, such as
+    the file with mode 0400, needs `--out FILE`, and the operator puts the new
+    key in place. A Docker or Compose secret needs a one-off container that
+    mounts the secrets of the service, with `--out` to a mounted folder outside
+    the data volume, and then a new secret. For a key that the command cannot
+    see, such as a systemd credential, the operator makes a copy of the key in a
+    folder of the service user outside the data directory, points
+    `host.secret_key_path` at the copy, rotates in place, puts the new key into
+    the secret store, and sets the path back.
 
 ## Docs
 
