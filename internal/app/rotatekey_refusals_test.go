@@ -493,6 +493,25 @@ func TestRotateKeyOutWithTheKeyInUseFinishesNothing(t *testing.T) {
 	}
 }
 
+// Rule 19: FILE finishes a rotation only when every sealed value carries the key ID of its key. A FILE whose key
+// sealed only some of the values starts no finish. The command goes on to the key at the key path (rule 7), which
+// does not open every value, and refuses for that key.
+func TestRotateKeyOutWithAKeyThatSealedOnlySomeValues(t *testing.T) {
+	h := newRotHost(t)
+	other := bytes.Repeat([]byte{7}, 32)
+	file := filepath.Join(t.TempDir(), "other.key")
+	mustWrite(t, file, other)
+	sqlExec(t, h.dir, `UPDATE secrets SET nonce=x'000000000000000000000000', ciphertext=x'0000000000000000000000000000000000000000', key_id='`+core.KeyID(other)+`' WHERE name='SITE_TOKEN'`)
+	check := frozen(t, h, file)
+	_, err := h.rotate(t, "--yes", "--out", file)
+	refusedWith(t, "rotate-key --out with a key that sealed one value", err, "the key at "+h.keyPath+" opens 4 of the 5 sealed values",
+		"The values that do not open carry the key ID "+core.KeyID(other))
+	if strings.Contains(err.Error(), "the key in "+file) {
+		t.Errorf("the command took FILE for the file of a finish: %v", err)
+	}
+	check("the refusal")
+}
+
 func mustRemove(t *testing.T, path string) {
 	t.Helper()
 	if err := os.Remove(path); err != nil {
