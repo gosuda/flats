@@ -124,11 +124,18 @@ func Run(ctx context.Context, o Options) (res *Result, err error) {
 		}
 		if !o.ExcludeSecretKey {
 			if _, err := keyFile.Read(); err != nil {
-				return nil, &RefusedError{fmt.Sprintf("%v; --exclude-secret-key makes the backup skip the key", err)}
+				msg := fmt.Sprintf("%v; --exclude-secret-key makes the backup skip the key", err)
+				// A rotation that stopped can be the cause (state C of docs/spec/secret-key-rotation.md). Which state it
+				// is needs the database, which this refusal comes before, so the message names the file and the command.
+				if _, err := os.Lstat(keyFile.PendingPath()); err == nil {
+					msg += fmt.Sprintf(". %s exists: when a rotation of the key stopped, `flats secret rotate-key` finishes it and puts the key in place, and the backup refuses until then", keyFile.PendingPath())
+				}
+				return nil, &RefusedError{msg}
 			}
 		}
 	}
-	// Last, because it is the one refusal that opens a database, and that can create a -shm file (rule 11).
+	// After the refusals above, because this one and the next one open a database, and that can create a -shm file
+	// (rule 11).
 	if err := checkSchema(flatsDB); err != nil {
 		return nil, err
 	}

@@ -3,6 +3,9 @@ package store
 import (
 	"bytes"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
 	"errors"
 	"maps"
 	"os"
@@ -23,8 +26,14 @@ const (
 func fill(b byte, n int) []byte { return bytes.Repeat([]byte{b}, n) }
 
 // oldSchemaDB builds a flats.db as the binary of schema 26 left it: one row in secrets, one operator record with a
-// value and one without. It returns the path.
+// value and one without. The values are bytes that stand for a nonce and a ciphertext. It returns the path.
 func oldSchemaDB(t *testing.T) string {
+	t.Helper()
+	return oldSchemaDBWith(t, fill(1, 12), fill(2, 40), fill(3, 12), fill(4, 50))
+}
+
+// oldSchemaDBWith is oldSchemaDB with the nonce and the ciphertext of the flat secret and of the operator key.
+func oldSchemaDBWith(t *testing.T, secretNonce, secretText, keyNonce, keyText []byte) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "flats.db")
 	t.Run("build schema 26", func(t *testing.T) {
@@ -35,10 +44,10 @@ func oldSchemaDB(t *testing.T) string {
 		}
 		makeFlat(t, s, "app")
 		// The schema has no label column, so the rows are written as the code of that time wrote them.
-		if _, err := s.db.Exec(`INSERT INTO secrets(flat,name,nonce,ciphertext,updated_at) VALUES('app','ONE',?,?,1000)`, fill(1, 12), fill(2, 40)); err != nil {
+		if _, err := s.db.Exec(`INSERT INTO secrets(flat,name,nonce,ciphertext,updated_at) VALUES('app','ONE',?,?,1000)`, secretNonce, secretText); err != nil {
 			t.Fatal(err)
 		}
-		if _, err := s.db.Exec(`INSERT INTO host_keys(id,nonce,ciphertext,source,updated_at) VALUES('netbird',?,?,'cli',2000)`, fill(3, 12), fill(4, 50)); err != nil {
+		if _, err := s.db.Exec(`INSERT INTO host_keys(id,nonce,ciphertext,source,updated_at) VALUES('netbird',?,?,'cli',2000)`, keyNonce, keyText); err != nil {
 			t.Fatal(err)
 		}
 		if _, err := s.db.Exec(`INSERT INTO host_keys(id,source,updated_at) VALUES('zrok','console',3000)`); err != nil {
@@ -55,7 +64,7 @@ func oldSchemaDB(t *testing.T) string {
 }
 
 // A flats.db of schema 26 migrates to 27. Each row keeps its bytes, its time and its source, and has an empty label
-// (rule 33). That the values still open is a test of package core.
+// (rule 33).
 func TestMigrationFromVersion26AddsTheLabels(t *testing.T) {
 	ctx := context.Background()
 	path := oldSchemaDB(t)
@@ -89,6 +98,61 @@ func TestMigrationFromVersion26AddsTheLabels(t *testing.T) {
 	}
 	if bs := backupFiles(t, path); len(bs) != 1 {
 		t.Errorf("backups = %v, want the one of schema 26", bs)
+	}
+}
+
+// Values that a key sealed before the migration keep their bytes, have an empty label and open with that key
+// afterwards (rule 33). The test makes its key, and seals as the host does: AES-256-GCM, with the name of a flat
+// secret or "host-key", a zero byte and the id of an operator key as the associated data.
+func TestMigrationFromVersion26KeepsValuesThatOpen(t *testing.T) {
+	ctx := context.Background()
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err != nil {
+		t.Fatal(err)
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	seal := func(value, aad string) (nonce, text []byte) {
+		nonce = make([]byte, gcm.NonceSize())
+		if _, err := rand.Read(nonce); err != nil {
+			t.Fatal(err)
+		}
+		return nonce, gcm.Seal(nil, nonce, []byte(value), []byte(aad))
+	}
+	const secretValue, keyValue, keyAAD = "the value of ONE", "the value of the netbird key", "host-key\x00netbird"
+	secretNonce, secretText := seal(secretValue, "ONE")
+	keyNonce, keyText := seal(keyValue, keyAAD)
+	path := oldSchemaDBWith(t, secretNonce, secretText, keyNonce, keyText)
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if info, err := Inspect(path); err != nil || info.Version != latestVersion() {
+		t.Fatalf("after: %+v, %v", info, err)
+	}
+	secs, err := s.ListSecrets(ctx, "app")
+	if err != nil || len(secs) != 1 {
+		t.Fatalf("ListSecrets = %+v, %v", secs, err)
+	}
+	if got := secs[0]; !bytes.Equal(got.Nonce, secretNonce) || !bytes.Equal(got.Ciphertext, secretText) || got.KeyID != "" {
+		t.Errorf("the flat secret changed in the migration, or has a label: %+v", got)
+	}
+	if got, err := gcm.Open(nil, secs[0].Nonce, secs[0].Ciphertext, []byte("ONE")); err != nil || string(got) != secretValue {
+		t.Errorf("the flat secret after the migration opens as %q, %v", got, err)
+	}
+	k, err := s.GetHostKey(ctx, "netbird")
+	if err != nil || !bytes.Equal(k.Nonce, keyNonce) || !bytes.Equal(k.Ciphertext, keyText) || k.KeyID != "" {
+		t.Fatalf("the operator key changed in the migration, or has a label: %+v, %v", k, err)
+	}
+	if got, err := gcm.Open(nil, k.Nonce, k.Ciphertext, []byte(keyAAD)); err != nil || string(got) != keyValue {
+		t.Errorf("the operator key after the migration opens as %q, %v", got, err)
 	}
 }
 

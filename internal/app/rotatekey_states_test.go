@@ -75,7 +75,7 @@ func TestRotateKeyStateB(t *testing.T) {
 		"inside step 1": func(t *testing.T, h *rotHost) {
 			// The stop comes while the file is written: it exists and is not complete.
 			out, err := rotateWith(t, h.config, func(p string) error {
-				if p != rotateWriteNewKey {
+				if p != rotateBeforeNewKey {
 					return nil
 				}
 				mustWrite(t, h.pending(), []byte("half a key"))
@@ -455,7 +455,7 @@ func TestRotateKeyStateF(t *testing.T) {
 		},
 		"inside step 1": func(t *testing.T, h *rotHost, file string) {
 			_, err := rotateWith(t, h.config, func(p string) error {
-				if p != rotateWriteNewKey {
+				if p != rotateBeforeNewKey {
 					return nil
 				}
 				mustWrite(t, file, []byte("half a key"))
@@ -481,7 +481,7 @@ func TestRotateKeyStateF(t *testing.T) {
 			rows := rowsText(sealedRows(t, h.dir)) // after the start, so that only the command can change a row from here
 
 			_, err := h.rotate(t, "--yes", "--out", file)
-			refusedWith(t, "rotate-key with the FILE of a run that stopped", err, file+" exists", "Remove it, or name another file")
+			refusedWith(t, "rotate-key with the FILE of a run that stopped", err, file+" exists", "Name a file that does not exist", "Remove "+file+" only when it is a key file that an earlier run of this command left")
 			if got := mustRead(t, file); !bytes.Equal(got, left) {
 				t.Error("the refusal changed FILE")
 			}
@@ -603,7 +603,7 @@ func TestRotateKeyOutStatesGAndH(t *testing.T) {
 		t.Errorf("the start warns after the key is in place:\n%s", logs)
 	}
 	_, err = h.rotate(t, "--yes", "--out", file, "--password-file", pw)
-	refusedWith(t, "rotate-key with a FILE whose key is in place", err, "holds the key that "+h.keyPath+" holds too", "remove "+file)
+	refusedWith(t, "rotate-key with a FILE whose key is in place", err, "holds the key that "+h.keyPath+" holds too", file+" is a second file with it, which you can remove")
 	if got := mustRead(t, file); !bytes.Equal(got, newKey) {
 		t.Error("the refusal changed FILE")
 	}

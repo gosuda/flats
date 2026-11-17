@@ -246,10 +246,14 @@ func TestRunAroundARotationOfAnExternalKey(t *testing.T) {
 			o := f.options("copy")
 			o.SecretKeyPath, o.ExcludeSecretKey = path, true
 			refusedBeforeAnyWrite(t, f, o, "flats secret rotate-key", path+".next")
-			if name == "the old key at the key path" {
-				o.ExcludeSecretKey = false
-				refusedBeforeAnyWrite(t, f, o, "flats secret rotate-key", path+".next")
+			// Without the flag too. With nothing at the key path, the refusal for a key that cannot be read comes
+			// first, because it opens no database. It names the flag, and also the pending key file and the command.
+			o.ExcludeSecretKey = false
+			want := []string{"flats secret rotate-key", path + ".next"}
+			if name == "nothing at the key path" {
+				want = append(want, "--exclude-secret-key")
 			}
+			refusedBeforeAnyWrite(t, f, o, want...)
 		})
 	}
 	t.Run("D", func(t *testing.T) {

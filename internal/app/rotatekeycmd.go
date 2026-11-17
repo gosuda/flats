@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/gosuda/flats/internal/config"
 	"github.com/gosuda/flats/internal/core"
 	"github.com/gosuda/flats/internal/durable"
 	"github.com/gosuda/flats/internal/store"
@@ -21,11 +22,12 @@ import (
 // a file or a row. This file holds the order of the steps. The file writes, the classification of the pending key
 // and the re-seal are in internal/core.
 
-// The points of a rotation that rotateHook hears about, in the order of the steps. At a point that is named for an
-// operation that has not run yet (it starts with a verb), an error of the hook stands for the failure of that
-// operation. At every other point an error stops the command there, as a stop of the process would.
+// The points of a rotation that rotateHook hears about, in the order of the steps. At the four points that hooked
+// passes (checkpoint, remove-pending, write-copy and write-copy-id), the operation has not run yet, and an error of
+// the hook stands for its failure. At every other point an error stops the command there, as a stop of the process
+// would.
 const (
-	rotateWriteNewKey    = "write-new-key"   // step 1, after the removal of a pending key that was left over: a stop
+	rotateBeforeNewKey   = "before-new-key"  // step 1, after the removal of a pending key that was left over
 	rotateNewKeyWritten  = "new-key-written" // step 1 is durable: the pending key, or FILE, holds the new key
 	rotateCommitted      = "committed"       // the transaction of step 2 committed
 	rotateCheckpoint     = "checkpoint"      // an error is the failure of the checkpoint of step 2
@@ -113,7 +115,7 @@ func (k *secretKeyCmd) rotate(args []string) error {
 		if out, err = lookAtOut(*outFlag, dataDir, keyFile, ids); err != nil {
 			return err
 		}
-		if out.state == outFinishes {
+		if out.key != nil {
 			return r.finishOut(out)
 		}
 	}
@@ -191,12 +193,14 @@ func (k *secretKeyCmd) rotate(args []string) error {
 	// Point 8, step 1: the new key is durable in the pending key file, or in FILE. From here the command completes,
 	// also when an interrupt arrives.
 	if pending.State == core.PendingLeftOver {
-		if err := keyFile.RemovePending(); err != nil {
-			return fmt.Errorf("remove the pending key %s, which is left over from a rotation that stopped: %w; nothing else was changed", pendingPath, err)
+		if err := keyFile.RemovePending(); errors.Is(err, core.ErrRemovedNotSynced) {
+			return fmt.Errorf("removed the pending key %s, which was left over from a rotation that stopped, but its removal is not durable: %w; nothing else was changed. Run the command again", pendingPath, err)
+		} else if err != nil {
+			return fmt.Errorf("remove the pending key %s, which is left over from a rotation that stopped: %w; nothing was changed", pendingPath, err)
 		}
 		k.printf("removed %s, which was left over from a rotation that stopped before it changed a value\n", pendingPath)
 	}
-	if err := reached(rotateWriteNewKey); err != nil {
+	if err := reached(rotateBeforeNewKey); err != nil {
 		return err
 	}
 	holder, again := pendingPath, "`flats secret rotate-key`"
@@ -205,7 +209,9 @@ func (k *secretKeyCmd) rotate(args []string) error {
 		if err := writeKeyOut(out.path, newKey); err != nil {
 			return err
 		}
-	} else if err := keyFile.WritePending(newKey); err != nil {
+	} else if err := keyFile.WritePending(newKey); errors.Is(err, core.ErrPendingKeyStays) {
+		return actionf("the pending key %s was created, but the command could not write it to the end or make it durable: %v; no value was changed. The file stays, and the next run of the command removes it. Remove the cause and run the command again, or write the new key to a new file with --out FILE, and put that file at the key path", pendingPath, err)
+	} else if err != nil {
 		return actionf("cannot create the pending key %s: %v; no value was changed. Write the new key to a new file with --out FILE, and put that file at the key path", pendingPath, err)
 	}
 	if err := reached(rotateNewKeyWritten); err != nil {
@@ -308,18 +314,25 @@ func unopenedRefusal(subject string, c core.KeyCheck) error {
 	if len(secrets) > 0 {
 		fmt.Fprintf(&b, ". It does not open %s", strings.Join(secrets, ", "))
 	}
-	b.WriteString(". Ways out: put the right key in place with `flats secret restore-key`")
-	if c.Opened > 0 {
-		b.WriteString("; or remove the values that it does not open, an operator key with `flats key rm`, and a flat secret with `flats secret rm` after a start of the host")
-	} else {
-		b.WriteString("; or, with no such key left, delete the stored values with `flats secret reset`")
-	}
+	ways := ". Ways out"
 	if n := len(c.UnopenedKeyIDs); n > 0 {
 		carry := "the key ID " + c.UnopenedKeyIDs[0]
 		if n > 1 {
 			carry = "the key IDs " + strings.Join(c.UnopenedKeyIDs, ", ")
 		}
-		fmt.Fprintf(&b, ". The values that do not open carry %s: the file that an earlier `flats secret rotate-key --out` wrote can hold that key", carry)
+		fmt.Fprintf(&b, ". The values that do not open carry %s", carry)
+		// The state after a rotation with --out, whose file finishes it: the key opens nothing, and one key sealed
+		// the values. That run comes before the other ways out, with its condition (state G of rule 18).
+		if c.Opened == 0 && n == 1 {
+			b.WriteString(". After a rotation with `--out`, the file that it wrote holds that key: run `flats secret rotate-key --out FILE` again with the same file, and put the key of that file at the key path only after that run reported the re-seal durable")
+			ways = ". Other ways out"
+		}
+	}
+	b.WriteString(ways + ": put the right key in place with `flats secret restore-key`")
+	if c.Opened > 0 {
+		b.WriteString("; or remove the values that it does not open, an operator key with `flats key rm`, and a flat secret with `flats secret rm` after a start of the host")
+	} else {
+		b.WriteString("; or, with no such key left, delete the stored values with `flats secret reset`")
 	}
 	return actionf("%s", b.String())
 }
@@ -338,52 +351,67 @@ const (
 	oldKeyNoteAfter  = "A copy of flats.db from before this rotation opens only with the old key, which Flats did not keep. Such a copy stays readable with a key of its own, as in a backup with its secret.key, or with a copy of the old key that you made before the rotation: a real copy and not a link, because every name of the key file got the new key."
 )
 
-// outState says what the file that --out names is.
-type outState int
-
-const (
-	outNew      outState = iota // nothing is there: a new rotation creates it
-	outFinishes                 // it holds the key of every sealed value, and the key path does not: rule 19
-	outRefused                  // anything else: the refusal of rule 14
-)
-
-// outTarget is the file of --out as lookAtOut found it. key is set when the file finishes a rotation. refusal is
-// the refusal of rule 14, which belongs to point 4 of rule 7, after the checks of the key.
+// outTarget is the file of --out as lookAtOut found it. key is set when the file exists and finishes a rotation
+// (rule 19). refusal is the refusal of rule 14, which belongs to point 4 of rule 7, after the checks of the key.
+// With neither, nothing is at the name, and a new rotation creates the file.
 type outTarget struct {
 	path    string
-	state   outState
 	key     []byte
 	refusal error
 }
 
-// lookAtOut looks at the file that --out names and writes nothing. A file that does not exist gets the checks of
-// `flats secret restore-key --out` (rule 14). A file that exists finishes a rotation when it is a valid key, is not
-// the key at the key path, and every sealed value carries its key ID (rule 19). Every other file that exists is a
-// refusal, which says which case it is.
+// lookAtOut looks at the file that --out names and writes nothing. A name with nothing at it gets the checks of
+// `flats secret restore-key --out` (rule 14), which also name the cause when the name cannot be looked at. A file
+// that exists finishes a rotation when it is a valid key, is not the key at the key path, and every sealed value
+// carries its key ID (rule 19). Every other file that exists is a refusal, which says which case it is. Only a
+// file that is neither the key file nor in the data directory gets the advice to remove it.
 func lookAtOut(flag, dataDir string, keyFile core.KeyFile, ids store.KeyIDCounts) (outTarget, error) {
 	path, err := cleanPath(flag)
 	if err != nil {
 		return outTarget{}, actionf("--out: %v", err)
 	}
-	if _, err := os.Lstat(path); errors.Is(err, fs.ErrNotExist) {
+	refuse := func(err error) (outTarget, error) { return outTarget{path: path, refusal: err}, nil }
+	if _, err := os.Lstat(path); err != nil {
 		if _, err := keyOutFile(flag, dataDir); err != nil {
-			return outTarget{path: path, state: outRefused, refusal: err}, nil
+			return refuse(err)
 		}
-		return outTarget{path: path, state: outNew}, nil
+		return outTarget{path: path}, nil
 	}
-	other := actionf("--out: %s exists, and it is not the file of a rotation that this command can finish: it is no valid key, or its key sealed none or not all of the stored values. Remove it, or name another file", path)
+	keyPath := keyFile.Path()
+	if fi, err := os.Stat(path); err == nil {
+		if ki, err := os.Stat(keyPath); err == nil && os.SameFile(fi, ki) {
+			return refuse(actionf("--out: %s is the key file that the key path %s names, and the command does not write the new key over it with --out. Name a file that does not exist; do not remove %s", path, keyPath, path))
+		}
+	}
+	if inDataDir(path, dataDir) {
+		return refuse(actionf("--out: %s exists and lies inside the data directory %s. Name a file that does not exist, outside the data directory; do not remove %s for this command", path, dataDir, path))
+	}
+	other := actionf("--out: %s exists, and it is not the file of a rotation that this command can finish: it is no valid key, or its key sealed none or not all of the stored values. Name a file that does not exist. Remove %s only when it is a key file that an earlier run of this command left", path, path)
 	fileKey, ok := readKeyAt(path)
 	if !ok {
-		return outTarget{path: path, state: outRefused, refusal: other}, nil
+		return refuse(other)
 	}
 	if current, err := keyFile.ReadUnchecked(); err == nil && subtle.ConstantTimeCompare(current, fileKey) == 1 {
-		return outTarget{path: path, state: outRefused,
-			refusal: actionf("--out: %s holds the key that %s holds too, so the key is in place: remove %s", path, keyFile.Path(), path)}, nil
+		return refuse(actionf("--out: %s holds the key that %s holds too, so the key is in place. %s is a second file with it, which you can remove", path, keyPath, path))
 	}
 	if id, single := ids.Single(); single && id == core.KeyID(fileKey) {
-		return outTarget{path: path, state: outFinishes, key: fileKey}, nil
+		return outTarget{path: path, key: fileKey}, nil
 	}
-	return outTarget{path: path, state: outRefused, refusal: other}, nil
+	return refuse(other)
+}
+
+// inDataDir reports whether the file at path, which exists, lies in the data directory: by its name, or by the file
+// that a link at the name leads to.
+func inDataDir(path, dataDir string) bool {
+	data, err := filepath.EvalSymlinks(dataDir)
+	if err != nil {
+		return false
+	}
+	if dir, err := filepath.EvalSymlinks(filepath.Dir(path)); err == nil && config.InsideDir(data, dir) {
+		return true
+	}
+	real, err := filepath.EvalSymlinks(path)
+	return err == nil && config.InsideDir(data, real)
 }
 
 // readKeyAt reads the file at path when it is a regular file of 32 bytes, following a link as a read of the host
@@ -515,7 +543,9 @@ func (r *rotation) placeAndCopy(key, copyData []byte, place bool) error {
 		}
 	}
 	var late []error
-	if err := hooked(rotateRemovePending, r.keyFile.RemovePending); err != nil {
+	if err := hooked(rotateRemovePending, r.keyFile.RemovePending); errors.Is(err, core.ErrRemovedNotSynced) {
+		late = append(late, fmt.Errorf("%s holds the new key, and the pending key %s was removed, but its removal is not durable: %w. If the file is there again after a loss of power, run `flats secret rotate-key` again, which removes it", keyPath, pendingPath, err))
+	} else if err != nil {
 		late = append(late, fmt.Errorf("%s holds the new key, but the pending key %s could not be removed: %w. Run `flats secret rotate-key` again, which removes it", keyPath, pendingPath, err))
 	} else if err := reached(rotatePendingRemoved); err != nil {
 		return err

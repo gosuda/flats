@@ -130,14 +130,12 @@ func (k *secretKeyCmd) backup(args []string) error {
 
 // rotationRefusal is the check of rule 22 of docs/spec/secret-key-rotation.md for a command that holds no host
 // lock: it refuses while a pending key of a rotation waits, and while the key at the key path sealed none of the
-// values. It reads the key IDs of flats.db without a migration. When flats.db is missing or is not of the schema
-// of this binary, it makes no check of the labels, and still stops on a pending key file that cannot be classified.
+// values. It reads the key IDs of flats.db without a migration. When flats.db is missing, is not of the schema of
+// this binary or cannot be read, it makes no check of the labels: a copy of the key helps most beside a database
+// that is damaged. It still stops on a pending key file that cannot be classified.
 func rotationRefusal(ctx context.Context, dataDir string, keyFile core.KeyFile) error {
 	ids, ok, err := store.SealedKeyIDsBeside(ctx, filepath.Join(dataDir, "flats.db"))
-	if err != nil {
-		return fmt.Errorf("read the key IDs of the sealed values: %w", err)
-	}
-	if !ok {
+	if err != nil || !ok {
 		ids = nil
 	}
 	return rotationError(core.CheckRotation(keyFile, ids))

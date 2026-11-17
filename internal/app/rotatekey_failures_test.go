@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -411,6 +412,18 @@ func TestRotateKeyFailuresOfStep3(t *testing.T) {
 			t.Fatal("the next run made a new key")
 		}
 	})
+	// The file can be gone when the removal reports an error: the sync of the folder failed after it. The message
+	// then says so, and does not say that the file could not be removed.
+	t.Run("a removal of the pending key that is not durable", func(t *testing.T) {
+		h := newRotHost(t)
+		notSynced := fmt.Errorf("%w: sync: input/output error", core.ErrRemovedNotSynced)
+		_, err := rotateWith(t, h.config, failAt(rotateRemovePending, notSynced), "--yes")
+		failedWith(t, "the removal of the pending key", err, "input/output error", h.keyPath+" holds the new key",
+			"the pending key "+h.pending()+" was removed, but its removal is not durable", "after a loss of power")
+		if strings.Contains(err.Error(), "could not be removed") {
+			t.Errorf("the message says that the file could not be removed: %v", err)
+		}
+	})
 }
 
 // A finish with nothing at the key path creates the key file with mode 0600, and the file is there and durable
@@ -600,8 +613,10 @@ func rotateInterrupted(t *testing.T, h *rotHost, atPrompt bool, atPoint string, 
 		defer func() { openTerminal = old }()
 	}
 	old := rotateHook
+	interrupted := false
 	rotateHook = func(p string) error {
 		if p == atPoint {
+			interrupted = true
 			cancel()
 		}
 		return nil
@@ -609,6 +624,9 @@ func rotateInterrupted(t *testing.T, h *rotHost, atPrompt bool, atPoint string, 
 	defer func() { rotateHook = old }()
 	var out bytes.Buffer
 	err := SecretKeyCommand(ctx, append([]string{"rotate-key", "--config", h.config}, args...), strings.NewReader(""), &out)
+	if atPoint != "" && !interrupted {
+		t.Fatalf("the command did not reach the point %q, so the test made no interrupt: %v\n%s", atPoint, err, out.String())
+	}
 	return out.String(), err
 }
 

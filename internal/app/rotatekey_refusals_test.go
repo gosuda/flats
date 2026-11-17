@@ -236,9 +236,28 @@ func TestRotateKeyNeedsAKeyThatOpensEveryValue(t *testing.T) {
 		check := frozen(t, h)
 		_, err := h.rotate(t, "--yes")
 		refusedWith(t, "rotate-key", err, "opens 0 of the 5 sealed values", "`flats secret restore-key`", "`flats secret reset`",
-			"The values that do not open carry the key ID "+core.KeyID(h.key), "the file that an earlier `flats secret rotate-key --out` wrote can hold that key")
+			"The values that do not open carry the key ID "+core.KeyID(h.key), "run `flats secret rotate-key --out FILE` again with the same file",
+			"only after that run reported the re-seal durable", "Other ways out")
+		// The run with the same file is the first way out that the refusal names.
+		if msg := err.Error(); strings.Index(msg, "rotate-key --out FILE") > strings.Index(msg, "`flats secret restore-key`") {
+			t.Errorf("the refusal names another way out before the run with the same file: %v", err)
+		}
 		if strings.Contains(err.Error(), "flats key rm") {
 			t.Errorf("the refusal names `flats key rm` although the key opens no value: %v", err)
+		}
+		check("the refusal")
+	})
+	// The run with the same file finishes only when one key sealed every value. A refusal for values of which the
+	// key opens some names their key ID, and not that run.
+	t.Run("the key opens some values, and the others carry a key ID", func(t *testing.T) {
+		h := newRotHost(t)
+		other := core.KeyID(bytes.Repeat([]byte{7}, 32))
+		sqlExec(t, h.dir, `UPDATE secrets SET nonce=x'000000000000000000000000', ciphertext=x'0000000000000000000000000000000000000000', key_id='`+other+`' WHERE name='SITE_TOKEN'`)
+		check := frozen(t, h)
+		_, err := h.rotate(t, "--yes")
+		refusedWith(t, "rotate-key", err, "opens 4 of the 5 sealed values", "The values that do not open carry the key ID "+other, ". Ways out: ", "`flats secret restore-key`")
+		if strings.Contains(err.Error(), "--out FILE") {
+			t.Errorf("the refusal names the run with --out although the key opens some values: %v", err)
 		}
 		check("the refusal")
 	})
@@ -364,6 +383,10 @@ func TestRotateKeyRefusesAnOutFile(t *testing.T) {
 	if err := os.Mkdir(below, 0o700); err != nil {
 		t.Fatal(err)
 	}
+	left := func(file string) []string {
+		return []string{file + " exists", "Name a file that does not exist", "Remove " + file + " only when it is a key file that an earlier run of this command left"}
+	}
+	db := filepath.Join(h.dir, "flats.db")
 	cases := map[string]struct {
 		file string
 		want []string
@@ -372,11 +395,12 @@ func TestRotateKeyRefusesAnOutFile(t *testing.T) {
 		"a folder that is a file":            {filepath.Join(notAKey, "new.key"), []string{"--out"}},
 		"the data directory":                 {filepath.Join(h.dir, "new.key"), []string{"outside the data directory"}},
 		"a folder below the data directory":  {filepath.Join(below, "new.key"), []string{"outside the data directory"}},
-		"a file that is no valid key":        {notAKey, []string{notAKey + " exists", "Remove it, or name another file"}},
-		"a key that sealed no value":         {sealedNothing, []string{sealedNothing + " exists", "Remove it, or name another file"}},
-		"a folder at the name":               {folder, []string{folder + " exists", "Remove it, or name another file"}},
-		"the key that the key path holds":    {inPlace, []string{inPlace + " holds the key that " + h.keyPath + " holds too", "the key is in place", "remove " + inPlace}},
-		"the key file itself":                {h.keyPath, []string{"holds the key that " + h.keyPath + " holds too"}},
+		"a file that is no valid key":        {notAKey, left(notAKey)},
+		"a key that sealed no value":         {sealedNothing, left(sealedNothing)},
+		"a folder at the name":               {folder, left(folder)},
+		"the key that the key path holds":    {inPlace, []string{inPlace + " holds the key that " + h.keyPath + " holds too", "the key is in place", inPlace + " is a second file with it, which you can remove"}},
+		"the key file itself":                {h.keyPath, []string{h.keyPath + " is the key file that the key path " + h.keyPath + " names", "do not remove " + h.keyPath}},
+		"a file of the data directory":       {db, []string{db + " exists and lies inside the data directory", "do not remove " + db}},
 		"the recovery copy's name, not used": {filepath.Join(h.dir, core.RecoveryKeyFile), []string{"outside the data directory"}},
 	}
 	check := frozen(t, h, notAKey, sealedNothing, inPlace, folder, filepath.Join(h.dir, "new.key"), filepath.Join(below, "new.key"), filepath.Join(elsewhere, "missing"))
@@ -384,6 +408,15 @@ func TestRotateKeyRefusesAnOutFile(t *testing.T) {
 		_, err := h.rotate(t, "--yes", "--out", tc.file)
 		refusedWith(t, "--out "+name, err, tc.want...)
 		check("--out " + name)
+		// No refusal tells the operator to remove the key file or a file of the data directory.
+		if msg := err.Error(); (tc.file == h.keyPath || tc.file == db) && (strings.Contains(msg, "you can remove") || strings.Contains(msg, "Remove ")) {
+			t.Errorf("--out %s: the refusal says to remove the file: %v", name, err)
+		}
+	}
+	// A name below a file cannot be looked at. The refusal names that cause on every system, and not a file that exists.
+	_, err := h.rotate(t, "--yes", "--out", filepath.Join(notAKey, "new.key"))
+	if msg := err.Error(); strings.Contains(msg, "exists") || !(strings.Contains(msg, "is not a folder") || strings.Contains(msg, "not a directory")) {
+		t.Errorf("--out below a file: the refusal does not name the cause: %v", err)
 	}
 	t.Run("through a link into the data directory", func(t *testing.T) {
 		link := filepath.Join(t.TempDir(), "link")

@@ -82,6 +82,9 @@ func (k KeyFile) pending(ids store.KeyIDCounts, compareAlways bool) (PendingKey,
 	if err != nil || !found {
 		return PendingKey{}, err
 	}
+	if err := k.keyPathLeadsToPending(); err != nil {
+		return PendingKey{}, err
+	}
 	if len(data) != 32 {
 		return PendingKey{State: PendingLeftOver}, nil
 	}
@@ -98,6 +101,27 @@ func (k KeyFile) pending(ids store.KeyIDCounts, compareAlways bool) (PendingKey,
 		p.State = PendingWaits
 	}
 	return p, nil
+}
+
+// keyPathLeadsToPending refuses a key path that is a symbolic link which leads to the pending key file (rule 17).
+// The two names then hold the same bytes, as a duplicate does, but the pending key file is the only file with them:
+// its removal would leave a link to nothing. So no reader classifies the pending key, and none removes it. A hard
+// link is not refused: it is a second name of the file, which keeps the key when the pending name goes.
+func (k KeyFile) keyPathLeadsToPending() error {
+	link, err := os.Lstat(k.path)
+	if err != nil || link.Mode()&fs.ModeSymlink == 0 {
+		return nil
+	}
+	target, err := os.Stat(k.path)
+	if err != nil {
+		return nil // a link to nothing: the read of the key refuses it
+	}
+	pending, err := os.Lstat(k.PendingPath())
+	if err != nil || !os.SameFile(target, pending) {
+		return nil
+	}
+	return fmt.Errorf("%w: the key path %s is a link that leads to the pending key file %s, which is then the only file with the key. Flats does not go on, because the end of a rotation removes the pending key file: put a real copy of that file at the key path in place of the link, and run `flats secret rotate-key`",
+		ErrPendingKey, k.path, k.PendingPath())
 }
 
 // readPending reads the file at the pending name without following a link. found is false when nothing is there. It
@@ -229,37 +253,52 @@ func (k KeyFile) CheckPendingPlace() error {
 
 // WritePending creates the pending key file with key and makes it durable (rule 13): a create that fails when the
 // name exists, mode 0600, the 32 bytes, a sync of the file and then of its folder. It makes no temporary file and no
-// hard link, and os.IsExist reports that the name is taken. A file that it created stays after a failed write: it is
-// left over, and the next rotation removes it (rule 21).
+// hard link, and os.IsExist reports that the name is taken. A file that it created stays after a failed write or a
+// failed sync, and the error then wraps ErrPendingKeyStays: the file is left over, and the next rotation removes it
+// (rule 21).
 func (k KeyFile) WritePending(key []byte) error {
 	if len(key) != 32 {
 		return errors.New("a secret key must be 32 bytes")
 	}
-	if err := createKeyFile(k.PendingPath(), key); err != nil {
-		return err
+	created, err := createKeyFile(k.PendingPath(), key)
+	if err == nil {
+		err = durable.SyncDir(filepath.Dir(k.PendingPath()))
 	}
-	return durable.SyncDir(filepath.Dir(k.PendingPath()))
+	if err != nil && created {
+		return fmt.Errorf("%w: %w", ErrPendingKeyStays, err)
+	}
+	return err
 }
 
-// createKeyFile creates path with a call that fails when the name exists, writes key and syncs the file.
-func createKeyFile(path string, key []byte) error {
+// ErrPendingKeyStays reports a pending key file that WritePending created and could not complete or make durable.
+// The file stays.
+var ErrPendingKeyStays = errors.New("the pending key file was created, but its write did not complete")
+
+// ErrRemovedNotSynced reports a pending key file that RemovePending removed, when the sync of its folder failed
+// afterwards: the file is gone, and a loss of power can bring it back.
+var ErrRemovedNotSynced = errors.New("the file was removed, but the sync of its folder failed")
+
+// createKeyFile creates path with a call that fails when the name exists, writes key and syncs the file. created
+// reports that the file exists because of this call, also when a later step failed.
+func createKeyFile(path string, key []byte) (created bool, err error) {
 	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
-		return err
+		return false, err
 	}
 	if _, err := f.Write(key); err != nil {
 		f.Close()
-		return err
+		return true, err
 	}
 	if err := f.Sync(); err != nil {
 		f.Close()
-		return err
+		return true, err
 	}
-	return f.Close()
+	return true, f.Close()
 }
 
 // RemovePending removes the pending key file and syncs its folder. It removes only a regular file: anything else at
-// the name is the refusal of Pending.
+// the name is the refusal of Pending. When the file is removed and the sync fails, the error wraps
+// ErrRemovedNotSynced.
 func (k KeyFile) RemovePending() error {
 	path := k.PendingPath()
 	li, err := os.Lstat(path)
@@ -272,18 +311,38 @@ func (k KeyFile) RemovePending() error {
 	if err := os.Remove(path); err != nil {
 		return err
 	}
-	return durable.SyncDir(filepath.Dir(path))
+	if err := durable.SyncDir(filepath.Dir(path)); err != nil {
+		return fmt.Errorf("%w: %w", ErrRemovedNotSynced, err)
+	}
+	return nil
 }
 
 // CheckWritable opens the key file for writing and closes it again without a change, the check of rule 12 before the
 // first write of a rotation. It follows a link, as the write does. A read-only mount or attribute, a mode that does
-// not let the user write and a program that holds the file fail it. Nothing at the key path is fs.ErrNotExist.
+// not let the user write and a program that holds the file fail it. So does anything that is no regular file once
+// the links are followed: the open of a named pipe would wait for a reader. Nothing at the key path is
+// fs.ErrNotExist.
 func (k KeyFile) CheckWritable() error {
+	if err := regularFile(k.path); err != nil {
+		return err
+	}
 	f, err := os.OpenFile(k.path, os.O_WRONLY, 0)
 	if err != nil {
 		return err
 	}
 	return f.Close()
+}
+
+// regularFile refuses a path that holds something other than a regular file, after it followed the links.
+func regularFile(path string) error {
+	fi, err := os.Stat(path)
+	if err != nil {
+		return err
+	}
+	if !fi.Mode().IsRegular() {
+		return fmt.Errorf("%s is no regular file (%s)", path, fileKind(fi.Mode()))
+	}
+	return nil
 }
 
 // WriteInPlace writes key into the key file where it is, and does not replace the file, so the file keeps its owner,
@@ -299,7 +358,7 @@ func (k KeyFile) WriteInPlace(key []byte, written func() error) error {
 		return errors.New("a secret key must be 32 bytes")
 	}
 	if _, err := os.Lstat(k.path); errors.Is(err, fs.ErrNotExist) {
-		if err := createKeyFile(k.path, key); err != nil {
+		if _, err := createKeyFile(k.path, key); err != nil {
 			return err
 		}
 		if err := durable.SyncDir(filepath.Dir(k.path)); err != nil {
@@ -323,8 +382,11 @@ func (k KeyFile) WriteInPlace(key []byte, written func() error) error {
 	return nil
 }
 
-// overwriteKeyFile writes key over the content of the file at path, which exists, and syncs it.
+// overwriteKeyFile writes key over the content of the regular file at path, which exists, and syncs it.
 func overwriteKeyFile(path string, key []byte) error {
+	if err := regularFile(path); err != nil {
+		return err
+	}
 	f, err := os.OpenFile(path, os.O_WRONLY, 0)
 	if err != nil {
 		return err
@@ -361,8 +423,6 @@ func Reseal(ctx context.Context, st *store.Store, oldKey, newKey []byte, out boo
 	if err != nil {
 		return 0, 0, err
 	}
-	var plain []byte // one buffer for the opened values, which do not outlive their seal
-	defer func() { clear(plain[:cap(plain)]) }()
 	seal := func(v store.SealedValue) ([]byte, []byte, error) {
 		aad := []byte(v.Name)
 		if v.Flat == "" {
@@ -372,11 +432,11 @@ func Reseal(ctx context.Context, st *store.Store, oldKey, newKey []byte, out boo
 		if len(v.Nonce) != from.NonceSize() {
 			return nil, nil, fmt.Errorf("%s does not open with the old key: its nonce has %d bytes", v, len(v.Nonce))
 		}
-		opened, err := from.Open(plain[:0], v.Nonce, v.Ciphertext, aad)
+		plain, err := from.Open(nil, v.Nonce, v.Ciphertext, aad)
 		if err != nil {
 			return nil, nil, fmt.Errorf("%s does not open with the old key: %w", v, err)
 		}
-		plain = opened
+		defer clear(plain) // the opened value does not outlive its seal
 		nonce := make([]byte, to.NonceSize())
 		if _, err := rand.Read(nonce); err != nil {
 			return nil, nil, err
