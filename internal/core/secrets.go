@@ -38,13 +38,35 @@ func (invalidKeyError) Is(target error) bool { return target == ErrInvalidSecret
 // restore the key together with flats.db from the same backup. A configured key
 // (host.secret_key_path) is read in full, so every way that it can be unusable is a
 // refusal here, with or without sealed values: Flats never creates it.
+//
+// Before those checks it makes the check of a rotation that stopped (CheckRotation),
+// whatever the key path holds, so that a host never seals a new value under a key
+// that does not open the others (docs/spec/secret-key-rotation.md, rule 22). The
+// refusal of a missing key names the key ID of the sealed values when they all
+// carry one (rule 23).
 func CheckSecretKey(ctx context.Context, key KeyFile, st *store.Store) error {
-	if key.Configured() {
-		_, err := key.Read()
+	ids, err := st.SealedKeyIDs(ctx)
+	if err != nil {
+		return err
+	}
+	if err := CheckRotation(key, ids); err != nil {
 		return err
 	}
 	path := key.Path()
-	if _, err := os.Lstat(path); !errors.Is(err, os.ErrNotExist) {
+	_, lerr := os.Lstat(path)
+	missing := errors.Is(lerr, os.ErrNotExist)
+	if key.Configured() {
+		// The two steps of key.Read, apart, so that only the refusal of the missing file gets the key ID.
+		if err := key.Check(); err != nil {
+			return err
+		}
+		_, err := key.readConfigured()
+		if hint := keyOfTheValues(ids); err != nil && missing && hint != "" {
+			return fmt.Errorf("%w%s", err, hint)
+		}
+		return err
+	}
+	if !missing {
 		return nil
 	}
 	has, err := st.HasSecrets(ctx)
@@ -52,15 +74,35 @@ func CheckSecretKey(ctx context.Context, key KeyFile, st *store.Store) error {
 		return err
 	}
 	if has {
-		return fmt.Errorf("%w: restore %s with `flats secret restore-key` or from the backup of this database, or, with neither the key nor its recovery password left, delete the stored values with `flats secret reset`; Flats will not create a new key", ErrSecretKeyMissing, path)
+		return fmt.Errorf("%w: restore %s with `flats secret restore-key` or from the backup of this database, or, with neither the key nor its recovery password left, delete the stored values with `flats secret reset`; Flats will not create a new key%s", ErrSecretKeyMissing, path, keyOfTheValues(ids))
 	}
 	if has, err = st.HasSealedHostKeys(ctx); err != nil {
 		return err
 	}
 	if has {
-		return fmt.Errorf("%w: restore %s with `flats secret restore-key` or from the backup of this database, or remove the stored operator keys with `flats key rm` and register them again; Flats will not create a new key", ErrSecretKeyMissing, path)
+		return fmt.Errorf("%w: restore %s with `flats secret restore-key` or from the backup of this database, or remove the stored operator keys with `flats key rm` and register them again; Flats will not create a new key%s", ErrSecretKeyMissing, path, keyOfTheValues(ids))
 	}
 	return nil
+}
+
+// keyOfTheValues is the sentence that the refusal of a missing key ends with when every sealed value carries one
+// key ID, and "" otherwise (rule 23 of docs/spec/secret-key-rotation.md).
+func keyOfTheValues(ids store.KeyIDCounts) string {
+	id, ok := ids.Single()
+	if !ok {
+		return ""
+	}
+	return fmt.Sprintf(". The stored values carry the key ID %s: a key file with that ID opens them", id)
+}
+
+// sealedByAnotherKey is the part of the error of a value that did not open that names both key IDs: the one that
+// the value carries and the one of the key that was tried. It is "" for a value without a label and for one that
+// carries the ID of the key, whose error stays as it was (rule 3 of docs/spec/secret-key-rotation.md).
+func sealedByAnotherKey(valueID, keyID string) string {
+	if valueID == "" || valueID == keyID {
+		return ""
+	}
+	return fmt.Sprintf(" (the value carries the key ID %s, and the key in use has the ID %s)", valueID, keyID)
 }
 
 func loadOrCreateKey(path string) ([]byte, error) {
@@ -69,8 +111,8 @@ func loadOrCreateKey(path string) ([]byte, error) {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return nil, err
 	}
-	key := make([]byte, 32)
-	if _, err := rand.Read(key); err != nil {
+	key, err := NewSecretKey()
+	if err != nil {
 		return nil, err
 	}
 	if err := publishKey(path, key); err != nil {
@@ -171,7 +213,7 @@ func (s *Service) SetSecret(ctx context.Context, slugName, name, value string, v
 		return err
 	}
 	ct := g.Seal(nil, nonce, []byte(value), []byte(name))
-	if err := s.st.PutSecret(ctx, slugName, store.SealedSecret{Name: name, Nonce: nonce, Ciphertext: ct, UpdatedAt: s.now()}, s.audit(ctx, via)); err != nil {
+	if err := s.st.PutSecret(ctx, slugName, store.SealedSecret{Name: name, Nonce: nonce, Ciphertext: ct, KeyID: s.secretKeyID, UpdatedAt: s.now()}, s.audit(ctx, via)); err != nil {
 		if errors.Is(err, store.ErrEnvCollision) {
 			return invalidf("secret %q conflicts with an existing environment variable", name)
 		}
@@ -221,7 +263,7 @@ func (s *Service) decryptSecrets(secs []store.SealedSecret) (map[string]string, 
 	for _, sec := range secs {
 		pt, err := g.Open(nil, sec.Nonce, sec.Ciphertext, []byte(sec.Name))
 		if err != nil {
-			return nil, fmt.Errorf("decrypt secret %s: %w", sec.Name, err)
+			return nil, fmt.Errorf("decrypt secret %s: %w%s", sec.Name, err, sealedByAnotherKey(sec.KeyID, s.secretKeyID))
 		}
 		env[sec.Name] = string(pt)
 	}

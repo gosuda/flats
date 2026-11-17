@@ -105,7 +105,7 @@ func hostKeyAEAD(key []byte) (cipher.AEAD, error) {
 }
 
 // SealHostKey encrypts value for id under the host key, creating the key file when there is none
-// yet. A configured key is never created.
+// yet. A configured key is never created. The record carries the key ID of the key that sealed it.
 func SealHostKey(keyFile KeyFile, id, value string, source string, now time.Time) (store.HostKey, error) {
 	key, err := keyFile.LoadOrCreate()
 	if err != nil {
@@ -120,10 +120,11 @@ func SealHostKey(keyFile KeyFile, id, value string, source string, now time.Time
 		return store.HostKey{}, err
 	}
 	return store.HostKey{ID: id, Nonce: nonce, Ciphertext: g.Seal(nil, nonce, []byte(value), hostKeyAAD(id)),
-		Source: source, UpdatedAt: now}, nil
+		KeyID: KeyID(key), Source: source, UpdatedAt: now}, nil
 }
 
-// OpenHostKey decrypts a stored key value.
+// OpenHostKey decrypts a stored key value. It always tries the key: the key ID of the record is a label, and it only
+// adds to the error of a value that did not open.
 func OpenHostKey(keyFile KeyFile, k store.HostKey) (string, error) {
 	if !k.HasValue() {
 		return "", errors.New("the key record holds no value")
@@ -138,7 +139,7 @@ func OpenHostKey(keyFile KeyFile, k store.HostKey) (string, error) {
 	}
 	pt, err := g.Open(nil, k.Nonce, k.Ciphertext, hostKeyAAD(k.ID))
 	if err != nil {
-		return "", fmt.Errorf("decrypt the stored %s key: %w; the key at %s does not match flats.db: put back the matching key, which `flats secret restore-key` restores from its recovery copy, or remove this key with `flats key rm` while the host is stopped and register it again", k.ID, err, keyFile.Path())
+		return "", fmt.Errorf("decrypt the stored %s key: %w%s; the key at %s does not match flats.db: put back the matching key, which `flats secret restore-key` restores from its recovery copy, or remove this key with `flats key rm` while the host is stopped and register it again", k.ID, err, sealedByAnotherKey(k.KeyID, KeyID(key)), keyFile.Path())
 	}
 	return string(pt), nil
 }

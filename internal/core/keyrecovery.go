@@ -132,10 +132,13 @@ func (n SealedName) String() string {
 }
 
 // KeyCheck counts the sealed values in flats.db that a key opens, and names
-// those it does not.
+// those it does not. UnopenedKeyIDs lists, sorted, the key IDs that the values
+// that did not open carry, so that a refusal can say which key sealed them
+// (docs/spec/secret-key-rotation.md, rule 9).
 type KeyCheck struct {
-	Opened, Total int
-	Unopened      []SealedName
+	Opened, Total  int
+	Unopened       []SealedName
+	UnopenedKeyIDs []string
 }
 
 // All reports whether the key opens every sealed value.
@@ -157,7 +160,7 @@ func CheckKey(ctx context.Context, st *store.Store, key []byte) (KeyCheck, error
 		return KeyCheck{}, err
 	}
 	var c KeyCheck
-	try := func(name SealedName, nonce, ciphertext, aad []byte) {
+	try := func(name SealedName, keyID string, nonce, ciphertext, aad []byte) {
 		c.Total++
 		// Open panics on a nonce of the wrong size; a damaged row opens nothing.
 		if len(nonce) == g.NonceSize() {
@@ -167,15 +170,19 @@ func CheckKey(ctx context.Context, st *store.Store, key []byte) (KeyCheck, error
 			}
 		}
 		c.Unopened = append(c.Unopened, name)
+		if keyID != "" && !slices.Contains(c.UnopenedKeyIDs, keyID) {
+			c.UnopenedKeyIDs = append(c.UnopenedKeyIDs, keyID)
+		}
 	}
 	for _, s := range secs {
-		try(SealedName{s.Flat, s.Name}, s.Nonce, s.Ciphertext, []byte(s.Name))
+		try(SealedName{s.Flat, s.Name}, s.KeyID, s.Nonce, s.Ciphertext, []byte(s.Name))
 	}
 	for _, k := range keys {
 		if k.HasValue() {
-			try(SealedName{Name: k.ID}, k.Nonce, k.Ciphertext, hostKeyAAD(k.ID))
+			try(SealedName{Name: k.ID}, k.KeyID, k.Nonce, k.Ciphertext, hostKeyAAD(k.ID))
 		}
 	}
+	slices.Sort(c.UnopenedKeyIDs)
 	return c, nil
 }
 
