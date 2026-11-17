@@ -29,6 +29,8 @@ const (
 	nameFlats        = "flats"
 	nameLifecycle    = ".lifecycle"
 	nameSecretKey    = "secret.key"
+	namePendingKey   = "secret.key.next" // the pending key of a rotation
+	tempKeyPrefix    = ".secret-key-"    // a temporary key file of the first start and of restore-key
 	nameRecovery     = "secret.key.recovery"
 	nameRecoveryID   = "secret.key.recovery.id"
 	nameConfigHist   = "config-history"
@@ -74,6 +76,10 @@ func classify(rel string) classification {
 	case top == nameFlatsDB:
 		return classification{class: classDatabase, kind: KindFlats}
 	case isDBSidecar(top, nameFlatsDB):
+		return classification{class: classExcluded}
+	case len(seg) == 1 && (top == namePendingKey || strings.HasPrefix(top, tempKeyPrefix)):
+		// A key file that is not the host key: the pending key of a rotation, and a temporary key file that a crash
+		// can leave. Never copied, with or without --exclude-secret-key (rule 3).
 		return classification{class: classExcluded}
 	case top != nameFlats:
 		return classification{class: classHost}

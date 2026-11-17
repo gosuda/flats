@@ -950,10 +950,14 @@ func relayLimit(n int64) int {
 
 // keyRefusal makes a refusal of the host key an action error, which exits with status 78. A service manager
 // that does not restart on 78 does not loop on a key that is missing or cannot be used, whether the check
-// at the start or the one in core.New found it (docs/spec/secret-key-path.md, rules 5 and 8).
+// at the start or the one in core.New found it (docs/spec/secret-key-path.md, rules 5 and 8). The refusals of a
+// rotation that stopped are refusals of the key too: a pending key that waits, a key that sealed none of the
+// values, and a pending key file that cannot be classified (docs/spec/secret-key-rotation.md, rules 17 and 22).
 func keyRefusal(err error) error {
-	if errors.Is(err, core.ErrSecretKeyMissing) || errors.Is(err, core.ErrKeyLocation) {
-		return &ActionError{err}
+	for _, refusal := range []error{core.ErrSecretKeyMissing, core.ErrKeyLocation, core.ErrRotationStopped, core.ErrKeySealedNothing, core.ErrPendingKey} {
+		if errors.Is(err, refusal) {
+			return &ActionError{err}
+		}
 	}
 	return err
 }

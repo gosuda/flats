@@ -132,6 +132,10 @@ func Run(ctx context.Context, o Options) (res *Result, err error) {
 	if err := checkSchema(flatsDB); err != nil {
 		return nil, err
 	}
+	// After the database check, because it reads the key IDs from flats.db, and before the partial directory exists.
+	if err := checkRotation(ctx, keyFile, flatsDB, o.ExcludeSecretKey); err != nil {
+		return nil, err
+	}
 	// Once, here, before any goroutine: the snapshots of one attempt open connections together, and the driver's
 	// table of collations is not safe against a registration that overlaps an open (a data race that CI found).
 	// collation_test.go registers it in init() as well, because the tests run in parallel in one process. So the
@@ -311,6 +315,31 @@ func checkSchema(flatsDB string) error {
 		return &RefusedError{fmt.Sprintf("%s has schema version %d and this Flats expects %d. Start the host once with this Flats, which migrates it, or copy the stopped data directory by hand", flatsDB, info.Version, info.Latest)}
 	}
 	return nil
+}
+
+// checkRotation refuses a copy in the states that a rotation of the host key can leave, with the message of the
+// start (docs/spec/secret-key-rotation.md, rules 22 and 26): a pending key waits, or the key at the key path sealed
+// none of the values. A copy made then would pair flats.db with a key that does not open it. It reads the key IDs
+// without the host lock and without a migration. With --exclude-secret-key the command copies no key and reads none
+// for the second state, so only the first state refuses. A pending key file that cannot be classified refuses in
+// both modes, because it can be a pending key that waits.
+func checkRotation(ctx context.Context, keyFile core.KeyFile, flatsDB string, excludeKey bool) error {
+	ids, ok, err := store.SealedKeyIDsBeside(ctx, flatsDB)
+	if err != nil {
+		return fmt.Errorf("read the key IDs of %s: %w", flatsDB, err)
+	}
+	if !ok {
+		ids = nil // the schema changed after the check above: no check of the labels
+	}
+	check := core.CheckRotation
+	if excludeKey {
+		check = core.CheckStoppedRotation
+	}
+	err = check(keyFile, ids)
+	if errors.Is(err, core.ErrRotationStopped) || errors.Is(err, core.ErrKeySealedNothing) || errors.Is(err, core.ErrPendingKey) {
+		return &RefusedError{err.Error()}
+	}
+	return err
 }
 
 // checkError is the error of Run for the failures of the copy's own check. A failure that a second run cannot

@@ -754,12 +754,12 @@ func (a *app) logs(args []string) error {
 
 func (a *app) secret(args []string) error {
 	if len(args) == 0 {
-		return usagef("missing subcommand (set, rm, ls, backup-key, restore-key or reset)")
+		return usagef("missing subcommand (set, rm, ls, backup-key, restore-key, rotate-key or reset)")
 	}
 	sub, args := args[0], args[1:]
 	fs := a.flags("secret")
 	switch sub {
-	case "backup-key", "restore-key", "reset":
+	case "backup-key", "restore-key", "rotate-key", "reset":
 		return a.secretKey(append([]string{sub}, args...))
 	case "set":
 		pos, err := a.parse(fs, args, 2, 2)
@@ -822,7 +822,7 @@ func (a *app) secret(args []string) error {
 		}
 		return tw.Flush()
 	}
-	return usagef("unknown secret subcommand %q (use set, rm, ls, backup-key, restore-key or reset)", sub)
+	return usagef("unknown secret subcommand %q (use set, rm, ls, backup-key, restore-key, rotate-key or reset)", sub)
 }
 
 // secretKey runs the subcommands that work on secret.key in the data

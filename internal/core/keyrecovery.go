@@ -191,12 +191,28 @@ func CheckKey(ctx context.Context, st *store.Store, key []byte) (KeyCheck, error
 // a copy was there. A crash between the two leaves an ID that does not match,
 // which the next start reports, never one that matches an older copy.
 func WriteKeyCopy(dataDir string, data, key []byte) (replaced bool, err error) {
+	if replaced, err = WriteKeyCopyFile(dataDir, data); err != nil {
+		return false, err
+	}
+	return replaced, WriteKeyCopyID(dataDir, key)
+}
+
+// WriteKeyCopyFile is the first write of WriteKeyCopy: it writes data, a recovery copy, to dataDir, replacing an
+// older file, and reports whether a copy was there. A caller that must say which of the two writes failed makes
+// them in two calls, this one first (docs/spec/secret-key-rotation.md, rule 20).
+func WriteKeyCopyFile(dataDir string, data []byte) (replaced bool, err error) {
 	_, err = os.Lstat(filepath.Join(dataDir, RecoveryKeyFile))
 	replaced = err == nil
 	if err := replaceFile(dataDir, RecoveryKeyFile, data); err != nil {
 		return false, err
 	}
-	return replaced, replaceFile(dataDir, RecoveryKeyIDFile, []byte(KeyID(key)+"\n"))
+	return replaced, nil
+}
+
+// WriteKeyCopyID is the second write of WriteKeyCopy: it writes the ID of key, the key in the recovery copy, beside
+// the copy, replacing an older ID file.
+func WriteKeyCopyID(dataDir string, key []byte) error {
+	return replaceFile(dataDir, RecoveryKeyIDFile, []byte(KeyID(key)+"\n"))
 }
 
 // replaceFile writes data to dir/name through a synced temporary file.
