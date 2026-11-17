@@ -240,7 +240,7 @@ func TestRotateKeyAFailedCheckpoint(t *testing.T) {
 			t.Errorf("the second run reported the re-seal durable although its checkpoint failed:\n%s", out)
 		}
 		out, err = h.rotate(t, "--out", file)
-		if err != nil || !strings.Contains(out, "the re-seal is durable") || !strings.Contains(out, "The new key must be put at "+h.keyPath) {
+		if err != nil || !strings.Contains(out, "the re-seal is durable") || !strings.Contains(out, "The key of "+file+" must be put at "+h.keyPath) {
 			t.Fatalf("the third run: %v\n%s", err, out)
 		}
 		if n := len(eventsOf(t, h.dir, store.AuditKeyRotate)); n != 1 {

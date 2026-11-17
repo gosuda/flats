@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 
 	"github.com/gosuda/flats/internal/config"
@@ -67,6 +68,8 @@ type rotation struct {
 	dataDir      string
 	keyFile      core.KeyFile
 	passwordFile string
+	// ids are the key IDs that the sealed values carry, as the command found them.
+	ids store.KeyIDCounts
 	// write is the context of every write after the first one began: an interrupt does not stop it (rule 16).
 	write context.Context
 }
@@ -95,6 +98,7 @@ func (k *secretKeyCmd) rotate(args []string) error {
 	if err != nil {
 		return err
 	}
+	r.ids = ids
 
 	// Point 2: a rotation that stopped is finished, and the points below do not apply (rule 19).
 	pending, err := keyFile.Pending(ids)
@@ -130,7 +134,7 @@ func (k *secretKeyCmd) rotate(args []string) error {
 		return err
 	}
 	if !check.All() {
-		return unopenedRefusal("the key at "+keyPath, check)
+		return r.unopenedRefusal("the key at "+keyPath, check)
 	}
 
 	// Point 4: the place of the new key.
@@ -297,7 +301,7 @@ func (r *rotation) hostKey() ([]byte, error) {
 }
 
 // unopenedRefusal is the refusal of rule 9 for a key that does not open every sealed value. subject names the key.
-func unopenedRefusal(subject string, c core.KeyCheck) error {
+func (r *rotation) unopenedRefusal(subject string, c core.KeyCheck) error {
 	var keys, secrets []string
 	for _, n := range c.Unopened {
 		if n.Flat == "" {
@@ -322,8 +326,8 @@ func unopenedRefusal(subject string, c core.KeyCheck) error {
 		}
 		fmt.Fprintf(&b, ". The values that do not open carry %s", carry)
 		// The state after a rotation with --out, whose file finishes it: the key opens nothing, and one key sealed
-		// the values. That run comes before the other ways out, with its condition (state G of rule 18).
-		if c.Opened == 0 && n == 1 {
+		// every value. That run comes before the other ways out, with its condition (state G of rule 18).
+		if _, oneKey := r.ids.Single(); c.Opened == 0 && oneKey {
 			b.WriteString(". After a rotation with `--out`, the file that it wrote holds that key: run `flats secret rotate-key --out FILE` again with the same file, and put the key of that file at the key path only after that run reported the re-seal durable")
 			ways = ". Other ways out"
 		}
@@ -352,11 +356,13 @@ const (
 )
 
 // outTarget is the file of --out as lookAtOut found it. key is set when the file exists and finishes a rotation
-// (rule 19). refusal is the refusal of rule 14, which belongs to point 4 of rule 7, after the checks of the key.
-// With neither, nothing is at the name, and a new rotation creates the file.
+// (rule 19), and keyID is then the ID of the other key, which the key path holds. refusal is the refusal of rule
+// 14, which belongs to point 4 of rule 7, after the checks of the key. With neither, nothing is at the name, and a
+// new rotation creates the file.
 type outTarget struct {
 	path    string
 	key     []byte
+	keyID   string
 	refusal error
 }
 
@@ -371,13 +377,16 @@ func lookAtOut(flag, dataDir string, keyFile core.KeyFile, ids store.KeyIDCounts
 		return outTarget{}, actionf("--out: %v", err)
 	}
 	refuse := func(err error) (outTarget, error) { return outTarget{path: path, refusal: err}, nil }
+	keyPath := keyFile.Path()
+	if sameName(path, keyFile.PendingPath()) {
+		return refuse(actionf("--out: %s is the name of the pending key file of %s, which the command keeps for itself. Name another file", path, keyPath))
+	}
 	if _, err := os.Lstat(path); err != nil {
 		if _, err := keyOutFile(flag, dataDir); err != nil {
 			return refuse(err)
 		}
 		return outTarget{path: path}, nil
 	}
-	keyPath := keyFile.Path()
 	if fi, err := os.Stat(path); err == nil {
 		if ki, err := os.Stat(keyPath); err == nil && os.SameFile(fi, ki) {
 			return refuse(actionf("--out: %s is the key file that the key path %s names, and the command does not write the new key over it with --out. Name a file that does not exist; do not remove %s", path, keyPath, path))
@@ -391,13 +400,39 @@ func lookAtOut(flag, dataDir string, keyFile core.KeyFile, ids store.KeyIDCounts
 	if !ok {
 		return refuse(other)
 	}
-	if current, err := keyFile.ReadUnchecked(); err == nil && subtle.ConstantTimeCompare(current, fileKey) == 1 {
-		return refuse(actionf("--out: %s holds the key that %s holds too, so the key is in place. %s is a second file with it, which you can remove", path, keyPath, path))
+	// The command must see the whole state before it finishes anything: a valid key at the key path, another key in
+	// FILE, and the key ID of that key on every sealed value (state G of rule 18). When it cannot read the key at the
+	// key path, a FILE that holds the key in use looks the same as the FILE of a rotation that stopped. It then
+	// finishes nothing, and the refusal of rule 8 for the key comes first.
+	current, err := keyFile.ReadUnchecked()
+	if err != nil {
+		return refuse(actionf("--out: %s exists, and the command cannot read the key at %s to tell what %s is: %v. Name a file that does not exist; do not remove %s", path, keyPath, path, err, path))
+	}
+	if subtle.ConstantTimeCompare(current, fileKey) == 1 {
+		return refuse(actionf("--out: %s holds the key that %s holds too, so the key is in place. Name a file that does not exist. %s is a second file with that key: remove it only when the key path does not get the key from it", path, keyPath, path))
 	}
 	if id, single := ids.Single(); single && id == core.KeyID(fileKey) {
-		return outTarget{path: path, key: fileKey}, nil
+		return outTarget{path: path, key: fileKey, keyID: core.KeyID(current)}, nil
 	}
 	return refuse(other)
+}
+
+// sameName reports whether two paths name the same entry of the same folder, also when the folder is reached
+// through a link. Nothing has to be at the name.
+func sameName(a, b string) bool {
+	da, err := filepath.EvalSymlinks(filepath.Dir(a))
+	if err != nil {
+		return false
+	}
+	db, err := filepath.EvalSymlinks(filepath.Dir(b))
+	if err != nil {
+		return false
+	}
+	na, nb := filepath.Base(a), filepath.Base(b)
+	if runtime.GOOS == "windows" {
+		da, db, na, nb = strings.ToLower(da), strings.ToLower(db), strings.ToLower(na), strings.ToLower(nb)
+	}
+	return da == db && na == nb
 }
 
 // inDataDir reports whether the file at path, which exists, lies in the data directory: by its name, or by the file
@@ -567,7 +602,7 @@ func (r *rotation) finishInputs(subject string, key []byte) (check core.KeyCheck
 		return check, nil, err
 	}
 	if !check.All() {
-		return check, nil, unopenedRefusal(subject, check)
+		return check, nil, r.unopenedRefusal(subject, check)
 	}
 	password, hasCopy, err := r.recoveryPassword()
 	if err != nil {
@@ -628,8 +663,10 @@ func (r *rotation) finishDuplicate(p core.PendingKey) error {
 	return r.placeAndCopy(p.Key, copyData, false)
 }
 
-// finishOut finishes a rotation with --out whose file holds the key of every sealed value (the third case of rule
-// 19). It makes the re-seal durable and writes the recovery copy. The operator puts the key in place.
+// finishOut is the third case of rule 19: the file of --out holds the key of every sealed value, and the key path
+// holds another valid key, which sealed none of them. It makes flats.db durable and writes the recovery copy. The
+// operator puts the key in place. The output says what the command found. It does not say that a rotation took
+// place: this run made no new key, and the same state can come from a key file that was put in place by mistake.
 func (r *rotation) finishOut(out outTarget) error {
 	check, copyData, err := r.finishInputs("the key in "+out.path, out.key)
 	if err != nil {
@@ -641,8 +678,8 @@ func (r *rotation) finishOut(out outTarget) error {
 	if err := r.ctx.Err(); err != nil {
 		return interrupted(err)
 	}
-	r.printf("finished a rotation that had stopped: the re-seal is durable, and the %s in flats.db are under the key with the ID %s, which %s holds\n",
-		counted(check.Total, "sealed value", "sealed values"), core.KeyID(out.key), out.path)
+	r.printf("made no new key: the %s in flats.db are under the key with the ID %s, which %s holds, and the key at %s (key ID %s) sealed none of them. That is the state after a rotation with --out, and the re-seal is durable now\n",
+		counted(check.Total, "sealed value", "sealed values"), core.KeyID(out.key), out.path, r.keyFile.Path(), out.keyID)
 	r.printf("%s\n", putInPlace(out.path, r.keyFile.Path()))
 	err = r.writeCopy(out.key, copyData, true)
 	r.printf("%s\n", oldKeyNoteAfter)
@@ -651,5 +688,5 @@ func (r *rotation) finishOut(out outTarget) error {
 
 // putInPlace says what the operator does with the file of --out (rule 28).
 func putInPlace(outPath, keyPath string) string {
-	return fmt.Sprintf("The new key must be put at %s: put the key of %s there, with the owner and the access that the host needs, and then remove %s. While flats.db holds sealed values, the start refuses until the new key is at %s.", keyPath, outPath, outPath, keyPath)
+	return fmt.Sprintf("The key of %s must be put at %s, with the owner and the access that the host needs. While flats.db holds sealed values, the start refuses until that key is at %s. Remove %s only after that, and only when the key path does not get the key from that file.", outPath, keyPath, keyPath, outPath)
 }

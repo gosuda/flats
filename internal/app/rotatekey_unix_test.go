@@ -47,9 +47,14 @@ func TestRotateKeyFinishWithANamedPipeAtTheKeyPath(t *testing.T) {
 			t.Errorf("the message names --out, which a finish refuses: %v", r.err)
 		}
 	case <-time.After(time.Minute):
-		// The command waits in the open of the pipe. A reader lets it go, so that the test can end.
+		// The command waits in the open of the pipe. A reader lets it go, and the test waits for it, so that the
+		// command does not run beside a later test.
 		if f, err := os.OpenFile(h.keyPath, os.O_RDONLY|syscall.O_NONBLOCK, 0); err == nil {
 			defer f.Close()
+		}
+		select {
+		case <-done:
+		case <-time.After(time.Minute):
 		}
 		t.Fatal("the finish waits on the named pipe at the key path")
 	}

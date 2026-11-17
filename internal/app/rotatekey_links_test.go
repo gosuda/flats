@@ -30,7 +30,7 @@ func TestRotateKeyOutThatTheKeyPathLinksTo(t *testing.T) {
 	check := frozen(t, h, file)
 	_, err := h.rotate(t, "--yes", "--out", file)
 	refusedWith(t, "--out with the file that the key path links to", err, file+" is the key file that the key path "+h.keyPath+" names", "do not remove "+file)
-	if msg := err.Error(); strings.Contains(msg, "you can remove") || strings.Contains(msg, "Remove ") {
+	if saysToRemove(err.Error()) {
 		t.Errorf("the refusal says to remove the key file: %v", err)
 	}
 	check("the refusal")

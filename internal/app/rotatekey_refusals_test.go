@@ -398,10 +398,11 @@ func TestRotateKeyRefusesAnOutFile(t *testing.T) {
 		"a file that is no valid key":        {notAKey, left(notAKey)},
 		"a key that sealed no value":         {sealedNothing, left(sealedNothing)},
 		"a folder at the name":               {folder, left(folder)},
-		"the key that the key path holds":    {inPlace, []string{inPlace + " holds the key that " + h.keyPath + " holds too", "the key is in place", inPlace + " is a second file with it, which you can remove"}},
+		"the key that the key path holds":    {inPlace, []string{inPlace + " holds the key that " + h.keyPath + " holds too", "the key is in place", inPlace + " is a second file with that key: remove it only when the key path does not get the key from it"}},
 		"the key file itself":                {h.keyPath, []string{h.keyPath + " is the key file that the key path " + h.keyPath + " names", "do not remove " + h.keyPath}},
 		"a file of the data directory":       {db, []string{db + " exists and lies inside the data directory", "do not remove " + db}},
 		"the recovery copy's name, not used": {filepath.Join(h.dir, core.RecoveryKeyFile), []string{"outside the data directory"}},
+		"the name of the pending key file":   {h.pending(), []string{h.pending() + " is the name of the pending key file of " + h.keyPath, "Name another file"}},
 	}
 	check := frozen(t, h, notAKey, sealedNothing, inPlace, folder, filepath.Join(h.dir, "new.key"), filepath.Join(below, "new.key"), filepath.Join(elsewhere, "missing"))
 	for name, tc := range cases {
@@ -409,7 +410,7 @@ func TestRotateKeyRefusesAnOutFile(t *testing.T) {
 		refusedWith(t, "--out "+name, err, tc.want...)
 		check("--out " + name)
 		// No refusal tells the operator to remove the key file or a file of the data directory.
-		if msg := err.Error(); (tc.file == h.keyPath || tc.file == db) && (strings.Contains(msg, "you can remove") || strings.Contains(msg, "Remove ")) {
+		if (tc.file == h.keyPath || tc.file == db) && saysToRemove(err.Error()) {
 			t.Errorf("--out %s: the refusal says to remove the file: %v", name, err)
 		}
 	}
@@ -427,6 +428,76 @@ func TestRotateKeyRefusesAnOutFile(t *testing.T) {
 		refusedWith(t, "--out through a link", err, "outside the data directory")
 		check("--out through a link")
 	})
+}
+
+// saysToRemove reports whether a message tells the operator to remove something, in any case of the letters. The
+// words "do not remove" do not count.
+func saysToRemove(msg string) bool {
+	return strings.Contains(strings.ReplaceAll(strings.ToLower(msg), "do not remove", ""), "remove")
+}
+
+// Rule 19: the command finishes with --out only when it sees the whole state: a valid key at the key path, another
+// key in FILE, and the key ID of that key on every value. A FILE that holds the key in use, such as the file that a
+// secret store loads the key path from, looks the same when the command cannot read the key at the key path. The
+// command then finishes nothing: it refuses for the key (rule 8), reports nothing durable, writes nothing, and does
+// not say to remove FILE.
+func TestRotateKeyOutWithTheKeyInUseFinishesNothing(t *testing.T) {
+	for name, tc := range map[string]struct {
+		outside bool
+		hide    func(t *testing.T, h *rotHost)
+	}{
+		"nothing at the default key path":     {false, func(t *testing.T, h *rotHost) { mustRemove(t, h.keyPath) }},
+		"nothing at a configured key path":    {true, func(t *testing.T, h *rotHost) { mustRemove(t, h.keyPath) }},
+		"a damaged file at the key path":      {false, func(t *testing.T, h *rotHost) { mustWrite(t, h.keyPath, []byte("no key")) }},
+		"a damaged file at a configured path": {true, func(t *testing.T, h *rotHost) { mustWrite(t, h.keyPath, []byte("no key")) }},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newRotHost(t)
+			if tc.outside {
+				h.outside(t)
+			}
+			// The file that the key path gets the key from. Every value carries the ID of its key.
+			source := filepath.Join(t.TempDir(), "source.key")
+			mustWrite(t, source, h.key)
+			tc.hide(t, h)
+			events := len(eventsOf(t, h.dir, store.AuditKeyRotate))
+			check := frozen(t, h, source)
+			out, err := h.rotate(t, "--yes", "--out", source)
+			if err == nil || exitCode(err) != ExitConfig {
+				t.Fatalf("rotate-key --out with the key in use: %v (status %d), want a refusal\n%s", err, exitCode(err), out)
+			}
+			text := strings.ToLower(out + "\n" + err.Error())
+			// The words of a finish. The paths of the test hold its name, so the list has whole phrases.
+			for _, wrong := range []string{"durable", "made no new key", "finishing a rotation", "finished a rotation", "remove " + strings.ToLower(source)} {
+				if strings.Contains(text, wrong) {
+					t.Errorf("the command says %q although it cannot read the key at the key path:\n%s\n%v", wrong, out, err)
+				}
+			}
+			check("the refusal")
+			if n := len(eventsOf(t, h.dir, store.AuditKeyRotate)); n != events {
+				t.Errorf("the refusal wrote %d key.rotate events", n-events)
+			}
+			mustNotBeThere(t, filepath.Join(h.dir, core.RecoveryKeyFile))
+
+			// With the key at the key path again, the same FILE is a second file with that key. The refusal says to
+			// remove it only when the key path does not get the key from it.
+			mustWrite(t, h.keyPath, h.key)
+			_, err = h.rotate(t, "--yes", "--out", source)
+			refusedWith(t, "rotate-key --out with a second file of the key", err, source+" holds the key that "+h.keyPath+" holds too",
+				"remove it only when the key path does not get the key from it")
+			if got := mustRead(t, source); !bytes.Equal(got, h.key) {
+				t.Error("the refusal changed FILE")
+			}
+			mustStart(t, h, rotSealed)
+		})
+	}
+}
+
+func mustRemove(t *testing.T, path string) {
+	t.Helper()
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
 }
 
 // Rule 17: something at the pending name that is no regular file, or a file that cannot be read, is none of the

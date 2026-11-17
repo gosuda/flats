@@ -531,8 +531,9 @@ func TestRotateKeyOutStatesGAndH(t *testing.T) {
 	for _, want := range []string{
 		"sealed 3 flat secrets and 2 operator keys again", core.KeyID(h.key), core.KeyID(newKey),
 		"wrote the new key to " + file,
-		"The new key must be put at " + h.keyPath, "then remove " + file,
-		"While flats.db holds sealed values, the start refuses until the new key is at " + h.keyPath,
+		"The key of " + file + " must be put at " + h.keyPath,
+		"Remove " + file + " only after that, and only when the key path does not get the key from that file",
+		"While flats.db holds sealed values, the start refuses until that key is at " + h.keyPath,
 		"wrote " + filepath.Join(h.dir, core.RecoveryKeyFile), "opens only with the old key",
 	} {
 		if !strings.Contains(out, want) {
@@ -584,11 +585,21 @@ func TestRotateKeyOutStatesGAndH(t *testing.T) {
 	if got := rowsText(sealedRows(t, h.dir)); !slices.Equal(got, rows) {
 		t.Error("a refused command changed a row")
 	}
-	// A run with the same FILE finishes: it reports the re-seal durable, and makes no new key.
+	// A run with the same FILE finishes: it makes no new key, says what it found with both key IDs, and reports the
+	// re-seal durable. It says to remove FILE only with the two conditions.
 	out, err = h.rotate(t, "--out", file, "--password-file", pw)
-	if err != nil || !strings.Contains(out, "finished a rotation that had stopped") || !strings.Contains(out, "the re-seal is durable") ||
-		!strings.Contains(out, "The new key must be put at "+h.keyPath) || !strings.Contains(out, "then remove "+file) {
+	if err != nil {
 		t.Fatalf("the finish with the same FILE: %v\n%s", err, out)
+	}
+	for _, want := range []string{"made no new key", "under the key with the ID " + core.KeyID(newKey) + ", which " + file + " holds",
+		"the key at " + h.keyPath + " (key ID " + core.KeyID(h.key) + ") sealed none of them", "the re-seal is durable now",
+		"The key of " + file + " must be put at " + h.keyPath, "Remove " + file + " only after that, and only when the key path does not get the key from that file"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the output of the finish with the same FILE lacks %q:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "finished a rotation") || strings.Contains(out, "then remove") {
+		t.Errorf("the output reports a rotation of this run, or a removal without its conditions:\n%s", out)
 	}
 	if got := mustRead(t, file); !bytes.Equal(got, newKey) {
 		t.Error("the finish changed FILE")
@@ -603,7 +614,7 @@ func TestRotateKeyOutStatesGAndH(t *testing.T) {
 		t.Errorf("the start warns after the key is in place:\n%s", logs)
 	}
 	_, err = h.rotate(t, "--yes", "--out", file, "--password-file", pw)
-	refusedWith(t, "rotate-key with a FILE whose key is in place", err, "holds the key that "+h.keyPath+" holds too", file+" is a second file with it, which you can remove")
+	refusedWith(t, "rotate-key with a FILE whose key is in place", err, "holds the key that "+h.keyPath+" holds too", file+" is a second file with that key: remove it only when the key path does not get the key from it")
 	if got := mustRead(t, file); !bytes.Equal(got, newKey) {
 		t.Error("the refusal changed FILE")
 	}
