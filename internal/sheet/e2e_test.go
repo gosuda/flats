@@ -1093,11 +1093,35 @@ func (s *browserTest) publicRoute(t *testing.T) {
 	}
 }
 
-// tap touches a point as a finger does: the browser turns the touch into
-// the tap and the mouse events a page gets on a phone.
+func (p *page) touch(kind string, points ...point) {
+	p.b.t.Helper()
+	active := make([]map[string]float64, len(points))
+	for i, at := range points {
+		active[i] = map[string]float64{"x": at.X, "y": at.Y}
+	}
+	p.cdp("Input.dispatchTouchEvent", map[string]any{"type": kind, "touchPoints": active})
+}
+
+// tap uses touch events so the browser generates a phone's compatibility
+// mouse events without depending on the platform's synthetic gesture input.
 func (p *page) tap(at point) {
 	p.b.t.Helper()
-	p.cdp("Input.synthesizeTapGesture", map[string]any{"x": at.X, "y": at.Y})
+	p.touch("touchStart", at)
+	p.touch("touchEnd")
+}
+
+// swipeLeft moves the finger once per frame and slows it before release.
+func (p *page) swipeLeft(from point, distance float64) {
+	p.b.t.Helper()
+	p.touch("touchStart", from)
+	const steps = 16
+	for i := 1; i <= steps; i++ {
+		progress := float64(i) / steps
+		x := from.X - distance*progress*(2-progress)
+		p.touch("touchMove", point{x, from.Y})
+		p.eval(`new Promise(resolve => requestAnimationFrame(() => resolve(true)))`, nil)
+	}
+	p.touch("touchEnd")
 }
 
 // phone opens the sheet at a phone's width: a person scrolls, selects a
@@ -1123,7 +1147,10 @@ func (s *browserTest) phone(t *testing.T) {
 	if ph.truthy(`T.cellEl('D2').getBoundingClientRect().right <= innerWidth`) {
 		t.Fatal("column D fits a phone screen; the scroll below shows nothing")
 	}
-	ph.cdp("Input.synthesizeScrollGesture", map[string]any{"x": 200, "y": 400, "xDistance": -160, "speed": 1600})
+	// A tap during momentum scrolling stops the scroll instead of selecting a cell.
+	ph.eval(`document.querySelector('.gridwrap').addEventListener('scrollend', () => { window.phoneScrollEnded = true; }, { once: true })`, nil)
+	ph.swipeLeft(point{200, 400}, 160)
+	ph.wait("the end of the swipe", `window.phoneScrollEnded`)
 	ph.wait("column D on screen", `document.querySelector('.gridwrap').scrollLeft > 100 && T.cellEl('D2').getBoundingClientRect().right <= innerWidth`)
 	ph.tap(ph.at(`'D2'`))
 	ph.waitText("the tapped cell", `T.active()`, "D2")
