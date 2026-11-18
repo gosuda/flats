@@ -105,11 +105,10 @@ at the read limit, the limits fixture, and the largest undo payloads and cycles)
 `FLATS_SHEET_FULL=1`, which the three sheet shards of `scripts/ci-test.sh`
 set and no other lane does. Every other run, the race lanes and the Windows
 job included, takes the smaller size of each case where it has one. The
-sheet shards took 2.6, 4.3 and 8.3 minutes on a developer machine at a
-load average of 20 to 36 (measured in November 2026). Each sets a 14-minute
-test timeout in place of `go test`'s 10 minutes, inside the 20-minute job:
-about 1.7 times the slowest shard at that load. Whether hosted runners keep
-that margin has not been measured. Each two-lane package
+two undo shards default to a 14-minute Go test timeout. The non-undo shard
+defaults to 17 minutes. Each runs in a 20-minute hosted job. In a hosted run,
+both undo shards passed and the non-undo shard reached its former 14-minute
+Go test timeout. Each two-lane package
 is split by test name like the runtime and docs shards: the first lane runs
 a `-run` pattern, the second `-skip`s the same pattern. The sheet's first
 four lanes run `-run` patterns (the second with `-skip` on the first's),
@@ -118,10 +117,12 @@ their 20-minute limit. The `notebook-1` and `notebook-2` lanes set an
 18-minute test timeout; the whole package took about nine minutes in one
 lane, close to `go test`'s default of 10 minutes. The five sheet lanes set
 a 15-minute test timeout for the same reason: under the race detector they
-took 6.0, 6.2, 7.2, 6.6 and 7.2 minutes on the same developer machine at a
+took 6.0, 6.2, 7.2, 6.6 and 7.2 minutes on a developer machine at a
 load average of 15 to 33 (measured on 17 November 2026), the slowest under
 half of the timeout. With three lanes the third had reached its timeout
-there; hosted runners are not measured. `notebook-1` runs the
+there. All five sheet race jobs passed in a hosted run. The `sheet-4` and
+`sheet-5` jobs took 12 minutes 44 seconds and 14 minutes 11 seconds from
+setup through cleanup, respectively. `notebook-1` runs the
 `TestMarkdown` and `TestReader` tests, about half of the package's race time; `notebook-2`
 runs the rest. The slowest subtests of the services lane
 (`TestEveryMCPToolPreservesPendingApproval`, `TestHistoryAdapterTraversal`
