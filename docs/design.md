@@ -573,12 +573,19 @@ Values are sealed with AES-256-GCM (random nonce, AAD = secret name) under
 keeps the key out of the data directory and of a copy of it (the host only reads
 that file; see [Keeping the key outside the data directory](configuration.md#keeping-the-key-outside-the-data-directory)).
 Only the console and the local CLI (`flats secret set`,
-loopback only) can set or delete values; APIs and MCP return names and update
-times only. The CLI is recognized by its `X-Flats-Client: cli` header on the
+loopback only) can set or delete values; APIs and MCP return names, update
+times and the binding of an injected secret, never a value. The CLI is recognized by its `X-Flats-Client: cli` header on the
 loopback listener, so this stops MCP and remote API clients, not a process
-with a shell on the Flats host (see Approvals). Values reach JavaScript as
+with a shell on the Flats host (see Approvals). The values of readable secrets reach JavaScript as
 `env.NAME` and WASI as environment variables from the captured activation
-snapshot. Changes apply on the next approved deployment, redeployment, rollback or standalone data snapshot restoration,
+snapshot. An injected secret is bound to one exact HTTPS origin and one header
+name when it is set (`flats secret set <slug> <NAME> --origin URL --header NAME`),
+and the binding stays until the secret is removed. Its value is never in `env`:
+the worker gets it in a field of its spec apart from `env`, and the outbound
+client adds the header to each `fetch` to that origin and refuses a call that
+supplies the header itself. A WASI worker gets no injected secret. The redactor
+knows the values of both kinds
+([Injected fetch secrets](spec/injected-fetch-secrets.md)). Changes apply on the next approved deployment, redeployment, rollback or standalone data snapshot restoration,
 or Flats host restart; automatic worker restarts reuse the captured settings.
 Every change of a sealed value, and every key backup, restore, rotation and reset, writes an event to the audit log in
 `flats.db`. A change of a sealed value, a rotation and a reset write it in the transaction of the change; a key backup
@@ -1033,7 +1040,7 @@ export default {
 }
 ```
 
-* `env` holds the flat's ordinary environment variables and secrets plus `env.DB` (`query(sql, ...params)` →
+* `env` holds the flat's ordinary environment variables and readable secrets (an injected secret is not in it) plus `env.DB` (`query(sql, ...params)` →
   rows, `exec(sql, ...params)` → `{changes, last_insert_id}`) backed by
   `data/db.sqlite`, and `env.FILES` (`get(key)`, `put(key, data)`,
   `delete(key)`, `list(prefix)`) backed by `data/files/`, and
@@ -1051,7 +1058,7 @@ export default {
   over quota. JS has no general filesystem or socket access; outbound `fetch` is host-mediated and requires exact operator-granted origins.
 * `.wasm` entries: a WASI preview1 module reading the request as JSON on stdin
   and writing response JSON on stdout. Each request creates a fresh instance.
-  Environment includes only the flat's configured environment variables and secrets, with no inherited host process environment. Clocks, cancellable
+  Environment includes only the flat's configured environment variables and readable secrets, with no inherited host process environment. Clocks, cancellable
   sleeps and CSPRNG are available. There are no preopened directories, filesystem/network
   mounts, SQLite/FILES host imports or WebSocket connection API. The worker's
   host-side data directory is **not** mounted into the WASI guest.
@@ -1064,7 +1071,7 @@ export default {
 | WebSocket | `websocket.open` / `message` / `close`, `ws.send` | Unavailable; Upgrade remains an ordinary HTTP request |
 | Outbound network | Bounded HTTP(S) `fetch` to exact operator-granted origins; no sockets | Unavailable |
 | Filesystem | Read-only bundled modules; no arbitrary host filesystem; persistence via DB/FILES | No mounts or preopened directories |
-| App environment variables and secrets | `env.NAME` (strings) | Only the flat's configured variables and secrets as environment variables |
+| App environment variables and secrets | `env.NAME` (strings) for variables and readable secrets; an injected secret goes only into its header of `fetch` to its origin | Only the flat's configured variables and readable secrets as environment variables |
 | Clocks/randomness | timers, `Date`, Web Crypto CSPRNG | WASI clocks, cancellable sleeps and CSPRNG |
 
 WASI request JSON is `{method, url, headers, body}` (body is a string or null).

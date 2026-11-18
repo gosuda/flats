@@ -348,8 +348,13 @@ func (k *secretKeyCmd) reset(args []string) error {
 		return err
 	}
 	var values []core.SealedName
+	bound := map[core.SealedName]store.Binding{}
 	for _, s := range secrets {
-		values = append(values, core.SealedName{Flat: s.Flat, Name: s.Name})
+		name := core.SealedName{Flat: s.Flat, Name: s.Name}
+		values = append(values, name)
+		if s.Inject.Injected() {
+			bound[name] = s.Inject
+		}
 	}
 	for _, r := range records {
 		if r.HasValue() {
@@ -372,6 +377,10 @@ func (k *secretKeyCmd) reset(args []string) error {
 	}
 	k.printf("This deletes:\n")
 	for _, v := range values {
+		if b, ok := bound[v]; ok {
+			k.printf("  %s (injected: sent as %s to %s)\n", v, b.Header, b.Origin)
+			continue
+		}
 		k.printf("  %s\n", v)
 	}
 	if !*yes {
@@ -421,6 +430,9 @@ func (k *secretKeyCmd) reset(args []string) error {
 		k.printf("The next start creates a new %s. Run `flats secret backup-key` after it %s.\n", keyPath, why)
 	}
 	k.printf("Set the secrets again with `flats secret set` and redeploy, and the operator keys with `flats key set`.\n")
+	if len(bound) > 0 {
+		k.printf("Set each injected secret again with `flats secret set <slug> <NAME> --origin <origin> --header <header>`, with the origin and the header listed above, so that it stays out of env.\n")
+	}
 	if synced != nil {
 		return fmt.Errorf("the values are deleted, but %w", synced)
 	}

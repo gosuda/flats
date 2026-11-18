@@ -64,6 +64,7 @@ var migrations = []migration{
 	{25, "audit events", addAuditEvents},
 	{26, "event webhook", addEventWebhook},
 	{27, "key IDs", addKeyIDs},
+	{28, "fetch bindings of secrets", addFetchBindings},
 }
 
 func latestVersion() int { return migrations[len(migrations)-1].version }

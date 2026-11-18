@@ -560,7 +560,7 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
       fill(networkSlot,
         h('p', { class: 'muted', text: 'Only the operator grants JavaScript server fetch access. WASI receives no outbound network capability. Permit at most 32 exact public HTTP:80 or HTTPS:443 origins, one per line. No wildcards, paths, credentials or private targets. An empty list denies server fetch.' }),
         form,
-        h('p', { class: 'muted small', text: 'Changes apply on the next deploy/redeploy, rollback or data restoration after any required approval, Flats host restart, or new preview. Running workers and automatic restarts retain captured grants; after clearing, redeploy to revoke live access. Browser fetch follows browser CORS/CSP independently and receives no injected secrets.' }),
+        h('p', { class: 'muted small', text: 'Changes apply on the next deploy/redeploy, rollback or data restoration after any required approval, Flats host restart, or new preview. Running workers and automatic restarts retain captured grants; after clearing, redeploy to revoke live access. Browser fetch follows browser CORS/CSP independently, and the host adds no secret to it.' }),
         flat.live_version ? redeployButton() : h('p', { class: 'muted small', text: 'Applied when this flat is first published.' }));
     } catch (err) { if (ctx.alive()) fill(networkSlot, errorPanel(err, 'Cannot load server network permissions')); }
   }
@@ -638,7 +638,7 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
         h('span', { class: 'muted', text: `Changes apply on ${activationWhen()}: redeploy the live version ${flat.live_version} to use them now.` }), redeployButton())
       : h('p', { class: 'muted', text: publishesOnSave() ? 'Changes apply on the next published save.' : 'Changes apply when a deployment is approved.' });
     fill(envSlot, add,
-      h('p', { class: 'muted', text: 'Values are stored as plain text and readable by authorized agents. Use Secrets for credentials. Server-side JavaScript reads env.NAME; WASI reads environment variables. Static files and browser bundles receive no injected values.' }),
+      h('p', { class: 'muted', text: 'Values are stored as plain text and readable by authorized agents. Use Secrets for credentials. Server-side JavaScript reads env.NAME; WASI reads environment variables. Static files and browser bundles receive none of these values.' }),
       items, form, apply,
       h('p', { class: 'muted small', text: 'Approved deployment, redeployment, rollback and standalone data snapshot restoration capture current settings. Automatic worker restarts reuse the captured settings. New previews load current settings.' }));
   }
@@ -701,9 +701,12 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
         const del = h('button', { type: 'button', class: 'btn btn-small btn-danger-text', text: 'Delete', 'aria-label': `Delete secret ${s.name}` });
         replace.addEventListener('click', () => { form.hidden = false; addSecret.setAttribute('aria-expanded', 'true'); name.value = s.name; value.value = ''; value.focus(); });
         del.addEventListener('click', () => busy(del, async () => {
+          const keep = 'The running version keeps its current environment until it is redeployed (Redeploy (apply environment) on the live version).';
           const ok = await confirmDialog({
             title: `Delete secret ${s.name}?`,
-            body: 'The running version keeps its current environment until it is redeployed (Redeploy (apply environment) on the live version).',
+            body: s.inject
+              ? `${keep} A secret added again here is readable by flat code as env.${s.name}. To make it injected again, run flats secret set with --origin and --header.`
+              : keep,
             confirmLabel: 'Delete', danger: true,
           });
           if (!ok) return;
@@ -711,7 +714,9 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
           loadSecrets();
         }));
         return h('li', { class: 'plain-row' },
-          h('div', null, h('code', { text: s.name }), h('div', { class: 'muted small' }, 'Updated ', timeEl(s.updated_at))),
+          h('div', null, h('code', { text: s.name }),
+            s.inject ? h('div', { class: 'muted small secret-inject', text: `Sent as ${s.inject.header} to ${s.inject.origin}. Not in env.` }) : null,
+            h('div', { class: 'muted small' }, 'Updated ', timeEl(s.updated_at))),
           h('div', { class: 'cell-actions' }, replace, del));
       }))
       : h('p', { class: 'muted', text: 'No secrets.' });
@@ -728,7 +733,7 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
       if (!form.hidden) name.focus();
     });
     fill(secretsSlot, addSecret,
-      h('p', { class: 'muted', text: (note ? note[0].toUpperCase() + note.slice(1) : 'Values are never returned') + '. Server-only: JavaScript reads env.NAME; WASI reads environment variables. Static files and browser bundles receive no injected values.' }),
+      h('p', { class: 'muted', text: (note ? note[0].toUpperCase() + note.slice(1) : 'Values are never returned') + '. Server-only: JavaScript reads a readable secret as env.NAME, and WASI reads it as an environment variable. An injected secret is not in env: the host adds it as its header to each fetch to its origin. Static files and browser bundles receive no secret.' }),
       items, form, apply,
       h('p', { class: 'muted small', text: 'Approved deployment, redeployment, rollback and standalone data snapshot restoration capture current settings. Automatic worker restarts reuse the captured settings. New previews load current settings.' }));
   }

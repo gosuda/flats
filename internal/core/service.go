@@ -28,6 +28,7 @@ import (
 	"github.com/gosuda/flats/internal/board"
 	"github.com/gosuda/flats/internal/bundle"
 	"github.com/gosuda/flats/internal/contenttype"
+	"github.com/gosuda/flats/internal/egress"
 	"github.com/gosuda/flats/internal/site"
 	"github.com/gosuda/flats/internal/slug"
 	"github.com/gosuda/flats/internal/store"
@@ -78,9 +79,11 @@ type RuntimeSpec struct {
 	DataDir        string // per-flat data (SQLite, files); a copy for previews
 	Env            map[string]string
 	NetworkOrigins []string // operator-approved exact origins; JS only, default deny
-	ImagePath      string   // saved document image; live managed documents only, in a core-owned directory
-	Log            func(level, msg string)
-	Usage          UsageSink // CPU and memory of the instance's processes; nil: not accounted
+	// FetchHeaders are the injected secrets (docs/spec/injected-fetch-secrets.md): never in Env, JS only.
+	FetchHeaders []egress.Header
+	ImagePath    string // saved document image; live managed documents only, in a core-owned directory
+	Log          func(level, msg string)
+	Usage        UsageSink // CPU and memory of the instance's processes; nil: not accounted
 }
 
 // Instance is a running server flat.
@@ -529,6 +532,10 @@ func (s *Service) buildWithEnvironment(ctx context.Context, slugName string, v s
 		env := maps.Clone(snapshot.values)
 		redact := snapshot.redact
 		networkOrigins := slices.Clone(snapshot.networkOrigins)
+		fetchHeaders := slices.Clone(snapshot.fetchHeaders)
+		if strings.EqualFold(filepath.Ext(m.Entry), ".wasm") {
+			fetchHeaders = nil // WASI has no network, and its worker gets no injected secret.
+		}
 		var err error
 		runtimeDir, entry := dir, m.Entry
 		release := func() {}
@@ -548,6 +555,7 @@ func (s *Service) buildWithEnvironment(ctx context.Context, slugName string, v s
 			}
 			entry = s.cfg.DocsApp.Entry
 			networkOrigins = nil // The embedded docs app has no outbound capability.
+			fetchHeaders = nil
 		}
 		managedDocs := assets != nil && dataDir == s.dataDirOf(slugName)
 		if !managedDocs {
@@ -574,8 +582,9 @@ func (s *Service) buildWithEnvironment(ctx context.Context, slugName string, v s
 			ManagedDocs: managedDocs, Lazy: managedDocs && lazy, Now: s.now,
 			Flat: slugName, Version: v.Number,
 			Generation: generation, NextGeneration: nextGeneration,
-			Dir: runtimeDir, Entry: entry, DataDir: dataDir, Env: env, NetworkOrigins: networkOrigins, ImagePath: imagePath,
-			Usage: usage,
+			Dir: runtimeDir, Entry: entry, DataDir: dataDir, Env: env, NetworkOrigins: networkOrigins, FetchHeaders: fetchHeaders,
+			ImagePath: imagePath,
+			Usage:     usage,
 			Log: func(level, msg string) {
 				s.runtimeLog(slugName, v.Number, level, redact(msg))
 			}})

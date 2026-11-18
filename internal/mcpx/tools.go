@@ -99,7 +99,7 @@ func register(s *mcp.Server, t *tools) {
 	mcp.AddTool(s, &mcp.Tool{Name: "get_network", Annotations: ro,
 		Description: "Read the operator-managed server HTTP(S) origin allowlist. Agents cannot grant network permissions; browser fetch follows browser CORS/CSP."}, t.getNetwork)
 	mcp.AddTool(s, &mcp.Tool{Name: "list_secrets", Annotations: ro,
-		Description: "List secret names of a flat (values are never returned; only the operator sets them)."}, t.listSecrets)
+		Description: "List secret names of a flat (values are never returned; only the operator sets them). A secret with `inject` {origin, header} is an injected secret: it is not in env, and the host adds that header to each fetch to that origin, so call fetch there without the header (guide topic.env-secrets)."}, t.listSecrets)
 }
 
 // --- shared output types ---
@@ -1130,7 +1130,7 @@ func (t *tools) getLogs(ctx context.Context, _ *mcp.CallToolRequest, in LogsIn) 
 
 // SecretsOut lists secret names.
 type SecretsOut struct {
-	Secrets []core.SecretInfo `json:"secrets" jsonschema:"secret names and update times"`
+	Secrets []core.SecretInfo `json:"secrets" jsonschema:"secret names, update times, and the inject binding {origin, header} of each injected secret"`
 	Note    string            `json:"note" jsonschema:"how secrets work"`
 }
 
@@ -1139,7 +1139,7 @@ func (t *tools) listSecrets(ctx context.Context, _ *mcp.CallToolRequest, in Slug
 	if err != nil {
 		return nil, SecretsOut{}, toolErr(err, notFoundHint(err, in.Slug))
 	}
-	out := SecretsOut{Secrets: secs, Note: "Values are never returned. The operator sets them in the console or with `flats secret set`; server flats receive them as env values. Changes apply to live on the next deploy/redeploy, rollback or data restoration (after any required approval), or Flats host restart. New previews capture current settings; automatic worker restarts reuse their captured settings."}
+	out := SecretsOut{Secrets: secs, Note: "Values are never returned. The operator sets them in the console or with `flats secret set`. Server flats read a readable secret as an env value. An injected secret (with `inject`) is not in env: the host adds its header to each fetch to its origin. Changes apply to live on the next deploy/redeploy, rollback or data restoration (after any required approval), or Flats host restart. New previews capture current settings; automatic worker restarts reuse their captured settings."}
 	if out.Secrets == nil {
 		out.Secrets = []core.SecretInfo{}
 	}

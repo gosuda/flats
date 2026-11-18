@@ -21,6 +21,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/gosuda/flats/internal/egress"
 )
 
 // Limits enforced in the worker.
@@ -78,8 +80,11 @@ type workerSpec struct {
 	MemoryPages    uint32            `json:"memory_pages,omitempty"`
 	PoolSize       int               `json:"pool_size,omitempty"`
 	NetworkOrigins []string          `json:"network_origins,omitempty"`
-	ImagePath      string            `json:"image_path,omitempty"` // document image file; live managed documents only
-	Socket         string            `json:"socket,omitempty"`     // path the worker binds; empty = the inherited socket
+	// FetchHeaders are the injected secrets of a JavaScript flat. They are never part of Env, so guest code cannot
+	// read them: the outbound client adds each to the requests to its origin.
+	FetchHeaders []egress.Header `json:"fetch_headers,omitempty"`
+	ImagePath    string          `json:"image_path,omitempty"` // document image file; live managed documents only
+	Socket       string          `json:"socket,omitempty"`     // path the worker binds; empty = the inherited socket
 	// UsageIntervalMS is how often the worker reports its CPU and memory;
 	// 0 = usageInterval.
 	UsageIntervalMS int64 `json:"usage_interval_ms,omitempty"`

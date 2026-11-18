@@ -1589,7 +1589,9 @@ the copy. Anyone who can write `flats.db` can change the log. To keep a record o
 
 The audit log is a schema change: an older Flats refuses a `flats.db` of schema 25. Schema 26 added the two webhook keys and the
 flat ID of an approval, and an older Flats refuses it too. Schema 27 added the key ID of each sealed value
-([Rotating the key](#rotating-the-key)), and an older Flats refuses it too. To go back to an older release,
+([Rotating the key](#rotating-the-key)), and an older Flats refuses it too. Schema 28 added the origin and the header of an
+injected secret ([Calling external APIs](external-api.md)), and an older Flats refuses it too. Make a copy with
+[`flats backup`](#what-to-back-up) before an upgrade. To go back to an older release,
 restore a backup of the whole data directory that you took before the upgrade, as [flats.db](#flatsdb) says.
 
 ### Audit export
