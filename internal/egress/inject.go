@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+	"unicode/utf8"
 
 	"golang.org/x/net/http/httpguts"
 )
@@ -73,6 +74,8 @@ func CheckInjectValue(value string) error {
 		return errors.New("the value of an injected secret cannot be empty")
 	case len(value) > MaxInjectedValue:
 		return fmt.Errorf("the value of an injected secret is larger than %d KiB", MaxInjectedValue>>10)
+	case !utf8.ValidString(value):
+		return errors.New("the value of an injected secret must be valid UTF-8")
 	case !httpguts.ValidHeaderFieldValue(value):
 		return errors.New("the value of an injected secret must be a valid HTTP header value, with no line break or other control character")
 	case strings.ContainsAny(value[:1], " \t") || strings.ContainsAny(value[len(value)-1:], " \t"):

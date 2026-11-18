@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"errors"
+	"fmt"
 	"math/big"
 	"net"
 	"net/http"
@@ -227,7 +228,7 @@ func TestNewRefusesABadInjectedList(t *testing.T) {
 	good := Header{Origin: "https://api.example.com", Name: "Authorization", Value: injectedValue}
 	many := make([]Header, MaxInjected+1)
 	for i := range many {
-		many[i] = Header{Origin: "https://api.example.com", Name: "X-Key-" + string(rune('A'+i%26)) + string(rune('A'+i/26)), Value: injectedValue}
+		many[i] = Header{Origin: "https://api.example.com", Name: fmt.Sprintf("X-Key-%d", i), Value: injectedValue}
 	}
 	for name, list := range map[string][]Header{
 		"http origin":         {{Origin: "http://api.example.com", Name: "Authorization", Value: injectedValue}},
@@ -242,6 +243,7 @@ func TestNewRefusesABadInjectedList(t *testing.T) {
 		"leading space":       {{Origin: "https://api.example.com", Name: "Authorization", Value: " " + injectedValue}},
 		"trailing tab":        {{Origin: "https://api.example.com", Name: "Authorization", Value: injectedValue + "\t"}},
 		"too large":           {{Origin: "https://api.example.com", Name: "Authorization", Value: strings.Repeat("a", MaxInjectedValue+1)}},
+		"not UTF-8":           {{Origin: "https://api.example.com", Name: "Authorization", Value: "Bearer \xff"}},
 		"two for one header":  {good, good},
 		"more than the limit": many,
 	} {
@@ -254,6 +256,12 @@ func TestNewRefusesABadInjectedList(t *testing.T) {
 		if strings.Contains(err.Error(), injectedValue) {
 			t.Errorf("%s: the error holds the value: %v", name, err)
 		}
+	}
+	// The limit case fails for the count only: the same list without one entry passes.
+	if c, err := New([]string{"https://api.example.com"}, many[:MaxInjected]...); err != nil {
+		t.Fatalf("%d headers: %v", MaxInjected, err)
+	} else {
+		c.Close()
 	}
 	c, err := New([]string{"https://api.example.com"}, good, Header{Origin: "https://api.example.com", Name: "X-Api-Key", Value: "key"})
 	if err != nil {
@@ -294,7 +302,7 @@ func TestInjectChecksOfTheService(t *testing.T) {
 	if err := CheckInjectValue(strings.Repeat("a", MaxInjectedValue)); err != nil {
 		t.Errorf("8 KiB: %v", err)
 	}
-	for _, v := range []string{"", "zq9\nzq9", "zq9\x00zq9", " zq9", "zq9 ", "\tzq9", "zq9\t", strings.Repeat("zq9", MaxInjectedValue)} {
+	for _, v := range []string{"", "zq9\nzq9", "zq9\x00zq9", "zq9\xffzq9", " zq9", "zq9 ", "\tzq9", "zq9\t", strings.Repeat("zq9", MaxInjectedValue)} {
 		err := CheckInjectValue(v)
 		if err == nil {
 			t.Errorf("CheckInjectValue(%q) accepted", v)

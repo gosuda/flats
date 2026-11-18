@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gosuda/flats/internal/core"
 	"github.com/gosuda/flats/internal/store"
@@ -27,6 +28,12 @@ func TestKeyCommandsWithAnInjectedSecret(t *testing.T) {
 		t.Fatal(err)
 	}
 	h.Close()
+	// The export holds the binding of the secret.set event and never the value (rule 23).
+	// The clock is past the lag of the export, so the events of this test are inside its range.
+	stdout, stderr, err := runExport(t, path, time.Now().Add(time.Hour))
+	if err != nil || !strings.Contains(stdout, `"origin":"https://api.example.com"`) || strings.Contains(stdout+stderr, "app-injected-value") {
+		t.Fatalf("export: %v\n%s%s", err, stdout, stderr)
+	}
 	keyPath := filepath.Join(dir, core.SecretKeyFile)
 	if err := os.Remove(keyPath); err != nil {
 		t.Fatal(err)
@@ -65,7 +72,8 @@ func TestKeyCommandsWithAnInjectedSecret(t *testing.T) {
 		}
 	}
 	out, err = runSecretKey(t, path, "reset", "--yes")
-	if err != nil || !strings.Contains(out, "secret TOKEN of app") || strings.Contains(out, "app-injected-value") {
+	if err != nil || !strings.Contains(out, "secret TOKEN of app (injected: sent as Authorization to https://api.example.com)") || !strings.Contains(out, "--origin <origin> --header <header>") ||
+		strings.Contains(out, "app-injected-value") {
 		t.Fatalf("reset: %q %v", out, err)
 	}
 	if got := binds(); len(got) != 0 {

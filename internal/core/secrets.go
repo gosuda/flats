@@ -294,8 +294,13 @@ func injectRefusal(slugName, name string, r *store.InjectRefusal, valueErr error
 		if valueErr != nil {
 			reason = valueErr.Error()
 		}
-		return invalidf("the value of secret %q goes into the header %s of each fetch to %s, and %s. Nothing changed: run `flats secret set %s %s` again with a valid value",
-			name, r.Binding.Header, r.Binding.Origin, reason, slugName, name)
+		// For a new name, the command keeps the flags: without them the same command makes a readable secret.
+		again := fmt.Sprintf("flats secret set %s %s", slugName, name)
+		if r.New {
+			again += fmt.Sprintf(" --origin %s --header %s", r.Binding.Origin, r.Binding.Header)
+		}
+		return invalidf("the value of secret %q goes into the header %s of each fetch to %s, and %s. Nothing changed: run `%s` again with a valid value",
+			name, r.Binding.Header, r.Binding.Origin, reason, again)
 	}
 }
 

@@ -573,8 +573,8 @@ Values are sealed with AES-256-GCM (random nonce, AAD = secret name) under
 keeps the key out of the data directory and of a copy of it (the host only reads
 that file; see [Keeping the key outside the data directory](configuration.md#keeping-the-key-outside-the-data-directory)).
 Only the console and the local CLI (`flats secret set`,
-loopback only) can set or delete values; APIs and MCP return names and update
-times only. The CLI is recognized by its `X-Flats-Client: cli` header on the
+loopback only) can set or delete values; APIs and MCP return names, update
+times and the binding of an injected secret, never a value. The CLI is recognized by its `X-Flats-Client: cli` header on the
 loopback listener, so this stops MCP and remote API clients, not a process
 with a shell on the Flats host (see Approvals). The values of readable secrets reach JavaScript as
 `env.NAME` and WASI as environment variables from the captured activation

@@ -113,7 +113,7 @@ func TestRuntimeDocsDiscoveryConsistency(t *testing.T) {
 }
 
 func TestRuntimeDocsWASIEnvironmentConsistency(t *testing.T) {
-	if !strings.Contains(oneLine(runtimeref.Markdown), "Environment receives only the flat's configured environment variables and secrets") {
+	if !strings.Contains(oneLine(runtimeref.Markdown), "Environment receives only the flat's configured environment variables and readable secrets") {
 		t.Error("runtime reference must describe the app-scoped WASI environment")
 	}
 	checks := []struct{ path, section, claim string }{

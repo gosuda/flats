@@ -134,7 +134,7 @@ mounted under both prefixes; **console** routes exist only under
 | PUT, DELETE | `/flats/{slug}/env/{name}` | both | `{value}` (any string, including empty); applies at the next activation |
 | GET | `/flats/{slug}/network` | both | `{origins, updated_at, note}`: server HTTP(S) origin grants |
 | PUT | `/flats/{slug}/network` | both | `{origins: [...]}`, `[]` clears. Console, or the CLI on loopback; 403 otherwise |
-| GET | `/flats/{slug}/secrets` | both | Secret names; values are never returned |
+| GET | `/flats/{slug}/secrets` | both | Secret names and update times, and `inject: {origin, header}` for an injected secret; values are never returned |
 | PUT, DELETE | `/flats/{slug}/secrets/{name}` | both | `{value, inject?: {origin, header}}`. `inject` makes an injected secret, which the host adds as `header` to each `fetch` to `origin` and keeps out of `env`; a value without `inject` keeps a stored binding. 409 for a binding on a readable secret, another binding, or a binding that another secret has. Console, or the CLI on loopback; 403 otherwise |
 | GET | `/flats/{slug}/stats` | both | `?days=` (1–365, default 30): daily page views, top paths and `usage` (below) |
 | GET | `/flats/{slug}/snapshots` | both | Data snapshots taken before deploys |

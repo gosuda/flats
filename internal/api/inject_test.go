@@ -69,6 +69,7 @@ func TestInjectedSecretRoute(t *testing.T) {
 		"an http origin":                 {"NEW", `{"value":"Bearer v","inject":{"origin":"http://api.example.com","header":"X-Key"}}`, 400},
 		"an empty value of TOKEN":        {"TOKEN", `{"value":""}`, 400},
 		"a trailing space":               {"TOKEN", `{"value":"Bearer v "}`, 400},
+		"a control character":            {"TOKEN", `{"value":"Bearer v\u0001"}`, 400},
 	} {
 		for _, route := range []string{"/api", "/console/api"} {
 			hdr := cli

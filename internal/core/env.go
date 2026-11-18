@@ -130,6 +130,9 @@ func (s *Service) captureEnvironment(ctx context.Context, slugName string, v sto
 	return snapshot, nil
 }
 
+// The store and the outbound client count the same limit (rule 8).
+const _ = uint(store.MaxInjectedSecrets-egress.MaxInjected) + uint(egress.MaxInjected-store.MaxInjectedSecrets)
+
 // injectedSecrets checks the injected rows of a capture again (rule 20) and returns them as the list of the worker.
 // A row that fails refuses the activation, and no value of it goes into env. No message holds a value.
 func injectedSecrets(slugName string, secs []store.SealedSecret, values map[string]string) ([]egress.Header, error) {
@@ -164,7 +167,8 @@ func injectedSecrets(slugName string, secs []store.SealedSecret, values map[stri
 		out = append(out, egress.Header{Origin: b.Origin, Name: b.Header, Value: values[sec.Name]})
 	}
 	if len(out) > store.MaxInjectedSecrets {
-		return nil, invalidf("flat %s has %d injected secrets, and a flat can have %d. Remove some with `flats secret rm`", slugName, len(out), store.MaxInjectedSecrets)
+		return nil, invalidf("flat %s has %d injected secrets, and a flat can have %d. List them with `flats secret ls %s` and remove some with `flats secret rm`",
+			slugName, len(out), store.MaxInjectedSecrets, slugName)
 	}
 	return out, nil
 }

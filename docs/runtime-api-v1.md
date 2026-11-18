@@ -262,7 +262,7 @@ closed with code 1001. Redeploy closes connections.
 WASI `.wasm` is a fresh preview1 command per request: stdin JSON
 `{method,url,headers,body}`; stdout JSON `{status,headers,body}`, optional
 `body_base64: true` for base64-encoded binary response. Environment receives
-only the flat's configured environment variables and secrets; clocks and CSPRNG
+only the flat's configured environment variables and readable secrets; clocks and CSPRNG
 are available separately. There is no inherited host environment.
 It has **no DB/FILES host ABI**,
 filesystem mounts, outbound network, JS Web Crypto or WebSocket callbacks.

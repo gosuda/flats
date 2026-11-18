@@ -65,13 +65,13 @@ func TestSetInjectedSecretRefusals(t *testing.T) {
 		"an origin with credentials":  {"NEW", coreInjected, &SecretInject{Origin: "https://user:pass-secret@api.example.com/?q=query-secret", Header: "X-Key"}, ViaCLI, ErrInvalid, nil, []string{"pass-secret", "query-secret"}},
 		"a header that the host sets": {"NEW", coreInjected, &SecretInject{Origin: "https://api.example.com", Header: "Host"}, ViaCLI, ErrInvalid, []string{"Host"}, nil},
 		"content type":                {"NEW", coreInjected, &SecretInject{Origin: "https://api.example.com", Header: "content-type"}, ViaCLI, ErrInvalid, []string{"Content-Type"}, nil},
-		"a new value with a newline":  {"NEW", "Bearer distinctive-6d1e\nX: y", other, ViaCLI, ErrInvalid, []string{"flats secret set app NEW"}, nil},
+		"a new value with a newline":  {"NEW", "Bearer distinctive-6d1e\nX: y", other, ViaCLI, ErrInvalid, []string{"run `flats secret set app NEW --origin https://other.example.com --header Authorization` again"}, nil},
 		"a binding on PLAIN":          {"PLAIN", coreInjected, apiBinding, ViaCLI, ErrConflict, []string{"env.PLAIN", "flats secret rm app PLAIN", "new credential"}, nil},
 		"another binding":             {"TOKEN", coreInjected, other, ViaCLI, ErrConflict, []string{"Authorization to https://api.example.com", "flats secret rm app TOKEN"}, nil},
 		"a binding of TOKEN":          {"NEW", coreInjected, apiBinding, ViaCLI, ErrConflict, []string{`"TOKEN"`, "flats secret rm app TOKEN", "flats secret set app TOKEN"}, nil},
 		"an empty value of TOKEN":     {"TOKEN", "", nil, ViaConsole, ErrInvalid, []string{"cannot be empty", "Nothing changed"}, nil},
 		"a control character":         {"TOKEN", "Bearer distinctive-6d1e\x01", nil, ViaConsole, ErrInvalid, []string{"control character"}, nil},
-		"a trailing space":            {"TOKEN", "Bearer distinctive-6d1e ", nil, ViaCLI, ErrInvalid, []string{"space"}, nil},
+		"a trailing space":            {"TOKEN", "Bearer distinctive-6d1e ", nil, ViaCLI, ErrInvalid, []string{"space", "run `flats secret set app TOKEN` again"}, nil},
 	} {
 		_, err := s.SetSecretBinding(ctx, "app", tc.secret, tc.value, tc.inject, tc.via)
 		if !errors.Is(err, tc.kind) {
@@ -286,10 +286,75 @@ func TestStoredBindingsThatRefuseTheActivation(t *testing.T) {
 			}
 		}
 		_, err := s.build(ctx, "app", store.Version{Kind: "server", Manifest: []byte(`{"entry":"server.js"}`)}, "unused", nil)
-		if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "flats secret rm") {
+		if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), "flats secret ls app") || !strings.Contains(err.Error(), "flats secret rm") {
 			t.Fatalf("build: %v", err)
 		}
 	})
+	// I2 of the implementation review: a stored value that is not valid UTF-8 cannot be sent as it is stored.
+	t.Run("a value that is not UTF-8", func(t *testing.T) {
+		t.Parallel()
+		s, dir := injectService(t)
+		ctx := t.Context()
+		g, err := s.aead()
+		if err != nil {
+			t.Fatal(err)
+		}
+		nonce := make([]byte, g.NonceSize())
+		// An old readable secret can hold such bytes (TestLegacySecretsRemainReadableByRuntime).
+		sealed := g.Seal(nil, nonce, []byte("Bearer \xff\xfe"), []byte("LEGACY"))
+		if err := s.st.PutSecret(ctx, "app", store.SealedSecret{Name: "LEGACY", Nonce: nonce, Ciphertext: sealed, UpdatedAt: s.now()}, store.Audit{}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := rawDB(t, dir).Exec(`UPDATE secrets SET fetch_origin='https://other.example.com', fetch_header='X-Key' WHERE name='LEGACY'`); err != nil {
+			t.Fatal(err)
+		}
+		_, err = s.build(ctx, "app", store.Version{Kind: "server", Manifest: []byte(`{"entry":"server.js"}`)}, "unused", nil)
+		if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), `"LEGACY"`) || !strings.Contains(err.Error(), "UTF-8") {
+			t.Fatalf("build: %v", err)
+		}
+	})
+}
+
+// A rename rebuilds the live version from its kept capture, and a new preview captures the current settings
+// (rule 19).
+func TestRenameKeepsAndPreviewCapturesTheInjectedList(t *testing.T) {
+	t.Parallel()
+	s, _ := injectService(t)
+	ctx := t.Context()
+	var specs []RuntimeSpec
+	s.cfg.Runtime = lifecycleRuntime(func(spec RuntimeSpec) (Instance, error) {
+		specs = append(specs, spec)
+		return lifecycleInstance{http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.WriteHeader(200) })}, nil
+	})
+	if _, err := s.SaveVersion(ctx, "app", []bundle.File{{Path: "flats.json", Data: []byte(`{"kind":"server","entry":"server.js"}`)}, {Path: "server.js", Data: []byte(`export default {}`)}}, SaveMeta{}, ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	lifecycleApprove(t, s, lifecycleRequest(t, s, "app"))
+	value := func(spec RuntimeSpec) string {
+		if len(spec.FetchHeaders) != 1 {
+			return fmt.Sprintf("%d headers", len(spec.FetchHeaders))
+		}
+		return spec.FetchHeaders[0].Value
+	}
+	if len(specs) == 0 || value(specs[len(specs)-1]) != coreInjected {
+		t.Fatalf("live capture: %d specs", len(specs))
+	}
+	if err := s.SetSecret(ctx, "app", "TOKEN", "Bearer after-the-deploy", ViaCLI); err != nil {
+		t.Fatal(err)
+	}
+	before := len(specs)
+	if _, err := s.RenameSlug(ctx, "app", "renamed", ViaConsole); err != nil {
+		t.Fatal(err)
+	}
+	if len(specs) != before+1 || specs[len(specs)-1].Flat != "renamed" || value(specs[len(specs)-1]) != coreInjected {
+		t.Fatalf("the rename did not rebuild from the kept capture: %d -> %d specs, last %q", before, len(specs), value(specs[len(specs)-1]))
+	}
+	if _, err := s.OpenPreview(ctx, "renamed", 1); err != nil {
+		t.Fatal(err)
+	}
+	if got := value(specs[len(specs)-1]); got != "Bearer after-the-deploy" {
+		t.Fatalf("the preview captured %q, want the current value", got)
+	}
 }
 
 // No text of the host holds an injected value (rule 23): the refusals, a capture refusal through a deploy, the

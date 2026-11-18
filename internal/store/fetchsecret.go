@@ -60,8 +60,10 @@ type InjectRefusal struct {
 	// Secret is the other secret for InjectTaken.
 	Secret string
 	// Binding is the stored binding for InjectOtherBinding and InjectValue, and the binding of the set for
-	// InjectTaken.
+	// InjectTaken and for a new name.
 	Binding Binding
+	// New says that nothing was stored under the name.
+	New bool
 }
 
 func (e *InjectRefusal) Error() string {
@@ -154,13 +156,13 @@ func (s *Store) PutSecretChecked(ctx context.Context, flat string, sec SealedSec
 // checkNewBinding applies rules 7 and 8 to a new injected secret, inside the write transaction.
 func checkNewBinding(ctx context.Context, x executor, flat, name string, b Binding, headerValue bool) error {
 	if !headerValue {
-		return &InjectRefusal{Reason: InjectValue, Binding: b}
+		return &InjectRefusal{Reason: InjectValue, Binding: b, New: true}
 	}
 	var other string
 	err := x.QueryRowContext(ctx, `SELECT name FROM secrets WHERE flat=? AND name<>? AND fetch_origin=? AND fetch_header=? COLLATE NOCASE ORDER BY name LIMIT 1`,
 		flat, name, b.Origin, b.Header).Scan(&other)
 	if err == nil {
-		return &InjectRefusal{Reason: InjectTaken, Secret: other, Binding: b}
+		return &InjectRefusal{Reason: InjectTaken, Secret: other, Binding: b, New: true}
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return err
@@ -170,7 +172,7 @@ func checkNewBinding(ctx context.Context, x executor, flat, name string, b Bindi
 		return err
 	}
 	if n >= MaxInjectedSecrets {
-		return &InjectRefusal{Reason: InjectLimit}
+		return &InjectRefusal{Reason: InjectLimit, New: true}
 	}
 	return nil
 }

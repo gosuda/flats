@@ -171,7 +171,7 @@ The author of this spec decided these points, and each can change before the imp
 20. The capture checks each injected row again, and it refuses the activation when a row has only one of the two
     binding columns, breaks rules 5 to 7, has the same binding as another row, or when the flat has more than 32
     injected rows. In each of these cases no value of the row goes into `env`. The message names the secret, and
-    `flats secret rm` with a new set.
+    `flats secret rm` with a new set. For more than 32 rows it names the flat, `flats secret ls` and `flats secret rm`.
 21. The worker of a JavaScript flat gets the injected secrets in its spec on stdin, in a field apart from `env`, as a
     list of origin, header and value. They are never in argv or in the environment of the process. The host sends no
     list to the worker of a WASI flat. The worker refuses to start when the list breaks rules 5 to 7.
