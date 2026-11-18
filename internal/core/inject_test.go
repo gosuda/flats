@@ -226,16 +226,17 @@ func rawDB(t *testing.T, dir string) *sql.DB {
 
 func TestStoredBindingsThatRefuseTheActivation(t *testing.T) {
 	t.Parallel()
+	// Each case names the reason that the message gives, so a check that a later check covers by chance still shows.
 	for name, tc := range map[string]struct {
-		sql    []string
-		secret string
+		sql            []string
+		secret, reason string
 	}{
-		"only an origin":     {[]string{`UPDATE secrets SET fetch_header='' WHERE name='TOKEN'`}, "TOKEN"},
-		"only a header":      {[]string{`UPDATE secrets SET fetch_origin='' WHERE name='TOKEN'`}, "TOKEN"},
-		"an http origin":     {[]string{`UPDATE secrets SET fetch_origin='http://api.example.com' WHERE name='TOKEN'`}, "TOKEN"},
-		"a bad header name":  {[]string{`UPDATE secrets SET fetch_header='Host' WHERE name='TOKEN'`}, "TOKEN"},
-		"a bad value":        {[]string{`UPDATE secrets SET fetch_origin='https://other.example.com', fetch_header='X-Key' WHERE name='MULTI'`}, "MULTI"},
-		"two with a binding": {[]string{`DROP INDEX secrets_fetch_binding`, `UPDATE secrets SET fetch_origin='https://api.example.com', fetch_header='Authorization' WHERE name='SECOND'`}, "TOKEN"},
+		"only an origin":     {[]string{`UPDATE secrets SET fetch_header='' WHERE name='TOKEN'`}, "TOKEN", "only one of its origin and its header"},
+		"only a header":      {[]string{`UPDATE secrets SET fetch_origin='' WHERE name='TOKEN'`}, "TOKEN", "only one of its origin and its header"},
+		"an http origin":     {[]string{`UPDATE secrets SET fetch_origin='http://api.example.com' WHERE name='TOKEN'`}, "TOKEN", "not a normalized https origin"},
+		"a bad header name":  {[]string{`UPDATE secrets SET fetch_header='Host' WHERE name='TOKEN'`}, "TOKEN", "not a canonical header name"},
+		"a bad value":        {[]string{`UPDATE secrets SET fetch_origin='https://other.example.com', fetch_header='X-Key' WHERE name='MULTI'`}, "MULTI", "valid HTTP header value"},
+		"two with a binding": {[]string{`DROP INDEX secrets_fetch_binding`, `UPDATE secrets SET fetch_origin='https://api.example.com', fetch_header='Authorization' WHERE name='SECOND'`}, "TOKEN", `"SECOND" has the same origin and header`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -259,7 +260,8 @@ func TestStoredBindingsThatRefuseTheActivation(t *testing.T) {
 				return lifecycleInstance{http.NotFoundHandler()}, nil
 			})
 			_, err := s.build(ctx, "app", store.Version{Kind: "server", Manifest: []byte(`{"entry":"server.js"}`)}, "unused", nil)
-			if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), `"`+tc.secret+`"`) || !strings.Contains(err.Error(), "flats secret rm app "+tc.secret) {
+			if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), `"`+tc.secret+`"`) || !strings.Contains(err.Error(), "flats secret rm app "+tc.secret) ||
+				!strings.Contains(err.Error(), tc.reason) {
 				t.Fatalf("build: %v", err)
 			}
 			if started {
