@@ -231,12 +231,14 @@ func TestStoredBindingsThatRefuseTheActivation(t *testing.T) {
 		sql            []string
 		secret, reason string
 	}{
-		"only an origin":     {[]string{`UPDATE secrets SET fetch_header='' WHERE name='TOKEN'`}, "TOKEN", "only one of its origin and its header"},
-		"only a header":      {[]string{`UPDATE secrets SET fetch_origin='' WHERE name='TOKEN'`}, "TOKEN", "only one of its origin and its header"},
-		"an http origin":     {[]string{`UPDATE secrets SET fetch_origin='http://api.example.com' WHERE name='TOKEN'`}, "TOKEN", "not a normalized https origin"},
-		"a bad header name":  {[]string{`UPDATE secrets SET fetch_header='Host' WHERE name='TOKEN'`}, "TOKEN", "not a canonical header name"},
-		"a bad value":        {[]string{`UPDATE secrets SET fetch_origin='https://other.example.com', fetch_header='X-Key' WHERE name='MULTI'`}, "MULTI", "valid HTTP header value"},
-		"two with a binding": {[]string{`DROP INDEX secrets_fetch_binding`, `UPDATE secrets SET fetch_origin='https://api.example.com', fetch_header='Authorization' WHERE name='SECOND'`}, "TOKEN", `"SECOND" has the same origin and header`},
+		"only an origin":    {[]string{`UPDATE secrets SET fetch_header='' WHERE name='TOKEN'`}, "TOKEN", "only one of its origin and its header"},
+		"only a header":     {[]string{`UPDATE secrets SET fetch_origin='' WHERE name='TOKEN'`}, "TOKEN", "only one of its origin and its header"},
+		"an http origin":    {[]string{`UPDATE secrets SET fetch_origin='http://api.example.com' WHERE name='TOKEN'`}, "TOKEN", "not a normalized https origin"},
+		"a bad header name": {[]string{`UPDATE secrets SET fetch_header='Host' WHERE name='TOKEN'`}, "TOKEN", "not a canonical header name"},
+		"a bad value":       {[]string{`UPDATE secrets SET fetch_origin='https://other.example.com', fetch_header='X-Key' WHERE name='MULTI'`}, "MULTI", "valid HTTP header value"},
+		// The order of the rows decides which of the two the message names first (S1 of the testing review), so the case
+		// names no secret and checks the reason, which names the other one.
+		"two with a binding": {[]string{`DROP INDEX secrets_fetch_binding`, `UPDATE secrets SET fetch_origin='https://api.example.com', fetch_header='Authorization' WHERE name='SECOND'`}, "", "has the same origin and header"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -260,8 +262,9 @@ func TestStoredBindingsThatRefuseTheActivation(t *testing.T) {
 				return lifecycleInstance{http.NotFoundHandler()}, nil
 			})
 			_, err := s.build(ctx, "app", store.Version{Kind: "server", Manifest: []byte(`{"entry":"server.js"}`)}, "unused", nil)
-			if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), `"`+tc.secret+`"`) || !strings.Contains(err.Error(), "flats secret rm app "+tc.secret) ||
-				!strings.Contains(err.Error(), tc.reason) {
+			named := tc.secret != "" && strings.Contains(err.Error(), `"`+tc.secret+`"`) && strings.Contains(err.Error(), "flats secret rm app "+tc.secret) ||
+				tc.secret == "" && strings.Contains(err.Error(), `"TOKEN"`) && strings.Contains(err.Error(), `"SECOND"`) && strings.Contains(err.Error(), "flats secret rm app ")
+			if !errors.Is(err, ErrInvalid) || !named || !strings.Contains(err.Error(), tc.reason) {
 				t.Fatalf("build: %v", err)
 			}
 			if started {
@@ -439,5 +442,68 @@ func TestNoHostTextHoldsAnInjectedValue(t *testing.T) {
 	for _, e := range audit {
 		b, _ := json.Marshal(e)
 		noValue(t, "an audit event", string(b))
+	}
+}
+
+// Two injected secrets with different values go into the list with their own bindings (T1 of the testing review).
+func TestTwoInjectedSecretsInTheCapture(t *testing.T) {
+	t.Parallel()
+	s, _ := injectService(t)
+	ctx := t.Context()
+	if _, err := s.SetSecretBinding(ctx, "app", "OTHER", "Bearer value-of-other", &SecretInject{Origin: "https://other.example.com", Header: "Authorization"}, ViaCLI); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.SetSecretBinding(ctx, "app", "KEY", "key-of-api", &SecretInject{Origin: "https://api.example.com", Header: "X-Api-Key"}, ViaCLI); err != nil {
+		t.Fatal(err)
+	}
+	var spec RuntimeSpec
+	s.cfg.Runtime = lifecycleRuntime(func(got RuntimeSpec) (Instance, error) {
+		spec = got
+		return lifecycleInstance{http.NotFoundHandler()}, nil
+	})
+	d, err := s.build(ctx, "app", store.Version{Kind: "server", Manifest: []byte(`{"entry":"server.js"}`)}, "unused", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.inst.Stop()
+	got := map[string]string{}
+	for _, h := range spec.FetchHeaders {
+		got[h.Origin+" "+h.Name] = h.Value
+	}
+	want := map[string]string{
+		"https://api.example.com Authorization":   coreInjected,
+		"https://api.example.com X-Api-Key":       "key-of-api",
+		"https://other.example.com Authorization": "Bearer value-of-other",
+	}
+	if fmt.Sprint(got) != fmt.Sprint(want) || len(spec.FetchHeaders) != 3 {
+		t.Fatalf("FetchHeaders = %+v", spec.FetchHeaders)
+	}
+	for _, name := range []string{"TOKEN", "OTHER", "KEY"} {
+		if _, ok := spec.Env[name]; ok {
+			t.Errorf("env holds %s", name)
+		}
+	}
+}
+
+// A stored ordinary variable with the name of an injected secret refuses the activation, and its value does not take
+// the place of the secret in env (T6 of the testing review). Only a direct write can make such a row.
+func TestStoredVariableWithTheNameOfAnInjectedSecret(t *testing.T) {
+	t.Parallel()
+	s, dir := injectService(t)
+	ctx := t.Context()
+	db := rawDB(t, dir)
+	for _, q := range []string{`DROP TRIGGER IF EXISTS env_vars_secret_insert`, `INSERT INTO env_vars(flat,name,value,updated_at) VALUES('app','TOKEN','ordinary-value',1)`} {
+		if _, err := db.Exec(q); err != nil {
+			t.Fatal(err)
+		}
+	}
+	started := false
+	s.cfg.Runtime = lifecycleRuntime(func(RuntimeSpec) (Instance, error) {
+		started = true
+		return lifecycleInstance{http.NotFoundHandler()}, nil
+	})
+	_, err := s.build(ctx, "app", store.Version{Kind: "server", Manifest: []byte(`{"entry":"server.js"}`)}, "unused", nil)
+	if !errors.Is(err, ErrInvalid) || !strings.Contains(err.Error(), `environment variable "TOKEN" conflicts with an existing secret`) || started {
+		t.Fatalf("build: %v (started %v)", err, started)
 	}
 }

@@ -308,3 +308,22 @@ func TestMigrationFromVersion27KeepsSecretsReadable(t *testing.T) {
 		t.Errorf("the migration wrote events: %v", auditKinds(got))
 	}
 }
+
+// The binding is unique in a flat only: two flats may bind a secret to the same origin and header (T6 of the testing
+// review).
+func TestTheSameBindingInTwoFlats(t *testing.T) {
+	t.Parallel()
+	s := open(t)
+	for _, flat := range []string{"one", "two"} {
+		makeFlat(t, s, flat)
+		b := bindA
+		if _, err := putChecked(t, s, flat, "TOKEN", "value of "+flat, SecretPut{Inject: &b, HeaderValue: true}); err != nil {
+			t.Fatalf("%s: %v", flat, err)
+		}
+	}
+	for _, flat := range []string{"one", "two"} {
+		if row, ok := secretRow(t, s, flat, "TOKEN"); !ok || row.Inject != bindA || string(row.Ciphertext) != "value of "+flat {
+			t.Errorf("%s: %+v", flat, row)
+		}
+	}
+}

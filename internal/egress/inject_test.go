@@ -33,7 +33,7 @@ const injectedValue = "Bearer injected-fixture-7f3a"
 var injectTestNames = []string{"api.example.com", "eu.api.example.com", "api.example.com.evil.test", "other.example.com"}
 
 type seenRequest struct {
-	host, path, auth, extra string
+	host, path, auth, extra, key string
 }
 
 type injectFixture struct {
@@ -76,12 +76,13 @@ func testCertificate(t *testing.T) (tls.Certificate, *x509.CertPool) {
 
 // newInjectFixture starts the servers and a client for origins with the injected secret of Authorization at
 // https://api.example.com.
-func newInjectFixture(t *testing.T, origins []string) *injectFixture {
+// With no headers, the list is the one injected secret of Authorization at https://api.example.com.
+func newInjectFixture(t *testing.T, origins []string, headers ...Header) *injectFixture {
 	t.Helper()
 	f := &injectFixture{}
 	record := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		f.mu.Lock()
-		f.seen = append(f.seen, seenRequest{host: r.Host, path: r.URL.Path, auth: strings.Join(r.Header.Values("Authorization"), "|"), extra: r.Header.Get("X-Fill")})
+		f.seen = append(f.seen, seenRequest{host: r.Host, path: r.URL.Path, auth: strings.Join(r.Header.Values("Authorization"), "|"), extra: r.Header.Get("X-Fill"), key: strings.Join(r.Header.Values("X-Api-Key"), "|")})
 		f.mu.Unlock()
 		if r.URL.Path == "/redirect" {
 			w.Header().Set("Location", "https://other.example.com/next")
@@ -97,7 +98,10 @@ func newInjectFixture(t *testing.T, origins []string) *injectFixture {
 	t.Cleanup(tlsServer.Close)
 	plain := httptest.NewServer(record)
 	t.Cleanup(plain.Close)
-	c, err := New(origins, Header{Origin: "https://api.example.com", Name: "Authorization", Value: injectedValue})
+	if len(headers) == 0 {
+		headers = []Header{{Origin: "https://api.example.com", Name: "Authorization", Value: injectedValue}}
+	}
+	c, err := New(origins, headers...)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -310,6 +314,37 @@ func TestInjectChecksOfTheService(t *testing.T) {
 		}
 		if strings.Contains(err.Error(), "zq9") {
 			t.Errorf("CheckInjectValue(%q) holds the value: %v", v, err)
+		}
+	}
+}
+
+// Each request carries the values of its own origin only: one header name at two origins with two values, and two headers
+// at one origin (T1 of the testing review).
+func TestTwoInjectedSecretsKeepTheirOwnValues(t *testing.T) {
+	t.Parallel()
+	f := newInjectFixture(t, allInjectOrigins,
+		Header{Origin: "https://api.example.com", Name: "Authorization", Value: "Bearer value-of-api"},
+		Header{Origin: "https://api.example.com", Name: "X-Api-Key", Value: "key-of-api"},
+		Header{Origin: "https://other.example.com", Name: "Authorization", Value: "Bearer value-of-other"})
+	ctx := context.Background()
+	for _, url := range []string{"https://api.example.com/v1", "https://other.example.com/v1", "https://eu.api.example.com/v1"} {
+		if _, err := f.client.Fetch(ctx, Request{URL: url}); err != nil {
+			t.Fatalf("%s: %v", url, err)
+		}
+	}
+	want := map[string]seenRequest{
+		"api.example.com":    {auth: "Bearer value-of-api", key: "key-of-api"},
+		"other.example.com":  {auth: "Bearer value-of-other"},
+		"eu.api.example.com": {},
+	}
+	got := f.requests()
+	if len(got) != len(want) {
+		t.Fatalf("requests: %+v", got)
+	}
+	for _, r := range got {
+		w, ok := want[r.host]
+		if !ok || r.auth != w.auth || r.key != w.key {
+			t.Errorf("%s got Authorization %q and X-Api-Key %q, want %q and %q", r.host, r.auth, r.key, w.auth, w.key)
 		}
 	}
 }

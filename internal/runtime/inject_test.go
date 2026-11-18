@@ -4,16 +4,19 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http/httptest"
 	"path/filepath"
 	"slices"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/gosuda/flats/internal/core"
 	"github.com/gosuda/flats/internal/egress"
 	"github.com/gosuda/flats/internal/ostest"
+	"github.com/gosuda/flats/internal/wsconn"
 )
 
 // The runtime checks of docs/spec/injected-fetch-secrets.md. The outbound client adds the header: its own tests prove
@@ -165,5 +168,41 @@ func TestWorkerSpecKeepsInjectedSecretsOutOfEnv(t *testing.T) {
 	}
 	if len(got.Env) != 1 || got.Env["READABLE"] != "r" || len(got.FetchHeaders) != 1 || got.FetchHeaders[0].Value != runtimeInjected {
 		t.Fatalf("spec: %s", b)
+	}
+}
+
+// A fetch in a WebSocket callback uses the same outbound client: the bound header supplied by flat code fails with the
+// error of rule 15 (rule 14; T6 of the testing review).
+func TestInjectedSecretInAWebSocketCallback(t *testing.T) {
+	t.Parallel()
+	m := newManager(t)
+	f := mustStart(t, m, "inject-ws", map[string]string{"index.js": `export default {
+  fetch() { return new Response("http"); },
+  websocket: {
+    async message(ws, data) {
+      try { await fetch("https://8.8.8.8/v1", {headers: {authorization: "Bearer flat-code"}}); ws.send("allowed"); }
+      catch (e) { ws.send(e.message); }
+    },
+  },
+}`}, "index.js", map[string]string{"READABLE": "r"}, func(s *core.RuntimeSpec) {
+		s.NetworkOrigins = []string{"https://8.8.8.8"}
+		s.FetchHeaders = []egress.Header{{Origin: "https://8.8.8.8", Name: "Authorization", Value: runtimeInjected}}
+	})
+	addr := strings.TrimPrefix(f.srv.URL, "http://")
+	dial := func(ctx context.Context) (net.Conn, error) { return (&net.Dialer{}).DialContext(ctx, "tcp", addr) }
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	c, err := wsconn.Dial(ctx, dial, addr, "/ws")
+	if err != nil {
+		t.Fatalf("dial: %v; logs:\n%s", err, f.logs)
+	}
+	defer c.Close(1006, "")
+	c.NetConn().SetDeadline(time.Now().Add(10 * time.Second))
+	if err := c.WriteFrame(wsconn.OpText, []byte("go")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := c.ReadMessage(MaxWSMessage)
+	if want := (&egress.HostHeaderError{Name: "Authorization"}).Error(); err != nil || got != want {
+		t.Fatalf("read = %q, %v; want %q; logs:\n%s", got, err, want, f.logs)
 	}
 }
