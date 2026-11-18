@@ -274,10 +274,7 @@ func TestNotebookMigrationPreservesSchema21(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			approval, err := s.GetApproval(ctx, "approval")
-			if err != nil {
-				t.Fatal(err)
-			}
+			approval := approvalBefore26(t, s, "approval")
 			if err := s.Close(); err != nil {
 				t.Fatal(err)
 			}

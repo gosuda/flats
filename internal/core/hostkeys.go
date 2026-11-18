@@ -9,10 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/gosuda/flats/internal/store"
+	"github.com/gosuda/flats/internal/webhook"
 )
 
 // Operator key ids (store.HostKey.ID).
@@ -20,10 +22,17 @@ const (
 	HostKeyTailscale = "tailscale"
 	HostKeyZrok      = "zrok"
 	HostKeyNetbird   = "netbird"
+
+	// The two keys of the event webhook (docs/spec/event-webhook.md, rule 6). Only `flats key` sets them.
+	HostKeyWebhookURL    = "webhook-url"
+	HostKeyWebhookSecret = "webhook-secret"
 )
 
-// HostKeyIDs lists the operator keys in display order.
-var HostKeyIDs = []string{HostKeyTailscale, HostKeyNetbird, HostKeyZrok}
+// ProviderKeyIDs lists the keys of the network providers in display order. The console shows and sets these.
+var ProviderKeyIDs = []string{HostKeyTailscale, HostKeyNetbird, HostKeyZrok}
+
+// HostKeyIDs lists every operator key that `flats key` accepts: the provider keys and the two webhook keys.
+var HostKeyIDs = slices.Concat(ProviderKeyIDs, []string{HostKeyWebhookURL, HostKeyWebhookSecret})
 
 // Where a stored key came from (store.HostKey.Source).
 const (
@@ -48,6 +57,18 @@ func CheckHostKeyValue(id, v string) error {
 		return invalidf("the %s key is longer than %d bytes", id, maxHostKeyLen)
 	case strings.ContainsAny(v, " \t\r\n"):
 		return invalidf("the %s key contains white space", id)
+	}
+	switch id {
+	case HostKeyWebhookURL:
+		if err := webhook.CheckURL(v); err != nil {
+			return invalidf("the webhook URL is refused: %v", err)
+		}
+		return nil
+	case HostKeyWebhookSecret:
+		if err := webhook.CheckSecret(v); err != nil {
+			return invalidf("the webhook secret is refused: %v", err)
+		}
+		return nil
 	}
 	if id == HostKeyNetbird {
 		if !setupKeyRE.MatchString(v) {

@@ -230,7 +230,7 @@ func TestAuditLsUsageMistakesAndRefusals(t *testing.T) {
 	config := initConfig(t, dir)
 	for name, args := range map[string][]string{
 		"no subcommand":          nil,
-		"another subcommand":     {"export"},
+		"another subcommand":     {"tail"},
 		"a bad --since":          {"ls", "--since", "yesterday"},
 		"a negative duration":    {"ls", "--since", "-5h"},
 		"a negative --limit":     {"ls", "--limit", "-1"},

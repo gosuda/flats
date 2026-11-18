@@ -10,7 +10,7 @@ The question "who decides this value?" picks the place:
 | Decided by | Stored in | Examples |
 | --- | --- | --- |
 | The operator | `config.json` | addresses, system policies, permitted networks, console domains, provider settings |
-| Flats while running | `flats.db` | flats, drafts, versions, deployments, revision metadata of documents, designs, boards and notebooks, approvals, per-flat provider permission, events, the [audit log](#audit-log) of secret and key operations, analytics (page views, and per-day usage in `usagedays`), ordinary app environment variables, encrypted secrets, encrypted operator keys, console node records, [Autopilot settings](#autopilot-settings), [public instance settings](#public-instance-settings) |
+| Flats while running | `flats.db` | flats, drafts, versions, deployments, revision metadata of documents, designs, boards and notebooks, approvals, per-flat provider permission, events, the [audit log](#audit-log) of secret, key, visibility and grant changes, analytics (page views, and per-day usage in `usagedays`), ordinary app environment variables, encrypted secrets, encrypted operator keys, console node records, [Autopilot settings](#autopilot-settings), [public instance settings](#public-instance-settings) |
 | The flat | `flats/<slug>/` | uploaded code, revision contents, the flat's SQLite database and FILES, a board's or notebook's current content |
 | Nobody may read it in plain text | separate files | `secret.key`, or the file that [`host.secret_key_path`](#keeping-the-key-outside-the-data-directory) names |
 | A client machine's user | `flats-client/connection.json` | which Flats host the CLI and `flats mcp` use, saved by `flats connect` |
@@ -81,8 +81,8 @@ Revision contents are content-addressed: a revision adds only the files that
 changed, and blobs no revision refers to any more are removed after
 retention deletes revisions.
 
-Operator keys (the Tailscale auth key, the NetBird setup key, and a zrok token
-waiting to be used) are kept in `flats.db`, encrypted with `secret.key`; see
+Operator keys (the Tailscale auth key, the NetBird setup key, a zrok token
+waiting to be used, and the URL and signing secret of the event webhook) are kept in `flats.db`, encrypted with `secret.key`; see
 [Operator keys](#operator-keys). `config.json` holds no key. It holds a path to
 the key file only when you set `host.secret_key_path`.
 
@@ -706,6 +706,8 @@ events or API responses:
 | Tailscale auth key | logs in every new tailnet node | until removed |
 | NetBird setup key | registers every new NetBird peer (one per flat and console domain) | until removed |
 | zrok account token | connects the zrok account | until connected; the zrok environment in `zrok-environment/` then holds it |
+| Webhook URL (`webhook-url`) | the address that the [event webhook](#event-webhook) posts to | until removed |
+| Webhook signing secret (`webhook-secret`) | signs every event of the webhook | until removed |
 
 Each value is sealed with AES-256-GCM under `secret.key`, with
 `"host-key\x00"` followed by the key's name as additional data, so a stored
@@ -726,7 +728,7 @@ A key reaches Flats in one of these ways:
 - **`flats key`** while the host is stopped. It takes the host lock like
   `flats config set`, refuses while a host runs, and checks that `flats.db`
   belongs to the configuration (`--config PATH` or `--data DIR` select it):
-  - `flats key set tailscale|zrok|netbird` reads the key from standard input
+  - `flats key set tailscale|zrok|netbird|webhook-url|webhook-secret` reads the key from standard input
     (a prompt without echo on a terminal) or `--from-file PATH`, never from
     the command line, and replaces a stored one. A zrok token waits for the
     next start, which connects it when no account is connected. With
@@ -736,6 +738,9 @@ A key reaches Flats in one of these ways:
   - `flats key rm` removes a stored key or a waiting zrok token and needs no
     `secret.key`; `flats key ls` needs none either. Disconnecting a zrok
     account stays in the console.
+  - The two keys of the [event webhook](#event-webhook), `webhook-url` and
+    `webhook-secret`, have no console page and no start input. `flats key` is
+    the only way to set, list and remove them.
 - **At start**, in this order of priority:
   1. the flags `--tailscale-authkey-file` (`--authkey-file` for a legacy
      service), `--zrok-token-file` and `--netbird-setup-key-file`, each naming
@@ -1175,10 +1180,13 @@ example after `reset` let the start create a new key.
 
 ### Audit log
 
-Every change of a sealed value, and every key backup, key restore and reset, writes one event to the audit log in
+Every change of a sealed value, every key backup, key restore and reset, every change of the visibility of a flat that an
+approval applies, and every change of the origin grants or of a provider permission of a flat that the console or
+`flats network set` makes writes one event to the audit log in
 `flats.db` (the table `audit_events`, schema version 25). It is separate from the log of a flat, which Flats
 trims to `system.events_keep` events and removes with the flat. The audit log is append-only, is never trimmed,
-and the deletion or rename of a flat does not change it. Agents cannot read it: no MCP tool and no API route
+and the deletion or rename of a flat does not change it. The grants that a new flat starts with, and the Tailscale grant
+that the upgrade of a legacy service adds, write no event. Agents cannot read it: no MCP tool and no API route
 returns it, and `get_logs` shows only the log of the flat. The value of a secret or key is never recorded, only
 its name.
 
@@ -1191,11 +1199,15 @@ its name.
 | `key.backup` | `flats secret backup-key` wrote the recovery copy | `key_id`, and `out` when `--out` wrote a second copy |
 | `key.restore` | `flats secret restore-key` wrote the key | `key_id`, `out`, and how many sealed values the key `opened` of the `total` |
 | `key.reset` | `flats secret reset` deleted the stored values | how many `secrets` and `keys`; each value also has its own delete event |
+| `visibility.set` | an approval applied a change of the visibility or of the public access level of a flat | `from` and `to`, each with `visibility` and `access`, and the `approval` |
+| `network.set` | the list of origins that the server code of a flat may fetch changed | `count` and `origins`: the list after the change. A list whose JSON text has more than 3000 bytes is cut to its first origins, with `truncated` |
+| `provider.set` | the permission of a flat to use a network provider changed (the provider is the name of the event) | `permitted` |
 
 Each event has a time, the slug and the ID of the flat when it concerns one, the name of the secret or key, the
-channel (`via`) and the actor. The channel is `console`, `cli` (`flats secret set` or `rm` through the loopback
+channel (`via`) and the actor. The channel is `console`, `cli` (`flats secret set` or `rm`, or `flats network set`, through the loopback
 API), `command` (a command that you ran on the host), `start` (an input that the host read at start, or the zrok
-enrolment after it), `migration` (the import of a legacy key) or `flat-delete`. The actor is the identity that the
+enrolment after it), `migration` (the import of a legacy key), `flat-delete`, or `autopilot` (an agent decided the approval of a visibility
+change under [Autopilot](#autopilot-settings); the actor is then the Autopilot record of that agent). The actor is the identity that the
 channel knows. For the console it is the text that the console records for approvals: a tailnet user or node, a
 NetBird peer, the external origin, or the address of the caller. For a command it is the name of the operating-system
 user, which is `root` under `sudo`. For `cli`, `start`, `migration` and `flat-delete` it is empty: the CLI header is
@@ -1221,11 +1233,170 @@ the user that runs the host, as you run `flats key`, `restore-key` and `reset`. 
 exits with status 1 and says that the recovery copy was written and the event was not.
 
 A restore of the host from `flats backup` replaces `flats.db`, so it drops the audit events that were written after
-the copy. Anyone who can write `flats.db` can change the log. To keep a record off the host, copy the output of
-`flats audit ls --json` from time to time.
+the copy. Anyone who can write `flats.db` can change the log. To keep a record off the host, run
+[`flats audit export`](#audit-export) from time to time.
 
-The audit log is a schema change: an older Flats refuses a `flats.db` of schema 25. To go back to an older release,
+The audit log is a schema change: an older Flats refuses a `flats.db` of schema 25. Schema 26 added the two webhook keys and the
+flat ID of an approval, and an older Flats refuses it too. To go back to an older release,
 restore a backup of the whole data directory that you took before the upgrade, as [flats.db](#flatsdb) says.
+
+### Audit export
+
+```sh
+flats audit export [--since TIME] [--config PATH | --data DIR]
+```
+
+`flats audit export` writes the audit log and the approval records as JSON lines, oldest first, so that you can ship
+them off the host. It prints nothing else to standard output. It reads `flats.db` as `flats audit ls` does: without a
+host lock, without calling the host, while the host runs or is stopped, and with the same refusals and exit statuses.
+It writes no row.
+
+There are three kinds of line. Each has `record` and `at`, an RFC 3339 time in UTC with milliseconds.
+
+```json
+{"record":"approval","event":"created","at":"2026-11-16T09:29:40.002Z","id":"apr-3765ym6bd21w","flat":"notes","flat_id":"754f…","action":"delete","via":"mcp","reason":"the project ended"}
+{"record":"audit","id":12,"at":"2026-11-16T09:30:00.118Z","kind":"secret.delete","flat":"notes","flat_id":"754f…","name":"API_KEY","via":"flat-delete","actor":"","data":{"approval":"apr-3765ym6bd21w"}}
+{"record":"approval","event":"decided","at":"2026-11-16T09:30:00.120Z","id":"apr-3765ym6bd21w","flat":"notes","flat_id":"754f…","action":"delete","state":"approved","decided_by":"ann@example.org","result":"flat notes was permanently deleted"}
+```
+
+- An `audit` line is one event of the [audit log](#audit-log), with the fields of `flats audit ls --json`.
+- A `created` line is written for every approval, at the time of the request.
+- A `decided` line is written for every approval that is `approved`, `rejected` or `failed`, at the time of the decision.
+
+An approval record stays when its flat is deleted, so the decision of an approved delete is in the export after the flat
+is gone, together with the `secret.delete` events of the secrets that the flat held. A delete from the console makes no
+approval. Such a flat shows only through those `secret.delete` events and through the pending approvals that its
+deletion failed. `flat_id` joins the lines of one flat: a rename changes the slug of its approval lines and not the slug
+of its older audit lines, and a flat that is created again under a deleted slug has another ID. `flat_id` is empty for an
+approval that was made before schema 26 and whose flat was gone at the upgrade.
+
+`decided_by` is the stored record of who decided: `console`, a tailnet login, a NetBird peer, or the Autopilot record of
+an agent with its address. `reason` is text that an agent wrote, and `result` can be an error text of the host with a path
+in it. Flats does not filter them. It cuts `reason` and `result` at 1 KiB and `decided_by` at 512 bytes. No line holds the
+parameters of an approval or a secret value. Treat the export as you treat the approval records.
+
+`--since` takes an RFC 3339 time or a duration such as `24h` and keeps the lines whose `at` is that time or later.
+The command stops at a cutoff, 30 seconds before it started, because a record that the host is writing can still be on
+its way to the disk. It prints the cutoff on standard error:
+
+```text
+exported 1820 lines through 2026-11-16T09:31:10.456Z
+```
+
+Run the next export with `--since` and that time. The line at the boundary can appear in both exports, so a reader
+ignores a second line with the same `record`, `event` and `id`. A write of the host that takes more than 30 seconds
+between its time stamp and its commit can be missed. To be safe against that, give `--since` a time a few minutes before
+the printed one and ignore the repeated lines. Lines are ordered by `at`. Lines with the same `at` come as audit
+lines by `id`, then `created` lines, then `decided` lines.
+
+Anyone who can write `flats.db` can change what the export shows. A restore of the host from `flats backup` drops the
+records that were written after the copy.
+
+### Event webhook
+
+Flats can send a signed HTTP POST to one URL when an approval is created or decided, when the visibility of a flat
+changes, and when a grant of a flat's network access changes. The webhook is off until you store its two
+[operator keys](#operator-keys) while the host is stopped:
+
+```sh
+umask 077
+openssl rand -hex 32 > webhook-secret.txt      # the receiver needs this value too
+flats key set webhook-secret --from-file webhook-secret.txt
+flats key set webhook-url --from-file webhook-url.txt   # a file that holds only the URL
+```
+
+Flats never shows a stored value again, so keep the secret for the receiver, and delete the two files when both sides
+have it. A value on a command line can stay in the shell history, which is why the URL comes from a file or from
+standard input. The next start sends events. `flats key rm webhook-url` or `flats key rm webhook-secret` turns the webhook off, and a
+host that has only one of the two keys logs that at its start and sends nothing. There is no console page for the
+webhook, and no MCP tool, API route or log of a flat shows the URL, the secret or that a webhook is on. Both values are
+sealed in `flats.db` like the other operator keys, because a webhook URL often holds a token.
+
+The URL uses `https`. `http` is accepted only for `localhost` and for an IP address in the loopback, private,
+link-local or CGNAT ranges, for a receiver on the same machine or network. It has no fragment and at most 2048 bytes.
+The secret has at least 16 bytes.
+
+| Event | Sent when |
+| --- | --- |
+| `approval.created` | an approval is requested, from the console or by an agent. A request that repeats an open one sends nothing |
+| `approval.decided` | an approval is approved, rejected or failed, also when the deletion of its flat fails it |
+| `visibility.changed` | an approved change of the visibility or of the public access level of a flat is applied |
+| `network.changed` | the provider permission of a flat, or the list of origins that its server code may fetch, changes |
+
+A change that alters nothing sends nothing. The host-wide `network.permitted` list, the creation of a flat, the public
+instance mode, the downgrade of "anyone can edit" when guest editing is off, an approval that a restart finishes, and
+secrets and operator keys send no event. The [audit log](#audit-log) records the changes of secrets and operator keys.
+
+The body is a JSON object of at most 4 KiB:
+
+```json
+{
+  "id": "evt_mfrggzdfmztwq2lknnwg23tpob",
+  "type": "approval.decided",
+  "at": "2026-11-16T09:30:00.120Z",
+  "flat": {"slug": "notes", "id": "754f4ee971ef128d6ce458c59c730fbb"},
+  "operation": "set_visibility",
+  "state": "approved",
+  "approval_id": "apr-3765ym6bd21w",
+  "decided_by": "operator",
+  "console_url": "https://console.example.ts.net/approvals/apr-3765ym6bd21w"
+}
+```
+
+| Field | Content |
+| --- | --- |
+| `id` | the ID of the event, the same for every attempt to deliver it |
+| `type`, `at` | the event and its time on the clock of the host |
+| `flat` | the slug and the ID of the flat. The ID is empty when Flats does not know it |
+| `operation` | the action of the approval, or `set_visibility`, `set_network_origins` or `set_provider_permission` |
+| `state` | `pending`, then `approved`, `rejected` or `failed`; `applied` for a visibility or grant change |
+| `approval_id` | the approval, when there is one |
+| `via` | for `approval.created`, the channel that asked (`mcp`, `cli`, `api` or `console`) |
+| `decided_by` | `operator` or `autopilot`. Absent for an approval that nobody decided |
+| `change` | for `visibility.changed`, `from` and `to`, each with `visibility` and `access`. For `network.changed`, `{"grant":"origins","count":2,"origins":[…]}` or `{"grant":"provider","provider":…,"permitted":true}`. A list of origins whose JSON text has more than 3000 bytes is cut to its first origins, with `"truncated":true`; `count` is the size of the whole list |
+| `console_url` | the page of the approval or of the flat in the console |
+
+The body never holds the content of a flat, a secret or its name, the reason, parameters or result of an approval, a
+login or an address. The export carries the reason, the result and the stored record of who decided.
+
+Each request has these headers:
+
+| Header | Value |
+| --- | --- |
+| `Content-Type` | `application/json` |
+| `User-Agent` | `flats/<version>` |
+| `X-Flats-Event` | the type |
+| `X-Flats-Event-Id` | the `id` of the body |
+| `X-Flats-Timestamp` | the Unix time in seconds of this attempt |
+| `X-Flats-Signature` | `v1=` and the HMAC-SHA256, in lower-case hex, of the timestamp, a `.` and the exact body, with the secret as the key |
+
+A receiver checks a request in this order. It computes the signature from the header timestamp and the bytes it
+received, and compares it with the header in constant time. It refuses a timestamp that is more than five minutes from
+its own clock. It ignores an event whose `X-Flats-Event-Id` it has handled already. With the body in `body.json`:
+
+```sh
+printf '%s.' "$TIMESTAMP" | cat - body.json | openssl dgst -sha256 -hmac "$SECRET" -hex
+```
+
+`body.json` must hold the exact bytes of the request body, with no added line end. `openssl` prints a label and then the
+hex digits. The digits must equal the header value after `v1=`.
+
+For the secret `whsec_0123456789abcdef0123456789abcdef`, the timestamp `1700000000` and the body
+`{"id":"evt_test","type":"approval.created"}`, the signature is
+`v1=edecf23a0b88e1b94a9e5c0e5534118dcd61eeaf578b04fa0696a8a3f9b79919`.
+
+A delivery succeeds on a status 200 to 299. Flats does not follow a redirect and always verifies the certificate of an
+`https` receiver. It connects to the receiver itself and ignores `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`, so a host
+that reaches the network only through a proxy cannot deliver the webhook. An attempt has 10 seconds. Flats tries an event at most 4 times, and waits 5 seconds, 30 seconds and
+2 minutes between the attempts, after a network or certificate error, a timeout, and a status 408, 429 or 5xx. Any other
+status, and a redirect, end the event at once. A failed event leaves one line in the host log with the ID of the event,
+its type and a class (`connect`, `timeout`, `tls`, `status NNN` or `other`), never the URL or the secret.
+
+A delivery never delays the operation that caused it. Flats keeps at most 256 events that wait and runs 4 deliveries at
+once, so a receiver can see events in another order than they happened, can see an event twice, and can miss one: an
+event that waits when the host stops, that used its 4 attempts, or that a burst of newer events pushed out of the queue
+(an agent that requests many approvals can cause that) is not sent again. The webhook is a notification. The record is
+the audit log and the approvals, which [`flats audit export`](#audit-export) ships.
 
 ## Moving an existing installation
 

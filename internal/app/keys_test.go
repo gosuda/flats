@@ -252,7 +252,7 @@ func TestKeyCommandOffline(t *testing.T) {
 		t.Fatal(err)
 	}
 	out, err := run("", "ls")
-	if err != nil || !strings.Contains(out, "tailscale  stored (from cli") || !strings.Contains(out, "zrok       waiting") || strings.Contains(out, "tskey") {
+	if err != nil || !strings.Contains(out, "tailscale      stored (from cli") || !strings.Contains(out, "zrok           waiting") || strings.Contains(out, "tskey") {
 		t.Fatalf("ls: %q %v", out, err)
 	}
 	if _, err := run("", "set", "portal"); exitCode(err) != 2 {
@@ -282,7 +282,7 @@ func TestKeyCommandOffline(t *testing.T) {
 		t.Fatal(err)
 	}
 	out, _ = run("", "ls")
-	if !strings.Contains(out, "tailscale  none") {
+	if !strings.Contains(out, "tailscale      none") {
 		t.Fatalf("after rm: %q", out)
 	}
 }

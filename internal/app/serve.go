@@ -603,6 +603,7 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 		return nil, keyRefusal(err)
 	}
 	h.Svc = svc
+	h.startWebhook(ctx, keyFile, st, logf)
 	// The deprecated key file path goes once its key is in flats.db.
 	if cfg.Credentials.TailscaleAuthKeyFile != "" {
 		if err := svc.DropDeprecatedAuthKeyFile(); err != nil {

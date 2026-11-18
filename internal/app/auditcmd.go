@@ -21,12 +21,16 @@ const auditPage = 500
 // defaultAuditLimit is how many of the newest events `flats audit ls` lists without --limit.
 const defaultAuditLimit = 100
 
-// AuditCommand runs `flats audit ls`. It works on the data directory, reads flats.db without a host lock and never
-// calls the host.
+// AuditCommand runs `flats audit ls` and `flats audit export`. Both work on the data directory, read flats.db without
+// a host lock and never call the host.
 func AuditCommand(ctx context.Context, args []string, out io.Writer) error {
 	c := &auditCmd{configCmd: configCmd{ctx: ctx, out: out}}
+	if len(args) > 0 && args[0] == "export" {
+		return c.export(args[1:])
+	}
 	if len(args) == 0 || args[0] != "ls" {
-		return usagef("usage: flats audit ls [--since TIME] [--kind KIND] [--flat SLUG] [--flat-id ID] [--limit N] [--json] [--config PATH | --data DIR]")
+		return usagef("usage: flats audit ls [--since TIME] [--kind KIND] [--flat SLUG] [--flat-id ID] [--limit N] [--json] [--config PATH | --data DIR]\n" +
+			"       flats audit export [--since TIME] [--config PATH | --data DIR]")
 	}
 	f := c.flags("audit ls")
 	since := f.String("since", "", "only events from this RFC 3339 time, or from this long ago (a duration such as 24h)")
@@ -52,19 +56,8 @@ func AuditCommand(ctx context.Context, args []string, out io.Writer) error {
 		}
 		q.Since = t
 	}
-	dataDir, _, err := c.location()
+	rd, err := c.openReader()
 	if err != nil {
-		return err
-	}
-	rd, err := store.OpenAuditReader(filepath.Join(dataDir, "flats.db"))
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		return actionf("%s has no flats.db: it is not the data directory of a Flats host", dataDir)
-	case errors.Is(err, store.ErrSchemaTooNew):
-		return actionf("this Flats is older than the database in %s; use the release that wrote it", dataDir)
-	case errors.Is(err, store.ErrAuditSchema):
-		return actionf("the database in %s is of an older schema than this Flats expects: start the host once with this Flats so that it migrates it", dataDir)
-	case err != nil:
 		return err
 	}
 	defer rd.Close()
@@ -100,6 +93,28 @@ func AuditCommand(ctx context.Context, args []string, out io.Writer) error {
 
 type auditCmd struct{ configCmd }
 
+// openReader opens the flats.db of the data directory as rule 22 of docs/spec/audit-events.md says. A data directory
+// without a database and a database of another schema are refusals with status 78 (rule 23), for `ls` and for
+// `export` alike.
+func (c *auditCmd) openReader() (*store.AuditReader, error) {
+	dataDir, _, err := c.location()
+	if err != nil {
+		return nil, err
+	}
+	rd, err := store.OpenAuditReader(filepath.Join(dataDir, "flats.db"))
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		return nil, actionf("%s has no flats.db: it is not the data directory of a Flats host", dataDir)
+	case errors.Is(err, store.ErrSchemaTooNew):
+		return nil, actionf("this Flats is older than the database in %s; use the release that wrote it", dataDir)
+	case errors.Is(err, store.ErrAuditSchema):
+		return nil, actionf("the database in %s is of an older schema than this Flats expects: start the host once with this Flats so that it migrates it", dataDir)
+	case err != nil:
+		return nil, err
+	}
+	return rd, nil
+}
+
 // parseSince reads an RFC 3339 time, or a duration that counts back from now.
 func parseSince(v string, now time.Time) (time.Time, error) {
 	if t, err := time.Parse(time.RFC3339, v); err == nil {
@@ -124,14 +139,22 @@ type auditLine struct {
 	Data   json.RawMessage `json:"data,omitempty"`
 }
 
+// auditTime writes a time as the audit commands print it: RFC 3339 in UTC with milliseconds.
+func auditTime(t time.Time) string { return t.UTC().Format("2006-01-02T15:04:05.000Z") }
+
+// auditLineOf is the JSON line of e, for `ls --json` and for `export`.
+func auditLineOf(e store.AuditEvent) auditLine {
+	return auditLine{ID: e.ID, At: auditTime(e.Time), Kind: e.Kind, Flat: e.Flat, FlatID: e.FlatID, Name: e.Name, Via: e.Via, Actor: e.Actor, Data: e.Data}
+}
+
 func (c *auditCmd) printEvent(e store.AuditEvent, asJSON bool) error {
-	at := e.Time.UTC().Format("2006-01-02T15:04:05.000Z")
+	at := auditTime(e.Time)
 	if asJSON {
-		b, err := json.Marshal(auditLine{ID: e.ID, At: at, Kind: e.Kind, Flat: e.Flat, FlatID: e.FlatID, Name: e.Name, Via: e.Via, Actor: e.Actor, Data: e.Data})
+		b, err := json.Marshal(auditLineOf(e))
 		if err != nil {
 			return err
 		}
-		c.printf("%s\n", b)
+		c.printf("%s\n", jsonForTerminal(b))
 		return nil
 	}
 	target := e.Name

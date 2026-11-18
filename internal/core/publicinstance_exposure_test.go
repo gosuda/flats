@@ -53,7 +53,7 @@ func TestPublicInstanceOffUnpublishedExposure(t *testing.T) {
 					if err := s.st.CreateFlat(t.Context(), store.Flat{Slug: "site", Name: "site", Visibility: store.Public, CreatedAt: apNow, UpdatedAt: apNow}); err != nil {
 						t.Fatal(err)
 					}
-					if err := s.st.SetProviderPermission(t.Context(), "site", store.ProviderPortal, true); err != nil {
+					if _, err := s.st.SetProviderPermission(t.Context(), "site", store.ProviderPortal, true, store.Audit{}); err != nil {
 						t.Fatal(err)
 					}
 				}

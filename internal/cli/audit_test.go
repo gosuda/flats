@@ -53,3 +53,61 @@ func TestAuditIsListedInTheHelp(t *testing.T) {
 		t.Errorf("flats help audit = %q", r.stdout)
 	}
 }
+
+// `flats audit export` reaches the same wired command with its arguments, prints what the command prints and nothing
+// else on the standard output, and keeps the exit status of the command, as `flats audit ls` does.
+func TestAuditExportIsWiredAndKeepsItsExitStatus(t *testing.T) {
+	old := Audit
+	t.Cleanup(func() { Audit = old })
+	var got []string
+	var reply error
+	const line = `{"record":"audit","id":1}` + "\n"
+	Audit = func(_ context.Context, args []string, out io.Writer) error {
+		got = args
+		if reply == nil {
+			io.WriteString(out, line)
+		}
+		return reply
+	}
+
+	r := run(t, "http://127.0.0.1:1", "", "audit", "export", "--since", "1h")
+	if r.code != 0 || !slices.Equal(got, []string{"export", "--since", "1h"}) || r.stdout != line || r.stderr != "" {
+		t.Fatalf("code %d, args %q, stdout %q, stderr %q", r.code, got, r.stdout, r.stderr)
+	}
+
+	for name, tc := range map[string]struct {
+		err  error
+		code int
+		text string
+	}{
+		"a refusal":       {exit78{errors.New("/d has no flats.db")}, ExitConfig, "/d has no flats.db"},
+		"a failure":       {errors.New("write the export: broken pipe"), 1, "broken pipe"},
+		"a usage mistake": {exit2{errors.New(`--since: "soon" is neither an RFC 3339 time nor a duration such as 24h`)}, ExitUsage, "flats audit export [--since time]"},
+	} {
+		reply = tc.err
+		r := run(t, "http://127.0.0.1:1", "", "audit", "export", "--since", "soon")
+		if r.code != tc.code || !strings.Contains(r.stderr, tc.text) || r.stdout != "" {
+			t.Errorf("%s: code %d, stdout %q, stderr %q; want code %d, %q on the standard error and no standard output", name, r.code, r.stdout, r.stderr, tc.code, tc.text)
+		}
+	}
+}
+
+func TestAuditExportIsListedInTheHelp(t *testing.T) {
+	r := run(t, "http://127.0.0.1:1", "", "help", "audit")
+	for _, want := range []string{"usage: flats audit ls ", "       flats audit export [--since time] [--config path | --data dir]\n", "export"} {
+		if !strings.Contains(r.stdout, want) {
+			t.Errorf("flats help audit lacks %q:\n%s", want, r.stdout)
+		}
+	}
+	// The line of the command in the list of `flats help` says that it exports too.
+	r = run(t, "http://127.0.0.1:1", "", "help")
+	listed := false
+	for _, l := range strings.Split(r.stdout, "\n") {
+		if strings.HasPrefix(l, "  audit ") && strings.Contains(l, "export") {
+			listed = true
+		}
+	}
+	if !listed {
+		t.Errorf("the audit line of flats help does not name the export:\n%s", r.stdout)
+	}
+}

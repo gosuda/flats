@@ -49,7 +49,8 @@ In scope: the table and its migration, the events of rules 8 to 15 and where eac
 
 Out of scope:
 
-- The webhook, `flats audit export` and the approval records in an export (#225).
+- The webhook, `flats audit export` and the approval records in an export. They are in [event webhook](event-webhook.md)
+  (#225), which also adds three kinds to this log.
 - The writer of the rotation event. This spec reserves the kind `key.rotate` (rule 15). The rotation spec gives its
   fields and writes it.
 - A console view, an MCP tool or an API route for the log. Agents cannot read it.
@@ -75,7 +76,7 @@ Out of scope:
    `flats backup` replaces `flats.db` and so drops the rows that were written after the copy; the docs say so. A person
    who can write `flats.db` can still change the rows, as "Scope" says.
 3. No row holds a secret value, an operator key value, key bytes, a recovery password or the recovery copy. A name is
-   not a value. `data` holds only the fields that rules 8 to 15 name. The key ID of rules 12 and 13 is the one that
+   not a value. `data` holds only the fields that rules 8 to 15 and rule 21 of [event webhook](event-webhook.md) name. The key ID of rules 12 and 13 is the one that
    [secret key recovery](secret-key-recovery.md) defines. It reveals nothing that opens the key.
 4. `via` says which channel made the change. It is one of
    - `console`: a route of the console API (the web console);
@@ -85,13 +86,16 @@ Out of scope:
    - `start`: an input that the host read at its start (a key file flag, a `FLATS_*` variable, or the deprecated
      `credentials.tailscale_authkey_file`), and the zrok enrolment and clean-up that the host runs after its start;
    - `migration`: the import of a legacy key file when an older installation moves to a configuration file;
-   - `flat-delete`: the deletion of a flat removed its secrets.
+   - `flat-delete`: the deletion of a flat removed its secrets;
+   - `autopilot`: an agent decided an approval under [Autopilot](autopilot.md) (the kind `visibility.set` of
+     [event webhook](event-webhook.md) only).
 5. `actor` is the identity that the channel knows. For `console` it is the actor text that `consoleActor`
    (`internal/api/experiments.go`) derives from the request: a tailnet user or node, a NetBird peer, the external
    origin, or the socket address of the caller. For `command` it is the name of the operating-system user that ran the
    command, or empty when the system gives none. Under `sudo` that user is `root`, and the docs say so. For `cli`,
    `start`, `migration` and `flat-delete` it is empty: the `cli` header is a client's claim and not an identity
-   ([design](../design.md), "Secrets"), and the others have no person. #139 may fill `actor` for `cli` later. The log
+   ([design](../design.md), "Secrets"), and the others have no person. #139 may fill `actor` for `cli` later. For `visibility.set` with `via` `autopilot` it is the
+   text that `core.DeciderText` gives for the approval ([event webhook](event-webhook.md), rule 21). The log
    holds these identities and is never trimmed. The docs say so, because #225 ships the log off the host.
 6. A row never changes the meaning of an existing per-flat event. The events `secret NAME set via VIA` and the events of
    `flats secret reset` stay as they are.
@@ -111,6 +115,7 @@ Out of scope:
 | `key.restore` (13) | none | none | `{"key_id": ..., "out": true or false, "opened": N, "total": M}` | `command` |
 | `key.reset` (14) | none | none | `{"secrets": N, "keys": M}` | `command` |
 | `key.rotate` (15) | none | none | reserved | reserved |
+| `visibility.set`, `network.set`, `provider.set` | the flat | none, none, the provider | [event webhook](event-webhook.md), rule 21 | `console`, `cli`, `autopilot` |
 
 8. `secret.set` is written for each successful set of a flat secret, whether the name is new (`created` true) or
    replaced. A set that fails validation or the name check changes nothing and writes nothing. `flat` and `flat_id`
@@ -184,7 +189,9 @@ flats audit ls [--since TIME] [--kind KIND] [--flat SLUG] [--flat-id ID] [--limi
     `--limit 0` returns every match. A flag value that does not parse is a usage mistake with status 2.
 21. The text output is one line for each event with the time, the kind, the slug and name, `via`, `actor` and `data`.
     With `--json` it is one JSON object per line (JSON lines) with the fields of rule 1 (`data` as an object, `at` as an
-    RFC 3339 time in UTC with milliseconds), which is the format that `flats audit export` of #225 extends. The ID of a
+    RFC 3339 time in UTC with milliseconds), which is the format that `flats audit export` of #225 extends. A character that the
+    output filter of the command line rewrites (DEL, a C1 control or a bidi override) is a JSON escape in the line, so the
+    line stays valid JSON. The ID of a
     flat is shown to the operator here, as it is in no other output.
 22. The command opens `flats.db` read-only, takes no host lock, never calls the host and writes no row. The open is
     never immutable while a host may write: it is a plain read-only open, which sees the write-ahead log, whenever a

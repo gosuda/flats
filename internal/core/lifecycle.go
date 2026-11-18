@@ -186,6 +186,12 @@ func (s *Service) requestFrozen(ctx context.Context, slugName, action string, pa
 	}
 	url := s.ApprovalURL(ctx, a.ID)
 	s.Event(ctx, slugName, "warn", "approval", fmt.Sprintf("%s requested via %s; waiting for the operator: %s", action, via, url), params)
+	if s.notifying() {
+		// The row carries the ID of the flat, which the insert looked up.
+		if row, err := s.st.GetApproval(ctx, a.ID); err == nil {
+			s.notifyApproval(ctx, eventApprovalCreated, "pending", row)
+		}
+	}
 	return ActionResult{Status: "pending_approval", Approval: &a, ApprovalURL: url,
 		Message: "This action needs the operator's approval. Share the approval link with them; nothing changes until they approve it in the web console."}, nil
 }
@@ -449,8 +455,12 @@ func (s *Service) SetProviderPermission(ctx context.Context, slugName, provider 
 			return err
 		}
 	}
-	if err := s.st.SetProviderPermission(ctx, slugName, provider, permitted); err != nil {
+	changed, err := s.st.SetProviderPermission(ctx, slugName, provider, permitted, s.audit(ctx, via))
+	if err != nil {
 		return err
+	}
+	if changed {
+		s.notifyProvider(ctx, f, provider, permitted)
 	}
 	s.Event(ctx, slugName, "info", "provider", fmt.Sprintf("provider %s permitted=%t via %s", provider, permitted, via), nil)
 	if !permitted {
@@ -627,6 +637,7 @@ func (s *Service) finishApplying(ctx context.Context, a store.Approval) (store.A
 			return a, err
 		}
 		s.agentDecisionEvent(ctx, a, msg)
+		s.notifyApproval(ctx, eventApprovalDecided, "approved", a)
 		return s.st.GetApproval(ctx, a.ID)
 	}
 
@@ -648,6 +659,7 @@ func (s *Service) finishApplying(ctx context.Context, a store.Approval) (store.A
 			return a, err
 		}
 		s.agentDecisionEvent(ctx, a, msg)
+		s.notifyApproval(ctx, eventApprovalDecided, "approved", a)
 		return s.st.GetApproval(ctx, a.ID)
 	}
 	res, err := s.applyApproval(ctx, a)
@@ -679,6 +691,7 @@ func (s *Service) finishApplying(ctx context.Context, a store.Approval) (store.A
 	if a.Action != "delete" || err != nil {
 		s.Event(ctx, a.Flat, "info", "approval", fmt.Sprintf("%s %s by %s: %s", a.Action, status, DeciderText(a.DecidedBy), result), nil)
 	}
+	s.notifyApproval(ctx, eventApprovalDecided, status, a)
 	out, gerr := s.st.GetApproval(ctx, a.ID)
 	if gerr != nil {
 		return out, gerr
@@ -1160,9 +1173,10 @@ func (s *Service) applyVisibilityApproval(ctx context.Context, a store.Approval)
 		next := f
 		next.Visibility, next.PublicAccess, next.UpdatedAt = target, access, s.now()
 		if f.Visibility.Public() {
-			if err := s.st.CommitVisibility(ctx, next, f, a.ID, raw); err != nil {
+			if err := s.st.CommitVisibility(ctx, next, f, a.ID, raw, s.visibilityAudit(ctx, a)); err != nil {
 				return ActionResult{}, err
 			}
+			s.notifyVisibility(ctx, a, f, next)
 		} else {
 			if err := s.publicAvailable(ctx, a.Flat); err != nil {
 				return ActionResult{}, err
@@ -1170,9 +1184,10 @@ func (s *Service) applyVisibilityApproval(ctx context.Context, a store.Approval)
 			if err := s.ensureExposure(ctx, next); err != nil {
 				return ActionResult{}, s.rollbackPublicExposure(ctx, f, err)
 			}
-			if err := s.st.CommitVisibility(ctx, next, f, a.ID, raw); err != nil {
+			if err := s.st.CommitVisibility(ctx, next, f, a.ID, raw, s.visibilityAudit(ctx, a)); err != nil {
 				return ActionResult{}, s.rollbackPublicExposure(ctx, f, err)
 			}
+			s.notifyVisibility(ctx, a, f, next)
 		}
 		next.AccessSeq++
 		note := s.applyLevelLocked(levelCtx, a.Flat, access, next.AccessSeq)
@@ -1198,9 +1213,10 @@ func (s *Service) applyVisibilityApproval(ctx context.Context, a store.Approval)
 	}
 	next := f
 	next.Visibility, next.PublicAccess, next.UpdatedAt = store.Private, "", s.now()
-	if err := s.st.CommitVisibility(ctx, next, f, a.ID, raw); err != nil {
+	if err := s.st.CommitVisibility(ctx, next, f, a.ID, raw, s.visibilityAudit(ctx, a)); err != nil {
 		return ActionResult{}, err
 	}
+	s.notifyVisibility(ctx, a, f, next)
 	next.AccessSeq++
 	note := s.applyLevelLocked(ctx, a.Flat, "", next.AccessSeq)
 	s.stopPublicRedirects(a.Flat)

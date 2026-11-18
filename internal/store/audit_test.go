@@ -124,7 +124,7 @@ func TestAuditTableHasTheColumnsAndIndexesOfTheSpec(t *testing.T) {
 func TestMigrationFromVersion24AddsTheAuditLog(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "flats.db")
 	t.Run("old schema", func(t *testing.T) {
-		withMigrations(t, migrations[:len(migrations)-1])
+		withMigrations(t, migrationsThrough(24))
 		s, err := Open(path)
 		if err != nil {
 			t.Fatal(err)
@@ -145,7 +145,7 @@ func TestMigrationFromVersion24AddsTheAuditLog(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if info, err := Inspect(path); err != nil || info.Version != 25 || info.Version != latestVersion() {
+	if info, err := Inspect(path); err != nil || info.Version != latestVersion() {
 		t.Fatalf("after: %+v, %v", info, err)
 	}
 	if _, err := s.GetFlat(context.Background(), "keep"); err != nil {
@@ -810,7 +810,7 @@ func TestAppendAuditBeside(t *testing.T) {
 func TestAppendAuditBesideRefusesAnotherSchemaAndWritesNothing(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "flats.db")
 	t.Run("old schema", func(t *testing.T) {
-		withMigrations(t, migrations[:len(migrations)-1])
+		withMigrations(t, migrationsThrough(24))
 		s, err := Open(path)
 		if err != nil {
 			t.Fatal(err)
@@ -868,23 +868,26 @@ func TestReaderOpensADatabaseWhoseWalFileIsEmpty(t *testing.T) {
 	}
 }
 
-// An older binary refuses a database of schema 25, as Open does, and so does its reader (rule 25).
-func TestAnOlderBinaryRefusesAVersion25Database(t *testing.T) {
+// An older binary refuses a database of the latest schema, as Open does, and so does its reader (rule 25). The binaries
+// of schema 24 and 25 are the ones that exist before and after the audit log.
+func TestAnOlderBinaryRefusesALaterSchemaDatabase(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "flats.db")
 	s, err := Open(path)
 	if err != nil {
 		t.Fatal(err)
 	}
 	s.Close()
-	t.Run("a registry that ends at 24", func(t *testing.T) {
-		withMigrations(t, migrations[:len(migrations)-1])
-		if _, err := Open(path); !errors.Is(err, ErrSchemaTooNew) {
-			t.Errorf("Open = %v, want ErrSchemaTooNew", err)
-		}
-		if _, err := OpenAuditReader(path); !errors.Is(err, ErrSchemaTooNew) {
-			t.Errorf("OpenAuditReader = %v, want ErrSchemaTooNew", err)
-		}
-	})
+	for _, version := range []int{24, 25} {
+		t.Run(fmt.Sprintf("a registry that ends at %d", version), func(t *testing.T) {
+			withMigrations(t, migrationsThrough(version))
+			if _, err := Open(path); !errors.Is(err, ErrSchemaTooNew) {
+				t.Errorf("Open = %v, want ErrSchemaTooNew", err)
+			}
+			if _, err := OpenAuditReader(path); !errors.Is(err, ErrSchemaTooNew) {
+				t.Errorf("OpenAuditReader = %v, want ErrSchemaTooNew", err)
+			}
+		})
+	}
 }
 
 // The reserved kind key.rotate is stored and listed like the others (rule 15).
@@ -909,7 +912,8 @@ func TestTheReservedKeyRotateKindIsListed(t *testing.T) {
 	}
 }
 
-// No code but the audit code touches audit_events, and that code only creates, inserts and selects (rule 2). The scan covers
+// No code but the audit code, its export reader and the migration that adds an index names audit_events, and that code only
+// creates, inserts and selects (rule 2). The scan covers
 // every path that could change a row: retention, the sweep, a flat's deletion or rename, a restore of a flat's data, and the
 // reset (a migration may create the table).
 func TestNothingUpdatesOrDeletesAnAuditRow(t *testing.T) {
@@ -938,7 +942,7 @@ func TestNothingUpdatesOrDeletesAnAuditRow(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if want := []string{"../../internal/store/audit.go"}; !slices.Equal(touching, want) {
+	if want := []string{"../../internal/store/audit.go", "../../internal/store/auditexport.go", "../../internal/store/webhook.go"}; !slices.Equal(touching, want) {
 		t.Errorf("files that name audit_events: %v, want only %v", touching, want)
 	}
 }
