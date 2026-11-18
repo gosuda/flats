@@ -117,8 +117,8 @@ func TestRuntimeDocsWASIEnvironmentConsistency(t *testing.T) {
 		t.Error("runtime reference must describe the app-scoped WASI environment")
 	}
 	checks := []struct{ path, section, claim string }{
-		{"../../README.md", "## Static and server flats", "only the flat's configured environment variables and secrets, with no inherited host environment, plus clocks and randomness."},
-		{"../../docs/design.md", "## Server flats (handler ABI)", "Environment includes only the flat's configured environment variables and secrets, with no inherited host process environment."},
+		{"../../README.md", "## Static and server flats", "only the flat's configured environment variables and readable secrets, with no inherited host environment, plus clocks and randomness."},
+		{"../../docs/design.md", "## Server flats (handler ABI)", "Environment includes only the flat's configured environment variables and readable secrets, with no inherited host process environment."},
 	}
 	for _, c := range checks {
 		b, err := os.ReadFile(c.path)

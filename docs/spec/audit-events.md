@@ -109,7 +109,7 @@ Out of scope:
 
 | Kind | `flat` | `name` | `data` | `via` |
 | --- | --- | --- | --- | --- |
-| `secret.set` (8) | the flat | the secret | `{"created": true or false}` | `console`, `cli` |
+| `secret.set` (8) | the flat | the secret | `{"created": true or false}`, and `"origin"` and `"header"` for an injected secret | `console`, `cli` |
 | `secret.delete` (9) | the flat | the secret | `{"approval": ID}` for `flat-delete` when an approval deleted the flat, else none | `console`, `cli`, `command` (reset), `flat-delete` |
 | `key.set` (10) | none | `tailscale`, `netbird` or `zrok` | `{"replaced": true or false, "from": "flag", "env" or "config"}`, with `from` only for `start` and `migration` | `console`, `command`, `start`, `migration` |
 | `key.delete` (11) | none | the key | `{"reason": "removed" or "connected"}` | `console`, `command`, `start` |
@@ -121,7 +121,9 @@ Out of scope:
 
 8. `secret.set` is written for each successful set of a flat secret, whether the name is new (`created` true) or
    replaced. A set that fails validation or the name check changes nothing and writes nothing. `flat` and `flat_id`
-   are those of the flat that the secret belongs to.
+   are those of the flat that the secret belongs to. For each set of an injected secret, the first and each later one,
+   the data also has its `origin` and its `header`
+   ([injected fetch secrets](injected-fetch-secrets.md), rule 29). The value is never in the data.
 9. `secret.delete` is written for each secret that is removed: by `DeleteSecret` (a delete of a name that does not
    exist changes nothing and writes nothing), by `flats secret reset`, and by the deletion of a flat, one event for each
    secret the flat held, with `via` `flat-delete`. The names are read in the transaction that deletes the flat. When an

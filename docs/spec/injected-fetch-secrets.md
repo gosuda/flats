@@ -1,6 +1,6 @@
 # Injected fetch secrets
 
-Status: planned.
+Status: implemented.
 
 ## Summary
 
@@ -12,9 +12,7 @@ returns it. A readable secret (every secret of today) keeps working as before.
 
 The request is item 3 of issue #224.
 
-## Current state
-
-Nothing of this spec is implemented. The code of today does this:
+## Before this change
 
 - A flat secret is a name and a sealed value in the `secrets` table of `flats.db` (`internal/store/store.go`). Only the
   console and the `flats` CLI on loopback set or remove one (`Service.SetSecret`, `Service.DeleteSecret`,
@@ -286,13 +284,6 @@ The author of this spec decided these points, and each can change before the imp
 - The binding is not part of the associated data of the seal, which is the name only. A writer of `flats.db` can empty
   the two columns and make an injected secret readable at the next activation, or bind it to another origin. A later
   change that puts the binding into the associated data must seal each injected value again.
-
-## Changes to other specs
-
-- [Audit events](audit-events.md): rule 8 and the row of `secret.set` in the table of kinds get the members `origin`
-  and `header` of rule 29.
-- [Secret key rotation](secret-key-rotation.md): none. The re-seal changes the nonce, the ciphertext and the key ID of a
-  row and no other column.
 
 ## Completion criteria
 

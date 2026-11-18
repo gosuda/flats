@@ -113,8 +113,9 @@ declare namespace Flats {
 
   /**
    * The handler's `env`: a frozen object. DB and FILES are host bindings. Every
-   * other property is an ordinary environment variable or a secret, as a string,
-   * captured when the worker starts. Missing names are undefined.
+   * other property is an ordinary environment variable or a readable secret, as a
+   * string, captured when the worker starts. Missing names are undefined. An
+   * injected secret is never here: the host adds it as its header to `fetch`.
    * Declare your names: `Flats.Env<"API_KEY" | "MODE">`.
    */
   type Env<Names extends string = never> = {

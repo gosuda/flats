@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"time"
 
+	"github.com/gosuda/flats/internal/egress"
 	"github.com/gosuda/flats/internal/store"
 )
 
@@ -183,44 +184,119 @@ func (s *Service) aead() (cipher.AEAD, error) {
 
 // SecretInfo is what APIs may reveal about a secret.
 type SecretInfo struct {
-	Name      string    `json:"name"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Name      string        `json:"name"`
+	UpdatedAt time.Time     `json:"updated_at"`
+	Inject    *SecretInject `json:"inject,omitempty"`
 }
 
-// SetSecret stores a secret value. Only the operator (console or local CLI)
+// SecretInject is the binding of an injected secret (docs/spec/injected-fetch-secrets.md): the host adds Header with
+// the value to each fetch of the flat to Origin, and the value is not in env. The binding is not secret.
+type SecretInject struct {
+	Origin string `json:"origin"`
+	Header string `json:"header"`
+}
+
+func secretInject(b store.Binding) *SecretInject {
+	if !b.Injected() {
+		return nil
+	}
+	return &SecretInject{Origin: b.Origin, Header: b.Header}
+}
+
+// SetSecret stores the value of a secret and names no binding. Only the operator (console or local CLI)
 // may call it. Approved deployment activations (including rollback and data
 // restore), new previews, and Flats host restarts capture the change. Automatic
 // worker restarts retain the previously captured environment.
 func (s *Service) SetSecret(ctx context.Context, slugName, name, value string, via Via) error {
+	_, err := s.SetSecretBinding(ctx, slugName, name, value, nil, via)
+	return err
+}
+
+// SetSecretBinding stores the value of a secret. With inject, the set names a binding: a new name becomes an injected
+// secret, and a stored injected secret keeps its value only for the same binding (rules 2 and 8 of the spec). It
+// returns the binding of the stored secret, or nil for a readable secret. No message holds the value.
+func (s *Service) SetSecretBinding(ctx context.Context, slugName, name, value string, inject *SecretInject, via Via) (*SecretInject, error) {
 	if via != ViaConsole && via != ViaCLI {
-		return forbiddenf("secret values are set by the operator in the web console or with `flats secret set`; agents can only list secret names")
+		return nil, forbiddenf("secret values are set by the operator in the web console or with `flats secret set`; agents can only list secret names")
 	}
 	if err := validateEnvName(name, "secret"); err != nil {
-		return err
+		return nil, err
 	}
 	if err := validateEnvValue(value, "secret"); err != nil {
-		return err
+		return nil, err
 	}
+	var want *store.Binding
+	if inject != nil {
+		origin, err := egress.InjectOrigin(inject.Origin)
+		if err != nil {
+			return nil, invalidf("secret %q: %v", name, err)
+		}
+		header, err := egress.InjectHeader(inject.Header)
+		if err != nil {
+			return nil, invalidf("secret %q: %v", name, err)
+		}
+		want = &store.Binding{Origin: origin, Header: header}
+	}
+	valueErr := egress.CheckInjectValue(value)
 	if _, err := s.st.GetFlat(ctx, slugName); err != nil {
-		return err
+		return nil, err
 	}
 	g, err := s.aead()
 	if err != nil {
-		return err
+		return nil, err
 	}
 	nonce := make([]byte, g.NonceSize())
 	if _, err := rand.Read(nonce); err != nil {
-		return err
+		return nil, err
 	}
 	ct := g.Seal(nil, nonce, []byte(value), []byte(name))
-	if err := s.st.PutSecret(ctx, slugName, store.SealedSecret{Name: name, Nonce: nonce, Ciphertext: ct, KeyID: s.secretKeyID, UpdatedAt: s.now()}, s.audit(ctx, via)); err != nil {
+	sec := store.SealedSecret{Name: name, Nonce: nonce, Ciphertext: ct, KeyID: s.secretKeyID, UpdatedAt: s.now()}
+	stored, err := s.st.PutSecretChecked(ctx, slugName, sec, store.SecretPut{Inject: want, HeaderValue: valueErr == nil}, s.audit(ctx, via))
+	if err != nil {
 		if errors.Is(err, store.ErrEnvCollision) {
-			return invalidf("secret %q conflicts with an existing environment variable", name)
+			return nil, invalidf("secret %q conflicts with an existing environment variable", name)
 		}
-		return err
+		var refused *store.InjectRefusal
+		if errors.As(err, &refused) {
+			return nil, injectRefusal(slugName, name, refused, valueErr)
+		}
+		return nil, err
 	}
-	s.Event(ctx, slugName, "info", "secret", fmt.Sprintf("secret %s set via %s; redeploy to apply", name, via), nil)
-	return nil
+	how := ""
+	if stored.Injected() {
+		how = fmt.Sprintf(" (sent as %s to %s, not in env)", stored.Header, stored.Origin)
+	}
+	s.Event(ctx, slugName, "info", "secret", fmt.Sprintf("secret %s set via %s%s; redeploy to apply", name, via, how), nil)
+	return secretInject(stored), nil
+}
+
+// injectRefusal is the message of a set that rules 7 and 8 refuse. Each names the next command, and none holds the
+// value.
+func injectRefusal(slugName, name string, r *store.InjectRefusal, valueErr error) error {
+	switch r.Reason {
+	case store.InjectReadable:
+		return withKind(ErrConflict, fmt.Errorf("secret %q exists and flat code reads it as env.%s, so the flat may hold its value. "+
+			"Remove it with `flats secret rm %s %s`, get a new credential from the service, and set it again with --origin and --header",
+			name, name, slugName, name))
+	case store.InjectOtherBinding:
+		return withKind(ErrConflict, fmt.Errorf("secret %q is sent as %s to %s, and its binding stays until the secret is removed. "+
+			"To change it, remove the secret with `flats secret rm %s %s` and set it again with its value, --origin and --header",
+			name, r.Binding.Header, r.Binding.Origin, slugName, name))
+	case store.InjectTaken:
+		return withKind(ErrConflict, fmt.Errorf("secret %q is already sent as %s to %s, and a flat has one secret for each origin and header. "+
+			"Remove it with `flats secret rm %s %s`, or give it a new value with `flats secret set %s %s` without --origin and --header",
+			r.Secret, r.Binding.Header, r.Binding.Origin, slugName, r.Secret, slugName, r.Secret))
+	case store.InjectLimit:
+		return invalidf("flat %s has %d injected secrets, the most that a flat can have. List them with `flats secret ls %s` and remove one with `flats secret rm`",
+			slugName, store.MaxInjectedSecrets, slugName)
+	default:
+		reason := "its value cannot be a header value"
+		if valueErr != nil {
+			reason = valueErr.Error()
+		}
+		return invalidf("the value of secret %q goes into the header %s of each fetch to %s, and %s. Nothing changed: run `flats secret set %s %s` again with a valid value",
+			name, r.Binding.Header, r.Binding.Origin, reason, slugName, name)
+	}
 }
 
 // DeleteSecret removes a secret.
@@ -246,7 +322,7 @@ func (s *Service) SecretNames(ctx context.Context, slugName string) ([]SecretInf
 	}
 	out := make([]SecretInfo, 0, len(secs))
 	for _, sec := range secs {
-		out = append(out, SecretInfo{Name: sec.Name, UpdatedAt: sec.UpdatedAt})
+		out = append(out, SecretInfo{Name: sec.Name, UpdatedAt: sec.UpdatedAt, Inject: secretInject(sec.Inject)})
 	}
 	return out, nil
 }

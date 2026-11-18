@@ -116,7 +116,7 @@ export async function redeployLive(flat) {
       h('p', { text: `${label(flat)} redeploys version ${n} with environment variables and secrets captured when approved activation begins.` }),
       h('p', { class: 'muted', text: server
         ? 'The health check and live worker use the same settings snapshot. Changes saved after capture apply at the next activation. If the health check fails, the running instance keeps serving. Data is kept as it is.'
-        : 'This is a static flat: environment variables and secrets are not injected, so it keeps serving the same files.' }),
+        : 'This is a static flat: it gets no environment variables or secrets, so it keeps serving the same files.' }),
     ],
     confirmLabel: 'Redeploy',
   });

@@ -139,7 +139,7 @@ const routes = {
   'PUT /console/api/flats/blog/network': { origins: ['https://api.example.com'] },
   'PUT /console/api/flats/blog/listing': { ...blog, portal_listing: 'hidden', portal_hidden: true },
   'GET /console/api/flats/blog/env': { env: [{ name: 'APP_MODE', value: '<script>demo</script>\nsecond line', updated_at: '2026-10-03T00:00:00Z' }, { name: 'EMPTY', value: '', updated_at: '2026-10-03T00:00:00Z' }] },
-  'GET /console/api/flats/blog/secrets': { secrets: [{ name: 'API_KEY', updated_at: '2026-10-03T00:00:00Z', value: 'SECRET_MUST_NEVER_RENDER' }] },
+  'GET /console/api/flats/blog/secrets': { secrets: [{ name: 'API_KEY', updated_at: '2026-10-03T00:00:00Z', value: 'SECRET_MUST_NEVER_RENDER' }, { name: 'BOUND', updated_at: '2026-10-03T00:00:00Z', inject: { origin: 'https://api.example.com', header: 'Authorization' } }] },
   'GET /console/api/flats/blog/versions': { versions: [
     { number: 2, kind: 'server', hash: 'b', size: 1, files: 1, deployed: true, created_at: '2026-10-02T00:00:00Z' },
     { number: 1, kind: 'server', hash: 'a', size: 1, files: 1, deployed: true, created_at: '2026-10-01T00:00:00Z' }] },
@@ -738,6 +738,34 @@ assert.ok(calls.some((c) => c.key === 'DELETE /console/api/flats/blog/env/APP_MO
 assert.equal(calls.some((c) => /^(PUT|DELETE).*\/secrets\//.test(c.key)), false);
 assert.equal(byText(management, 'Add secret').length, 1);
 assert.equal(byText(management, 'Add variable').length, 1);
+// An injected secret shows its binding, and only it does (docs/spec/injected-fetch-secrets.md, rule 26).
+const bindingText = 'Sent as Authorization to https://api.example.com. Not in env.';
+assert.equal(all(secretPanel, (e) => e.textContent === bindingText).length, 1, 'one row shows the binding: ' + secretPanel.textContent);
+assert.equal(secretPanel.textContent.split('Sent as').length - 1, 1, 'a readable secret shows no binding');
+// Replace sends only the value, so the binding stays.
+routes['PUT /console/api/flats/blog/secrets/BOUND'] = {};
+all(secretPanel, (e) => e.tagName === 'BUTTON' && e.getAttribute('aria-label') === 'Replace value of BOUND')[0].dispatch('click');
+const secretField = (id) => all(secretPanel, (e) => e.getAttribute('id') === id)[0];
+assert.equal(secretField('secret-name').value, 'BOUND');
+secretField('secret-value').value = 'Bearer new-token';
+secretField('secret-form').dispatch('submit');
+await tick();
+assert.deepEqual(JSON.parse(calls.filter((c) => c.key === 'PUT /console/api/flats/blog/secrets/BOUND').at(-1).body), { value: 'Bearer new-token' });
+// The delete dialog of an injected secret says that a secret added again in the console is readable.
+all(secretPanel, (e) => e.tagName === 'BUTTON' && e.getAttribute('aria-label') === 'Delete secret BOUND')[0].dispatch('click');
+await tick();
+const boundDelete = all(document.body, (e) => e.tagName === 'DIALOG').at(-1);
+assert.ok(boundDelete.textContent.includes('readable by flat code as env.BOUND'), boundDelete.textContent);
+assert.ok(boundDelete.textContent.includes('--origin and --header'));
+boundDelete.close('cancel');
+await tick();
+all(secretPanel, (e) => e.tagName === 'BUTTON' && e.getAttribute('aria-label') === 'Delete secret API_KEY')[0].dispatch('click');
+await tick();
+const plainDelete = all(document.body, (e) => e.tagName === 'DIALOG').at(-1);
+assert.equal(plainDelete.textContent.includes('env.API_KEY'), false, 'a readable secret gets the old text');
+plainDelete.close('cancel');
+await tick();
+assert.equal(calls.some((c) => /^DELETE.*\/secrets\//.test(c.key)), false);
 byText(management, 'Add variable')[0].dispatch('click');
 assert.ok(all(management, (e) => e.tagName === 'FORM' && e.className === 'form-grid').some((e) => !e.hidden));
 const networkPanel = all(management, (e) => e.tagName === 'SECTION' && e.getAttribute('id') === 'network')[0];

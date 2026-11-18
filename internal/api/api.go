@@ -853,17 +853,34 @@ func (s *Server) putSecret(w http.ResponseWriter, r *http.Request, via core.Via)
 		return
 	}
 	var in struct {
-		Value string `json:"value"`
+		Value  string `json:"value"`
+		Inject *struct {
+			Origin *string `json:"origin"`
+			Header *string `json:"header"`
+		} `json:"inject"`
 	}
 	if err := decode(r, &in); err != nil {
 		writeErr(w, 400, err)
 		return
 	}
-	if err := s.Svc.SetSecret(r.Context(), r.PathValue("slug"), r.PathValue("name"), in.Value, v); err != nil {
+	var inject *core.SecretInject
+	if in.Inject != nil {
+		if in.Inject.Origin == nil || in.Inject.Header == nil {
+			writeErr(w, 400, errors.New("inject needs both origin and header"))
+			return
+		}
+		inject = &core.SecretInject{Origin: *in.Inject.Origin, Header: *in.Inject.Header}
+	}
+	stored, err := s.Svc.SetSecretBinding(r.Context(), r.PathValue("slug"), r.PathValue("name"), in.Value, inject, v)
+	if err != nil {
 		fail(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"name": r.PathValue("name"), "status": "stored; redeploy to apply", "note": "Changes apply to live on the next deploy/redeploy, rollback or data restoration (after any required approval), or Flats host restart. New previews capture current settings; automatic worker restarts reuse their captured settings."})
+	out := map[string]any{"name": r.PathValue("name"), "status": "stored; redeploy to apply", "note": "Changes apply to live on the next deploy/redeploy, rollback or data restoration (after any required approval), or Flats host restart. New previews capture current settings; automatic worker restarts reuse their captured settings."}
+	if stored != nil {
+		out["inject"] = stored
+	}
+	writeJSON(w, 200, out)
 }
 
 func (s *Server) deleteSecret(w http.ResponseWriter, r *http.Request, via core.Via) {

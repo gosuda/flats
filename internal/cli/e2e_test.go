@@ -198,6 +198,19 @@ func TestAgainstRealAPI(t *testing.T) {
 	if r := run(t, srv.URL, "", "secret", "ls", "demo"); !strings.Contains(r.stdout, "API_KEY") || strings.Contains(r.stdout, "hunter2") {
 		t.Fatalf("secret read: %+v", r)
 	}
+	// An injected secret: the flags, the listing, and piped values that cannot be a header value, which the host
+	// refuses without a change (docs/spec/injected-fetch-secrets.md, rules 7 and 28).
+	if r := run(t, srv.URL, "Bearer e2e-injected\n", "secret", "set", "demo", "API_TOKEN", "--origin", "https://api.example.com", "--header", "authorization"); r.code != 0 || !strings.Contains(r.stdout, "Authorization header") {
+		t.Fatalf("injected secret set: %+v", r)
+	}
+	for _, input := range []string{"Bearer e2e-injected\n\n", "Bearer e2e-injected \n"} {
+		if r := run(t, srv.URL, input, "secret", "set", "demo", "API_TOKEN"); r.code != ExitError || strings.Contains(r.stdout+r.stderr, "e2e-injected") || !strings.Contains(r.stderr, "Nothing changed") {
+			t.Fatalf("a value that cannot be a header value: %q %+v", input, r)
+		}
+	}
+	if r := run(t, srv.URL, "", "secret", "ls", "demo"); !strings.Contains(r.stdout, "Authorization to https://api.example.com") || strings.Contains(r.stdout, "e2e-injected") {
+		t.Fatalf("injected secret ls: %+v", r)
+	}
 	if r := run(t, srv.URL, "", "logs", "demo", "--kind", "deploy"); r.code != 0 || !strings.Contains(r.stdout, "rollback: version 1 is live") {
 		t.Fatalf("logs: %+v", r)
 	}

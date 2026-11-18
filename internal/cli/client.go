@@ -249,8 +249,15 @@ type event struct {
 }
 
 type secretInfo struct {
-	Name      string    `json:"name"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Name      string        `json:"name"`
+	UpdatedAt time.Time     `json:"updated_at"`
+	Inject    *secretInject `json:"inject,omitempty"`
+}
+
+// secretInject is the binding of an injected secret: the host sends the value as Header to Origin.
+type secretInject struct {
+	Origin string `json:"origin"`
+	Header string `json:"header"`
 }
 
 type previewView struct {

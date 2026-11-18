@@ -762,15 +762,27 @@ func (a *app) secret(args []string) error {
 	case "backup-key", "restore-key", "rotate-key", "reset":
 		return a.secretKey(append([]string{sub}, args...))
 	case "set":
+		origin := fs.String("origin", "", "make an injected secret: the exact https origin that gets the value as a header")
+		header := fs.String("header", "", "make an injected secret: the header name that carries the value (with --origin)")
 		pos, err := a.parse(fs, args, 2, 2)
 		if err != nil {
 			return err
+		}
+		if (*origin == "") != (*header == "") {
+			return usagef("--origin and --header go together: give both to make an injected secret, or neither")
 		}
 		value, err := a.readSecret(pos[1])
 		if err != nil {
 			return err
 		}
-		resp, err := a.client().call(a.ctx, http.MethodPut, "/api/flats/"+pathEscape(pos[0])+"/secrets/"+pathEscape(pos[1]), nil, map[string]string{"value": value}, nil)
+		body := map[string]any{"value": value}
+		if *origin != "" {
+			body["inject"] = secretInject{Origin: *origin, Header: *header}
+		}
+		var out struct {
+			Inject *secretInject `json:"inject"`
+		}
+		resp, err := a.client().call(a.ctx, http.MethodPut, "/api/flats/"+pathEscape(pos[0])+"/secrets/"+pathEscape(pos[1]), nil, body, &out)
 		if err != nil {
 			return err
 		}
@@ -778,7 +790,13 @@ func (a *app) secret(args []string) error {
 			a.emitRaw(resp)
 			return nil
 		}
-		fmt.Fprintf(a.out, "Stored %s for %s. Changes apply to live on the next deploy/redeploy, rollback or data restoration (after any required approval), or Flats host restart. New previews capture current settings; automatic worker restarts reuse their captured settings.\n", pos[1], pos[0])
+		if out.Inject != nil {
+			fmt.Fprintf(a.out, "Stored %s for %s as an injected secret. The host sends its value as the %s header of each fetch to %s, and flat code cannot read it, because it is not in env. fetch reaches %s only when `flats network set %s` permits it.\n",
+				pos[1], pos[0], out.Inject.Header, out.Inject.Origin, out.Inject.Origin, pos[0])
+		} else {
+			fmt.Fprintf(a.out, "Stored %s for %s.\n", pos[1], pos[0])
+		}
+		fmt.Fprintln(a.out, "Changes apply to live on the next deploy/redeploy, rollback or data restoration (after any required approval), or Flats host restart. New previews capture current settings; automatic worker restarts reuse their captured settings.")
 		return nil
 	case "rm", "delete":
 		pos, err := a.parse(fs, args, 2, 2)
@@ -816,9 +834,13 @@ func (a *app) secret(args []string) error {
 			return nil
 		}
 		tw := tabwriter.NewWriter(a.out, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(tw, "NAME\tUPDATED")
+		fmt.Fprintln(tw, "NAME\tUPDATED\tINJECTED")
 		for _, s := range out.Secrets {
-			fmt.Fprintf(tw, "%s\t%s\n", s.Name, s.UpdatedAt.Local().Format(timeFmt))
+			injected := "-"
+			if s.Inject != nil {
+				injected = s.Inject.Header + " to " + s.Inject.Origin
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%s\n", s.Name, s.UpdatedAt.Local().Format(timeFmt), injected)
 		}
 		return tw.Flush()
 	}
