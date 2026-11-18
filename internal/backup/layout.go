@@ -39,6 +39,7 @@ const (
 	nameDataDB       = "db.sqlite"
 	nameBoardDB      = "board.db"
 	nameNotebookDB   = "notebook.db"
+	nameSheetDB      = "sheet.db"
 	nameJournal      = "restore-journal.json"
 	nameSnapshotMark = ".flats-snapshot-complete"
 )
@@ -110,6 +111,8 @@ func classify(rel string) classification {
 		return dbOrElse(rest[1:], nameBoardDB, KindBoard, classHost)
 	case "notebook":
 		return dbOrElse(rest[1:], nameNotebookDB, KindNotebook, classHost)
+	case "sheet":
+		return dbOrElse(rest[1:], nameSheetDB, KindSheet, classHost)
 	case "previews":
 		// previews/<host>/db.sqlite is a database; the rest of a preview is guest data.
 		switch {

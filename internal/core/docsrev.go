@@ -30,7 +30,7 @@ import (
 // the change; core imports it into the revision store shared with designs.
 
 // ErrNoRevisions refuses a revision tool on a flat without revisions.
-var ErrNoRevisions = fmt.Errorf("%w: flat has no revisions: only documents, designs, boards and notebooks do", ErrInvalid)
+var ErrNoRevisions = fmt.Errorf("%w: flat has no revisions: only documents, designs, boards, notebooks and sheets do", ErrInvalid)
 
 const (
 	// docsTick is how often each running document syncs and imports.

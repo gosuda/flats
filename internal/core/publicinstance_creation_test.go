@@ -61,6 +61,14 @@ func piCreationPaths() []piCreationPath {
 			_, err := s.UpdateNotebook(t.Context(), slug, notebookPayload("creation-update", notebookCreatePage), ViaMCP)
 			return err
 		}},
+		{"CreateFlatType/sheet", "sheet", func(t *testing.T, s *Service, slug string) error {
+			_, err := s.CreateSheet(t.Context(), slug, "Sheet", ViaMCP)
+			return err
+		}},
+		{"UpdateSheet", "sheet", func(t *testing.T, s *Service, slug string) error {
+			_, err := s.UpdateSheet(t.Context(), slug, []byte(`{"op_id":"creation-update","ops":[`+sheetBudgetRows+`]}`), ViaMCP)
+			return err
+		}},
 		{"SaveDraft", "flat", func(t *testing.T, s *Service, slug string) error {
 			_, err := s.SaveDraft(t.Context(), slug, piCreationWebsite(), SaveMeta{}, 0, ViaMCP)
 			return err
@@ -179,7 +187,7 @@ func TestPublicInstanceCreationPaths(t *testing.T) {
 				if err != nil || len(approvals) != 0 {
 					t.Errorf("creation requested approvals: %+v, %v", approvals, err)
 				}
-				if path.typ == "docs" || path.typ == "design" || path.typ == "board" || path.typ == "notebook" {
+				if path.typ == "docs" || path.typ == "design" || path.typ == "board" || path.typ == "notebook" || path.typ == "sheet" {
 					if !f.Running {
 						t.Fatal("revision-model flat did not start at creation")
 					}
@@ -427,7 +435,7 @@ func piCreationAssertUnpublished(t *testing.T, s *Service, slug string) {
 
 func TestPublicInstanceCreationExposureFailureRegrant(t *testing.T) {
 	for _, path := range piCreationPaths() {
-		if path.typ != "docs" && path.typ != "design" && path.typ != "board" && path.typ != "notebook" {
+		if path.typ != "docs" && path.typ != "design" && path.typ != "board" && path.typ != "notebook" && path.typ != "sheet" {
 			continue
 		}
 		t.Run(path.name, func(t *testing.T) {
@@ -476,6 +484,15 @@ func TestPublicInstanceCreationExposureFailureRegrant(t *testing.T) {
 				}
 				if got := notebookCount(t, s.liveNotebook("recover"), `SELECT count(*) FROM items WHERE kind='page' AND alive=1`); got != want {
 					t.Fatalf("notebook pages after exposure failure = %d, want %d", got, want)
+				}
+			case "sheet":
+				tabs := sheetRead(t, s, "recover", 0, `{}`)["tabs"].([]any)
+				want := any("A1:B4")
+				if path.name == "CreateFlatType/sheet" {
+					want = nil
+				}
+				if len(tabs) != 1 || tabs[0].(map[string]any)["used"] != want {
+					t.Fatalf("sheet content after exposure failure = %+v", tabs)
 				}
 			case "board":
 				page, err := s.GetBoard(t.Context(), "recover", 0, board.Query{})

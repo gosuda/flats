@@ -114,6 +114,10 @@ func stopInstance(inst Instance, code string) {
 		in.Shutdown(code)
 		return
 	}
+	if in, ok := inst.(*sheetInstance); ok {
+		in.Shutdown(code)
+		return
+	}
 	if in, ok := inst.(*board.Instance); ok {
 		in.Shutdown(code)
 		return
@@ -1106,6 +1110,9 @@ func (s *Service) catchUpRevisions(ctx context.Context, slugName string) error {
 	}
 	if err == nil && st.Type == contenttype.Notebook {
 		return s.catchUpNotebook(ctx, slugName)
+	}
+	if err == nil && st.Type == contenttype.Sheet {
+		return s.catchUpSheet(ctx, slugName)
 	}
 	return s.catchUpDocs(ctx, slugName)
 }

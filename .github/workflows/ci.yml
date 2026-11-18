@@ -87,6 +87,13 @@ jobs:
             shards: docs
           - lane: board
             shards: board
+          # The sheet packages at their full sizes, in three lanes.
+          - lane: sheet-undo-1
+            shards: sheet-undo-1
+          - lane: sheet-undo-2
+            shards: sheet-undo-2
+          - lane: sheet
+            shards: sheet
           - lane: other
             shards: other
     runs-on: ubuntu-latest
@@ -96,8 +103,8 @@ jobs:
       - uses: ./.github/actions/setup-go
         with:
           cache-key: test-${{ matrix.lane }}
-          # The board packages used to be tested in the other shard.
-          restore-fallback: ${{ matrix.lane == 'board' && 'test-other' || '' }}
+          # The board and sheet packages used to be tested in the other shard.
+          restore-fallback: ${{ (matrix.lane == 'board' || startsWith(matrix.lane, 'sheet')) && 'test-other' || '' }}
           # The other shard vets every package, so it downloads every module.
           save-modules: ${{ matrix.lane == 'other' }}
       - name: Verify module files
@@ -179,7 +186,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        lane: [core-1, core-2, services, notebook-1, notebook-2, board-1, board-2]
+        lane: [core-1, core-2, services, notebook-1, notebook-2, board-1, board-2, sheet-1, sheet-2, sheet-3, sheet-4, sheet-5]
         # The two lanes of a package compile it alike: one cache per package,
         # written only by its -1 lane.
         include:
@@ -190,6 +197,11 @@ jobs:
           - {lane: notebook-2, cache: notebook}
           - {lane: board-1, cache: board}
           - {lane: board-2, cache: board}
+          - {lane: sheet-1, cache: sheet}
+          - {lane: sheet-2, cache: sheet}
+          - {lane: sheet-3, cache: sheet}
+          - {lane: sheet-4, cache: sheet}
+          - {lane: sheet-5, cache: sheet}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
@@ -202,6 +214,27 @@ jobs:
           restore-fallback: race
       - name: Races
         run: scripts/ci-race.sh "${{ matrix.lane }}"
+
+  # The sheet's browser suites: the real client in the headless Chrome of the
+  # runner image (docs/gates.md). The suites skip when they find no browser,
+  # so the job fails first when the image has none. It reads the build cache
+  # of the sheet lane, which compiles the same package.
+  sheet-browser:
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup-go
+        with:
+          cache-key: test-sheet
+          save-build: "false"
+      - name: Sheet browser suites
+        run: |
+          CHROME=$(command -v google-chrome) || { echo "this runner image has no google-chrome" >&2; exit 1; }
+          export CHROME
+          FLATS_SHEET_E2E=1 go test -count=1 -v -run '^TestBrowser' ./internal/sheet
 
   notebook-memory:
     needs: changes

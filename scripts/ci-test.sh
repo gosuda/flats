@@ -10,13 +10,16 @@
 # their own shards with -run, and the remaining shard runs everything else
 # with -skip on the same patterns. A new or renamed test therefore always runs
 # somewhere; at worst the shards become unbalanced. The board packages
-# (internal/board and below) run in their own shard, and the other shard runs
-# every remaining package. Running every shard covers exactly `go test ./...`.
+# (internal/board and below) run in their own shard. The sheet packages
+# (internal/sheet and below) run in three shards at their full sizes: the
+# engine's undo tests in two, split by test name, and everything else in the
+# third. The other shard runs every remaining package. Running every shard
+# covers exactly `go test ./...`.
 
 set -eu
 
 [ $# -ge 1 ] || {
-	echo "usage: $0 runtime-soak|runtime-codec|runtime|docs-soak|docs-budget|docs|board|other [go test flags...]" >&2
+	echo "usage: $0 runtime-soak|runtime-codec|runtime|docs-soak|docs-budget|docs|board|sheet-undo-1|sheet-undo-2|sheet|other [go test flags...]" >&2
 	exit 2
 }
 shard=$1
@@ -32,6 +35,23 @@ docs_soak='^(TestConflictPrivacyAndRollbackStorageBudgets|TestPublicDocumentRead
 # same reason and stays out of this list on purpose: the Windows job leaves out
 # this shard and must run a test of the guest limit.
 docs_budget='^(TestGuestRoomsLeaveMemberRoomMemory|TestMaximumRewriteActivationBudget|TestLargeDocumentEditAndPingBudgets|TestLargeDisjointActivation|TestFullRewriteActivation|TestAgentEditManyBlocksWithinDeadline|TestVisitorHealthIsCheapAndCannotBlockCommit|Test100KiBDocumentTimings|TestUnauthorizedUpdatesPreserveWriterBudget|TestConnectionInputLimitPreservesOtherWriter|TestAuthorizedUpdatesConsumeWriterBudget|TestGuestBusyResendKeepsOrder)$'
+
+# The sheet engine's undo tests, and about half of their time at full size:
+# sheet-undo-1 runs these, sheet-undo-2 the other undo tests.
+sheet_undo='^TestUndo'
+sheet_undo_1='^(TestUndoNotesStayInBudget|TestUndoStampLinksStayBounded|TestUndoLargeTabDeletions|TestUndoNotesDoNotGrowWhenRowsBetweenThemAreWritten|TestUndoAfterBlankCollection)$'
+
+# sheet runs the sheet's tests with their full-size memory and volume cases
+# (docs/gates.md), which run in these shards and in no other lane. The
+# shards took 2.6, 4.3 and 8.3 minutes on a developer machine at a load
+# average of 20 to 36 (November 2026). The timeout leaves about 1.7 times
+# the slowest, inside the 20-minute job; hosted runners are not measured.
+# A caller's own -timeout comes later and wins.
+sheet() {
+	FLATS_SHEET_FULL=${FLATS_SHEET_FULL-1}
+	export FLATS_SHEET_FULL
+	GOFLAGS="-count=1${GOFLAGS:+ $GOFLAGS}" exec go test -timeout=14m "$@"
+}
 
 # The release and commit image workflows run this script from main against
 # older source, which may predate a package. Its shards then have nothing to
@@ -62,6 +82,9 @@ docs-budget)
 	;;
 docs) need internal/apps/docs && exec go test "$@" -skip "$docs_soak|$docs_budget" ./internal/apps/docs ;;
 board) need internal/board && exec go test "$@" ./internal/board/... ;;
+sheet-undo-1) need internal/sheet && sheet "$@" -run "$sheet_undo_1" ./internal/sheet ;;
+sheet-undo-2) need internal/sheet && sheet "$@" -run "$sheet_undo" -skip "$sheet_undo_1" ./internal/sheet ;;
+sheet) need internal/sheet && sheet "$@" -skip "$sheet_undo" ./internal/sheet/... ;;
 other)
 	# Separate assignments, so set -e stops on a failing go list instead of
 	# testing no packages. Older source has another module path.
@@ -69,7 +92,8 @@ other)
 	all=$(go list ./...)
 	packages=$(printf '%s\n' "$all" | awk -v m="$module" '
 		$0 != m "/internal/runtime" && $0 != m "/internal/apps/docs" &&
-		$0 != m "/internal/board" && index($0, m "/internal/board/") != 1')
+		$0 != m "/internal/board" && index($0, m "/internal/board/") != 1 &&
+		$0 != m "/internal/sheet" && index($0, m "/internal/sheet/") != 1')
 	[ -n "$packages" ] || {
 		echo "no packages left for the other shard" >&2
 		exit 1

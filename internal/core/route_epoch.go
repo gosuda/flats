@@ -34,6 +34,7 @@ func (s *Service) revokeRoute(key string) {
 	}
 	if slugName, public := strings.CutPrefix(key, "public:"); public {
 		s.withdrawNotebookPublic(slugName)
+		s.withdrawSheetPublic(slugName)
 	}
 }
 

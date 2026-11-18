@@ -23,17 +23,23 @@ notebook the same calls are `invalid`: use `update_notebook` and the
 revision tools. A notebook write with an unknown field, a bad value, an
 unknown asset path, a move that breaks the page or block tree, or a kind
 change Flats cannot make is `invalid`; the error names the operation and
-field. Upload
+field. On a sheet the same calls are `invalid`: use `update_sheet` and the
+revision tools. A sheet write with an unknown operation or field, a bad
+address, a bad tab name or a value of the wrong JSON type is `invalid`; the
+error names the operation or the field. Upload
 validation lists every problem with its `path` and `fix` at once. Nothing was
 saved. Fix every listed problem and send the complete request again. Rules:
 `topic.static`, `topic.manifest`, `topic.docs`, `topic.board`, `topic.notebook`,
+`topic.sheet`,
 `topic.env-secrets`.
 
 ## not_found
 
 The flat, version, approval or snapshot does not exist. Call `list_flats` for
 slugs, `list_versions` for published version numbers, and use the
-`approval_id` a request returned.
+`approval_id` a request returned. For `get_sheet` and a sheet read of
+`get_revision`, reason `tab` means the sheet has no tab of that name. Read
+the tab list with `get_sheet {slug}`.
 
 ## document_not_found
 
@@ -115,6 +121,34 @@ limit:
   unpinning revisions. A `rollback_revision` is never refused for the disk
   quota.
 
+## not_sheet
+
+The tool (`get_sheet` or `update_sheet`) needs a sheet (`type: "sheet"`),
+and this flat is another type. Check `get_flat`. Create a sheet with
+`create_flat {type: "sheet"}` or `update_sheet` on a new slug. A flat never
+changes its type.
+
+## sheet_capacity
+
+The sheet write did not fit, and nothing changed. The error says which
+limit:
+
+* `limit` names a limit of the sheet, with `max` and the `value` the write
+  would reach. The limits are `tabs`, `rows`, `columns`, `cells` (cells with
+  content or a format), `formulas`, `text_length`, `formula_length`,
+  `formula_depth` (nesting), `formula_reads` and `sheet_reads` (cells that
+  one formula, or all formulas, read), `sheet_text`, `call_cells` and
+  `call_bytes` (the bounds of one call), `recalculation_time`, and
+  `action_changes` (what one call replaces before it ends). Write less,
+  split the call, or read smaller ranges in the formulas.
+  `topic.sheet` lists the values.
+* reason `disk_quota`: the write and the revision that records it would put
+  the flat over its disk quota, or the flat is already over it. While over,
+  every write is refused, a deletion included. Tell the user: the operator
+  can raise the disk quota, or free space by lowering the revision quota or
+  unpinning revisions. A `rollback_revision` is never refused for the disk
+  quota.
+
 ## public_edit_blocked
 
 A board or document cannot become editable by anyone yet, so the
@@ -127,7 +161,7 @@ a revision quota, or a free pin), then request the change again.
 
 ## no_revisions
 
-The revision tools work on documents, designs, boards and notebooks, and this
+The revision tools work on documents, designs, boards, notebooks and sheets, and this
 flat is a website or a page: those keep numbered versions instead (`list_versions`, `rollback`).
 A document that never ran has no revisions yet; save it with `save_document`
 first.
@@ -166,6 +200,18 @@ different request. An expired `get_notebook` cursor is `conflict` with reason
 from current content. Nothing in the call applied. Read `get_notebook` again
 (from the first page for a cursor), rebuild the call against what people
 wrote, and retry with a new `op_id`.
+
+On a sheet, `update_sheet` is refused with `conflict` when the call names
+no `state` (`state_required`), or the state is not known or too old
+(`state_unknown`, `state_too_old`). It is also refused when, since that
+state, a tab the call names was renamed, deleted or replaced
+(`tab_changed`), rows or columns were inserted, deleted or sorted where the
+call names an address (`structure_changed`), or the sheet was rolled back
+(`rolled_back`). A failed guard (`guard`) and the same `op_id` with a
+different request (`op_id_reuse`) are `conflict` too. An expired `get_sheet`
+cursor is `conflict` with reason `read_expired`. Nothing in the call
+applied. Read `get_sheet` again, build the call against what you read, and
+send it with the new `state`.
 
 While anyone can edit a board or document, unpinning its safe point is
 `conflict`; it stays pinned until the operator stops guest editing.
@@ -246,6 +292,13 @@ For `get_notebook` and `update_notebook`, retry only when the error says
 `retry` is true, with the same `op_id` and request. A notebook read can be
 `unavailable` while the host is busy with other large reads; retry after the
 hint's delay.
+
+For `get_sheet` and `update_sheet`, retry when the error says `retry` is
+true, with the same `op_id` and request. A sheet is `unavailable` while it
+calculates after a host restart, a rollback or a change of its calculation
+date, and while its storage cannot be measured. `topic.sheet` lists the
+reasons under Refusals: which ones pass after a moment, and which ones mean
+a fault to report to the user.
 
 ## provider_not_permitted
 

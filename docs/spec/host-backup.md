@@ -27,10 +27,11 @@ when a change during the copy could make it inconsistent.
   backup from a running host.
 - A plain copy of a live SQLite database can lose recent commits. SQLite's
   backup API copies one database, not the host.
-- A document, a board and a notebook each keep an outbox in a database of their
-  own, and `flats.db` keeps a cursor into it (`content_state.import_store` and
-  `import_seq`). The outbox databases and `flats.db` must come from one moment,
-  or a flat does not start, loses its newest revisions, or stops importing
+- A document, a board, a notebook and a sheet each keep an outbox in a database
+  of their own, and `flats.db` keeps a cursor into it
+  (`content_state.import_store` and `import_seq`). The outbox databases and
+  `flats.db` must come from one moment, or a flat does not start, loses its
+  newest revisions, or stops importing
   ([configuration](../configuration.md#what-to-back-up),
   [boards](../revision-store.md#boards)).
 - Revision blobs are written once. The sweep deletes a blob that nothing
@@ -82,12 +83,14 @@ Out of scope:
    | Class | Paths below the data directory | Steps | Copy |
    | --- | --- | --- | --- |
    | Write-once files | `flats/<slug>/revisions/blobs/`, `flats/<slug>/design/blobs/`, `versions/`, `draft-revs/`, and `snapshots/` | 14 and 17 | rule 6 |
-   | Databases | `flats.db`, and for each flat `data/db.sqlite`, `previews/<host>/db.sqlite`, `board/board.db` and `notebook/notebook.db` | 15 and 16 | rule 4 |
+   | Databases | `flats.db`, and for each flat `data/db.sqlite`, `previews/<host>/db.sqlite`, `board/board.db`, `notebook/notebook.db` and `sheet/sheet.db` | 15 and 16 | rule 4 |
    | Guest files | `flats/<slug>/data/files/`, and `previews/<host>/` apart from its database | 18 | rule 7 |
    | Host files | everything else that rule 3 does not leave out: `config.json`, `config-history/`, `secret.key`, `secret.key.recovery` and its `.id`, `tsnet/`, `portal/`, `netbird/`, `zrok/`, `zrok-environment/`, `cloudflare-quick/`, `network-retirements/`, `flats/.lifecycle/` and each `restore-journal.json` | 18 | rule 6 |
 
 3. The command leaves out, and the manifest lists in `excluded`:
-   - `logs/`, `cache/`, `run/`, `runtime/`, `backups/` and `flats.lock`;
+   - `logs/`, `cache/`, `run/`, `runtime/`, `backups/` and `flats.lock`. `cache/`
+     holds the scratch files of running notebooks and sheets
+     (`cache/notebook-spills/`, `cache/sheet-undo/`), which are never in a copy;
    - the `-wal`, `-shm` and `-journal` file of each SQLite database, because the
      snapshot of rule 4 holds its commits;
    - below a flat's directory: `health-check/`, `restore-trial/` and the
@@ -108,12 +111,25 @@ Out of scope:
    is tried again, up to 3 times. The command syncs each snapshot file and
    computes its SHA-256 after the last snapshot, so that this work does not
    lengthen the time between two snapshots. The manifest lists each database in
-   `databases`, with its path and kind (`flats`, `data`, `preview`, `board` or
-   `notebook`).
+   `databases`, with its path and kind (`flats`, `data`, `preview`, `board`,
+   `notebook` or `sheet`).
+
+   The snapshot of a `sheet.db` then gets the check that a host runs before it
+   opens a sheet: the schema of this release, the size of each row and the
+   class of each number. `VACUUM INTO` moves the cells of each row as they are
+   and reads no value whole, so the snapshot of a damaged `sheet.db` costs no
+   more memory than another. A snapshot that the check refuses stays in the
+   copy as it is, and the backup goes on. A host keeps such a sheet closed;
+   keeping its rows lets the operator repair it or take its data out later,
+   and the rest of the host is still backed up. Failing the whole backup
+   would leave every other flat without a copy until the sheet is repaired.
+   The manifest lists the refused file in `refused`, with the reason, and the
+   output names it. No later step reads its rows: neither the coherence test
+   of rule 16 nor any check of rule 27.
 5. A flat's `data/db.sqlite` is the database of a server flat, of a document
    (the docs worker's) or of a flat with no database yet. It is an outbox
-   database when its flat is a document. A `board.db` and a `notebook.db` are
-   outbox databases. Rule 16 treats the three the same way.
+   database when its flat is a document. A `board.db`, a `notebook.db` and a
+   `sheet.db` are outbox databases. Rule 16 treats the four the same way.
 6. A file of the classes write-once and host is copied as it is, with its content
    read while the host may write it. It is stable when its size and modification
    time are the same before and after the copy. An unstable file is copied again,
@@ -136,10 +152,10 @@ Out of scope:
    database with it), a file of
    `config-history/` (the host keeps the newest 10), and an entry of
    `network-retirements/` (a finished retirement). For `flats.db`, the
-   `data/db.sqlite`, `board.db` and `notebook.db` of a flat, and every other host
-   file, the command waits 100 ms and tries again, up to 3 times, because a
-   restore of a legacy snapshot replaces `db.sqlite` by a rename. It fails the
-   backup when the path is still gone.
+   `data/db.sqlite`, `board.db`, `notebook.db` and `sheet.db` of a flat, and every
+   other host file, the command waits 100 ms and tries again, up to 3 times,
+   because a restore of a legacy snapshot replaces `db.sqlite` by a rename. It
+   fails the backup when the path is still gone.
 9. The command copies regular files and directories. It does not follow a
    symbolic link or a Windows junction, and it does not open a FIFO, a socket or
    a device file. It lists each such entry in `skipped` with its path and kind.
@@ -147,7 +163,11 @@ Out of scope:
    follows when they are links (rule 13 of the
    [secret key recovery](secret-key-recovery.md) spec). The command copies the
    bytes of their targets. This rule applies to entries below the data directory.
-   The data directory itself may be a link, and the command follows it.
+   The data directory itself may be a link, and the command follows it. An
+   entry whose name the manifest cannot list exactly (rule 26), such as one
+   with a backslash, is skipped the same way, with a folder's contents, and
+   so is such a file of `config-history/` beside a configuration outside the
+   data directory.
 10. On Unix the command creates files with mode 0600 and directories with mode
     0700. On Windows a new file takes the access list of its folder, and the
     command sets none. A copy holds every secret that the host holds, apart from
@@ -205,7 +225,8 @@ these steps and no other:
     directory `PATH.partial-<random>` in the same folder, with mode 0700. All
     writes go there.
 13. **Survey.** For each flat directory below `flats/` it lists the directory and
-    those of its subdirectories `data/`, `board/` and `notebook/` that exist.
+    those of its subdirectories `data/`, `board/`, `notebook/` and `sheet/` that
+    exist.
     Each has the file identity that the system gives (the inode on Unix, the file
     index on Windows) and its creation time where the system has one. It lists
     the entry names of `flats/.lifecycle/` and each `restore-journal.json` with
@@ -224,8 +245,8 @@ these steps and no other:
     file.
 15. **Databases.** It snapshots, one at a time, every database of the flats that
     is not in the group below: `data/db.sqlite`, each preview database,
-    `board.db` and `notebook.db`. It then snapshots `flats.db` and the outbox
-    databases (rule 5) of the flats that have a cursor in the live `flats.db`
+    `board.db`, `notebook.db` and `sheet.db`. It then snapshots `flats.db` and the
+    outbox databases (rule 5) of the flats that have a cursor in the live `flats.db`
     (`content_state.import_store` is not empty) at the same time. Each snapshot of
     this group opens its connection first, and all of them start together. A
     member that fails before its start does not hold the others. The group holds
@@ -242,24 +263,26 @@ these steps and no other:
     table, minus one, or `last` when the table is empty. A running host keeps this
     true at every moment: it creates an entry, `flats.db` imports it and moves the
     cursor, and then the host acknowledges the entry by deleting it
-    ([boards](../revision-store.md#boards) and
-    [notebooks](../revision-store.md#notebooks), importing, step 1; for a document,
+    ([boards](../revision-store.md#boards),
+    [notebooks](../revision-store.md#notebooks) and
+    [sheets](../revision-store.md#sheets), importing, step 1; for a document,
     [Importing](../revision-store.md#importing), step 1). When the store id of the
     database (the `store` row of its `meta` table, or `flats_docs_meta` for a
     document) differs from `import_store`, there is nothing to compare. A flat with
     no cursor, and a flat whose outbox database does not exist, have nothing to
-    compare. The host runs the upper half of this test when it opens a board or a
-    notebook (`checkImportCursor`) and no test for a document. The command applies
-    the whole test to all three.
+    compare. The host runs the upper half of this test when it opens a board, a
+    notebook or a sheet (`checkImportCursor`) and no test for a document. The
+    command applies the whole test to all four, except a refused `sheet.db`
+    (rule 4), which a host does not open.
 
     Two snapshots that do not start at one moment can break the test in two ways:
 
     - `import_seq > last`: an entry was created and imported after the snapshot of
-      the database and before the snapshot of `flats.db`. A restored board or
-      notebook in that state does not start. A restored document starts, and its
-      next import acknowledges through `import_seq`, which deletes every outbox
-      entry up to that number, so the new entries that reuse those numbers are
-      dropped unimported ([docs app](../internal/docs-app.md)).
+      the database and before the snapshot of `flats.db`. A restored board,
+      notebook or sheet in that state does not start. A restored document starts,
+      and its next import acknowledges through `import_seq`, which deletes every
+      outbox entry up to that number, so the new entries that reuse those numbers
+      are dropped unimported ([docs app](../internal/docs-app.md)).
     - `acked > import_seq`: entries were imported and acknowledged after the
       snapshot of `flats.db` and before the snapshot of the database. Their
       revisions are in no database of the copy, and the restored host does not
@@ -287,9 +310,9 @@ these steps and no other:
     directory appeared or disappeared, when a directory of step 13 that existed
     then has another identity or is gone, when an entry of `flats/.lifecycle/`
     changed, or when a `restore-journal.json` appeared, disappeared or changed. A
-    `data/`, `board/` or `notebook/` directory that did not exist at step 13 and
-    exists now is not a failure, because a flat creates `data/` at its first use of
-    a database. A create, rename, delete or data restore ran during the copy
+    `data/`, `board/`, `notebook/` or `sheet/` directory that did not exist at step
+    13 and exists now is not a failure, because a flat creates `data/` at its first
+    use of a database. A create, rename, delete or data restore ran during the copy
     otherwise.
 20. **Verification.** It runs the checks of rules 25 to 28 on the copy in
     `PATH.partial-<random>`, with the manifest that it holds in memory. Its first
@@ -340,7 +363,7 @@ flats backup --out PATH [--exclude-secret-key] [--config PATH | --data DIR] [--j
     [secret key recovery](secret-key-recovery.md#the-recovery-copy) says. The
     output names the folder, the number of files and bytes, whether a secret key
     is in the copy, the number of retries that it needed, the skipped and unstable
-    paths, and the text that the copy holds secrets and must be protected. It
+    paths, each refused `sheet.db` with its reason (rule 4), and the text that the copy holds secrets and must be protected. It
     prints text. With `--json`, a failure prints as JSON, as for every command.
 
 ## `flats backup --verify`
@@ -364,18 +387,58 @@ flats backup --verify PATH [--json]
     knows (`format` is `1`), and list every file below `PATH` with its size and
     SHA-256. A listed file that is missing, a file below `PATH` that is not listed
     apart from `manifest.json`, and a size or hash that differs fail the check.
+    Every path by which the manifest names a copied file or database (the
+    entries of `files`, `databases` and `refused`) is relative, clean,
+    slash-separated and valid UTF-8, with no backslash, no volume, no leading slash and no `.` or `..`
+    element, and lies below `data/` or is `config.json` or a file of
+    `config-history/`. The check is the same on every system. A path of
+    another spelling fails before any file is looked up or opened by it. The
+    command looks a listed path up among the names that the folders of the
+    copy give their entries, so a spelling that a system resolves to another
+    entry, by case, by a short name or by a trailing dot, is a missing file.
+    The entries of `skipped` are different: they describe names of the source
+    that the copy left out (rule 9), as the source spells them, so one may
+    hold a backslash or other spelling that a path of a copied file may not.
+    No file is looked up by them.
     The manifest also records the number of attempts that rule 16 needed
     (`attempts`).
 27. **Databases and parts.**
-    - Each database that the manifest lists in `databases` passes
-      `PRAGMA quick_check` with the result `ok`.
+    - Each database that the manifest lists in `databases` has a path of rule
+      26 that the layout of rule 2 makes a database of the listed kind, exactly
+      as written, and is a listed file of the copy; otherwise it fails before
+      anything opens it. It passes `PRAGMA quick_check` with the result `ok`.
+      A `sheet.db` first passes the sheet check of rule 4, because
+      `quick_check` reads a value of another class in a column of numbers
+      whole. A database that fails either fails the check of the copy, and so
+      does the outbox database of a flat that `flats.db` names when the
+      manifest does not list it as a database. A rejected or unchecked
+      database reaches no other reader: neither the coherence test nor the
+      blob check below reads it.
+    - The checks build paths from the flat names in `flats.db` and the blob
+      hashes in the databases. A flat name that is no single folder name of
+      rule 26, and a hash that is no lowercase SHA-256, fails the check of
+      the copy and is not looked up.
+    - A `sheet.db` that the manifest lists in `refused` must still fail the
+      sheet check; it gets no `quick_check` and no other reader, and the check
+      notes it. One that passes the sheet check fails the check of the copy.
     - Every outbox database is coherent with `flats.db` (rule 16).
     - Every blob that the flat needs exists in the copy, under that flat's
       `revisions/blobs/` or `design/blobs/`. A flat needs the hashes in
       `content_head`, `revision_files` and `content_sources` of `flats.db`, and
       the `hash` of every row of the table `assets` of its `board.db` and its
-      `notebook.db`. The blob sweep keeps more than this, such as the blobs that
-      live undo state names, and the check does not read them.
+      `notebook.db`. A sheet also needs the hashes that its `sheet.db` names: the
+      files of its newest revision (`files` of the table `meta`) and of every
+      pending entry (`files` of the table `outbox`), which are the hashes that the
+      [blob sweep](../revision-store.md#blob-sweep) keeps for a sheet. A file whose
+      bytes `sheet.db` still holds in its table `snapshots` waits for its import
+      and has no blob yet, so the check does not ask for one. The blob sweep keeps
+      more than this, such as the blobs that live undo state names, and the check
+      does not read them.
+
+    The check is for what a copy, a crash or a failed disk can leave. A copy
+    edited by another program to hold values Flats never writes is outside
+    what the check promises: the path, class and length checks refuse what
+    they find, as defence in depth, without a claim that they are complete.
 28. **Key.** When the copy holds `secret.key` and `flats.db` holds sealed values,
     every flat secret and every operator key record with a stored value opens with
     that key. The code is the one of `flats secret restore-key` (rule 22 of its
@@ -439,34 +502,45 @@ flats backup --verify PATH [--json]
     kept it, or `flats secret restore-key` with the recovery password, before the
     start. A copy with `secret_key: "external"` brings back `config.json` with
     `host.secret_key_path`, and the operator puts the key at that path before
-    the start.
+    the start. A sheet whose `sheet.db` the copy lists in `refused` stays
+    closed after the restore, as it was on the host.
 
 ## Compatibility
 
 36. No schema change and no new dependency. The manifest has `format: 1`. A later
     Flats that changes the format raises it, and this command refuses a format it
-    does not know.
+    does not know. The database kind `sheet` came with the sheet content type and
+    did not raise the format: a Flats without sheets refuses the `flats.db` of a
+    host with sheets by its schema version (rule 25). Nor did the list
+    `refused`, which only a copy with a refused `sheet.db` holds: a Flats that
+    does not know it fails such a copy by its sheet check.
 37. A host that is not backed up this way behaves as before.
 
 ## Completion criteria
 
-- A test starts a host with a board, a notebook, a server flat with SQLite data
-  and files below `data/files/`, a flat secret and an operator key. It runs
-  `flats backup` while writes to the board and the notebook run, and restores the
-  result into a new data directory at the old path. The host starts, serves every
-  flat, reads the files, opens the secret and the operator key, holds at least
-  the board elements and the notebook pages that the host had acknowledged before
-  the backup began, accepts a new write to the board and to the notebook, and the
-  board continues its sequence above the one that the copy had reached.
+- A test starts a host with a board, a notebook, two sheets, a server flat with
+  SQLite data and files below `data/files/`, a flat secret and an operator key. It
+  runs `flats backup` while writes to the board, the notebook and one sheet run,
+  and restores the result into a new data directory at the old path. The host
+  starts, serves every flat, reads the files, opens the secret and the operator
+  key, holds at least the board elements, the notebook pages and the sheet cells
+  that the host had acknowledged before the backup began, accepts a new write to
+  the board, the notebook and the sheet, and the board continues its sequence
+  above the one that the copy had reached. The other sheet has cells, a formula,
+  formats, a column width and two tabs in imported revisions, its commits in
+  `sheet.db-wal`, and one entry that waits in its outbox because its import
+  failed. The copy holds its `sheet.db` as a database with that entry and without
+  a `-wal` or `-shm` file, and nothing of `cache/`. The restored sheet reads as
+  before, the entry becomes its next revision, and it accepts a new write.
   `flats backup --verify` passes on the copy before the restore. This test has no
   document and no running server flat: they need the docs worker and a flat
   process, which the unit tests do not start. The package tests cover the outbox
   database of a document and the database of a server flat with fixture
   databases. A backup of a host with a running document and a running server flat
   under write load has no automatic test, and this is a known gap.
-- For each kind of outbox database (a document, a board, a notebook) and for each
-  order of the two snapshots, a test shows that a change between the snapshot of
-  the database and the snapshot of `flats.db` that breaks the test of rule 16
+- For each kind of outbox database (a document, a board, a notebook, a sheet) and
+  for each order of the two snapshots, a test shows that a change between the
+  snapshot of the database and the snapshot of `flats.db` that breaks the test of rule 16
   fails it on the first attempt, passes on the next, and fails the backup when it
   happens on three attempts. The tests set the order, which production code
   leaves to the group of rule 15. A test shows that an entry that is only created
@@ -493,10 +567,13 @@ flats backup --verify PATH [--json]
   and the restore is the host's own.
 - Tests show that `--verify` fails on each of: a changed byte in a copied file, a
   missing file, an extra file, a format it does not know, a `user_version` it does
-  not expect, a database that fails `quick_check`, an outbox database below or
-  above its cursor (a document, a board and a notebook), a needed blob that is
-  missing, a `flats.db` with sealed values and a key that does not open them, and a
-  `-wal` file beside `flats.db`. A test runs `--verify` twice on a copy, once on a
+  not expect, a database that fails `quick_check` (a server flat's and a sheet's),
+  an outbox database below or above its cursor (a document, a board, a notebook
+  and a sheet), a needed blob that is missing (one that `flats.db` names, an asset
+  of a board and of a notebook, and a file that only `sheet.db` names, while a
+  file whose bytes `sheet.db` still holds needs none), a `flats.db` with sealed
+  values and a key that does not open them, and a `-wal` file beside `flats.db`.
+  A test runs `--verify` twice on a copy, once on a
   copy with another schema version and once on a copy with a `-wal` file, and shows
   that `PATH` keeps the same files with the same sizes and modification times.
 - Tests show that each refusal of rules 12 and 30 writes nothing at `PATH`, that a
@@ -510,7 +587,10 @@ flats backup --verify PATH [--json]
   host. A test shows that the copy has the modes of rule 10 on Unix, and a test
   shows the output of rule 24 and rule 29.
 - A test shows a backup of a stopped host with a `-wal` file and no `-shm`, and
-  that the copy holds the commits of the `-wal` file. The error for a folder that
+  that the copy holds the commits of the `-wal` file. A test shows that a sheet
+  whose commits are in `sheet.db-wal` while a connection holds it open is copied
+  as a snapshot with those commits, and that the copy has no `-wal` or `-shm`
+  file of it. The error for a folder that
   is not writable has no test, because a test owns its folder and may run as the
   superuser. A test shows that a snapshot that cannot start within the busy timeout
   is tried again and succeeds on a later try, and fails the backup after the third.

@@ -27,10 +27,10 @@ globalThis.fetch = async (url, opts = {}) => {
   else body = {};
   return { ok: true, json: async () => body };
 };
-const REVISION_MODEL = ['docs', 'design', 'board', 'notebook'];
+const REVISION_MODEL = ['docs', 'design', 'board', 'notebook', 'sheet'];
 // The imported suite's last calls can still land in calls, so look for the stats.
 const lastStats = () => calls.map(([url]) => url).filter((url) => url.includes('/stats?')).at(-1);
-for (const type of ['flat', 'page', 'docs', 'design', 'board', 'notebook', undefined, 'future']) {
+for (const type of ['flat', 'page', 'docs', 'design', 'board', 'notebook', 'sheet', undefined, 'future']) {
   for (views of [0, 7]) {
     flat = { slug: 'sample', name: 'Sample', type, disk_bytes: 1024, versions: 9, visibility: 'private', endpoints: [] };
     const main = document.createElement('main');
@@ -56,8 +56,8 @@ settings(main, ['limits'], ctx);
 await tick();
 assert.ok(element(main, 'LABEL', 'Revisions'));
 assert.ok(element(main, 'LABEL', 'Pinned revisions'));
-assert.ok(main.textContent.includes('each document, design, board or notebook keeps'));
-assert.ok(main.textContent.includes('revisions for documents, designs, boards and notebooks'));
+assert.ok(main.textContent.includes('each document, design, board, notebook or sheet keeps'));
+assert.ok(main.textContent.includes('revisions for documents, designs, boards, notebooks and sheets.'));
 assert.ok(main.textContent.includes('Pinned revisions are never deleted automatically'));
 assert.ok(main.textContent.includes('For websites and pages.'));
 assert.ok(element(main, 'LABEL', 'Versions'));

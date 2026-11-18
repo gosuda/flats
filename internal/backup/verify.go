@@ -2,17 +2,20 @@ package backup
 
 import (
 	"context"
+	"crypto/sha256"
 	"database/sql"
 	"errors"
 	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
 	"github.com/gosuda/flats/internal/core"
 	"github.com/gosuda/flats/internal/notebook"
+	"github.com/gosuda/flats/internal/sheet"
 	"github.com/gosuda/flats/internal/store"
 )
 
@@ -60,6 +63,22 @@ type verifier struct {
 	extKey []byte
 	fails  []Failure
 	notes  []string
+	// listed are the canonical paths of the manifest's files, walked every
+	// entry of the copy that is not a folder, by the name its folder gives
+	// it, and regular those that are regular files. A check looks a manifest
+	// path up in these and opens a file only by a path the walk found, so no
+	// system resolves a spelling to another file than the one the checks
+	// classify (rule 26).
+	listed, walked, regular map[string]bool
+	// dbs is the state of each database the manifest lists, by its path:
+	// true when it passed quick_check, and a sheet.db the sheet check before
+	// it. The later readers of a database read none other (dbReadable): those
+	// of a sheet.db hold for the schema of this release only.
+	dbs map[string]bool
+	// unread are the databases the later checks did not read because the
+	// manifest does not list them as databases, and badFlats the names
+	// flats.db gives flats that are no folder of a copy.
+	unread, badFlats map[string]bool
 }
 
 func (v *verifier) fail(path, format string, args ...any) {
@@ -70,7 +89,8 @@ func (v *verifier) fail(path, format string, args ...any) {
 // manifest m, which Run holds in memory before it writes manifest.json. extKey is the bytes of an
 // external key, or nil.
 func verifyTree(ctx context.Context, root string, m *Manifest, extKey []byte) ([]Failure, []string, error) {
-	v := &verifier{root: root, data: filepath.Join(root, "data"), m: m, extKey: extKey}
+	v := &verifier{root: root, data: filepath.Join(root, "data"), m: m, extKey: extKey,
+		listed: map[string]bool{}, walked: map[string]bool{}, regular: map[string]bool{}, dbs: map[string]bool{}, unread: map[string]bool{}, badFlats: map[string]bool{}}
 	flatsDB := filepath.Join(v.data, nameFlatsDB)
 	flatsHere, sidecar := false, false
 	if _, err := os.Stat(flatsDB); err == nil {
@@ -121,11 +141,17 @@ func sidecarsOf(db string) []string {
 }
 
 // checkFiles is the manifest check of rule 26: every listed file is there with
-// its size and hash, and nothing else is.
+// its size and hash, and nothing else is. A path the copy does not hold in
+// that spelling fails before anything looks it up.
 func (v *verifier) checkFiles(ctx context.Context) error {
 	listed := make(map[string]File, len(v.m.Files))
 	for _, f := range v.m.Files {
+		if err := checkManifestPath(f.Path); err != nil {
+			v.fail(f.Path, "is not a path a copy holds: it %v", err)
+			continue
+		}
 		listed[f.Path] = f
+		v.listed[f.Path] = true
 	}
 	seen := map[string]bool{}
 	err := filepath.WalkDir(v.root, func(p string, d fs.DirEntry, err error) error {
@@ -146,6 +172,7 @@ func (v *verifier) checkFiles(ctx context.Context) error {
 		if rel == ManifestFile {
 			return nil
 		}
+		v.walked[rel] = true
 		f, ok := listed[rel]
 		switch {
 		case !ok:
@@ -156,6 +183,7 @@ func (v *verifier) checkFiles(ctx context.Context) error {
 			return nil
 		}
 		seen[rel] = true
+		v.regular[rel] = true
 		got, holdsKey, err := hashScan(p, v.extKey)
 		if err != nil {
 			return err
@@ -183,7 +211,7 @@ func (v *verifier) checkFiles(ctx context.Context) error {
 	}
 	sort.Strings(missing)
 	for _, p := range missing {
-		if _, err := os.Lstat(filepath.Join(v.root, filepath.FromSlash(p))); err != nil {
+		if !v.walked[p] {
 			v.fail(p, "is missing")
 		}
 	}
@@ -191,31 +219,139 @@ func (v *verifier) checkFiles(ctx context.Context) error {
 }
 
 // checkDatabases runs PRAGMA quick_check on each database of the manifest (rule
-// 27). It reports whether flats.db passed, which the later checks need.
+// 27). It reports whether flats.db passed, which the later checks need. A
+// database whose path is not canonical, or that the layout does not make a
+// database of its kind, exactly as written, fails before anything opens it.
+// A sheet.db is checked by the sheet package first, as a sheet checks it
+// before its own quick_check: quick_check reads a value of another class in a
+// column of numbers whole. It notes in v.dbs which databases passed.
 func (v *verifier) checkDatabases(ctx context.Context) bool {
 	flatsOK := false
+	refused := map[string]string{}
+	for _, r := range v.m.Refused {
+		if checkDatabasePath(Database{Path: r.Path, Kind: KindSheet}) == nil {
+			refused[r.Path] = r.Reason
+		} else {
+			v.fail(r.Path, "is listed as a refused sheet database, and it is none")
+		}
+	}
+	found := map[string]bool{}
 	for _, d := range v.m.Databases {
-		p := filepath.Join(v.root, filepath.FromSlash(d.Path))
-		if _, err := os.Stat(p); err != nil {
-			continue // checkFiles reported it
+		if err := checkDatabasePath(d); err != nil {
+			v.fail(d.Path, "%v", err)
+			continue
 		}
-		if d.Kind == KindNotebook {
-			if err := notebook.RegisterCollation(); err != nil {
-				v.fail(d.Path, "cannot be checked: %v", err)
-				continue
-			}
+		var passed bool
+		if reason, ok := refused[d.Path]; ok && d.Kind == KindSheet {
+			found[d.Path] = true
+			v.checkRefused(ctx, d, reason)
+		} else {
+			passed = v.checkDatabase(ctx, d)
 		}
-		msgs, err := quickCheck(ctx, p)
-		switch {
-		case err != nil:
-			v.fail(d.Path, "does not open: %v", err)
-		case len(msgs) > 0:
-			v.fail(d.Path, "failed quick_check: %s", strings.Join(msgs, "; "))
-		case d.Kind == KindFlats:
+		if passed && d.Kind == KindFlats {
 			flatsOK = true
+		}
+		// A path the manifest lists twice is read only when every listing
+		// passed.
+		was, twice := v.dbs[d.Path]
+		v.dbs[d.Path] = passed && (was || !twice)
+	}
+	for p := range refused {
+		if !found[p] {
+			v.fail(p, "is listed as a refused sheet database, and the manifest lists no such database")
 		}
 	}
 	return flatsOK
+}
+
+// checkRefused checks a sheet.db that the backup copied as it is because the
+// sheet check refused it (rule 4): the check must still refuse it, and nothing
+// else reads it, not even quick_check, which can read a value whole.
+func (v *verifier) checkRefused(ctx context.Context, d Database, reason string) {
+	p, ok := v.copied(d)
+	if !ok {
+		return
+	}
+	if err := preflightSheet(ctx, p); err != nil {
+		v.notes = append(v.notes, fmt.Sprintf("%s is copied as it is, unchecked: the sheet check refuses it (%v), and so does a host, which keeps the sheet closed", d.Path, err))
+		return
+	}
+	if ctx.Err() == nil {
+		v.fail(d.Path, "is listed as refused by the sheet check (%s), and it passes the check", reason)
+	}
+}
+
+// copied returns the path to open the database d at, and whether the copy
+// holds it under the spelling of the manifest: as a listed regular file the
+// walk found. checkFiles failed a listed file that is missing or irregular.
+func (v *verifier) copied(d Database) (string, bool) {
+	if !v.listed[d.Path] {
+		v.fail(d.Path, "is listed as a database and not as a file of the copy")
+		return "", false
+	}
+	if !v.regular[d.Path] {
+		return "", false
+	}
+	return filepath.Join(v.root, filepath.FromSlash(d.Path)), true
+}
+
+// checkDatabase checks one database of the manifest and reports whether it
+// passed.
+func (v *verifier) checkDatabase(ctx context.Context, d Database) bool {
+	p, ok := v.copied(d)
+	if !ok {
+		return false
+	}
+	if d.Kind == KindNotebook {
+		if err := notebook.RegisterCollation(); err != nil {
+			v.fail(d.Path, "cannot be checked: %v", err)
+			return false
+		}
+	}
+	if d.Kind == KindSheet {
+		if err := preflightSheet(ctx, p); err != nil {
+			v.fail(d.Path, "failed the sheet check before quick_check: %v", err)
+			return false
+		}
+	}
+	msgs, err := quickCheck(ctx, p)
+	switch {
+	case err != nil:
+		v.fail(d.Path, "does not open: %v", err)
+	case len(msgs) > 0:
+		v.fail(d.Path, "failed quick_check: %s", strings.Join(msgs, "; "))
+	default:
+		return true
+	}
+	return false
+}
+
+// dbReadable reports whether the later checks may read the database at rel,
+// below the data directory: only one that passed checkDatabases. A database
+// the copy holds that the manifest does not list as one fails the check of
+// the copy.
+func (v *verifier) dbReadable(rel string) bool {
+	p := manifestPath(rel)
+	passed, listed := v.dbs[p]
+	if passed {
+		return true
+	}
+	if v.walked[p] && !listed && !v.unread[p] {
+		v.unread[p] = true
+		v.fail(p, "is not listed as a %s database in the manifest, so it was not checked", classify(rel).kind)
+	}
+	return false
+}
+
+// preflightSheet runs sheet.Preflight on a copied sheet.db. A test replaces
+// it to measure the check without it.
+var preflightSheet = func(ctx context.Context, path string) error {
+	db, err := openCopy(path)
+	if err != nil {
+		return err
+	}
+	defer db.Close()
+	return sheet.Preflight(ctx, db)
 }
 
 func quickCheck(ctx context.Context, path string) ([]string, error) {
@@ -252,6 +388,12 @@ func (v *verifier) checkParts(ctx context.Context) {
 		v.fail("data/flats.db", "cannot read the import cursors: %v", err)
 		return
 	}
+	// A rejected database fails the check already, and the coherence check
+	// reads it no further.
+	cursors = slices.DeleteFunc(cursors, func(c cursor) bool {
+		rel := outboxPath(c.flat, c.typ)
+		return rel != "" && (!v.flatName(c.flat) || !v.dbReadable(rel))
+	})
 	bad, err := incoherentCursors(ctx, v.data, cursors)
 	if err != nil {
 		v.fail("data/flats.db", "cannot check the outbox databases: %v", err)
@@ -292,6 +434,9 @@ func (v *verifier) checkParts(ctx context.Context) {
 		return
 	}
 	for _, f := range flats {
+		if !v.flatName(f.flat) {
+			continue
+		}
 		hashes, err := st.ReferencedHashes(ctx, f.flat)
 		if err != nil {
 			v.fail("data/flats.db", "cannot read the hashes of %s: %v", f.flat, err)
@@ -301,8 +446,25 @@ func (v *verifier) checkParts(ctx context.Context) {
 		switch f.typ {
 		case typeBoard, typeNotebook:
 			v.needBlobs(f.flat, f.typ, v.assetHashes(ctx, f.flat, f.typ))
+		case typeSheet:
+			v.needBlobs(f.flat, f.typ, v.sheetHashes(ctx, f.flat))
 		}
 	}
+}
+
+// flatName reports whether flat, a name that flats.db of the copy gives a
+// flat, is one folder of the layout of a copy, so that the paths the checks
+// build from it name that flat's folder and no other. Another fails the
+// check of the copy.
+func (v *verifier) flatName(flat string) bool {
+	if strings.Contains(flat, "/") || flat == nameLifecycle || checkManifestPath(manifestPath(nameFlats+"/"+flat)) != nil {
+		if !v.badFlats[flat] {
+			v.badFlats[flat] = true
+			v.fail("data/flats.db", "names the flat %q, which is no folder of a copy", flat)
+		}
+		return false
+	}
+	return true
 }
 
 // blobRoot is the folder below a flat that holds its blobs.
@@ -320,15 +482,29 @@ func (v *verifier) needBlobs(flat, typ string, hashes map[string]bool) {
 	}
 	sort.Strings(sorted)
 	for _, h := range sorted {
-		if len(h) < 3 {
+		if !blobHash(h) {
 			v.fail(manifestPath(join(nameFlats, flat)), "has the malformed blob hash %q", h)
 			continue
 		}
 		rel := join(nameFlats, flat, blobRoot(typ), "blobs", h[:2], h)
-		if _, err := os.Lstat(filepath.Join(v.data, filepath.FromSlash(rel))); err != nil {
+		if !v.walked[manifestPath(rel)] {
 			v.fail(manifestPath(rel), "is missing, and the database of flat %s needs it", flat)
 		}
 	}
+}
+
+// blobHash reports whether h is a SHA-256 in lowercase hex, the only form
+// that names a blob.
+func blobHash(h string) bool {
+	if len(h) != sha256.Size*2 {
+		return false
+	}
+	for i := 0; i < len(h); i++ {
+		if c := h[i]; (c < '0' || c > '9') && (c < 'a' || c > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // assetHashes reads the hash of every row of the assets table of a flat's board
@@ -336,7 +512,7 @@ func (v *verifier) needBlobs(flat, typ string, hashes map[string]bool) {
 func (v *verifier) assetHashes(ctx context.Context, flat, typ string) map[string]bool {
 	rel := outboxPath(flat, typ)
 	path := filepath.Join(v.data, filepath.FromSlash(rel))
-	if _, err := os.Stat(path); err != nil {
+	if !v.dbReadable(rel) {
 		return nil
 	}
 	if typ == typeNotebook {
@@ -370,6 +546,32 @@ func (v *verifier) assetHashes(ctx context.Context, flat, typ string) map[string
 	}
 	if err := errors.Join(rows.Err(), rows.Close()); err != nil {
 		v.fail(manifestPath(rel), "cannot read its assets: %v", err)
+	}
+	return out
+}
+
+// sheetHashes reads the hashes that a flat's sheet.db in the copy names and that the copy must hold as
+// blobs: the files of the newest revision and of every pending outbox entry, which is what the host's blob
+// sweep keeps for a sheet. A file whose bytes sheet.db still holds in its snapshots waits for its import
+// and has no blob yet, so it is not in the result. The sheet package reads them as the sheet does: each
+// list and hash only when it is of a class and a length the writer stores, and a list of no more files
+// than a revision names.
+func (v *verifier) sheetHashes(ctx context.Context, flat string) map[string]bool {
+	rel := outboxPath(flat, typeSheet)
+	path := filepath.Join(v.data, filepath.FromSlash(rel))
+	if !v.dbReadable(rel) {
+		return nil
+	}
+	db, err := openCopy(path)
+	if err != nil {
+		v.fail(manifestPath(rel), "cannot be read: %v", err)
+		return nil
+	}
+	defer db.Close()
+	out, err := sheet.BlobHashes(ctx, db)
+	if err != nil {
+		v.fail(manifestPath(rel), "cannot read its file lists: %v", err)
+		return nil
 	}
 	return out
 }

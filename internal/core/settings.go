@@ -811,6 +811,7 @@ func (s *Service) applySettingChanges(ctx context.Context, changed []string) {
 		s.pushAllDocsBudgets(ctx)
 		s.remeasureBoards()
 		s.remeasureNotebooks()
+		s.remeasureSheets()
 	}
 }
 

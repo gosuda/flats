@@ -286,6 +286,25 @@ class ChangeSelectionTests(unittest.TestCase):
                     self.assertEqual(output, "full=true\n")
 
 
+class JobSelectionTests(unittest.TestCase):
+    def test_every_full_suite_job_follows_the_documentation_selection(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        jobs = workflow.split("\njobs:\n", 1)[1]
+        names = re.findall(r"^  ([a-z][a-z0-9-]*):$", jobs, re.M)
+        # The selector itself, the documentation-only check, and the image
+        # publication of main, which follows the test jobs.
+        own_condition = {"changes", "docs", "commit-images"}
+        self.assertTrue(own_condition <= set(names))
+        full = "if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') }}"
+        for name, body in zip(names, re.split(r"^  [a-z][a-z0-9-]*:$", jobs, flags=re.M)[1:]):
+            if name in own_condition:
+                continue
+            with self.subTest(job=name):
+                header = body.split("\n    steps:\n", 1)[0]
+                self.assertIn("\n    needs: changes\n", header)
+                self.assertIn("\n    " + full + "\n", header)
+
+
 class WindowsPackageTests(unittest.TestCase):
     def test_pretested_packages_are_excluded_without_losing_siblings(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()

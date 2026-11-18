@@ -43,7 +43,7 @@ func followsLink(rel string) bool { return rel == nameSecretKey || rel == nameRe
 
 // walk visits the data directory depth first, in name order. It leaves out and
 // lists the excluded entries, skips and lists the entries that are not regular
-// files or directories, and calls fn for every other entry, directories before
+// files or directories or whose names a manifest cannot list, and calls fn for every other entry, directories before
 // their contents. A directory that is gone is not an error: rule 19 finds a
 // flat that disappeared.
 func (c *copier) walk(fn func(visit) error) error { return c.walkDir("", fn) }
@@ -64,6 +64,12 @@ func (c *copier) walkDir(rel string, fn func(visit) error) error {
 		crel := de.Name()
 		if rel != "" {
 			crel = join(rel, de.Name())
+		}
+		// A name the manifest cannot list exactly, such as one with a
+		// backslash, which Windows reads as a separator, is left out.
+		if err := checkManifestPath(manifestPath(crel)); err != nil {
+			c.skip(crel, "name that a copy cannot list: it "+err.Error())
+			continue
 		}
 		cls := classify(crel)
 		if incomplete[de.Name()] || cls.class == classExcluded || (c.excludeKey && crel == nameSecretKey) {

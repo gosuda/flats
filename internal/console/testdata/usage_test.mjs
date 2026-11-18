@@ -116,16 +116,19 @@ assert.equal(tileValue(usage, 'p95 response time'), '—');
 assert.ok(usage.textContent.includes('No requests in this period.'));
 assert.equal(all(usage, (n) => n.tagName === 'RECT').length, 0);
 
-// A notebook also runs inside the host process: the same note, no worker.
-main = await render('notebook', {
-  days: [], totals: { requests: 3, errors: 0, error_rate: 0, p50_ms: 2, p95_ms: 4 },
-  now: { cpu: 'not_separate', memory: 'not_separate' },
-});
-usage = section(main);
-assert.ok(usage.textContent.includes(NOTE));
-assert.equal(tileValue(usage, 'CPU time'), undefined);
-assert.equal(tileValue(usage, 'Peak memory'), undefined);
-assert.ok(!usage.textContent.includes('Worker:'), 'no worker state for a notebook');
+// A notebook or sheet also runs inside the host process: the same note, no
+// worker.
+for (const type of ['notebook', 'sheet']) {
+  main = await render(type, {
+    days: [], totals: { requests: 3, errors: 0, error_rate: 0, p50_ms: 2, p95_ms: 4 },
+    now: { cpu: 'not_separate', memory: 'not_separate' },
+  });
+  usage = section(main);
+  assert.ok(usage.textContent.includes(NOTE), `${type} shows the host-process note`);
+  assert.equal(tileValue(usage, 'CPU time'), undefined);
+  assert.equal(tileValue(usage, 'Peak memory'), undefined);
+  assert.ok(!usage.textContent.includes('Worker:'), `no worker state for a ${type}`);
+}
 
 // Memory is not measured on this system (non-Linux host).
 main = await render('docs', { ...server, now: { cpu: 'measured', memory: 'unsupported', state: 'running', workers: 1 } });

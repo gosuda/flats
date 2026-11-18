@@ -47,11 +47,17 @@ var (
 	descNotebookConns   = desc("flats_notebook_connections", "Open notebook WebSocket connections, Private and Public.")
 	descNotebookImport  = desc("flats_notebook_import_seconds", "Time to import notebook revisions from a notebook's outbox into the revision store.")
 
+	descSheetBatches = desc("flats_sheet_batches_total", "Writes to sheets by result, applied or rejected: people's edit batches, agent calls and rollbacks.", "result")
+	descSheetConns   = desc("flats_sheet_connections", "Open sheet WebSocket connections, Private and Public.")
+	descSheetImport  = desc("flats_sheet_import_seconds", "Time to import sheet revisions from a sheet's outbox into the revision store.")
+	descSheetRecalc  = desc("flats_sheet_recalculation_seconds", "Time of one sheet recalculation by what started it: edit for a person's action, an agent call or a tab recovery, other for a load, a date change, a rollback or a revision view.", "start")
+
 	allDescs = []*prometheus.Desc{descBuildInfo, descDBBytes, descFlats, descRequests, descRateLimited, descRespBytes,
 		descOpenStreams, descDuration, descWorkerCPU, descWorkerMem, descWorkerMemAt, descWorkerState, descWorkerExits,
 		descDiskBytes, descDiskAt, descEndpoints, descApprovals, descSnapshotAt, descManagementReq,
 		descBoardBatches, descBoardConns, descBoardImport,
-		descNotebookBatches, descNotebookConns, descNotebookImport}
+		descNotebookBatches, descNotebookConns, descNotebookImport,
+		descSheetBatches, descSheetConns, descSheetImport, descSheetRecalc}
 )
 
 // Label values reach the exposition only from fixed enums, slugs, provider
@@ -171,6 +177,34 @@ func (c *collector) Collect(ch chan<- prometheus.Metric) {
 		notebookBuckets[bound] = cum
 	}
 	ch <- prometheus.MustNewConstHistogram(descNotebookImport, n.ImportCount, n.ImportSum, notebookBuckets)
+
+	sh := snap.Sheet
+	for _, result := range []string{"applied", "rejected"} {
+		counter(descSheetBatches, float64(sh.Batches[result]), result)
+	}
+	gauge(descSheetConns, float64(sh.Connections))
+	sheetBuckets := make(map[float64]uint64, len(core.SheetImportBuckets))
+	cum = 0
+	for i, bound := range core.SheetImportBuckets {
+		if i < len(sh.ImportCounts) {
+			cum += sh.ImportCounts[i]
+		}
+		sheetBuckets[bound] = cum
+	}
+	ch <- prometheus.MustNewConstHistogram(descSheetImport, sh.ImportCount, sh.ImportSum, sheetBuckets)
+	// The start label takes its two fixed values only.
+	for _, start := range core.SheetRecalcStarts {
+		r := sh.Recalc[start]
+		recalc := make(map[float64]uint64, len(core.SheetRecalcBuckets))
+		cum = 0
+		for i, bound := range core.SheetRecalcBuckets {
+			if i < len(r.Counts) {
+				cum += r.Counts[i]
+			}
+			recalc[bound] = cum
+		}
+		ch <- prometheus.MustNewConstHistogram(descSheetRecalc, r.Count, r.Sum, recalc, start)
+	}
 
 	type countKey struct{ typ, vis, running string }
 	counts := map[countKey]int{}

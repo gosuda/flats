@@ -74,6 +74,13 @@ func TestContentTypeManifest(t *testing.T) {
 		{"notebook with screenshot", `{"type":"notebook","screenshot":""}`, nil, "", "", "screenshot is not allowed for a notebook"},
 		{"notebook with unknown field", `{"type":"notebook","content":{}}`, nil, "", "", "content is not allowed for a notebook"},
 		{"design shell", `{"type":"design"}`, nil, "design", "", ""},
+		{"sheet filename does not infer sheet", `{}`, []string{"sheet.md"}, "docs", "sheet.md", ""},
+		{"sheet shell", `{"type":"sheet","name":"Budget"}`, nil, "sheet", "", ""},
+		{"sheet unnamed shell", `{"type":"sheet"}`, nil, "sheet", "", ""},
+		{"sheet with files", `{"type":"sheet"}`, []string{"data.csv"}, "", "", "a sheet keeps its content in its revision history"},
+		{"sheet with kind", `{"type":"sheet","kind":"static"}`, nil, "", "", "kind is not allowed for a sheet"},
+		{"sheet with entry", `{"type":"sheet","entry":""}`, nil, "", "", "entry is not allowed for a sheet"},
+		{"sheet with unknown field", `{"type":"sheet","tabs":[]}`, nil, "", "", "tabs is not allowed for a sheet"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -97,8 +104,11 @@ func TestContentTypeManifest(t *testing.T) {
 					if strings.Contains(tt.manifest, `"type":"notebook"`) && (strings.Contains(p.Message, "is not allowed for a notebook") || strings.Contains(p.Message, "not in a bundle")) && !strings.Contains(p.Fix, "update_notebook") {
 						t.Fatalf("missing notebook write guidance: %+v", p)
 					}
-					if tt.name == "unknown type" && !strings.Contains(p.Fix, `"notebook"`) {
-						t.Fatalf("missing notebook type hint: %+v", p)
+					if strings.Contains(tt.manifest, `"type":"sheet"`) && (strings.Contains(p.Message, "is not allowed for a sheet") || strings.Contains(p.Message, "not in a bundle")) && !strings.Contains(p.Fix, "update_sheet") {
+						t.Fatalf("missing sheet write guidance: %+v", p)
+					}
+					if tt.name == "unknown type" && (!strings.Contains(p.Fix, `"notebook"`) || !strings.Contains(p.Fix, `"sheet"`)) {
+						t.Fatalf("missing type hint: %+v", p)
 					}
 				}
 				return
@@ -114,6 +124,12 @@ func TestContentTypeManifest(t *testing.T) {
 			}
 			if tt.typ == "notebook" && (m.Kind != "static" || m.Health != "/" || m.SPA || m.NotFound != "" || m.Screenshot != "") {
 				t.Fatalf("notebook shell defaults: %+v", m)
+			}
+			if tt.typ == "sheet" && (m.Kind != "static" || m.Health != "/" || m.SPA || m.NotFound != "" || m.Screenshot != "" || len(Lint(files)) != 0) {
+				t.Fatalf("sheet shell defaults: %+v", m)
+			}
+			if tt.name == "sheet shell" && m.Name != "Budget" {
+				t.Fatalf("sheet name: %+v", m)
 			}
 			if tt.name == "notebook shell" && m.Name != "Plan" {
 				t.Fatalf("notebook name: %+v", m)

@@ -83,6 +83,8 @@ type Revision struct {
 	// them instead of its bucket paths in Changes.
 	Elements      *ElementCounts       `json:"elements,omitempty"`
 	NotebookPages []NotebookPageChange `json:"pages,omitempty"`
+	// SheetTabs lists the tabs a sheet revision changed.
+	SheetTabs []SheetTabChange `json:"tabs,omitempty"`
 	// SafePoint marks the safe point of a board or document while anyone
 	// can edit it: it cannot be unpinned then. Readers fill it in.
 	SafePoint bool `json:"safe_point,omitempty"`
@@ -525,6 +527,52 @@ func queryRevisionFiles(ctx context.Context, q querier, flat string, n int) ([]R
 			}
 		}
 		out = append(out, f)
+	}
+	return out, rows.Err()
+}
+
+// ErrRevisionFiles is the refusal of a revision file list that holds more
+// files, or a longer path or hash, than its reader admits.
+var ErrRevisionFiles = errors.New("revision file list is beyond its bounds")
+
+// RevisionFileBounds are what BoundedRevisionFiles admits: the most files,
+// and the most bytes of one path and of one hash.
+type RevisionFileBounds struct {
+	Files, PathBytes, HashBytes int
+}
+
+// BoundedRevisionFiles returns the files of revision n, without guest
+// lines, when the revision lists at most b.Files of them and each path and
+// hash is text of at most its bound and each size an integer. It reads at
+// most one file more than b.Files, and returns no path or hash past its
+// bound. flats.db is trusted host state, so these checks bound the list a
+// caller holds and refuse what the writer never stores; they do not keep a
+// row that was edited outside Flats out of SQLite's memory, which the
+// primary-key seek on (flat, number, path) reads whole.
+func (s *Store) BoundedRevisionFiles(ctx context.Context, flat string, n int, b RevisionFileBounds) ([]RevisionFile, error) {
+	field := func(column string, limit int) string {
+		return fmt.Sprintf("CASE WHEN typeof(%[1]s)='text' AND octet_length(%[1]s)<=%[2]d THEN %[1]s END", column, limit)
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT `+field("path", b.PathBytes)+`,`+field("hash", b.HashBytes)+
+		`,CASE WHEN typeof(size)='integer' THEN size END FROM revision_files WHERE flat=? AND number=? LIMIT ?`, flat, n, b.Files+1)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []RevisionFile
+	for rows.Next() {
+		if len(out) == b.Files {
+			return nil, fmt.Errorf("revision %d lists more than %d files: %w", n, b.Files, ErrRevisionFiles)
+		}
+		var path, hash sql.NullString
+		var size sql.NullInt64
+		if err := rows.Scan(&path, &hash, &size); err != nil {
+			return nil, err
+		}
+		if !path.Valid || !hash.Valid || !size.Valid {
+			return nil, fmt.Errorf("revision %d lists a file whose path, hash or size is not one its reader takes: %w", n, ErrRevisionFiles)
+		}
+		out = append(out, RevisionFile{Path: path.String, Hash: hash.String, Size: size.Int64})
 	}
 	return out, rows.Err()
 }

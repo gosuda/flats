@@ -14,6 +14,7 @@ database or file storage.
 | a document people edit together, or quick notes (Markdown, Mermaid) | `docs` (`topic.docs`) |
 | a document you write as HTML with charts or visualizations | `page` |
 | a wiki, notes or a tracker with pages and tables people edit together | `notebook` (`topic.notebook`) |
+| a spreadsheet whose numbers calculate, such as a budget people edit together | `sheet` (`topic.sheet`) |
 | a site with several pages, an app, or anything with a server | `flat` (`topic.static`, `topic.server`) |
 
 ### Bundle rules

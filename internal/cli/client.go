@@ -85,15 +85,22 @@ func (c *client) do(ctx context.Context, method, path string, q url.Values, body
 	return response{Status: resp.StatusCode, Body: raw}, nil
 }
 
+// sentAsWritten is a JSON body that call sends byte for byte. Marshalling
+// it would write some characters as escapes and change its size.
+type sentAsWritten []byte
+
 // call sends JSON (when in != nil), and decodes a 2xx reply into out.
 // Non-2xx replies become *apiError.
 func (c *client) call(ctx context.Context, method, path string, q url.Values, in, out any) (response, error) {
 	var body io.Reader
 	ctype := ""
 	if in != nil {
-		b, err := json.Marshal(in)
-		if err != nil {
-			return response{}, err
+		b, written := in.(sentAsWritten)
+		if !written {
+			var err error
+			if b, err = json.Marshal(in); err != nil {
+				return response{}, err
+			}
 		}
 		body, ctype = bytes.NewReader(b), "application/json"
 	}

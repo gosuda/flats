@@ -1,13 +1,14 @@
 # Revision store
 
-Documents (`docs`), designs (`design`), boards (`board`) and notebooks
-(`notebook`) follow the Revision model of
+Documents (`docs`), designs (`design`), boards (`board`), notebooks
+(`notebook`) and sheets (`sheet`) follow the Revision model of
 [content-models.md](spec/content-models.md): no Draft or user versions, every
 edit unit becomes a whole-flat revision, with revision and pin quotas and
 rollback. This page describes the store that holds those revisions for all
-four types. It is owned by `internal/core` (`design.go`, `docsrev.go`,
-`board.go`, `notebook*.go`) with tables in `internal/store/content.go`,
-`internal/store/board.go` and `internal/store/notebook.go`.
+five types. It is owned by `internal/core` (`design.go`, `docsrev.go`,
+`board.go`, `notebook*.go`, `sheet*.go`) with tables in
+`internal/store/content.go`, `internal/store/board.go`,
+`internal/store/notebook.go` and `internal/store/sheet.go`.
 
 - A **design** writes the store directly: its current files ("head") and its
   open edit groups live here, and every write commits a revision here.
@@ -22,8 +23,11 @@ four types. It is owned by `internal/core` (`design.go`, `docsrev.go`,
 - A **notebook** keeps its current state in its own `notebook.db`, owned by
   the notebook instance in the host process, and is imported from an outbox
   the same way ([Notebooks](#notebooks)).
+- A **sheet** keeps its current state in its own `sheet.db`, owned by the
+  sheet instance in the host process, and is imported from an outbox the
+  same way ([Sheets](#sheets)).
 
-All four types also keep internal backing versions under `versions/<n>` (a
+All five types also keep internal backing versions under `versions/<n>` (a
 design's one-file shell, each docs bundle that ran) so the running instance
 has a version to serve. They are not user versions: version tools refuse
 these types, and pruning removes their files (the row stays, marked pruned)
@@ -35,23 +39,26 @@ preview or a pending activation or rollback approval names.
 Migration 11 adds the first five tables; migration 12 adds the document
 columns and `content_sources` and `content_holds`; migration 18 adds the two
 board tables; migration 20 adds `revision_guest_lines`; migration 24 adds
-the two notebook tables. Every table references `flats(slug)` (or
-`revisions`) with `ON DELETE CASCADE ON UPDATE CASCADE`, so rename and delete
-carry the whole history and nothing in memory needs moving.
+the two notebook tables; migration 28 adds the two sheet tables. Every table
+references `flats(slug)` (or `revisions`) with
+`ON DELETE CASCADE ON UPDATE CASCADE`, so rename and delete carry the whole
+history and nothing in memory needs moving.
 
 | Table | Holds |
 | --- | --- |
-| `content_state` | One row per Revision-model flat: `type` (`design`, `docs`, `board` or `notebook`), `phase` (`init` or `ready`), `seq` (bumped on every head change), `gen` (flat-wide file generation counter, never reused), `revision_quota` and `pin_quota` (per-flat overrides, NULL = host default), and the document, board and notebook import cursor `import_store`, `import_seq`. |
-| `content_head` | A design's current files: `path`, `hash`, `size`, `gen`. For a board or notebook, the file list of the last imported revision. |
+| `content_state` | One row per Revision-model flat: `type` (`design`, `docs`, `board`, `notebook` or `sheet`), `phase` (`init` or `ready`), `seq` (bumped on every head change), `gen` (flat-wide file generation counter, never reused), `revision_quota` and `pin_quota` (per-flat overrides, NULL = host default), and the document, board, notebook and sheet import cursor `import_store`, `import_seq`. |
+| `content_head` | A design's current files: `path`, `hash`, `size`, `gen`. For a board, notebook or sheet, the file list of the last imported revision. |
 | `content_groups` | A design's open edit groups, one per editor: `label`, `started_at`, `last_at`. |
 | `revisions` | `(flat, number)` with `created_at`, `kind`, `authors` (JSON), `message`, `rollback_of`, `pinned`, `changes` (JSON `{added, changed, removed}` against the previous revision), `files`, `size` and, for documents, `source`. |
 | `revision_files` | The files of a revision. For a document only its Markdown documents; its other files are named by `revisions.source`. |
 | `content_sources` | `(flat, source, path, hash, size)`: the non-document files of each docs bundle the host started, keyed by its content hash. A bundle without such files has one row with an empty path. |
-| `content_holds` | `(flat, op, number)`: the target revision of each document, board or notebook rollback in progress. |
+| `content_holds` | `(flat, op, number)`: the target revision of each document, board, notebook or sheet rollback in progress. |
 | `board_imports` | `(flat, store, outbox_seq, op_id, revision)`: the revision each imported board outbox entry became, so a repeated operation id finds its revision. |
 | `board_rev_stats` | `(flat, number, added, changed, removed)`: the elements a board revision added, changed and removed. |
 | `notebook_imports` | `(flat, store, outbox_seq, op_id, revision)`: the revision each imported notebook outbox entry became. |
 | `notebook_rev_pages` | `(flat, revision, page, change, title_before, title_after)`: the pages a notebook revision added, removed or changed, with their titles before and after. |
+| `sheet_imports` | `(flat, store, outbox_seq, op_id, revision, calc_date)`: the revision each imported sheet outbox entry became and the calculation date it closed with. Every sheet revision has exactly one row. |
+| `sheet_rev_tabs` | `(flat, revision, tab, change, name_before, name_after)`: the tabs a sheet revision added, removed or changed, with their names before and after. |
 | `revision_guest_lines` | `(flat, number, path, ranges)`: for each document of a revision that holds text anonymous guests wrote, the 1-based inclusive line ranges of that text as JSON `[[start, end], ...]`, merged and sorted. Documents without guest text have no row. |
 
 `content_state.type` is the durable type marker of a Revision-model flat. A
@@ -80,8 +87,8 @@ File bytes are content-addressed by SHA-256 under the flat's directory:
 ```text
 flats/<slug>/design/blobs/<hh>/<sha256>      design blobs, mode 0444
 flats/<slug>/design/tmp/                     design staging
-flats/<slug>/revisions/blobs/<hh>/<sha256>   document, board and notebook blobs, mode 0444
-flats/<slug>/revisions/tmp/                  document, board and notebook staging
+flats/<slug>/revisions/blobs/<hh>/<sha256>   document, board, notebook and sheet blobs, mode 0444
+flats/<slug>/revisions/tmp/                  document, board, notebook and sheet staging
 ```
 
 Because they live under the flat directory, rename, delete, backups and the
@@ -177,13 +184,13 @@ one. Retention runs:
 
 - in the transaction of every committed design write, group closing and
   rollback, and after every document import that added revisions; in the
-  transaction of every board or notebook import that added revisions;
+  transaction of every board, notebook or sheet import that added revisions;
 - after an unpin;
 - after a per-flat override changes, for that flat;
-- after `system.revision_quota` changes, for every document, design, board
-  and notebook, each under its flat lock, before the settings call returns (a
-  board or notebook imports its outbox first);
-- at startup: designs right away, boards and notebooks after an import,
+- after `system.revision_quota` changes, for every document, design, board,
+  notebook and sheet, each under its flat lock, before the settings call
+  returns (a board, notebook or sheet imports its outbox first);
+- at startup: designs right away, boards, notebooks and sheets after an import,
   documents after their first import.
 
 Pinning while the pin count has reached the pin quota is refused with
@@ -203,7 +210,7 @@ expands its source. Lists are newest first, at most 100 per page, with `next`.
 
 A document's history read, pin, quota read or quota change first imports its
 outbox (at most every 2 seconds per flat), so it sees recent revisions. A
-board's or notebook's does the same on every call.
+board's, notebook's or sheet's does the same on every call.
 
 ## Documents
 
@@ -302,7 +309,7 @@ worker receipt until its entry is imported, so that answer is definitive.
 ## Blob sweep
 
 Blobs are never deleted inline. A sweep runs every 10 minutes for every
-document, design, board and notebook, and for one flat after a retention pass deleted
+document, design, board, notebook and sheet, and for one flat after a retention pass deleted
 revisions. For each flat it:
 
 1. takes the flat lock, refusing (skipping the flat) while a rename or delete
@@ -323,12 +330,19 @@ revisions. For each flat it:
    for a notebook: likewise imports its outbox and skips the flat when the
    notebook is not running or the import failed, then reads every asset
    hash and every snapshot an unimported entry holds from `notebook.db`;
+   for a sheet: likewise imports its outbox and skips the flat when the
+   sheet is not running or the import failed, then reads the hashes of the
+   newest file list and of every pending entry from `sheet.db`. A sheet
+   that was unloaded after its idle time is swept without loading it: its
+   outbox was empty at the unload, so its newest file list is
+   `content_head`, and entries a reload adds keep their new files as
+   snapshots in `sheet.db` until they are imported;
 3. runs `PRAGMA wal_checkpoint(FULL)` and skips the flat unless the
    checkpoint completed, so the committed metadata that dropped a reference
    is durable before a blob it referenced is deleted;
 4. deletes every blob that is not referenced by `content_head`,
-   `revision_files`, `content_sources`, a board's `board.db` or a notebook's
-   `notebook.db`, not leased,
+   `revision_files`, `content_sources`, a board's `board.db`, a notebook's
+   `notebook.db` or a sheet's `sheet.db`, not leased,
    and older than 10 minutes, so a blob stored for a transaction still in
    flight is never taken. A board upload that reuses an existing blob
    refreshes its modification time, so a sweep that read the references
@@ -596,3 +610,100 @@ as zero usage. Retention, the sweep, quota settings and a config reload
 measure again. While the notebook is over quota every edit is refused, even
 one that shrinks it; a rollback is still applied. A refusal is
 `notebook_capacity` with reason `disk_quota`.
+
+## Sheets
+
+A sheet's current state, its receipts, edit groups and outbox live in
+`flats/<slug>/sheet/sheet.db`, owned by one `sheet.Instance` in the host
+process ([sheet technical design](spec/sheet-technical-design.md)). The host
+never writes that database: it reaches it through the instance's writer.
+
+**Creating a sheet** (`CreateSheet`, under the flat lock) follows the
+notebook's steps: write `content_state` (type `sheet`, phase `init`), save
+and make live a Draft holding only `flats.json` `{"type":"sheet","name":...}`,
+whose instance creates one empty tab named `Sheet1` and the `created` entry,
+import it as revision 1 and set phase `ready`. At startup every sheet row
+still in `init` finishes these steps. `update_sheet` on a missing slug or an
+untyped flat creates the sheet only if the call applies; a refused call
+leaves no flat, shell or database behind.
+
+**Revision files.** A sheet revision holds the manifest `sheet.json` (the
+tabs in order with their names and frozen rows and columns), the axes of each
+tab (`tabs/<tab>/axes.json`: row and column identities in order, and column
+widths) and row files (`tabs/<tab>/rows/<first>-<part>.json`: the cells of
+up to 256 filled rows with their formats, formulas in a stored form that is
+relative to the cell). An edit of one cell changes one row file, a sort
+changes only the axes, and unchanged files reuse their hashes. Calculated
+values, the calculation date, receipts and undo never enter these files.
+
+**Loading.** Core holds each running sheet through a handle that opens the
+instance on demand. `sheet.Open` refuses a `sheet.db` behind the cursor, as
+[for boards](#boards). Core stops a sheet with no connection, no request in
+flight, no open edit group, an empty outbox and no live read for 10 minutes
+under the flat lock, and its workbook leaves memory. The next request opens
+it again. The instance checks and stops in one step (`StopIfIdle`), and core
+asks it only while no request holds the instance, so a read that just
+returned a cursor keeps the sheet loaded and no request meets a stopped
+instance. An unloaded sheet still counts as running.
+
+**Importing** (`importSheetLocked`, under the flat lock). The cursor is
+`content_state.import_store` (the sheet.db store id) and `import_seq`:
+
+1. When the oldest outbox entry is at or before the cursor, a stop came
+   between the `flats.db` commit and the acknowledgement: acknowledge through
+   the cursor again.
+2. Read entries after the cursor. Check that each file path has one of the
+   three shapes above, that the manifest is present, that the entry carries a
+   calculation date and that every new hash is named by a file. Store new
+   snapshots as blobs, whose hash is checked as they are stored, and check
+   that the blob of every file exists with its size.
+3. One transaction inserts each entry as the next revision, its
+   `sheet_imports` row with the calculation date, and its tab summary in
+   `sheet_rev_tabs` (tabs that only one of the two revisions has, and tabs
+   whose manifest entry, files or place in the tab order differ, with names
+   before and after), deletes the hold of a rollback entry, sets
+   `content_head`, advances the cursor and runs retention.
+4. Acknowledge: only then does the instance release the entries' snapshots
+   and update its quota measurement. When step 2 stored blobs and a later
+   step failed, the instance measures the directory again at once: the
+   retry finds those blobs in the store and reports no new bytes.
+5. Settle holds: drop the hold of a rollback that left no outbox entry and
+   no longer calculates.
+
+A crash between any two steps replays without a second revision or missing
+content. The host imports when an agent write or rollback returns, before
+history reads, pins, quota changes, retention and the sweep, and every 5
+seconds for a sheet whose outbox reported new entries. A failed background
+import retries with a growing delay, from 5 seconds up to 5 minutes, and a
+successful import clears it. `list_revisions` and the History panel report
+the changed tabs (`tabs`).
+
+**Reading a revision** leases its files and passes them to the instance with
+the calculation date of its `sheet_imports` row. The instance calculates the
+revision with that date, so a retained revision always shows the same
+values, also after a restart.
+
+**Rollback to R** imports, holds R in `content_holds` under an operation id
+that names R, reads R's files from their blobs and sets the whole sheet to
+them in one writer transaction, which records a forced `rollback` entry with
+that operation id. The import reads the target revision from the id. The
+rollback adds no blob and is never refused for disk quota or sheet limits.
+It holds the flat lock for the import and the hold, then lets it go while
+the sheet calculates the target, and takes it again for the import after
+it. Settlement leaves the hold of a rollback in that state alone. The result
+is the new revision, also when another import recorded it meanwhile (it is
+found by its operation id in `sheet_imports`), or a `warning` without a
+revision when it is recorded but not imported yet.
+
+**Disk quota.** The instance checks every edit, people's and agents', inside
+its write transaction against the per-flat disk quota. The usage counts
+`sheet.db`, its WAL, the rest of the flat directory (revision blobs included)
+and reservations for revision files not imported yet. Agent writes take a
+fresh measurement under the flat lock; people's edits use one at most 60
+seconds old, and a missing measurement refuses with `unavailable`, never as
+zero usage. Retention, the sweep, quota settings and a config reload measure
+loaded sheets again. While the sheet is over quota every edit is refused,
+even one that shrinks it; a rollback is still applied. A refusal is
+`sheet_capacity` with reason `disk_quota`. The scratch files of large undo
+payloads live under `cache/sheet-undo/` in the data directory, outside the
+flat's directory, and count toward no quota.

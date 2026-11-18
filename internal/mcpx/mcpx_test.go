@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -34,13 +35,17 @@ type env struct {
 	pub                 *local.Public
 	local               *mcp.ClientSession // connects from loopback
 	remote              *mcp.ClientSession // looks like a tailnet peer
+	close               func()
 }
 
-func newEnv(t *testing.T) *env        { return newEnvWithRuntime(t, nil) }
-func newEnvRuntime(t *testing.T) *env { return newEnvWithRuntime(t, documentRuntime{}) }
-func newEnvWithRuntime(t *testing.T, rt core.Runtime) *env {
+func newEnv(t *testing.T) *env                             { return newEnvWithRuntime(t, nil) }
+func newEnvRuntime(t *testing.T) *env                      { return newEnvWithRuntime(t, documentRuntime{}) }
+func newEnvWithRuntime(t *testing.T, rt core.Runtime) *env { return newEnvIn(t, t.TempDir(), rt) }
+
+// newEnvIn starts a host on the data directory dir. close stops it before
+// the test ends, so that another host can start on the same directory.
+func newEnvIn(t *testing.T, dir string, rt core.Runtime) *env {
 	t.Helper()
-	dir := t.TempDir()
 	st, err := store.Open(filepath.Join(dir, "flats.db"))
 	if err != nil {
 		t.Fatal(err)
@@ -68,17 +73,21 @@ func newEnvWithRuntime(t *testing.T, rt core.Runtime) *env {
 		r.RemoteAddr = "100.64.0.7:41641" // a tailnet peer
 		h.ServeHTTP(w, r)
 	}))
-	t.Cleanup(func() {
-		management.Close()
-		localSrv.Close()
-		remoteSrv.Close()
-		svc.Close()
-		priv.Close()
-		pubNet.Close()
-		st.Close()
-	})
+	var once sync.Once
+	stop := func() {
+		once.Do(func() {
+			management.Close()
+			localSrv.Close()
+			remoteSrv.Close()
+			svc.Close()
+			priv.Close()
+			pubNet.Close()
+			st.Close()
+		})
+	}
+	t.Cleanup(stop)
 	return &env{management: management, localURL: localSrv.URL + "/mcp", remoteURL: remoteSrv.URL, svc: svc, st: st, priv: priv, pub: pub,
-		local: connect(t, localSrv.URL+"/mcp"), remote: connect(t, remoteSrv.URL)}
+		local: connect(t, localSrv.URL+"/mcp"), remote: connect(t, remoteSrv.URL), close: stop}
 }
 
 func connect(t *testing.T, endpoint string) *mcp.ClientSession {
@@ -192,8 +201,8 @@ func TestListTools(t *testing.T) {
 			t.Errorf("%s has no output schema", tool.Name)
 		}
 	}
-	want := []string{"check_client", "create_flat", "delete_env", "delete_flat", "delete_version", "deploy", "get_approval", "get_board", "get_board_share", "get_client_skill", "get_content_types", "get_design", "get_document", "get_draft", "get_flat", "get_logs", "get_network", "get_notebook", "get_revision", "get_runtime_reference", "guide", "list_env", "list_flats",
-		"list_revisions", "list_secrets", "list_versions", "open_preview", "pin_revision", "create_version", "rollback", "rollback_revision", "save_design", "save_document", "save_draft", "save_page", "save_draft_from_dir", "set_env", "set_visibility", "update_board", "update_document", "update_notebook", "import_board"}
+	want := []string{"check_client", "create_flat", "delete_env", "delete_flat", "delete_version", "deploy", "get_approval", "get_board", "get_board_share", "get_client_skill", "get_content_types", "get_design", "get_document", "get_draft", "get_flat", "get_logs", "get_network", "get_notebook", "get_revision", "get_runtime_reference", "get_sheet", "guide", "list_env", "list_flats",
+		"list_revisions", "list_secrets", "list_versions", "open_preview", "pin_revision", "create_version", "rollback", "rollback_revision", "save_design", "save_document", "save_draft", "save_page", "save_draft_from_dir", "set_env", "set_visibility", "update_board", "update_document", "update_notebook", "update_sheet", "import_board"}
 	slices.Sort(want)
 	slices.Sort(names)
 	if !slices.Equal(names, want) {

@@ -43,6 +43,12 @@ func TestClassify(t *testing.T) {
 		{"flats/a/board/board.db", classDatabase, KindBoard},
 		{"flats/a/board/board.db-shm", classExcluded, ""},
 		{"flats/a/notebook/notebook.db", classDatabase, KindNotebook},
+		{"flats/a/sheet/sheet.db", classDatabase, KindSheet},
+		{"flats/a/sheet/sheet.db-wal", classExcluded, ""},
+		{"flats/a/sheet/sheet.db-shm", classExcluded, ""},
+		{"flats/a/sheet/sheet.db-journal", classExcluded, ""},
+		{"flats/a/sheet/other", classHost, ""},
+		{"cache/sheet-undo/owner-00/flats-sheet-undo-1/payload", classExcluded, ""},
 		{"flats/a/previews/h.example/db.sqlite", classDatabase, KindPreview},
 		{"flats/a/previews/h.example/files/p", classGuest, ""},
 		{"flats/a/restore-journal.json", classHost, ""},
@@ -67,10 +73,13 @@ func populated(t *testing.T) *fixture {
 	f.board("b", "sb", 5, 5)
 	f.notebook("n", "sn", 3, 3)
 	f.docs("d", "sd", 2, 2)
+	f.sheet("h", "sh", 4, 4)
 	f.server("s")
 	h := f.blob("b", "revisions", "asset bytes")
 	f.head("b", h)
 	f.sql("flats/b/board/board.db", `INSERT INTO assets(hash) VALUES('`+h+`')`)
+	// Only sheet.db names this file: the host imported it and flats.db has dropped its revision since.
+	f.sql("flats/h/sheet/sheet.db", `UPDATE meta SET files = '`+sheetFiles(f.blob("h", "revisions", "sheet rows"))+`'`)
 	f.write("flats/b/versions/1/index.html", "<h1>hello</h1>")
 	f.write("flats/b/snapshots/before-v1-1.sqlite", "legacy database bytes")
 	f.write("flats/s/snapshots/before-v1-2.sqlite", "db")
@@ -121,7 +130,7 @@ func TestRunCopiesEveryClassAndVerifies(t *testing.T) {
 		"data/flats.db", "data/secret.key", "data/secret.key.recovery", "data/secret.key.recovery.id", "data/config.json",
 		"data/config-history/c0.json", "data/tsnet/node.json", "data/portal/x.json",
 		"data/flats/b/board/board.db", "data/flats/n/notebook/notebook.db", "data/flats/d/data/db.sqlite",
-		"data/flats/s/data/db.sqlite", "data/flats/s/data/files/notes.txt",
+		"data/flats/h/sheet/sheet.db", "data/flats/s/data/db.sqlite", "data/flats/s/data/files/notes.txt",
 		"data/flats/s/previews/h1.example/db.sqlite", "data/flats/s/previews/h1.example/files/pf.txt",
 		"data/flats/b/versions/1/index.html", "data/flats/b/snapshots/before-v1-1.sqlite",
 		"data/flats/s/snapshots/before-v1-2.sqlite", "data/flats/s/snapshots/before-v1-2.sqlite.data/db.sqlite",
@@ -152,6 +161,7 @@ func TestRunCopiesEveryClassAndVerifies(t *testing.T) {
 	}
 	for p, k := range map[string]string{"data/flats.db": KindFlats, "data/flats/b/board/board.db": KindBoard,
 		"data/flats/n/notebook/notebook.db": KindNotebook, "data/flats/d/data/db.sqlite": KindData,
+		"data/flats/h/sheet/sheet.db":                KindSheet,
 		"data/flats/s/previews/h1.example/db.sqlite": KindPreview} {
 		if kinds[p] != k {
 			t.Errorf("database %s has kind %q, want %q", p, kinds[p], k)
@@ -344,24 +354,28 @@ type outboxCase struct {
 	rel     string
 	table   string
 	storeID string
+	entry   string // the statement that adds an entry to the outbox
 }
 
+const createdEntry = `(created_at) VALUES(0)`
+
 var outboxCases = []outboxCase{
-	{typeBoard, func(f *fixture, s string, l, c int64) { f.board(s, "st", l, c) }, "flats/x/board/board.db", "outbox", "st"},
-	{typeNotebook, func(f *fixture, s string, l, c int64) { f.notebook(s, "st", l, c) }, "flats/x/notebook/notebook.db", "outbox", "st"},
-	{typeDocs, func(f *fixture, s string, l, c int64) { f.docs(s, "st", l, c) }, "flats/x/data/db.sqlite", "flats_docs_outbox", "st"},
+	{typeBoard, func(f *fixture, s string, l, c int64) { f.board(s, "st", l, c) }, "flats/x/board/board.db", "outbox", "st", `INSERT INTO outbox` + createdEntry},
+	{typeNotebook, func(f *fixture, s string, l, c int64) { f.notebook(s, "st", l, c) }, "flats/x/notebook/notebook.db", "outbox", "st", `INSERT INTO outbox` + createdEntry},
+	{typeDocs, func(f *fixture, s string, l, c int64) { f.docs(s, "st", l, c) }, "flats/x/data/db.sqlite", "flats_docs_outbox", "st", `INSERT INTO flats_docs_outbox` + createdEntry},
+	{typeSheet, func(f *fixture, s string, l, c int64) { f.sheet(s, "st", l, c) }, "flats/x/sheet/sheet.db", "outbox", "st", sheetEntry("'[]'")},
 }
 
 // bump makes the live outbox database reach one more entry, acknowledged, and moves the cursor
 // of flats.db to it: an entry that was created, imported and acknowledged.
 func (c outboxCase) bump(f *fixture, last int64) {
-	f.sql(c.rel, `INSERT INTO `+c.table+`(created_at) VALUES(0)`, `DELETE FROM `+c.table)
+	f.sql(c.rel, c.entry, `DELETE FROM `+c.table)
 	f.setCursor("x", last)
 }
 
 // pend adds an entry to the live outbox database that flats.db has not imported.
 func (c outboxCase) pend(f *fixture) {
-	f.sql(c.rel, `INSERT INTO `+c.table+`(created_at) VALUES(0)`)
+	f.sql(c.rel, c.entry)
 }
 
 // The snapshots of an attempt run together in production. A test that must change the host between
@@ -537,15 +551,20 @@ func TestBarrierOpensWhenAMemberLeavesEarly(t *testing.T) {
 // One damaged database stops the whole group of snapshots and leaves nothing behind.
 func TestRunFailsOnADamagedOutboxDatabase(t *testing.T) {
 	t.Parallel()
-	f := populated(t)
-	if err := os.WriteFile(filepath.Join(f.data, "flats", "b", "board", nameBoardDB), []byte(strings.Repeat("not a database ", 100)), 0o600); err != nil {
-		t.Fatal(err)
+	for _, rel := range []string{"flats/b/board/" + nameBoardDB, "flats/h/sheet/" + nameSheetDB} {
+		t.Run(rel, func(t *testing.T) {
+			t.Parallel()
+			f := populated(t)
+			if err := os.WriteFile(filepath.Join(f.data, filepath.FromSlash(rel)), []byte(strings.Repeat("not a database ", 100)), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			_, err := f.run(f.options("c1"))
+			if err == nil || !strings.Contains(err.Error(), "snapshot "+rel) {
+				t.Fatalf("err = %v, want a failure that names the database", err)
+			}
+			f.nothingLeft()
+		})
 	}
-	_, err := f.run(f.options("c1"))
-	if err == nil || !strings.Contains(err.Error(), "snapshot flats/b/board/board.db") {
-		t.Fatalf("err = %v, want a failure that names the database", err)
-	}
-	f.nothingLeft()
 }
 
 // A host with more outbox databases than one group holds is still copied coherently.
@@ -601,21 +620,8 @@ func TestSurveyFailsTheBackupOnAChangeOfLayout(t *testing.T) {
 		"a lifecycle journal appears": func(f *fixture) {
 			f.write("flats/.lifecycle/rename.a.b.json", "{}")
 		},
-		"the data directory is replaced": func(f *fixture) {
-			d := filepath.Join(f.data, "flats", "s", "data")
-			if err := os.Rename(d, d+".old"); err != nil {
-				f.t.Fatal(err)
-			}
-			if err := os.Mkdir(d, 0o700); err != nil {
-				f.t.Fatal(err)
-			}
-			if err := os.Rename(filepath.Join(d+".old", nameDataDB), filepath.Join(d, nameDataDB)); err != nil {
-				f.t.Fatal(err)
-			}
-			if err := os.RemoveAll(d + ".old"); err != nil {
-				f.t.Fatal(err)
-			}
-		},
+		"the data directory is replaced":  func(f *fixture) { f.replaceDir("flats/s/data", nameDataDB) },
+		"the sheet directory is replaced": func(f *fixture) { f.replaceDir("flats/h/sheet", nameSheetDB) },
 	} {
 		t.Run(name, func(t *testing.T) {
 			t.Parallel()
@@ -634,6 +640,25 @@ func TestSurveyFailsTheBackupOnAChangeOfLayout(t *testing.T) {
 			}
 			f.nothingLeft()
 		})
+	}
+}
+
+// replaceDir puts a new directory in the place of rel and moves the database into it, so that the path
+// and its content stay and the identity of the directory changes.
+func (f *fixture) replaceDir(rel, db string) {
+	f.t.Helper()
+	d := filepath.Join(f.data, filepath.FromSlash(rel))
+	if err := os.Rename(d, d+".old"); err != nil {
+		f.t.Fatal(err)
+	}
+	if err := os.Mkdir(d, 0o700); err != nil {
+		f.t.Fatal(err)
+	}
+	if err := os.Rename(filepath.Join(d+".old", db), filepath.Join(d, db)); err != nil {
+		f.t.Fatal(err)
+	}
+	if err := os.RemoveAll(d + ".old"); err != nil {
+		f.t.Fatal(err)
 	}
 }
 

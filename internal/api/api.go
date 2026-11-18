@@ -190,6 +190,8 @@ func (s *Server) Handler() http.Handler {
 			h("POST /flats/{slug}/board/import", s.importBoard)
 			h("GET /flats/{slug}/notebook", s.getNotebook)
 			h("POST /flats/{slug}/notebook", s.updateNotebook)
+			h("GET /flats/{slug}/sheet", s.getSheet)
+			h("POST /flats/{slug}/sheet", s.updateSheet)
 		}
 	}
 	return mux
@@ -246,6 +248,8 @@ func errorBody(err error) ErrorBody {
 		body.Category = notebookError.Code
 	} else if errors.Is(err, core.ErrNotNotebook) {
 		body.Category = "not_notebook"
+	} else if category := sheetCategory(err); category != "" {
+		body.Category = category
 	}
 
 	if v, ok := bundle.IsValidation(err); ok {
@@ -282,6 +286,9 @@ func writeErr(w http.ResponseWriter, code int, err error) {
 // fallback for messages of errors that are not typed yet.
 func statusOf(err error) int {
 	if code := notebookStatus(err); code != 0 {
+		return code
+	}
+	if code := sheetStatus(err); code != 0 {
 		return code
 	}
 	var de *core.DeployError

@@ -92,3 +92,69 @@ func TestRefusalLeavesTheDataDirectoryOfAStoppedHostAsItWas(t *testing.T) {
 		t.Errorf("the refusal changed the data directory: %v -> %v", before, after)
 	}
 }
+
+// A running sheet keeps its newest commits in sheet.db-wal, and a new sheet keeps nearly all of its content
+// there. The copy takes sheet.db as a snapshot that holds those commits, and none of its -wal and -shm files
+// (rule 3, rule 4).
+func TestRunTakesTheCommitsOfASheetFromItsWalFile(t *testing.T) {
+	t.Parallel()
+	f := newFixture(t)
+	f.sheet("h", "sh", 1, 1)
+	const rel = "flats/h/sheet/sheet.db"
+	live := filepath.Join(f.data, filepath.FromSlash(rel))
+	// The connection stays open for the whole backup, as the one of a running host does, and never checkpoints.
+	db, err := sql.Open("sqlite", sqliteuri.File(live)+"?_pragma=journal_mode(WAL)&_pragma=wal_autocheckpoint(0)")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	db.SetMaxOpenConns(1)
+	pending := hashOf("rows of the pending entry")
+	for _, s := range []string{
+		sheetEntry(`'` + sheetFiles(pending) + `'`),
+		`INSERT INTO snapshots(hash, data, refs) VALUES('` + pending + `', x'726f7773', 1)`,
+	} {
+		if _, err := db.Exec(s); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if fi, err := os.Stat(live + "-wal"); err != nil || fi.Size() == 0 {
+		t.Fatalf("the sheet has no commits in a -wal file: %v, %v", fi, err)
+	}
+	_, out := f.mustRun("c1")
+	m := readCopyManifest(t, out)
+	kind := ""
+	for _, d := range m.Databases {
+		if d.Path == "data/"+rel {
+			kind = d.Kind
+		}
+	}
+	if kind != KindSheet {
+		t.Errorf("the manifest lists sheet.db with the kind %q, want %q", kind, KindSheet)
+	}
+	for _, suffix := range []string{"-wal", "-shm"} {
+		if m.has("data/" + rel + suffix) {
+			t.Errorf("the manifest lists sheet.db%s as a file of the copy", suffix)
+		}
+		mustNotExist(t, filepath.Join(out, "data", filepath.FromSlash(rel)+suffix))
+		if !slices.Contains(m.Excluded, "data/"+rel+suffix) {
+			t.Errorf("the manifest does not list sheet.db%s as excluded: %v", suffix, m.Excluded)
+		}
+	}
+	st, err := readOutbox(context.Background(), filepath.Join(out, "data", filepath.FromSlash(rel)), typeSheet)
+	if err != nil || !st.present || st.store != "sh" || st.last != 2 || st.acked != 1 {
+		t.Errorf("the outbox of the copy = %+v, %v; want the store sh with entry 2 pending", st, err)
+	}
+	copyDB, err := openCopy(filepath.Join(out, "data", filepath.FromSlash(rel)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer copyDB.Close()
+	var data []byte
+	if err := copyDB.QueryRowContext(context.Background(), `SELECT data FROM snapshots WHERE hash = ?`, pending).Scan(&data); err != nil || string(data) != "rows" {
+		t.Errorf("the copy holds %q, %v; want the bytes that wait for their import", data, err)
+	}
+	if v, err := Verify(context.Background(), out); err != nil || len(v.Failures) > 0 {
+		t.Errorf("Verify = %+v, %v", v, err)
+	}
+}

@@ -10,8 +10,8 @@ The question "who decides this value?" picks the place:
 | Decided by | Stored in | Examples |
 | --- | --- | --- |
 | The operator | `config.json` | addresses, system policies, permitted networks, console domains, provider settings |
-| Flats while running | `flats.db` | flats, drafts, versions, deployments, revision metadata of documents, designs, boards and notebooks, approvals, per-flat provider permission, events, the [audit log](#audit-log) of secret, key, visibility and grant changes, analytics (page views, and per-day usage in `usagedays`), ordinary app environment variables, encrypted secrets, encrypted operator keys, console node records, [Autopilot settings](#autopilot-settings), [public instance settings](#public-instance-settings) |
-| The flat | `flats/<slug>/` | uploaded code, revision contents, the flat's SQLite database and FILES, a board's or notebook's current content |
+| Flats while running | `flats.db` | flats, drafts, versions, deployments, revision metadata of documents, designs, boards, notebooks and sheets, approvals, per-flat provider permission, events, the [audit log](#audit-log) of secret, key, visibility and grant changes, analytics (page views, and per-day usage in `usagedays`), ordinary app environment variables, encrypted secrets, encrypted operator keys, console node records, [Autopilot settings](#autopilot-settings), [public instance settings](#public-instance-settings) |
+| The flat | `flats/<slug>/` | uploaded code, revision contents, the flat's SQLite database and FILES, a board's, notebook's or sheet's current content |
 | Nobody may read it in plain text | separate files | `secret.key`, or the file that [`host.secret_key_path`](#keeping-the-key-outside-the-data-directory) names |
 | A client machine's user | `flats-client/connection.json` | which Flats host the CLI and `flats mcp` use, saved by `flats connect` |
 
@@ -55,12 +55,14 @@ the data directory is.
                               live and before a data restore (not for documents)
     previews/                 preview data, paired with preview rows in flats.db
                               (each preview's db.sqlite + -wal, -shm)
-    revisions/                revision contents of a document, board or notebook
+    revisions/                revision contents of a document, board, notebook or sheet
                               (blobs/, by SHA-256)
     design/                   a design's revision contents (blobs/, by SHA-256)
     board/board.db            a board's current content and the revisions not yet
                               imported (+ -wal, -shm)
     notebook/notebook.db      a notebook's current content, receipts, undo and
+                              unimported revisions (+ -wal, -shm)
+    sheet/sheet.db            a sheet's current content, receipts and
                               unimported revisions (+ -wal, -shm)
     restore-journal.json      present only while a data restore is unfinished
     health-check/ restore-trial/  temporary copies
@@ -77,12 +79,85 @@ the data directory is.
   cloudflare-quick/<slug>.json  Cloudflare quick tunnel credentials (mode 0600)
   network-retirements/        unfinished tailnet node cleanup
   cache/ run/                 compiled code cache, worker sockets
+  cache/notebook-spills/ cache/sheet-undo/
+                              scratch files of running notebooks and sheets,
+                              one owner-<id>/ per running host; removed when
+                              the host stops and, after a crash, at the next start
   logs/ flats.lock            service logs, the host lock
 ```
 
 Revision contents are content-addressed: a revision adds only the files that
 changed, and blobs no revision refers to any more are removed after
 retention deletes revisions.
+
+A running sheet keeps under `cache/sheet-undo/owner-<id>/` what undo needs
+and memory does not hold: the saved contents of large actions, a log of
+recent row, column and tab edits, and the stamps of cleared cells that
+someone can still undo. These bytes are in no flat's disk quota and in no
+backup. Each open sheet has its own bounds: 32 MiB for the cleared cells'
+stamps, and twice that while the store writes; for the rest see
+[the technical design](spec/sheet-technical-design.md#14-undo-and-redo). A
+sheet's files go when it has been unused for 10 minutes and when the host
+stops.
+
+When the disk of the data directory is full, an edit that needs this storage
+is refused as temporarily unavailable, and the browser shows a busy notice
+and sends the edit again. The flat's quota does not show the cause. The host
+logs `sheet undo scratch storage failed` with the flat's slug and the storage
+error, at most once in 10 seconds for a sheet. Free space on that disk, or
+move the data directory to a larger one; the edit then applies at its next
+attempt, and no content is lost. Removing files under `cache/sheet-undo/`
+while the host runs loses undo history only. The undo steps that needed them
+are skipped with a notice, and the host makes its directory again when a
+sheet next needs it.
+
+The same refusal follows when the host could not make its directory under
+`cache/sheet-undo/` at all, for example because `cache/` was not writable
+when it started. The host then logs `sheet scratch storage:` with the error
+at its start and each time a sheet opens, and sheets log the line above.
+Repair the directory: its permissions, the space of its disk, or a file that
+stands in its place. Nothing has to be restarted and no sheet has to be
+opened again. The next attempt of a refused edit makes the directory, and
+the edit applies once. What a host that was killed left under
+`cache/sheet-undo/` is removed at a start, and after such a repair when a
+sheet next opens.
+
+The host logs `sheet undo payload lost` with the flat's slug and the cause
+when it had to give up a person's undo step for a reason outside that
+person's own history. The cause is an error of this storage, or a bound of
+the sheet that everyone who edits it shares or that other people's edits
+fill: the memory for undo, the log of row, column and tab edits, or the
+edits one step waits for. The person gets a notice when they undo that
+step, the step is skipped, and no content is lost. For a storage error, do
+as above. A bound needs no action: it means that several people keep large
+undo history on one sheet while its rows, columns or tabs are edited
+heavily, or that others write into very many new rows while someone keeps
+an old step. Steps a person loses because their own undo history is full are
+not logged. This line and the storage line share one limit, at most one of
+the two in 10 seconds for a sheet, and the attribute `suppressed` counts
+the lines left out since the last one.
+
+Reads of sheets share one fixed allowance of 1 GiB of host memory. It
+counts the copies of a tab that reads take so that they come from one
+state while people edit: agent reads (`get_sheet` and `get_revision`)
+with the pages being built from them, CSV downloads, History tabs and the
+snapshot a browser receives when it opens a tab, with the snapshot frames
+kept for reuse. The allowance is the same for the whole host, however
+many sheets are open, and it is not a setting. A paged agent read keeps
+its copy until 60 seconds after its last page, and a sheet keeps at most
+four of them, so a copy of a large tab can stay counted for that long
+after its reader stopped.
+
+When the allowance is used up, an agent read and a CSV download are
+refused as temporarily unavailable (`unavailable` with the reason
+`capture_budget` and `retry: true`), and the same request works once
+other reads have given memory back. A browser that opens a tab shows that
+the sheet is calculating until its snapshot fits. Nothing is lost, and no
+action is needed: it means that several large reads ran at once. A read
+of the largest tab the sheet limits allow fits in the allowance on its
+own. The allowance does not cover the sheets themselves: their content,
+calculation and undo memory, like the rest of the host's memory, are
+outside it, so the host can use more than 1 GiB in total.
 
 Operator keys (the Tailscale auth key, the NetBird setup key, a zrok token
 waiting to be used, and the URL and signing secret of the event webhook) are kept in `flats.db`, encrypted with `secret.key`; see
@@ -201,8 +276,8 @@ directory by hand ([Copying by hand](#copying-by-hand)).
 
 To check a copy, run `flats backup --verify PATH`. It needs no host and no
 configuration, and it writes nothing. It compares every file with the manifest,
-checks each database, checks that the outbox databases of documents, boards and
-notebooks fit `flats.db`, checks that every blob that a flat needs is in the copy,
+checks each database, checks that the outbox databases of documents, boards,
+notebooks and sheets fit `flats.db`, checks that every blob that a flat needs is in the copy,
 and checks that `secret.key` opens every sealed value. For a copy with an
 external key it has no key to use: it says in a note that the key is outside the
 copy and that it did not check the sealed values. It prints `ok` or each
@@ -239,7 +314,8 @@ While the host runs, these are live SQLite databases, with recent commits in a
 - `flats/<slug>/data/db.sqlite`, a flat's own data;
 - `flats/<slug>/previews/<host>/db.sqlite`, while that preview is open;
 - `flats/<slug>/board/board.db`, a board;
-- `flats/<slug>/notebook/notebook.db`, a notebook.
+- `flats/<slug>/notebook/notebook.db`, a notebook;
+- `flats/<slug>/sheet/sheet.db`, a sheet.
 
 Never take a plain copy of a live database: it can lose recent commits or come
 out corrupt. A host that crashed or was killed also leaves commits in the
@@ -248,12 +324,12 @@ out corrupt. A host that crashed or was killed also leaves commits in the
 SQLite's backup API (`.backup` in the `sqlite3` shell) copies one live database,
 not the host. The databases and revision contents depend on each other and must
 come from the same moment, and a write between two copies can break that. For
-boards and notebooks:
+boards, notebooks and sheets:
 
-- With a board or notebook database that lacks revisions `flats.db` already
+- With a board, notebook or sheet database that lacks revisions `flats.db` already
   recorded, that flat does not start, and its log says why. It starts again once
   both come from one moment.
-- With `flats.db` older than a board or notebook database, the newest revisions
+- With `flats.db` older than a board, notebook or sheet database, the newest revisions
   are gone and later revisions reuse their numbers.
 - With `revisions/` older than the databases, the host stops importing. Writes
   still report success but no new revision appears, and a restart does not
@@ -369,9 +445,9 @@ written; `flats config unset KEY` removes it.
 | `tailscale.console_hosts` | `[]` (console on loopback only) | immediately from the console; a SIGHUP reload or restart from the file |
 | `system.upload_max_bytes` | `20971520` (20 MiB) | immediately |
 | `system.version_quota` | `20` per flat, `0` = unlimited | immediately; existing versions are kept |
-| `system.revision_quota` | `100` unpinned revisions per document, design, board or notebook, `0` = keep all | immediately; lowering it deletes the oldest unpinned revisions at once |
-| `system.pin_quota` | `20` pinned revisions per document, design, board or notebook, `0` = unlimited | immediately; existing pins are kept and new pins are refused while full |
-| `system.disk_quota_bytes` | `32212254720` (30 GiB) per flat, `0` = off | immediately; running boards and notebooks measure their flat again |
+| `system.revision_quota` | `100` unpinned revisions per document, design, board, notebook or sheet, `0` = keep all | immediately; lowering it deletes the oldest unpinned revisions at once |
+| `system.pin_quota` | `20` pinned revisions per document, design, board, notebook or sheet, `0` = unlimited | immediately; existing pins are kept and new pins are refused while full |
+| `system.disk_quota_bytes` | `32212254720` (30 GiB) per flat, `0` = off | immediately; running boards, notebooks and sheets measure their flat again |
 | `system.preview_ttl_seconds` | `86400` | next sweep |
 | `system.rate_limit_rps` | `50` per flat | immediately |
 | `system.redirect_days` | `7` | new renames |
@@ -683,8 +759,8 @@ authentication and do not change the endpoint path or port.
 
 `per_flat: false` omits every per-flat Prometheus series, including request,
 worker, preview/check CPU and storage series. Host process figures, aggregate
-flat and network counts, management requests and host-wide board and
-notebook metrics remain. By default, or with explicit `per_flat: true`,
+flat and network counts, management requests and host-wide board,
+notebook and sheet metrics remain. By default, or with explicit `per_flat: true`,
 metrics export the existing series with flat slugs, including Private and unpublished flats.
 Only allow trusted scrapers to reach the endpoint. Analytics, its stats API
 and usage collection continue with either setting, even when Prometheus
@@ -853,6 +929,7 @@ These versions are independent:
 | `user_version` | `flats.db` | any table, column or data-meaning change | automatic at start, after a backup |
 | a flat's database | `flats/<slug>/data/` | the flat decides | Flats never touches it |
 | a notebook's `user_version` | `flats/<slug>/notebook/notebook.db` | the notebook schema changes | by the notebook when it opens; a newer version is refused without writes |
+| a sheet's `user_version` | `flats/<slug>/sheet/sheet.db` | the sheet schema changes | by the sheet when it opens; a newer version is refused without writes |
 
 ### config.json schema rules
 
