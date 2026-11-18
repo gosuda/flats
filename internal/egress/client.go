@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"io"
 	"net"
@@ -58,7 +59,11 @@ type Response struct {
 }
 
 type Client struct {
-	origins  map[string]struct{}
+	origins map[string]struct{}
+	inject  map[string][]Header // injected secrets by origin
+	// roots, lookup and dial are seams that only the tests of this package set: New leaves roots nil (the system
+	// roots) and uses the system resolver and dialer.
+	roots    *x509.CertPool
 	lookup   func(context.Context, string, string) ([]netip.Addr, error)
 	dial     func(context.Context, string, string) (net.Conn, error)
 	slots    chan struct{}
@@ -85,13 +90,19 @@ func NormalizeOrigins(origins []string) ([]string, error) {
 	return slices.Compact(result), nil
 }
 
-func New(origins []string) (*Client, error) {
+// New returns a client for the permitted origins. headers are the injected secrets of the flat: the client adds each
+// to the requests to its origin, and refuses a request whose guest headers hold one of them.
+func New(origins []string, headers ...Header) (*Client, error) {
 	normalized, err := NormalizeOrigins(origins)
 	if err != nil {
 		return nil, err
 	}
+	inject, err := injectedHeaders(headers)
+	if err != nil {
+		return nil, err
+	}
 	lifetime, cancel := context.WithCancel(context.Background())
-	c := &Client{origins: make(map[string]struct{}, len(normalized)), lookup: net.DefaultResolver.LookupNetIP,
+	c := &Client{origins: make(map[string]struct{}, len(normalized)), inject: inject, lookup: net.DefaultResolver.LookupNetIP,
 		dial: (&net.Dialer{Timeout: Timeout}).DialContext, slots: make(chan struct{}, 5),
 		limiter: rate.NewLimiter(20, 20), lifetime: lifetime, close: cancel}
 	for _, origin := range normalized {
@@ -245,7 +256,8 @@ func (c *Client) Fetch(parent context.Context, input Request) (Response, error) 
 	if len(input.Headers) > MaxHeaderFields {
 		return empty, ErrLimit
 	}
-	headers := make(http.Header, len(input.Headers))
+	bound := c.inject[origin]
+	headers := make(http.Header, len(input.Headers)+len(bound))
 	size := 0
 	for name, values := range input.Headers {
 		if len(name) > MaxHeaders {
@@ -261,6 +273,11 @@ func (c *Client) Fetch(parent context.Context, input Request) (Response, error) 
 			return empty, ErrInvalid
 		}
 		canonical := http.CanonicalHeaderKey(name)
+		for _, h := range bound {
+			if h.Name == canonical {
+				return empty, &HostHeaderError{Name: h.Name}
+			}
+		}
 		if len(values) > MaxHeaderFields-len(headers[canonical]) {
 			return empty, ErrLimit
 		}
@@ -273,6 +290,10 @@ func (c *Client) Fetch(parent context.Context, input Request) (Response, error) 
 			}
 			headers.Add(name, value)
 		}
+	}
+	// The injected headers count toward no guest limit (rule 16).
+	for _, h := range bound {
+		headers[h.Name] = []string{h.Value}
 	}
 	if !c.limiter.Allow() {
 		return empty, ErrLimit
@@ -327,7 +348,7 @@ func (c *Client) Fetch(parent context.Context, input Request) (Response, error) 
 	tr := &http.Transport{
 		Proxy: nil, DisableKeepAlives: true, DisableCompression: true,
 		MaxResponseHeaderBytes: MaxHeaders, ResponseHeaderTimeout: Timeout, TLSHandshakeTimeout: Timeout,
-		TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, ServerName: hostname},
+		TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, ServerName: hostname, RootCAs: c.roots},
 		TLSNextProto:    make(map[string]func(string, *tls.Conn) http.RoundTripper),
 		DialContext: func(ctx context.Context, network, _ string) (net.Conn, error) {
 			for _, ip := range addresses {
