@@ -19,11 +19,19 @@ func TestSecretSetInjected(t *testing.T) {
 			t.Fatalf("%v: exit %d %s", args, r.code, r.stderr)
 		}
 	}
+	// An empty piped value: the example keeps the flags, so it does not make a readable secret (I7 of the review).
+	if r := run(t, srv.URL, "", "secret", "set", "blog", "API_TOKEN", "--origin", "https://api.example.com", "--header", "Authorization"); r.code != ExitError ||
+		!strings.Contains(r.stderr, "| flats secret set blog API_TOKEN --origin https://api.example.com --header Authorization`") {
+		t.Fatalf("empty value: exit %d %s", r.code, r.stderr)
+	}
+	if r := run(t, srv.URL, "", "secret", "set", "blog", "PLAIN"); r.code != ExitError || !strings.Contains(r.stderr, "| flats secret set blog PLAIN`") {
+		t.Fatalf("empty value of a readable secret: exit %d %s", r.code, r.stderr)
+	}
 	api.mu.Lock()
 	sent := len(api.reqs)
 	api.mu.Unlock()
 	if sent != 0 {
-		t.Fatalf("a usage error sent %d requests", sent)
+		t.Fatalf("a usage error or an empty value sent %d requests", sent)
 	}
 	r := run(t, srv.URL, value+"\n", "secret", "set", "blog", "API_TOKEN", "--origin", "https://api.example.com", "--header", "Authorization")
 	if r.code != 0 {

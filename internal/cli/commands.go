@@ -771,7 +771,12 @@ func (a *app) secret(args []string) error {
 		if (*origin == "") != (*header == "") {
 			return usagef("--origin and --header go together: give both to make an injected secret, or neither")
 		}
-		value, err := a.readSecret(pos[1])
+		// The example of an empty piped value keeps the flags: without them the same command makes a readable secret.
+		example := "flats secret set " + pos[0] + " " + pos[1]
+		if *origin != "" {
+			example += " --origin " + *origin + " --header " + *header
+		}
+		value, err := a.readSecret(pos[1], example)
 		if err != nil {
 			return err
 		}
@@ -862,8 +867,9 @@ func (a *app) secretKey(args []string) error {
 }
 
 // readSecret reads a value from stdin: without echo from a terminal, or the
-// whole input (minus one trailing newline) from a pipe.
-func (a *app) readSecret(name string) (string, error) {
+// whole input (minus one trailing newline) from a pipe. example is the command
+// that the refusal of an empty piped value shows.
+func (a *app) readSecret(name, example string) (string, error) {
 	if f, ok := a.env.Stdin.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
 		v, err := prompt.Hidden(a.ctx, f, a.errw, fmt.Sprintf("Value for %s (input hidden): ", name))
 		if err != nil {
@@ -880,7 +886,7 @@ func (a *app) readSecret(name string) (string, error) {
 	}
 	s := strings.TrimSuffix(strings.TrimSuffix(string(b), "\n"), "\r")
 	if s == "" {
-		return "", errors.New("empty value on stdin; pipe the value in, e.g. `printf %s \"$TOKEN\" | flats secret set <slug> <NAME>`")
+		return "", fmt.Errorf("empty value on stdin; pipe the value in, e.g. `printf %%s \"$TOKEN\" | %s`", example)
 	}
 	return s, nil
 }

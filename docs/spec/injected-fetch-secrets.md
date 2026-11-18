@@ -319,7 +319,7 @@ a request gets no header runs in the same setup as a check that the bound reques
   secret is refused; the capture puts an injected secret into the injected list and not into `env`; each stored state
   of rule 20 (one binding column only, a bad origin, a bad header name, a bad value, two rows with one binding, more
   than 32 injected rows) refuses the activation and
-  names the secret, and the value is not in `env`; the redactor removes an injected value from a log line; the docs app
+  names the secret (for more than 32 rows, the flat and `flats secret ls`), and the value is not in `env`; the redactor removes an injected value from a log line; the docs app
   and a WASI flat get no list; a rename keeps the list, and a new preview captures the current one.
 - No host text holds the value: a test stores a distinctive injected value and runs each set refusal of rules 7 and 8,
   a capture refusal of rule 20 through a deploy, the listings of the API, MCP and the CLI, `flats audit ls` and the
