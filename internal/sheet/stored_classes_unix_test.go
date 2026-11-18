@@ -16,6 +16,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/gosuda/flats/internal/testutil/peakrss"
 )
 
 // storedReadersDir names the directory of sheets whose readers
@@ -32,7 +34,7 @@ func TestStoredReadersInAProcessOfTheirOwn(t *testing.T) {
 	if dir == "" {
 		t.Skip("runs in a process that TestStoredValuesPastTheirBoundsStayOutOfMemory starts")
 	}
-	defer reportPeakRSS(t)
+	defer peakrss.Report(t)
 	raw, err := os.ReadFile(filepath.Join(dir, "base.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -83,7 +85,7 @@ func peakReaders(t *testing.T, dir string) (map[string]readerResult, int64) {
 		}
 		results[name] = got
 	}
-	return results, childPeakRSS(t, cmd.ProcessState, out)
+	return results, peakrss.Bytes(t, cmd.ProcessState, out)
 }
 
 // readerBatch is the number of sheets one process reads. Their files are
@@ -206,7 +208,7 @@ func TestGroupsCloseInAProcessOfTheirOwn(t *testing.T) {
 	if dir == "" {
 		t.Skip("runs in a process that TestGroupOrderStaysOutOfMemory starts")
 	}
-	defer reportPeakRSS(t)
+	defer peakrss.Report(t)
 	db, _, _, err := openDB(filepath.Join(dir, dbName))
 	if err != nil {
 		t.Fatal(err)
@@ -241,7 +243,7 @@ func peakClose(t *testing.T, dir, query string) (string, int64) {
 	}
 	_, line, _ := strings.Cut(string(out), "close: ")
 	line, _, _ = strings.Cut(line, "\n")
-	return line, childPeakRSS(t, cmd.ProcessState, out)
+	return line, peakrss.Bytes(t, cmd.ProcessState, out)
 }
 
 // A group whose editor is a text of 32 MiB is refused where the tick reads

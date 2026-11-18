@@ -15,12 +15,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
-	"syscall"
 	"testing"
 
 	"github.com/gosuda/flats/internal/sqliteuri"
+	"github.com/gosuda/flats/internal/testutil/peakrss"
 )
 
 // The environment of TestVerifierInAProcessOfItsOwn: what it checks, how, and
@@ -65,6 +64,7 @@ func TestVerifierInAProcessOfItsOwn(t *testing.T) {
 	if mode == "" {
 		t.Skip("runs in a process that TestSheetValuesStayOutOfTheVerifiersMemory starts")
 	}
+	defer peakrss.Report(t)
 	if os.Getenv(verifyControl) != "" {
 		preflightSheet = func(context.Context, string) error { return nil }
 	}
@@ -162,11 +162,7 @@ func runVerifier(t *testing.T, env ...string) (verifierResult, int64) {
 	if !found {
 		t.Fatalf("the verifier's process printed no result:\n%s", out)
 	}
-	peak := cmd.ProcessState.SysUsage().(*syscall.Rusage).Maxrss
-	if runtime.GOOS != "darwin" {
-		peak *= 1024 // kilobytes elsewhere
-	}
-	return res, int64(peak)
+	return res, peakrss.Bytes(t, cmd.ProcessState, out)
 }
 
 // A copied sheet.db with a text of 16 MiB in an integer column of meta or of
