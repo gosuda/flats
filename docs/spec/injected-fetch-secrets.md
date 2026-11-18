@@ -69,7 +69,7 @@ The owner of the repository decided four points on 2026-11-18:
 4. A model other than the author reviews each stage of this change.
 
 The issue calls the binding a grant. This spec reads it as a grant of one credential to one origin, and not as a network
-grant: it gives no network access (rule 10), and its change sends no webhook event (rule 30).
+grant. So it gives no network access (rule 10), and its change sends no webhook event (rule 30).
 
 The author of this spec decided these points, and each can change before the implementation:
 
@@ -120,14 +120,16 @@ The author of this spec decided these points, and each can change before the imp
    - a binding that is not the same (rule 3) as the stored binding of an injected secret (409). The message names the
      stored origin and header, and the removal and a new set of the secret;
    - a binding that is the same as the binding of another injected secret of the same flat (409). The message names
-     that secret;
-   - a new injected secret of a flat that has 32 injected secrets (400);
+     that secret, its removal with `flats secret rm`, and `flats secret set` without flags for a new value of it;
+   - a new injected secret of a flat that has 32 injected secrets (400). The message names `flats secret ls` and
+     `flats secret rm`;
    - an origin, a header name or a value that breaks rules 5 to 7 (400). The message says which of the three failed
      and why. The message for an origin does not repeat the text that the caller gave, because it can hold user
      information or a query.
 9. The store checks what is stored under the name, the binding of the other injected secrets of the flat and the count
-   of 32, and it writes the row, in one write transaction. So two sets that run at the same time give the result of one
-   of the two orders. A unique index on the flat, the origin and the header of the injected rows also refuses a second
+   of 32, and it writes the row, in one write transaction. Before the seal, the service checks the value against rule 7
+   and gives the result to the store. The transaction refuses the set when the value fails rule 7 and the row that it
+   reads, or the set, is injected. So two sets that run at the same time give the result of one of the two orders. A unique index on the flat, the origin and the header of the injected rows also refuses a second
    row with the same binding.
 10. A binding grants no network access. The host adds the header only to a request that the captured origin grants of
     the flat permit (rule 14). A set of an injected secret does not check the current grants, and its output says that
@@ -229,7 +231,7 @@ The author of this spec decided these points, and each can change before the imp
     version change with it. The docs say to make a backup with `flats backup` before the upgrade, and that a return to
     an older release needs the copy from before the upgrade.
 33. A readable secret, its API, its CLI and its runtime behavior do not change. A client from before this change sends
-    no `inject`: its set of the name of an injected secret replaces the value and keeps the binding (rule 2), and its
+    no `inject`. Its set of the name of an injected secret replaces the value and keeps the binding (rule 2), and its
     `secret ls` shows the name only. An older host refuses a set with `inject` with 400 (an unknown field), and stores
     nothing.
 
@@ -252,8 +254,8 @@ The author of this spec decided these points, and each can change before the imp
     - `docs/configuration.md`: the backup before the upgrade to schema 28;
     - `docs/spec/README.md`: the row of this spec;
     - the texts in code: the description and the note of MCP `list_secrets` (`internal/mcpx/tools.go`), the CLI help,
-      and the console texts of the secrets section and the network section (`internal/console/static/assets/js/flat.js`),
-      which say that browser code gets no injected values;
+      and the console texts of the secrets section, the network section and the section of the ordinary variables
+      (`internal/console/static/assets/js/flat.js`), which say that browser code gets no injected values;
     - the tests that pin these texts change with them, among them `internal/mcpx/reference_test.go` and the example
       checks of `internal/runtime/fetch_test.go`.
 35. Each changed sentence keeps "injected" for a secret of this spec only.
@@ -296,8 +298,9 @@ The author of this spec decided these points, and each can change before the imp
 
 Test seams. The egress client has three seams that only tests in package `egress` set: the trusted root certificates
 (empty means the system roots), the resolver and the dialer. They are unexported fields, and `egress.New` is the only
-constructor, so product code cannot set them. The runtime has one seam that only tests in package `runtime` replace:
-the function that builds the outbound client of a worker. The positive HTTPS checks run in package `egress` with
+constructor, so product code cannot set them. The runtime has one seam that only tests in package `runtime` replace,
+the function that builds the outbound client of a worker. It is a field of the worker, so parallel tests do not share
+it, and an empty field means the product function. The positive HTTPS checks run in package `egress` with
 local TLS servers. The runtime checks prove what the worker gives to that function and to flat code. Every check that
 a request gets no header runs in the same setup as a check that the bound request gets it. No test needs the network.
 
@@ -313,13 +316,18 @@ a request gets no header runs in the same setup as a check that the bound reques
   for `env.INJECTED`, and `JSON.stringify(env)` does not hold the injected value; the worker gives the injected list of
   its spec, and nothing else, to the function that builds its outbound client; the request that flat code passes to
   `fetch` does not hold the value; a WASI command does not get the name or the value; the worker spec holds the
-  injected secret outside `env`; a worker that the manager replaces gets the same list.
+  injected secret outside `env`; a worker that the manager replaces gets the same list; a worker that builds its
+  outbound client with the product function from a spec with an injected list runs flat code that supplies the bound
+  header to the bound origin, and the call fails with the error of rule 15 before any address lookup.
 - The service: each refusal of rules 6 to 8 and 11, with its message and its status class; a set without a binding of
   an empty value, of a value with a control character and of a value that ends with a space, through the console route
-  and through the CLI with a pipe, is 400, and the stored value and binding stay and the next activation passes; a new
+  and through the route with the CLI header, is 400, and the stored value and binding stay and the next activation
+  passes; `flats secret set` without flags gets 400 for a piped value that ends with two newlines or with a space, and
+  it refuses an empty piped value itself and sends no request, as today; a new
   value keeps the binding through the API with and without `inject`; an ordinary variable with the name of an injected
   secret is refused; the capture puts an injected secret into the injected list and not into `env`; each stored state
-  of rule 20 (one binding column only, a bad origin, a bad value, two rows with one binding) refuses the activation and
+  of rule 20 (one binding column only, a bad origin, a bad header name, a bad value, two rows with one binding, more
+  than 32 injected rows) refuses the activation and
   names the secret, and the value is not in `env`; the redactor removes an injected value from a log line; the docs app
   and a WASI flat get no list; a rename keeps the list, and a new preview captures the current one.
 - No host text holds the value: a test stores a distinctive injected value and runs each set refusal of rules 7 and 8,
@@ -328,7 +336,9 @@ a request gets no header runs in the same setup as a check that the bound reques
 - The store: the migration from schema 27 keeps every secret readable and its value openable; a reader of schema 27
   refuses schema 28; a set and a list keep the binding; `secret.set` has the data of rule 29; the re-seal of
   `rotate-key` keeps the binding; two sets of one new name with two bindings, run at the same time many times, leave
-  each time one binding with the value of the same set; the unique index refuses a second row with the same binding.
+  each time one binding with the value of the same set; a set without a binding of the value `a\nb` (allowed for a
+  readable secret) and a set of the same new name with a binding, run at the same time many times, never leave an
+  injected row with that value; the unique index refuses a second row with the same binding.
 - The API: `PUT` with `inject` returns the stored binding; `"inject": null` is the same as no `inject`; `GET` returns
   `inject` for an injected secret only; 400 and 409 as rules 7, 8 and 27 say; 403 for a remote caller.
 - The CLI: `--origin` without `--header` and the reverse are usage errors; `secret ls` prints `INJECTED`; the output of
