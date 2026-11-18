@@ -156,9 +156,9 @@ func bigSheet(t *testing.T) (*env, time.Duration) {
 }
 
 // A stop while a load runs the quick_check of its preflight interrupts
-// that statement: the preflight ends with the stop and never passes, and
-// the stop and the load end long before a whole quick_check of the file
-// would. It runs with a gate of one slot and with several.
+// that statement: the preflight is canceled long before a whole quick_check
+// of the file would finish. Stop then waits for cleanup. It runs with a gate
+// of one slot and with several.
 func TestStopInterruptsTheQuickCheck(t *testing.T) {
 	big, whole := bigSheet(t)
 	t.Logf("a whole quick_check takes %v", whole)
@@ -172,6 +172,7 @@ func TestStopInterruptsTheQuickCheck(t *testing.T) {
 				mu      sync.Mutex
 				target  *Instance
 				checked time.Time
+				endedAt time.Time
 				ended   error
 			)
 			reached, done := make(chan struct{}), make(chan struct{})
@@ -187,6 +188,7 @@ func TestStopInterruptsTheQuickCheck(t *testing.T) {
 				mu.Lock()
 				defer mu.Unlock()
 				if in == target {
+					endedAt = time.Now()
 					ended = err
 					close(done)
 				}
@@ -215,9 +217,9 @@ func TestStopInterruptsTheQuickCheck(t *testing.T) {
 			stopped := time.Since(began)
 			<-done
 			mu.Lock()
-			since, err := time.Since(checked), ended
+			since, err := endedAt.Sub(checked), ended
 			mu.Unlock()
-			t.Logf("the stop took %v, %v after the check point: %v", stopped, since, err)
+			t.Logf("the preflight ended %v after the check point with %v (Stop took %v)", since, err, stopped)
 			if !errors.Is(err, context.Canceled) {
 				t.Fatalf("the preflight ended with %v, not with the stop", err)
 			}
@@ -227,7 +229,7 @@ func TestStopInterruptsTheQuickCheck(t *testing.T) {
 			default:
 			}
 			if since > whole/2 {
-				t.Errorf("the stop ended the load %v after its quick_check began, which takes %v whole", since, whole)
+				t.Errorf("the preflight ended %v after its quick_check began, which takes %v whole", since, whole)
 			}
 			gateSettles(t, "after the stop", slots, 0)
 		})

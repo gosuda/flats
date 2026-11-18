@@ -8,7 +8,6 @@ import (
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/gosuda/flats/internal/sheet/formula"
 )
@@ -171,12 +170,10 @@ func TestUndoRefusedBesideTheTick(t *testing.T) {
 		t.Fatalf("the sheet holds %d blank records after the redo, want more than %d", n, limit)
 	}
 	before, kept := e.dump(), e.memory("Sheet1", alice)
-	was := e.setRecalcLimit(time.Nanosecond)
-	ack := alice.do(`{"op":"undo"}`)
-	e.setRecalcLimit(was)
-	if status(ack) != "refused:recalculation_time" {
-		t.Fatalf("the undo after its deadline: %s", status(ack))
-	}
+	deadline := e.workDeadline()
+	deadline.refusedAt(t, 0, 0, func() string {
+		return status(alice.do(`{"op":"undo"}`))
+	})
 	e.tick()
 	if after := e.dump(); after != before {
 		t.Fatalf("the refused undo and the tick changed the sheet: %s", dumpDiff(before, after))
