@@ -9,7 +9,8 @@ Choose a board to spread out, group and connect ideas: brainstorms, sorted
 feedback, flowcharts, retrospectives and plans that people will rearrange by
 hand. Choose a design (`topic.canvas`) for pixel-exact screens, prototypes
 and posters, a document (`topic.docs`) for prose, a notebook
-(`topic.notebook`) for pages of notes and tracker tables, and a page
+(`topic.notebook`) for pages of notes and tracker tables, a sheet
+(`topic.sheet`) for numbers that calculate, and a page
 (`topic.page`) for one finished HTML document with charts.
 
 A board runs at once and has no Draft, versions, previews, publish or

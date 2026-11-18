@@ -86,7 +86,7 @@ Errors are JSON: `{"error", "category", "problems": [{"path","message","fix"}], 
 | 409 | Conflict: stale Draft revision, unpublished flat made Public through an approval, not deployed, unavailable, stale approval, provider not permitted or not ready, unconfirmed public stop, unchanged content, provider in use, unusable or changed public instance network, preview while public instance mode is on |
 | 412 | `config_changed`: `config.json` changed since the host read it, or the console page is stale |
 | 415 | A mutating `/api` request without a JSON or archive type or `X-Flats-Client` |
-| 422 | Bundle validation, a failed health check or runtime start, a board write or import over the disk quota (`board_capacity`), or a notebook write over a content limit or the disk quota (`notebook_capacity`) |
+| 422 | Bundle validation, a failed health check or runtime start, a board write or import over the disk quota (`board_capacity`), a notebook write over a content limit or the disk quota (`notebook_capacity`), or a sheet write over a sheet limit or the disk quota (`sheet_capacity`) |
 | 500 | Server fault |
 
 A failed decision (`POST approvals/{id}/approve`) answers with the error body
@@ -114,6 +114,8 @@ mounted under both prefixes; **console** routes exist only under
 | POST | `/flats/{slug}/board` | api | An `update_board` body `{op_id, ops, layout?, assets?, if_seq?, message?, replace?}` (assets' `content` in base64; the body at most `upload_max_bytes × 4/3` plus 16 MiB, so one call carries images of about one upload limit in total; send more over several calls or in a data file through the import route); applies at once without approval and creates a missing board. Answers `{revision, seq, ids, layout, results, assets?, created?, warning?}` |
 | GET | `/flats/{slug}/notebook` | api | `get_notebook` read of a notebook: `?page=&database=&view=&sort=&filter=&format=&limit=&revision=`, or `?cursor=` (with `op_id=` for a write's mapping) for the next part; `page`, `database` and `view` take an id or a JSON reference. Answers the `get_notebook` result |
 | POST | `/flats/{slug}/notebook` | api | An `update_notebook` body `{op_id, ops, guards?, message?, assets?}`; applies at once without approval and creates a missing notebook. Answers the `update_notebook` result. A refusal answers 400 (`invalid`, `not_notebook`), 403, 404, 409 (`conflict`), 422 (`notebook_capacity`) or 503 (`unavailable`) |
+| GET | `/flats/{slug}/sheet` | api | `get_sheet` read of a sheet: `?tab=&range=&format=json\|csv&include=shown,formats,widths&limit=&revision=`, or `?cursor=` (with `revision=` for a cursor of a revision read) for the next page. Without `tab` it lists the tabs. Answers the `get_sheet` result |
+| POST | `/flats/{slug}/sheet` | api | An `update_sheet` body `{state, ops, op_id?, message?, guard?}` without `slug`, at most 8 MiB; applies at once without approval and creates a missing sheet. Answers `{result, revision, pending, created?, flat?}`, where `result` is the `update_sheet` result and `flat` is the new flat with its address when the call created the sheet. A refusal answers 400 (`invalid`, `not_sheet`), 403, 404, 409 (`conflict`), 422 (`sheet_capacity`) or 503 (`unavailable`), with `reason`, `retry` and, for a limit, `limit`, `max` and `value`. A body over 8 MiB answers 422 `sheet_capacity` with `limit: "call_bytes"`, and `value` when the request declares its length |
 | POST | `/flats/{slug}/board/import` | api | A board data file as the raw body (`.zip`, up to `upload_max_bytes × 4`, streamed to a temporary file); query `mode` (`add`, the default, or `replace`) and `op_id` (random when absent; resending with the same `op_id` imports once); applies at once without approval and creates a missing board |
 | POST | `/flats/{slug}/versions` | both | `{revision, hash?}` (revision 0 selects current): 202 `create_version` request. Creates the version without deploying it |
 | GET | `/flats/{slug}/versions` | both | Retained versions, `[]` when none |
@@ -145,7 +147,7 @@ mounted under both prefixes; **console** routes exist only under
 | POST | `/flats/{slug}/name` | console | `{name}`: display name |
 | PUT | `/flats/{slug}/listing` | console | `{listing}`: `default`, `hidden` or `listed` relay listing of the Portal route |
 | GET, PUT | `/flats/{slug}/version-quota` | console | GET is the flat view; PUT `{version_quota: n\|null}` (null follows the host) |
-| GET, PUT | `/flats/{slug}/revision-quota` | console | Documents, designs, boards and notebooks: `{revision_quota, pin_quota}` overrides (`n\|null`) with the host defaults and pin count |
+| GET, PUT | `/flats/{slug}/revision-quota` | console | Documents, designs, boards, notebooks and sheets: `{revision_quota, pin_quota}` overrides (`n\|null`) with the host defaults and pin count |
 | GET | `/flats/{slug}/public-edit` | console | Boards and documents: whether anyone-can-edit can take effect now: `{problems, disk_quota, revision_quota, pin_quota, pins, safe_point, safe_point_pinned, listed}` |
 | GET | `/providers` | console | Host providers: grant, backend status, hosts and provider settings. Both reverse proxy kinds also carry `address` (the bound listener, or `proxy.addr` while none is bound), `template` and, after a failed bind at start, `bind_error` |
 | PUT | `/providers/{id}` | console | `{enabled}` with the settings ETag in `If-Match` |
@@ -223,7 +225,7 @@ permissions and the Portal listing take effect immediately.
     `totals`, `cpu_seconds` and `memory_peak_bytes` are omitted where that
     figure is not measured, never reported as zero.
   - `now`: `cpu` and `memory` are `measured`, `not_separate` (websites,
-    pages, designs, boards and notebooks, which run inside the host process; the other `now`
+    pages, designs, boards, notebooks and sheets, which run inside the host process; the other `now`
     fields are then omitted) or `unsupported` (memory on hosts other than
     Linux). With a worker: `state` (`running`, `starting`, `quiescing`,
     `sleeping`, `backoff` or `stopped`; diagnostic only, `running` in the
@@ -322,6 +324,8 @@ for server flats); `flats config`, `flats key`, and
 | `board import <slug> <file.zip> [--replace] [--op-id id]` | Import a board data file; adds with new ids unless `--replace`. Prints the operation id it used (random unless `--op-id`); resending with the same `--op-id` imports once |
 | `notebook get <slug> [--page id\|--database id] [--view id\|--sort json --filter json] [--format structured\|markdown] [--limit n] [--revision n]` | Read a notebook's page tree, one page or one database, following every continuation; `--cursor c [--op-id id]` reads one continuation or a write's mapping |
 | `notebook apply <slug> <ops.json> [--message m] [--op-id id]` | Send an `update_notebook` body to a notebook, creating it when missing; a body without `op_id` gets a random one, and resending with the same `--op-id` applies once |
+| `sheet get <slug> [--tab name] [--range A1:D9] [--format json\|csv] [--include shown,formats,widths] [--revision n] [--limit n] [--output file]` | Read a sheet's tab list or the cells of a tab, following every continuation and printing one result. With `--format csv` it writes a CSV file that starts with the byte order mark, to standard output or to `--output` |
+| `sheet apply <slug> <ops.json> [--state s] [--op-id id] [--message m]` | Send an `update_sheet` body `{state, guard, ops}` to a sheet, creating it when missing; the flags override the file's `state`, `op_id` and `message`. A body without `op_id` gets a random one, and resending with the same `--op-id` applies once |
 | `create-version <slug> [--revision n] [--hash h]` | Request a new version from the Draft |
 | `deploy --flat <slug> --version <n>` | Request activation of a saved version; a directory argument is refused with guidance to save and create a version first |
 | `rollback <slug> [--to n] [--restore-data]` | Request activation of an earlier version |
@@ -343,7 +347,7 @@ for server flats); `flats config`, `flats key`, and
 exit codes. `flats help <command>` prints the usage line, the synopsis and, for
 `connect`, `mcp`, `mcp-config`, `client` and `agent-setup`, a longer
 description. `flats <command> -h` prints the same for commands that take flags,
-then lists the flags. Subcommand groups such as `board`, `notebook`, `config`,
+then lists the flags. Subcommand groups such as `board`, `notebook`, `sheet`, `config`,
 `env`, `key`, `network` and `secret`, and `serve`, handle `-h` themselves.
 
 Exit codes: 0 success, 1 error, 2 usage, 3 pending approval, 78 configuration
@@ -370,7 +374,8 @@ Tools (names are the registered `Name` values):
 | Designs | `save_design`, `get_design` |
 | Boards | `get_board`, `update_board`, `get_board_share`, `import_board` |
 | Notebooks | `get_notebook`, `update_notebook` |
-| Revisions (documents, designs, boards and notebooks) | `list_revisions`, `get_revision`, `pin_revision`, `rollback_revision` |
+| Sheets | `get_sheet`, `update_sheet` |
+| Revisions (documents, designs, boards, notebooks and sheets) | `list_revisions`, `get_revision`, `pin_revision`, `rollback_revision` |
 | Flat settings | `set_visibility`, `delete_flat`, `set_env`, `delete_env` |
 | References | `get_runtime_reference`, `get_content_types` (also resources `flats://docs/runtime-api/v1` and `flats://docs/content-types/v1`) |
 | Autopilot, only while it is on | `approve_request`, `reject_request` ([Autopilot tools](#autopilot-tools)) |
@@ -386,11 +391,11 @@ Private URLs as Local loopback or explicitly permitted Tailscale, NetBird or
 reverse proxy routes, and pending visibility notices use the future tense. Removed tools (`save_version`,
 `save_version_from_dir`, `publish`) have no aliases.
 
-Revision management of documents, designs, boards and notebooks also happens inside the
+Revision management of documents, designs, boards, notebooks and sheets also happens inside the
 flat's own Private route while private links are enabled; see
 [Revision store](revision-store.md). While public instance mode is on, those
 browser routes are disabled, but MCP revision operations keep working.
-`rollback_revision` on a board or notebook answers `{status, revision}`, or `{status,
+`rollback_revision` on a board, notebook or sheet answers `{status, revision}`, or `{status,
 warning}` without a revision when the restore applied but its revision is not
 recorded yet (import pending, or already deleted by retention); it must not be
 resent.
@@ -608,6 +613,50 @@ references. Anyone-can-edit does not apply to notebooks. Open Public
 connections close when the notebook becomes Private, its route stops, or it
 is renamed or deleted.
 
+### Sheet tools
+
+| Tool | Input | Result |
+| --- | --- | --- |
+| `create_flat {type: "sheet"}` | `slug`, `name` | A Private sheet with one empty tab named `Sheet1` (revision 1, `created`) |
+| `get_sheet` | `slug` and either nothing (the tab list), `tab` with `range?`, `format?` (`json` or `csv`), `include?` (`shown`, `formats`, `widths`) and `limit?`, or `cursor` alone (the next page) | `{state, date, tabs}`, or `{state, date, tab, range, start, rows or csv, shown?, formats?, widths?, next?}`. A formula reads as `{formula, value}` or `{formula, error}`. All pages of one read come from the same state |
+| `update_sheet` | `slug`, `state`, `ops`, `op_id?`, `message?`, `guard?` (`unchanged` or `ranges`) | `{state, revision, revision_pending?, cells_written, formulas_written, formula_errors, errors, created?, replay?}`; all operations apply or none, as one revision. `revision` is null with `revision_pending` while its import is pending |
+
+Sheet writes apply at once without approval. Sheet tools refuse other types
+(`not_sheet`); version tools refuse a sheet (`invalid`). A call is `conflict`
+when it names no state or a state the sheet no longer keeps, when a tab or
+structure changed since that state, when a guard fails, when a read cursor
+expired, or when it reuses an `op_id` with a different request. A write over
+a sheet limit (the error names `limit`, `max` and `value`) or the per-flat
+disk quota (reason `disk_quota`) is `sheet_capacity`. `get_revision` on a
+sheet also takes `tab`, `range`, `format`, `include`, `limit` and `cursor`
+and returns the `get_sheet` shapes under `sheet`, calculated with the date
+the revision closed with. `list_revisions` lists the tabs each revision
+changed. One MCP request may carry 8 MiB of `update_sheet` JSON plus 1 MiB.
+The agent guide is `topic.sheet`.
+
+### Sheet routes inside the flat
+
+A sheet serves its editor on its own routes. The sheet trusts only the
+access level core decides for the route; a missing or unknown one counts as
+Public. Every POST and WebSocket upgrade must be same-origin, and POST also
+needs `X-Flats-Sheet: 1`.
+
+| Route | Access | Use |
+| --- | --- | --- |
+| `GET /` | everyone | Editor; a tab opens at `/#/<tab id>` |
+| `GET /_sheet/app/<version>/…` | everyone | Built-in app files and the function list |
+| `GET /_sheet/ws` | everyone; edits and presence are Private | Live updates |
+| `GET /_sheet/csv?tab=<id>` | everyone | CSV download of one tab |
+| `GET /_sheet/api/revisions[/{n}[/tabs/{id}]]`, `POST /_sheet/api/pin`, `POST /_sheet/api/rollback` | Private | History: revisions with their changed tabs, an earlier revision's tab list and tabs, pin and rollback |
+| `POST /_sheet/api/recover` | Private | Bring back one tab from an earlier revision |
+
+A Public route receives a read-only projection of the current sheet: the
+tab list, cells, calculated values and CSV, without sessions, names,
+presence or history. Anyone-can-edit does not apply to sheets. Open Public
+connections close when the sheet becomes Private, its route stops, or it is
+renamed or deleted. While the workbook of an idle sheet is unloaded, the
+first request loads it again.
+
 ## Console
 
 ### Words
@@ -617,36 +666,36 @@ The console uses two words for the two approved steps of websites and pages.
 (`Save as vN`, approval action `create_version`). **Publish** puts one saved
 version live (`Publish vN`, approval action `activate`); publishing an earlier
 version again is `Roll back to vN`. Save buttons are drawn quieter than Publish
-buttons. Documents, designs, boards and notebooks have no Draft, versions or
+buttons. Documents, designs, boards, notebooks and sheets have no Draft, versions or
 publishing: they run once saved.
 
 ### Screens
 
 - **List.** Rows show `Live vN`, `Not published`, `vN saved, not published`
   (the newest saved version was never live, `latest_deployed` false) and
-  `unsaved draft changes`; documents, designs, boards and notebooks show `Running` or
+  `unsaved draft changes`; documents, designs, boards, notebooks and sheets show `Running` or
   `Not running`. `Save as vN` appears for flats with Draft changes, otherwise
   `Publish vN` when the newest saved version was never live. A row's menu holds
   the open links, Share, Deployments (Overview for documents, designs,
-  boards and notebooks), Analytics, Settings and, last under a divider, a red Delete.
+  boards, notebooks and sheets), Analytics, Settings and, last under a divider, a red Delete.
   Choosing Delete keeps the menu open and turns the item into a slide control
   in its own box; dragging the handle to the end (or ten Right presses)
   deletes the flat directly, as Settings does
   ([Delete from the flat list](spec/console-row-delete.md)). Each row has its
-  type's label and icon (Flat, Document, Page, Design, Board, Notebook); a running board's open link goes to
-  its canvas, and a running notebook's to its editor. Rows do not repeat a public-access banner.
-- **Flat page.** Tabs: Deployments (Overview for documents, designs, boards and notebooks) at
+  type's label and icon (Flat, Document, Page, Design, Board, Notebook, Sheet); a running board's open link goes to
+  its canvas, and a running notebook's or sheet's to its editor. Rows do not repeat a public-access banner.
+- **Flat page.** Tabs: Deployments (Overview for documents, designs, boards, notebooks and sheets) at
   `/flats/{slug}`, Analytics, Database (server flats only) and Settings.
   Deployments shows the addresses and live state, the Versions table, open
   previews and logs; the Versions table starts with a Draft row (Preview,
   `Save as vN`) while `draft.dirty` is true, and each version has a `Live`,
   `Previously live` or `Not published` badge with `Publish vN` above the live
   version and `Roll back to vN` below it. The Overview of a document, design,
-  board or notebook has the addresses, running state and logs, and no Versions or
+  board, notebook or sheet has the addresses, running state and logs, and no Versions or
   previews. Database lists data snapshots. Settings holds the name, slug,
   sharing, networks, version history quota (websites and pages), revision
-  quotas (documents, designs, boards and notebooks), environment variables,
-  secrets, server HTTP(S) permissions and deletion. A notebook has no
+  quotas (documents, designs, boards, notebooks and sheets), environment variables,
+  secrets, server HTTP(S) permissions and deletion. A notebook or a sheet has no
   database, environment variable, secret or server network settings, and its
   sharing offers no anyone-can-edit level.
 - **Networks** on a flat's Settings: Local (always on), Tailscale, NetBird
@@ -750,7 +799,7 @@ that error.
 Labels match the data the server returns:
 
 - Limits uses the shared labels **Revisions to keep** and **Pinned revisions
-  allowed** for the revision and pin quotas of documents, designs, boards and notebooks, and
+  allowed** for the revision and pin quotas of documents, designs, boards, notebooks and sheets, and
   **Version quota** for websites and pages.
 - Analytics shows **Page Views** (requests for pages), with the note that
   unique visitors are not tracked, and under it **Usage** (every request to
@@ -761,12 +810,12 @@ Labels match the data the server returns:
   with the sample age when the sample is stale; and daily requests stacked by
   status class (2xx, 3xx, 4xx, 5xx, Closed, and 1xx when there were
   upgrades). A missing value is shown as an em dash, never as zero.
-- For websites, pages, designs, boards and notebooks the CPU and memory tiles are replaced by the
+- For websites, pages, designs, boards, notebooks and sheets the CPU and memory tiles are replaced by the
   note "CPU and memory are not measured separately for this type; it runs
   inside the Flats process." On a host that does not measure worker memory
   (not Linux), Peak memory says "Memory is not measured on this system." A
   server that returns no `usage` shows no Usage section.
-- For documents, designs, boards and notebooks, Analytics hides the Versions count and shows disk
+- For documents, designs, boards, notebooks and sheets, Analytics hides the Versions count and shows disk
   usage as a plain byte value. Websites, pages and an unknown type show the
   Versions count and the disk value with its "(versions, data and previews)"
   description.

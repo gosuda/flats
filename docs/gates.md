@@ -41,27 +41,37 @@ parallel jobs:
 go mod tidy                         # CI requires no go.mod/go.sum diff
 go vet ./...
 make docs-check                     # Markdown links and anchors, uncached
-go test ./...                       # as eight shards: scripts/ci-test.sh <shard>
-scripts/ci-race.sh core-1           # go test -race, in seven routine lanes
+go test ./...                       # as eleven shards: scripts/ci-test.sh <shard>
+scripts/ci-race.sh core-1           # go test -race, in twelve routine lanes
 scripts/ci-race.sh core-2
 scripts/ci-race.sh services
 scripts/ci-race.sh notebook-1
 scripts/ci-race.sh notebook-2
 scripts/ci-race.sh board-1
 scripts/ci-race.sh board-2
+scripts/ci-race.sh sheet-1
+scripts/ci-race.sh sheet-2
+scripts/ci-race.sh sheet-3
+scripts/ci-race.sh sheet-4
+scripts/ci-race.sh sheet-5
 scripts/ci-memory.sh reader         # large fixtures, without -race
 scripts/ci-memory.sh markdown
 scripts/ci-memory.sh source
+FLATS_SHEET_E2E=1 go test -run '^TestBrowser' ./internal/sheet   # in headless Chrome
 (cd internal/apps/docs/_web && npm ci && npm test)
 ```
 
 `scripts/ci-test.sh` splits the QuickJS runtime and docs app packages into
 their long soak tests, the serial codec ownership soak and the serial docs
 budget tests (`-run`), and everything else (`-skip` on the same patterns). The
-board packages (`internal/board` and below) form their own shard, and the
-`other` shard runs every remaining package, so together the shards always run
-the whole suite. CI runs the shards in six jobs: the codec soak and the
-runtime soaks share one, and so do the docs budget and docs soak tests. A job
+board packages (`internal/board` and below) form their own shard. The sheet
+packages (`internal/sheet` and below) run at their full sizes in three
+shards: `sheet-undo-1` runs five of the engine's undo tests by name,
+`sheet-undo-2` the other undo tests (`-run '^TestUndo'` and `-skip` on the
+five) and `sheet` everything else (`-skip '^TestUndo'`). The `other` shard
+runs every remaining package, so together the shards always run the whole
+suite. CI runs the shards in nine jobs: the codec soak and the runtime soaks
+share one, and so do the docs budget and docs soak tests. A job
 runs its shards one after another, each as its own `go test`, the serial codec
 or budget shard first, so those tests still have the runner to themselves. Where `/dev/shm` is writable,
 the docs budget shard runs its test binary with `TMPDIR` and `GOTMPDIR` set to
@@ -78,16 +88,41 @@ CGO-free somewhere: darwin/arm64 by the `install-macos` job, darwin/amd64 by
 the `netbird` job on Linux, and linux/amd64 and linux/arm64 by the
 `container` job.
 
-`scripts/ci-race.sh` runs seven race lanes on each full-suite pull request and
+`scripts/ci-race.sh` runs twelve race lanes on each full-suite pull request and
 main push: the core service in two lanes; the API, app, MCP, store, Portal and
 WebSocket packages with the runtime's FILES, WASI and WebSocket limit tests
 and the board engine; the whole notebook package with its default model seed
-count in two lanes; and the board server in two lanes. Each two-lane package
+count in two lanes; the board server in two lanes; and the sheet engine with
+its formula package and browser client tests in five lanes: `sheet-1` runs
+the engine's seven slowest undo tests by name, `sheet-2` its other undo
+tests, `sheet-3` three of its other slowest tests by name with the
+collected-stamp, snapshot, paged-capture and rowless-receipt tests, `sheet-4`
+the load, revision, rollback, recovery, sort, merge, capture, ordering and
+client tests (by name prefix), and `sheet-5` the rest with the packages below
+the engine. The sheet engine's
+full-size memory and volume cases (the reference sheet, the layered sheet
+at the read limit, the limits fixture, and the largest undo payloads and cycles) run only with
+`FLATS_SHEET_FULL=1`, which the three sheet shards of `scripts/ci-test.sh`
+set and no other lane does. Every other run, the race lanes and the Windows
+job included, takes the smaller size of each case where it has one. The
+two undo shards default to a 14-minute Go test timeout. The non-undo shard
+defaults to 17 minutes. Each runs in a 20-minute hosted job. In a hosted run,
+both undo shards passed and the non-undo shard reached its former 14-minute
+Go test timeout. Each two-lane package
 is split by test name like the runtime and docs shards: the first lane runs
-a `-run` pattern, the second `-skip`s the same pattern. These jobs retain
+a `-run` pattern, the second `-skip`s the same pattern. The sheet's first
+four lanes run `-run` patterns (the second with `-skip` on the first's),
+and the fifth `-skip`s all of them. These jobs retain
 their 20-minute limit. The `notebook-1` and `notebook-2` lanes set an
 18-minute test timeout; the whole package took about nine minutes in one
-lane, close to `go test`'s default of 10 minutes. `notebook-1` runs the
+lane, close to `go test`'s default of 10 minutes. The five sheet lanes set
+a 15-minute test timeout for the same reason: under the race detector they
+took 6.0, 6.2, 7.2, 6.6 and 7.2 minutes on a developer machine at a
+load average of 15 to 33 (measured on 17 November 2026), the slowest under
+half of the timeout. With three lanes the third had reached its timeout
+there. All five sheet race jobs passed in a hosted run. The `sheet-4` and
+`sheet-5` jobs took 12 minutes 44 seconds and 14 minutes 11 seconds from
+setup through cleanup, respectively. `notebook-1` runs the
 `TestMarkdown` and `TestReader` tests, about half of the package's race time; `notebook-2`
 runs the rest. The slowest subtests of the services lane
 (`TestEveryMCPToolPreservesPendingApproval`, `TestHistoryAdapterTraversal`
@@ -194,8 +229,8 @@ generated modules under `/data`, restart persistence of config, flats and data
 without a second bootstrap, and a clean SIGTERM exit, all with a read-only
 root, no capabilities and `no-new-privileges`.
 
-Release tests retain all eight shards and restore the caches written by the
-six main CI lanes. In particular, `runtime-codec` reads `test-runtime-soak`
+Release tests retain all eleven shards and restore the caches written by the
+nine main CI lanes. In particular, `runtime-codec` reads `test-runtime-soak`
 and `docs-soak` reads `test-docs-budget`. Release checkouts remain restore-only.
 
 Tests use disposable hosts/data and local test-control infrastructure. Portal
@@ -217,6 +252,75 @@ github.com/gosuda/flats/cmd/flats@latest` (`@main` for unreleased changes)
 outside the checkout, then `go version -m` on the installed binary: the module
 proxy can resolve `@latest` to an earlier version for a while. See
 [Build version](release.md#build-version).
+
+### Sheet tests behind an environment variable
+
+Some tests of `internal/sheet` run, or run at another size, only when an
+environment variable is set. Where it is not set they are skipped or run
+smaller, and nothing fails. This table lists every variable a sheet test
+reads and where it is set. `scripts/test_ci_shards.py` reads the variables
+out of the test sources and the CI files. It fails when a test reads a
+variable that has no row, when a row says CI and no lane sets the variable
+there, and when a manual row has no command below.
+
+| Variable | What it turns on | Where it runs |
+|---|---|---|
+| `FLATS_SHEET_FULL` | With `1`, the full-size memory and volume cases: the reference sheet, the layered sheet at the read limit, the limits fixture (`TestLimitsFixture`: 100,000 formulas, 20,000,000 cells read and typed text at its limit) and the largest undo payloads and cycles. Without it the three cases that have no smaller size are skipped (the reference sheet, the layered sheet and the limits fixture), and every other case runs at its smaller size. | CI: the sheet shards of `scripts/ci-test.sh`. |
+| `FLATS_SHEET_E2E` | With `1`, the browser suites `TestBrowser`, `TestBrowserScreenState`, `TestBrowserLargeFormatDelta` and `TestBrowserEscapedTextTab`: the real client in a headless Chrome against a real sheet. They are skipped without it, and when no browser is found. | CI: the `sheet-browser` job. |
+| `CHROME` | The browser the suites start, in place of the first one found at the usual paths. | CI: the `sheet-browser` job. |
+| `CI` | A sheet test that needs `node` or Python 3 fails instead of skipping when the program is missing. | CI: every job, set by the runner. |
+| `FLATS_SHEET_E2E_SHOTS` | The directory where `TestBrowser` saves screenshots. | Manual: a look at the screens by eye. |
+| `FLATS_SHEET_SEEDS`, `FLATS_SHEET_STEPS`, `FLATS_SHEET_FROM` | How many random histories `TestStateMachine` plays against the reference model, their length and the first seed. Every lane plays the default: 6 histories of 90 steps, and 2 in short mode and under the race detector. | Manual: a longer model run. |
+| `FLATS_SHEET_SEED`, `FLATS_SHEET_PRINT`, `FLATS_SHEET_MINIMIZE`, `FLATS_SHEET_HISTORY` | One seed of `TestStateMachine` alone, its shortest failing history as JSON, the seconds spent shortening it, and a saved history to play again. | Manual: work on a failure of the model. |
+| `FLATS_SHEET_UNDO_CYCLES` | More undo and redo cycles in `TestUndoStampLinksStayBounded` than its 40 at full size and 10 otherwise. | Manual: a longer cycle run. |
+
+The `sheet-browser` job runs the browser suites with the Google Chrome of
+the hosted Ubuntu image. It fails when the image has none, because the
+suites would skip. The limits fixture took 5 s and 470 MB of memory at its
+peak, and the two browser suites 19 s, on a developer machine (Apple
+Silicon, macOS, 2026-11-15); the browser suites have not run on Linux
+outside CI.
+
+The manual runs are no gate of a pull request. Run them after a change to
+what they exercise, and record the result with the change:
+
+```sh
+# More histories against the reference model, after a change to the
+# engine's operations, to undo or to the model itself.
+FLATS_SHEET_SEEDS=200 go test -count=1 -timeout 60m -run '^TestStateMachine$' ./internal/sheet
+FLATS_SHEET_FROM=1000 FLATS_SHEET_SEEDS=50 FLATS_SHEET_STEPS=200 go test -count=1 -timeout 60m -run '^TestStateMachine$' ./internal/sheet
+# One failing seed: print its shortest history, then play that history again.
+FLATS_SHEET_SEED=17 FLATS_SHEET_PRINT=json FLATS_SHEET_MINIMIZE=120 go test -count=1 -run '^TestStateMachine$' ./internal/sheet
+FLATS_SHEET_HISTORY=history.json go test -count=1 -run '^TestStateMachine$' ./internal/sheet
+# More undo and redo cycles, after a change to how undo keeps stand-ins.
+FLATS_SHEET_UNDO_CYCLES=200 go test -count=1 -run '^TestUndoStampLinksStayBounded$' ./internal/sheet
+# The browser suites on a machine with Chrome, with screenshots to look at.
+FLATS_SHEET_E2E=1 FLATS_SHEET_E2E_SHOTS="$PWD/shots" go test -count=1 -run '^TestBrowser' ./internal/sheet
+```
+
+### Sheet assertions that do not run under the race detector
+
+The race lanes run the sheet tests with their functional assertions:
+what an undo applies, skips or loses, what is kept in scratch files and
+left in them, the budgets a session and a sheet count, the pages and the
+bytes of a paged read. Three kinds of assertion are left out there, and
+run in the lanes without the race detector:
+
+- What the heap holds or gives back (`heapInUse`, `liveHeap`, heap
+  peaks). The race detector keeps shadow memory for every allocation, so
+  a measured heap says nothing about the code under it.
+- What a step allocates (`TotalAlloc` differences).
+- How long a step takes or how long a reader waits. The race detector
+  slows every memory access several times over.
+
+A test that has other assertions beside these runs under the race
+detector, at a smaller size where its assertions hold at any size, and
+skips only these (`measures` in `helpers_test.go`). A test, or a
+subtest, with nothing else stays out of the race lanes:
+`TestDroppedStateIsCollected`, and the tests `heavy` skips, which need
+their full volume to mean anything (the cell, formula, text and row
+limits, the 100,000 blank records, the large frames and sorts). The
+sizes behind `FLATS_SHEET_FULL` never run under the race detector.
 
 ## Phase 0 — spike
 

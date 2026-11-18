@@ -20,6 +20,11 @@ def case_labels(path):
     return re.findall(r"^([a-z][a-z0-9-]*)\)", path.read_text(), re.M)
 
 
+def sheet_function(script):
+    """The text of the sheet function of ci-test.sh, which runs the sheet shards."""
+    return script[script.index("\nsheet() {"):script.index("\n}\n", script.index("\nsheet() {"))]
+
+
 def one_line(pattern, path):
     match = re.search(pattern, path.read_text(), re.M)
     if not match:
@@ -44,12 +49,33 @@ class ShardListTests(unittest.TestCase):
         self.assertEqual(sorted(s.strip() for s in release.split(",")), sorted(self.shards))
         self.assertEqual(sorted(fallback.split()), sorted(self.shards))
 
+    def test_gates_count_the_shards_and_lanes_of_the_workflows(self):
+        gates = (ROOT / "docs/gates.md").read_text()
+        ci = (ROOT / ".github/workflows/ci.yml").read_text()
+        release = one_line(r"^ +shard: \[(.+)\]$", ROOT / ".github/workflows/release.yml").split(", ")
+        lanes = re.findall(r"^ +shards: (.+)$", ci, re.M)
+        races = one_line(r"^ +lane: \[(.+)\]$", ROOT / ".github/workflows/ci.yml").split(", ")
+        words = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "ten",
+                 "eleven", "twelve", "thirteen", "fourteen", "fifteen", "sixteen"]
+
+        def stated(pattern):
+            found = re.findall(pattern, " ".join(gates.split()))
+            self.assertTrue(found, pattern)
+            return [words.index(word) for word in found]
+
+        self.assertEqual(stated(r"go test \./\.\.\. +# as (\w+) shards"), [len(self.shards)])
+        self.assertEqual(stated(r"CI runs the shards in (\w+) jobs"), [len(lanes)])
+        self.assertEqual(stated(r"in (\w+) routine lanes"), [len(races)])
+        self.assertEqual(stated(r"runs (\w+) race lanes on each full-suite pull request"), [len(races)])
+        self.assertEqual(stated(r"Release tests retain all (\w+) shards"), [len(release)])
+        self.assertEqual(stated(r"the caches written by the (\w+) main CI lanes"), [len(lanes)])
+
     def test_routine_and_scheduled_race_lanes_cover_every_lane_once(self):
         ci = ROOT / ".github/workflows/ci.yml"
         scheduled = ROOT / ".github/workflows/notebook-memory-race.yml"
         routine = one_line(r"^ +lane: \[(.+)\]$", ci).split(", ")
         large = one_line(r"^ +lane: \[(.+)\]$", scheduled).split(", ")
-        self.assertEqual(routine, ["core-1", "core-2", "services", "notebook-1", "notebook-2", "board-1", "board-2"])
+        self.assertEqual(routine, ["core-1", "core-2", "services", "notebook-1", "notebook-2", "board-1", "board-2", "sheet-1", "sheet-2", "sheet-3", "sheet-4", "sheet-5"])
         groups = case_labels(SCRIPTS / "ci-memory.sh")
         self.assertEqual(large, ["notebook-large-" + group for group in groups])
         self.assertEqual(sorted(routine + large), sorted(case_labels(SCRIPTS / "ci-race.sh")))
@@ -98,7 +124,7 @@ class ShardPackageTests(unittest.TestCase):
                "internal/board/benchdata/cmd/benchdata", "internal/boardx", "internal/core",
                "internal/notebook", "internal/runtime", "internal/runtimex"]
 
-    def run_shard(self, shard, module="github.com/gosuda/flats", packages=None):
+    def run_shard(self, shard, module="github.com/gosuda/flats", packages=None, extra=()):
         packages = self.CURRENT if packages is None else packages
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)
@@ -120,7 +146,7 @@ esac
 """)
             stub.chmod(0o755)
             env = {**os.environ, "PATH": f"{stub.parent}:{os.environ['PATH']}"}
-            result = subprocess.run(["sh", str(SCRIPTS / "ci-test.sh"), shard], cwd=work,
+            result = subprocess.run(["sh", str(SCRIPTS / "ci-test.sh"), shard, *extra], cwd=work,
                                     env=env, capture_output=True, text=True)
             return result.returncode, result.stdout.split(), result.stderr
 
@@ -168,6 +194,131 @@ esac
                 self.assertEqual(a[a.index("-run") + 1], b[b.index("-skip") + 1])
                 self.assertNotIn("-skip", a)
                 self.assertNotIn("-run", b)
+
+    SHEET_LANES = ("sheet-1", "sheet-2", "sheet-3", "sheet-4", "sheet-5")
+
+    def test_sheet_race_lanes_run_the_engine_and_its_packages(self):
+        first, second, third, fourth, fifth = (self.race_args(lane) for lane in self.SHEET_LANES)
+        timeout = ["test", "-race", "-timeout=15m"]
+        # sheet-1 runs some undo tests, sheet-2 the other undo tests.
+        self.assertEqual(first[:4], timeout + ["-run"])
+        self.assertTrue(first[4].startswith("^TestUndo("), first[4])
+        self.assertEqual(first[5:], ["./internal/sheet"])
+        self.assertEqual(second, timeout + ["-run", "^TestUndo", "-skip", first[4], "./internal/sheet"])
+        for lane in (third, fourth):
+            self.assertEqual(lane[:4], timeout + ["-run"])
+            self.assertEqual(lane[5:], ["./internal/sheet"])
+        # The fifth lane skips what the others run, and takes the packages below the engine.
+        self.assertEqual(fifth, timeout + ["-skip", "|".join(["^TestUndo", third[4], fourth[4]]), "./internal/sheet/..."])
+        # go test keeps the last -timeout, so a caller's value overrides the default.
+        for lane in self.SHEET_LANES:
+            self.assertEqual(self.race_args(lane, "-timeout=30m")[2:4], ["-timeout=15m", "-timeout=30m"])
+        ci = (ROOT / ".github/workflows/ci.yml").read_text()
+        for lane in self.SHEET_LANES:
+            self.assertIn("- {lane: " + lane + ", cache: sheet}", ci)
+
+    def test_sheet_race_lanes_run_each_test_once(self):
+        # go test matches -run and -skip against each top-level test name
+        # (the patterns have no slash), so every test function of the sheet
+        # packages runs in exactly one lane, and each name of a pattern
+        # names a test.
+        lanes = {lane: self.race_args(lane) for lane in self.SHEET_LANES}
+
+        def runs(args, package, name):
+            if args[-1] != "./internal/sheet/..." and args[-1] != "./" + package:
+                return False
+            run = args[args.index("-run") + 1] if "-run" in args else ""
+            skip = args[args.index("-skip") + 1] if "-skip" in args else None
+            return bool(re.search(run, name)) and not (skip and re.search(skip, name))
+
+        names = {}
+        for path in (ROOT / "internal/sheet").rglob("*_test.go"):
+            package = str(path.parent.relative_to(ROOT))
+            for name in re.findall(r"^func ((?:Test|Fuzz)\w*)\(\w+ \*testing\.[TF]\) {", path.read_text(), re.M):
+                names[(package, name)] = path
+        self.assertGreater(len(names), 400)
+        for (package, name), path in sorted(names.items()):
+            with self.subTest(test=name, package=package):
+                ran = [lane for lane, args in lanes.items() if runs(args, package, name)]
+                self.assertEqual(len(ran), 1, f"{name} of {path.name} runs in {ran}")
+        engine = {name for package, name in names if package == "internal/sheet"}
+        for lane in ("sheet-1", "sheet-3"):
+            pattern = lanes[lane][4]
+            for part in re.fullmatch(r"\^(?:TestUndo)?\((.+)\)\$", pattern).group(1).split("|"):
+                full = part if lane == "sheet-3" else "TestUndo" + part
+                self.assertTrue(any(re.fullmatch(full, name) for name in engine), f"{part} of {lane} names no test")
+        for part in re.fullmatch(r"\^Test\((.+)\)", lanes["sheet-4"][4]).group(1).split("|"):
+            self.assertTrue(any(name.startswith("Test" + part) for name in engine), f"{part} of sheet-4 names no test")
+
+    SHEET_SHARDS = ("sheet-undo-1", "sheet-undo-2", "sheet")
+
+    def test_sheet_runs_in_the_sheet_shards_alone(self):
+        packages = self.CURRENT + ["internal/sheet", "internal/sheet/formula"]
+        hits = {}
+        for shard in case_labels(SCRIPTS / "ci-test.sh"):
+            code, args, stderr = self.run_shard(shard, packages=packages)
+            self.assertEqual(code, 0, stderr)
+            hits[shard] = [a for a in args if "internal/sheet" in a]
+        self.assertEqual({s: h for s, h in hits.items() if h},
+                         {"sheet-undo-1": ["./internal/sheet"], "sheet-undo-2": ["./internal/sheet"],
+                          "sheet": ["./internal/sheet/..."]})
+        # Older source without the sheet has nothing to run there.
+        for shard in self.SHEET_SHARDS:
+            code, args, stderr = self.run_shard(shard)
+            self.assertEqual((code, args), (0, []))
+            self.assertIn("nothing to run", stderr)
+
+    def test_sheet_shards_split_the_package_by_test_name(self):
+        # sheet-undo-1 runs some undo tests, sheet-undo-2 the other undo
+        # tests and sheet everything else, so every test runs once, also a
+        # new or renamed one.
+        args = {}
+        for shard in self.SHEET_SHARDS:
+            code, args[shard], stderr = self.run_shard(shard, packages=self.CURRENT + ["internal/sheet"])
+            self.assertEqual(code, 0, stderr)
+        first, second, rest = (args[s] for s in self.SHEET_SHARDS)
+        undo = second[second.index("-run") + 1]
+        self.assertEqual(undo, "^TestUndo")
+        self.assertEqual(rest[rest.index("-skip") + 1], undo)
+        self.assertNotIn("-run", rest)
+        self.assertEqual(first[first.index("-run") + 1], second[second.index("-skip") + 1])
+        self.assertNotIn("-skip", first)
+        named = re.fullmatch(r"\^\((.+)\)\$", first[first.index("-run") + 1]).group(1).split("|")
+        self.assertTrue(named)
+        for name in named:
+            self.assertTrue(name.startswith("TestUndo"), name)
+        sources = "".join(p.read_text() for p in (ROOT / "internal/sheet").glob("*_test.go"))
+        for name in named:
+            self.assertIn(f"\nfunc {name}(t *testing.T) {{", sources, f"{name} is no test of internal/sheet")
+
+    def test_sheet_shards_keep_their_timeout(self):
+        packages = self.CURRENT + ["internal/sheet"]
+        for shard, timeout in (("sheet-undo-1", "14m"), ("sheet-undo-2", "14m"), ("sheet", "17m")):
+            with self.subTest(shard=shard):
+                code, defaults, stderr = self.run_shard(shard, packages=packages)
+                self.assertEqual(code, 0, stderr)
+                self.assertEqual(defaults[:1], [f"-timeout={timeout}"])
+                code, args, stderr = self.run_shard(shard, packages=packages, extra=["-timeout=30m"])
+                self.assertEqual(code, 0, stderr)
+                # go test keeps the last -timeout, so a caller's value overrides the default.
+                self.assertEqual(args, [defaults[0], "-timeout=30m", *defaults[1:]])
+        ci = (ROOT / ".github/workflows/ci.yml").read_text()
+        job = ci.split("\n  test:\n", 1)[1].split("\n\n  ", 1)[0]
+        self.assertIn("timeout-minutes: 20", job)
+        for shard in self.SHEET_SHARDS:
+            self.assertIn(f"          - lane: {shard}\n            shards: {shard}\n", ci)
+
+    def test_sheet_full_size_cases_run_in_the_sheet_shards_alone(self):
+        script = (SCRIPTS / "ci-test.sh").read_text()
+        self.assertEqual(script.count("FLATS_SHEET_FULL=${FLATS_SHEET_FULL-1}"), 1)
+        self.assertEqual(script.count("export FLATS_SHEET_FULL"), 1)
+        self.assertIn("export FLATS_SHEET_FULL", sheet_function(script))
+        other = script[script.index("\nother)"):script.index("\n*)")]
+        self.assertNotIn("FLATS_SHEET_FULL", other)
+        self.assertNotIn("sheet ", other)
+        for name in ("ci-race.sh", "ci-memory.sh"):
+            self.assertNotIn("FLATS_SHEET_FULL", (SCRIPTS / name).read_text(), name)
+        self.assertNotIn("FLATS_SHEET_FULL", (ROOT / ".github/workflows/ci.yml").read_text())
 
     def test_notebook_race_lanes_keep_the_long_timeout(self):
         for lane in ("notebook-1", "notebook-2"):
@@ -265,6 +416,127 @@ esac
         code, args, _ = self.run_shard("other", packages=["internal/runtime", "internal/board"])
         self.assertNotEqual(code, 0)
         self.assertEqual(args, [])
+
+
+class SheetVariableTests(unittest.TestCase):
+    """Account for every environment variable a sheet test reads.
+
+    A test that runs only with a variable is skipped wherever the variable is
+    not set, without a failure. docs/gates.md therefore lists each variable
+    with the CI lane that sets it, or as a manual run with its command, and
+    these tests keep the list, the test sources and the CI files in step.
+    """
+
+    HEADING = "\n### Sheet tests behind an environment variable\n"
+    NAME = r"[A-Z][A-Z0-9_]*"
+    # Where CI sets a variable of a sheet test, as the table writes it, and
+    # the text of the CI files that the place stands for.
+    PLACES = ("the sheet shards of `scripts/ci-test.sh`", "the `sheet-browser` job",
+              "every job, set by the runner")
+
+    def section(self):
+        gates = (ROOT / "docs/gates.md").read_text()
+        self.assertEqual(gates.count(self.HEADING), 1, "docs/gates.md lists the sheet variables once")
+        return re.split(r"\n##+ ", gates.split(self.HEADING, 1)[1], maxsplit=1)[0]
+
+    def rows(self):
+        """Variable -> (CI or Manual, where), from the table of docs/gates.md."""
+        rows = {}
+        for line in self.section().splitlines():
+            if not line.startswith("| `"):
+                continue
+            cells = [cell.strip() for cell in line.strip("|").split("|")]
+            self.assertEqual(len(cells), 3, line)
+            kind, _, where = cells[2].partition(": ")
+            self.assertIn(kind, ("CI", "Manual"), line)
+            for name in re.findall(rf"`({self.NAME})`", cells[0]):
+                self.assertNotIn(name, rows, f"{name} has two rows")
+                rows[name] = (kind, where.rstrip("."))
+        return rows
+
+    def read_by_tests(self):
+        names = {}
+        sources = [*(ROOT / "internal/sheet").rglob("*_test.go"), *(ROOT / "internal/core").glob("sheet*_test.go")]
+        self.assertGreater(len(sources), 40)
+        for path in sources:
+            for name in re.findall(rf'os\.(?:Getenv|LookupEnv)\("({self.NAME})"\)', path.read_text()):
+                names.setdefault(name, path.name)
+        scripts = [*(ROOT / "internal/sheet/web").rglob("*.mjs"), *(ROOT / "internal/sheet/web").rglob("*.js")]
+        self.assertGreater(len(scripts), 5)
+        for path in scripts:
+            for name in re.findall(rf"process\.env\.({self.NAME})", path.read_text()):
+                names.setdefault(name, path.name)
+        return names
+
+    def set_by_ci(self):
+        """Variable -> the place of PLACES where a CI file sets it."""
+        ci = (ROOT / ".github/workflows/ci.yml").read_text()
+        script = (SCRIPTS / "ci-test.sh").read_text()
+        other = sheet_function(script)
+        browser = ci.split("\n  sheet-browser:\n", 1)[1].split("\n\n", 1)[0]
+        found = {"CI": self.PLACES[2]}
+        for place, text in ((self.PLACES[0], other), (self.PLACES[1], browser)):
+            for name in re.findall(rf"\b({self.NAME})=", text):
+                if name.startswith("FLATS_SHEET_") or name == "CHROME":
+                    self.assertNotIn(name, found, f"{name} is set in two lanes")
+                    found[name] = place
+        # No other CI file sets a variable of a sheet test.
+        rest = script.replace(other, "") + ci.replace(browser, "")
+        for path in [*SCRIPTS.glob("ci-*.sh"), *SCRIPTS.glob("build-*.sh"), *(ROOT / ".github/workflows").glob("*.yml")]:
+            if path.name not in ("ci-test.sh", "ci.yml"):
+                rest += path.read_text()
+        self.assertEqual(re.findall(r"\b(FLATS_SHEET_[A-Z0-9_]*|CHROME)=", rest), [])
+        return found
+
+    def test_every_variable_a_sheet_test_reads_has_a_row(self):
+        read, rows = self.read_by_tests(), self.rows()
+        for name, source in sorted(read.items()):
+            self.assertIn(name, rows, f"{source} reads {name}: add it to the sheet table of docs/gates.md, "
+                          "with the CI lane that sets it or the command of its manual run")
+        for name in sorted(rows):
+            self.assertIn(name, read, f"no sheet test reads {name} any more: remove its row from docs/gates.md")
+        # The full-size setting and the browser suites are in the list.
+        self.assertIn("FLATS_SHEET_FULL", read)
+        self.assertIn("FLATS_SHEET_E2E", read)
+
+    def test_ci_rows_name_the_lane_that_sets_the_variable(self):
+        rows, found = self.rows(), self.set_by_ci()
+        listed = {name: where for name, (kind, where) in rows.items() if kind == "CI"}
+        self.assertEqual(listed, found)
+
+    def test_manual_rows_come_with_a_command(self):
+        section = self.section()
+        commands = "\n".join(re.findall(r"```sh\n(.*?)```", section, re.S))
+        manual = [name for name, (kind, _) in self.rows().items() if kind == "Manual"]
+        self.assertTrue(manual)
+        for name in manual:
+            with self.subTest(variable=name):
+                self.assertRegex(commands, rf"\b{name}=\S+ .*go test ")
+
+    def test_limits_fixture_runs_with_the_full_size_cases(self):
+        source = (ROOT / "internal/sheet/bench_test.go").read_text()
+        body = source.split("\nfunc TestLimitsFixture(t *testing.T) {\n", 1)[1].split("\n}\n", 1)[0]
+        self.assertTrue(body.startswith("\tfull(t, "), "the limits fixture is a full-size case")
+        self.assertNotIn("os.Getenv", body)
+        self.assertIn("`TestLimitsFixture`", self.section())
+
+    def test_browser_job_fails_without_a_browser(self):
+        ci = (ROOT / ".github/workflows/ci.yml").read_text()
+        job = ci.split("\n  sheet-browser:\n", 1)[1].split("\n\n", 1)[0]
+        # The suites skip when they find no browser. The job must not pass then.
+        self.assertRegex(job, r"CHROME=\$\(command -v google-chrome\) \|\| \{[^}]*exit 1; \}")
+        self.assertIn("export CHROME", job)
+        self.assertRegex(job, r"FLATS_SHEET_E2E=1 go test -count=1 [^\n]*-run '\^TestBrowser' \./internal/sheet\Z")
+        names = set()
+        for path in (ROOT / "internal/sheet").glob("*_test.go"):
+            text = path.read_text()
+            functions = re.split(r"(?m)^func (\w+)\(t \*testing\.T\) \{", text)
+            for name, body in zip(functions[1::2], functions[2::2]):
+                if 'os.Getenv("FLATS_SHEET_E2E")' in body:
+                    names.add(name)
+        self.assertEqual(sorted(names), ["TestBrowser", "TestBrowserEscapedTextTab", "TestBrowserLargeFormatDelta", "TestBrowserScreenState"])
+        for name in names:
+            self.assertIn(f"`{name}`", self.section())
 
 
 if __name__ == "__main__":

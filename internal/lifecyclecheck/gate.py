@@ -592,6 +592,8 @@ def version_quota_deletion(h):
 
 # The smallest valid update_notebook operation (notebook-TECH Appendix A).
 NOTEBOOK_PAGE = {"op": "create_page", "ref": "p1", "parent": None, "before": None, "title": "Notes"}
+# A valid update_sheet operation (sheet technical design, section 18.2).
+SHEET_WRITE = {"op": "write", "tab": "Sheet1", "at": "A1", "rows": [["Item", "Amount"], ["Total", "=SUM(B1:B1)"]]}
 
 
 def approval_boundary(h):
@@ -651,11 +653,14 @@ def approval_boundary(h):
         "delete_env": {"slug": "boundary", "name": "MODE"},
         "get_notebook": {"slug": "boundary"},
         "update_notebook": {"slug": "boundary", "op_id": "lc-1", "ops": [NOTEBOOK_PAGE]},
+        "get_sheet": {"slug": "boundary"},
+        "update_sheet": {"slug": "boundary", "op_id": "lc-1", "ops": [SHEET_WRITE]},
     }
     refusals = {"get_document": "not_docs", "update_document": "not_docs", "get_design": "not_design",
                 "list_revisions": "no_revisions", "get_revision": "no_revisions",
                 "pin_revision": "no_revisions", "rollback_revision": "no_revisions",
-                "get_notebook": "not_notebook", "update_notebook": "not_notebook"}
+                "get_notebook": "not_notebook", "update_notebook": "not_notebook",
+                "get_sheet": "not_sheet", "update_sheet": "not_sheet"}
     census = []
     for tool in tools:
         name = tool['name']
@@ -692,6 +697,8 @@ def approval_boundary(h):
         census.append({"name": tool["name"], "is_error": result.get("isError", False)})
     if any(tool['name'] == 'update_notebook' for tool in tools):
         notebook_writes_need_no_approval(h, pending)
+    if any(tool['name'] == 'update_sheet' for tool in tools):
+        sheet_writes_need_no_approval(h, pending)
     # Console decisions are authorized by the console transport (same-origin
     # browser requests). A local agent that forges those headers can decide;
     # a separate operator credential is a known open design item.
@@ -723,6 +730,21 @@ def notebook_writes_need_no_approval(h, pending):
     require(not written.get('approval') and not written.get('deploy'), f"notebook write requested an approval: {written}")
     require(h.versions('boundary-notebook') == [], 'notebook write allocated a website version')
     require(h.ok('GET', f'/api/approvals/{pending}')['status'] == 'pending', 'notebook write decided existing approval')
+
+
+def sheet_writes_need_no_approval(h, pending):
+    h.mcp('create_flat', slug='boundary-sheet', type='sheet')
+    require(h.flat('boundary-sheet')['type'] == 'sheet', 'MCP create_flat did not create a sheet')
+    state = h.mcp('get_sheet', slug='boundary-sheet')['state']
+    written = h.mcp('update_sheet', slug='boundary-sheet', state=state, op_id='lc-3', ops=[SHEET_WRITE])
+    require(not written.get('approval') and not written.get('deploy') and written.get('revision') == 2,
+            f"sheet write requested an approval or recorded no revision: {written}")
+    total = h.mcp('get_sheet', slug='boundary-sheet', tab='Sheet1', range='B2')['rows'][0][0]
+    require(total == {"formula": "=SUM(B1:B1)", "value": 0}, f"sheet write did not calculate: {total}")
+    flat = h.flat('boundary-sheet')
+    require(not flat.get('live_version') and not flat.get('version_count') and not flat.get('draft'),
+            'sheet write allocated a website version or Draft')
+    require(h.ok('GET', f'/api/approvals/{pending}')['status'] == 'pending', 'sheet write decided existing approval')
 
 
 def denied_visibility(h, slug):

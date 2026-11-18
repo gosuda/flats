@@ -43,7 +43,7 @@ else
 		cd "$source_dir"
 		go vet ./...
 		failed=0
-		for shard in runtime-soak runtime-codec runtime docs-soak docs-budget docs board other; do
+		for shard in runtime-soak runtime-codec runtime docs-soak docs-budget docs board sheet-undo-1 sheet-undo-2 sheet other; do
 			"$root/scripts/ci-test.sh" "$shard" || failed=1
 		done
 		[ "$failed" = 0 ]

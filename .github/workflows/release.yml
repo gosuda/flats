@@ -64,7 +64,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        shard: [runtime-soak, runtime-codec, runtime, docs-soak, docs-budget, docs, board, other]
+        shard: [runtime-soak, runtime-codec, runtime, docs-soak, docs-budget, docs, board, sheet-undo-1, sheet-undo-2, sheet, other]
         # CI writes one cache for each lane, including its grouped shards.
         include:
           - {shard: runtime-codec, cache: runtime-soak}

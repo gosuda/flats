@@ -104,7 +104,7 @@ func (s *Service) docsStoreDir(slugName string) string {
 // storeDir is the blob store of a Revision-model flat of type typ.
 func (s *Service) storeDir(slugName, typ string) string {
 	switch typ {
-	case contenttype.Docs, contenttype.Board, contenttype.Notebook:
+	case contenttype.Docs, contenttype.Board, contenttype.Notebook, contenttype.Sheet:
 		return s.docsStoreDir(slugName)
 	}
 	return s.designDir(slugName)
@@ -365,7 +365,7 @@ func (s *Service) lockStorageCtx(ctx context.Context, slugName string) (func(), 
 // --- type and access ---
 
 // refuseUnversioned refuses Version-model operations on documents, designs,
-// boards and notebooks.
+// boards, notebooks and sheets.
 func (s *Service) refuseUnversioned(ctx context.Context, f store.Flat) error {
 	t, err := s.flatType(ctx, f)
 	if err != nil {
@@ -380,6 +380,8 @@ func (s *Service) refuseUnversioned(ctx context.Context, f store.Flat) error {
 		return ErrBoardUnversioned
 	case contenttype.Notebook:
 		return ErrNotebookUnversioned
+	case contenttype.Sheet:
+		return ErrSheetUnversioned
 	}
 	return nil
 }
@@ -648,8 +650,8 @@ func (s *Service) finishDesignLocked(ctx context.Context, slugName, title string
 	return s.st.ContentTx(ctx, slugName, func(tx *store.ContentTx) error { return tx.SetPhase(ctx, "ready") })
 }
 
-// startPendingDesigns finishes designs, boards and notebooks whose creation was
-// interrupted.
+// startPendingDesigns finishes designs, boards, notebooks and sheets whose
+// creation was interrupted.
 func (s *Service) startPendingDesigns(ctx context.Context) {
 	states, err := s.st.ContentStates(ctx)
 	if err != nil {
@@ -669,6 +671,12 @@ func (s *Service) startPendingDesigns(ctx context.Context) {
 		if st.Type == contenttype.Notebook {
 			if err := s.startPendingNotebook(ctx, st.Flat); err != nil {
 				s.Event(ctx, st.Flat, "error", "notebook", "could not finish creating the notebook: "+err.Error(), nil)
+			}
+			continue
+		}
+		if st.Type == contenttype.Sheet {
+			if err := s.startPendingSheet(ctx, st.Flat); err != nil {
+				s.Event(ctx, st.Flat, "error", "sheet", "could not finish creating the sheet: "+err.Error(), nil)
 			}
 			continue
 		}
@@ -1272,8 +1280,8 @@ func (s *Service) retainAllRevisions(ctx context.Context, docs bool) {
 }
 
 // retainRevisions applies retention to one flat under its lock and sweeps
-// its blobs when it deleted revisions. Boards and notebooks import their outbox
-// first and measure disk usage again afterwards.
+// its blobs when it deleted revisions. Boards, notebooks and sheets import
+// their outbox first and measure disk usage again afterwards.
 func (s *Service) retainRevisions(ctx context.Context, slugName, typ string) {
 	unlock := s.lock(slugName)
 	in := s.liveBoard(slugName)
@@ -1292,6 +1300,14 @@ func (s *Service) retainRevisions(ctx context.Context, slugName, typ string) {
 		}
 		cancel()
 	}
+	sh := s.liveSheet(slugName)
+	if typ == contenttype.Sheet && sh != nil && s.checkStorageJournal(slugName) == nil {
+		ictx, cancel := context.WithTimeout(ctx, sheetTickTimeout)
+		if _, err := s.importSheetLocked(ictx, slugName, sh); err != nil {
+			s.logf("sheet revisions of %s: %v", slugName, err)
+		}
+		cancel()
+	}
 	deleted, err := s.retainLocked(ctx, slugName)
 	unlock()
 	if err != nil {
@@ -1306,6 +1322,11 @@ func (s *Service) retainRevisions(ctx context.Context, slugName, typ string) {
 	if typ == contenttype.Notebook && nb != nil {
 		if err := nb.Remeasure(context.Background()); err != nil {
 			s.logf("remeasure notebook %s: %v", slugName, err)
+		}
+	}
+	if typ == contenttype.Sheet && sh != nil {
+		if err := sh.Remeasure(context.Background()); err != nil {
+			s.logf("remeasure sheet %s: %v", slugName, err)
 		}
 	}
 }
@@ -1475,8 +1496,8 @@ func (s *Service) closeDue(ctx context.Context, slugName string, now time.Time) 
 
 // --- history operations ---
 
-// RevisionRollback reports a restored revision. Revision is 0 when a board or
-// notebook rollback applied but its new revision is not recorded: its import is
+// RevisionRollback reports a restored revision. Revision is 0 when a board,
+// notebook or sheet rollback applied but its new revision is not recorded: its import is
 // pending (list_revisions shows it shortly) or retention already deleted it.
 // Warning then says which. Retrying would restore again.
 type RevisionRollback struct {
@@ -1494,6 +1515,8 @@ func (s *Service) RollbackRevisionResult(ctx context.Context, slugName string, n
 				return s.rollbackBoard(ctx, slugName, n, label, via)
 			case contenttype.Notebook:
 				return s.rollbackNotebook(ctx, slugName, n, label, via)
+			case contenttype.Sheet:
+				return s.rollbackSheet(ctx, slugName, n, label, via)
 			}
 		}
 	}
@@ -1521,6 +1544,9 @@ func (s *Service) RollbackRevision(ctx context.Context, slugName string, n int, 
 		return r.Revision, err
 	case t == contenttype.Notebook:
 		r, err := s.rollbackNotebook(ctx, slugName, n, label, via)
+		return r.Revision, err
+	case t == contenttype.Sheet:
+		r, err := s.rollbackSheet(ctx, slugName, n, label, via)
 		return r.Revision, err
 	}
 	if _, _, err := s.revisionFlat(ctx, slugName); err != nil {
@@ -1600,7 +1626,7 @@ func (s *Service) RollbackRevision(ctx context.Context, slugName string, n int, 
 
 // PinRevision pins or unpins revision n.
 func (s *Service) PinRevision(ctx context.Context, slugName string, n int, pinned bool) error {
-	if err := s.catchUpRevisions(ctx, slugName); err != nil {
+	if err := s.catchUpRevisionKeeping(ctx, slugName, n); err != nil {
 		return err
 	}
 	unlock, lerr := s.lockCtx(ctx, slugName)
@@ -1703,6 +1729,9 @@ func (s *Service) ListRevisions(ctx context.Context, slugName string, before, li
 	if st.Type == contenttype.Notebook {
 		s.notebookRevisionPages(ctx, slugName, page.Revisions)
 	}
+	if st.Type == contenttype.Sheet {
+		s.sheetRevisionTabs(ctx, slugName, page.Revisions)
+	}
 	if page.Revisions == nil {
 		page.Revisions = []store.Revision{}
 	}
@@ -1712,9 +1741,10 @@ func (s *Service) ListRevisions(ctx context.Context, slugName string, before, li
 	return page, nil
 }
 
-// GetRevision returns revision n with every file it holds.
+// GetRevision returns revision n with every file it holds. A sheet's list
+// is admitted as the sheet admits it (sheetRevisionEntries).
 func (s *Service) GetRevision(ctx context.Context, slugName string, n int) (store.Revision, []store.RevisionFile, error) {
-	if err := s.catchUpRevisions(ctx, slugName); err != nil {
+	if err := s.catchUpRevisionKeeping(ctx, slugName, n); err != nil {
 		return store.Revision{}, nil, err
 	}
 	_, st, err := s.revisionFlat(ctx, slugName)
@@ -1732,8 +1762,15 @@ func (s *Service) GetRevision(ctx context.Context, slugName string, n int) (stor
 	if st.Type == contenttype.Notebook {
 		s.notebookRevisionPages(ctx, slugName, revs)
 	}
+	if st.Type == contenttype.Sheet {
+		s.sheetRevisionTabs(ctx, slugName, revs)
+	}
 	s.markSafePoint(ctx, slugName, st, revs)
 	r = revs[0]
+	if st.Type == contenttype.Sheet {
+		files, err := s.sheetRevisionEntries(ctx, slugName, r.Number)
+		return r, files, err
+	}
 	files, err := s.revisionFiles(ctx, slugName, r)
 	if st.Type == contenttype.Docs {
 		// Every document says whether guests wrote any of its lines.
@@ -1747,11 +1784,15 @@ func (s *Service) GetRevision(ctx context.Context, slugName string, n int) (stor
 }
 
 // RevisionFileContent returns one file of revision n. The bytes are read
-// under a lease, so the sweep cannot remove them meanwhile.
+// under a lease, so the sweep cannot remove them meanwhile. A sheet's file
+// is read as the sheet reads it (sheetRevisionFileContent).
 func (s *Service) RevisionFileContent(ctx context.Context, slugName string, n int, p string) ([]byte, store.RevisionFile, error) {
 	_, st, err := s.revisionFlat(ctx, slugName)
 	if err != nil {
 		return nil, store.RevisionFile{}, err
+	}
+	if st.Type == contenttype.Sheet {
+		return s.sheetRevisionFileContent(ctx, slugName, n, p)
 	}
 	r, err := s.st.Revision(ctx, slugName, n)
 	if err != nil {
@@ -1972,6 +2013,10 @@ func (s *Service) SweepDesignBlobs(ctx context.Context) {
 		return
 	}
 	for _, st := range states {
+		if st.Type == contenttype.Sheet {
+			s.sweepSheetIfFree(ctx, st.Flat)
+			continue
+		}
 		s.sweepBlobs(ctx, st.Flat, st.Type)
 	}
 }
@@ -1989,6 +2034,12 @@ func (s *Service) sweepBlobs(ctx context.Context, slugName, typ string) {
 		return
 	}
 	defer unlock()
+	s.sweepBlobsLocked(ctx, slugName, typ)
+}
+
+// sweepBlobsLocked is sweepBlobs for a caller that holds the flat's lock
+// and has checked its storage journal.
+func (s *Service) sweepBlobsLocked(ctx context.Context, slugName, typ string) {
 	if typ == contenttype.Docs && !s.prepareDocsSweepLocked(ctx, slugName) {
 		return
 	}
@@ -2011,6 +2062,21 @@ func (s *Service) sweepBlobs(ctx context.Context, slugName, typ string) {
 				s.logf("remeasure notebook %s: %v", slugName, err)
 			}
 		}()
+		runtimeRefs = refs
+	}
+	if typ == contenttype.Sheet {
+		in, refs, ok := s.prepareSheetSweepLocked(ctx, slugName)
+		if !ok {
+			return
+		}
+		// An unloaded sheet has no instance: it measures when it loads.
+		if in != nil {
+			defer func() {
+				if err := in.Remeasure(context.Background()); err != nil {
+					s.logf("remeasure sheet %s: %v", slugName, err)
+				}
+			}()
+		}
 		runtimeRefs = refs
 	}
 	if err := s.st.Checkpoint(ctx, "FULL"); err != nil {
@@ -2048,8 +2114,8 @@ func (s *Service) sweepBlobs(ctx context.Context, slugName, typ string) {
 	}
 }
 
-// designLoop closes due edit groups, records document, board and notebook revisions
-// and sweeps blobs in the background. It first migrates and imports every running
+// designLoop closes due edit groups, records document, board, notebook and sheet
+// revisions and sweeps blobs in the background. It first migrates and imports every running
 // document, then applies their retention.
 func (s *Service) designLoop() {
 	defer s.wg.Done()
@@ -2066,6 +2132,8 @@ func (s *Service) designLoop() {
 			s.CloseDueGroups(ctx)
 			s.TickBoards(ctx)
 			s.TickNotebooks(ctx)
+			s.TickSheets(ctx)
+			s.unloadIdleSheets()
 			if time.Since(lastDocs) >= docsTick {
 				lastDocs = time.Now()
 				s.TickDocs(ctx)

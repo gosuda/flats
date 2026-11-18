@@ -20,7 +20,7 @@ const LOG_POLL_MS = 5000;
 const LOG_KEEP = 500;
 
 // revisionQuotaBlock edits the revision and pin quotas of a document, design,
-// board or notebook. An empty field follows the host default; 0 means
+// board, notebook or sheet. An empty field follows the host default; 0 means
 // unlimited.
 function revisionQuotaBlock(slug, noun) {
   const slot = h('div', null, loading());
@@ -69,8 +69,8 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
   const networkSlot = h('div', null, loading());
   const secretsSlot = h('div', null, loading());
   const logs = settings ? { poll() {}, start() {}, stop() {} } : logsPanel(slug, ctx, timers);
-  // Documents, designs, boards and notebooks have no versions or previews:
-  // they run once saved.
+  // Documents, designs, boards, notebooks and sheets have no versions or
+  // previews: they run once saved.
   const isDocs = () => flat && isLive(flat);
   const serverParts = () => flat && hasServer(flat);
   const publishesOnSave = () => flat.private_links_off && flat.created_public_instance && visibilityOf(flat.visibility) === 'public' && !isDocs();
@@ -127,8 +127,8 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
     const privateState = shownRoute ? shownRoute.state : flat.private_state;
     const privateDetail = shownRoute ? shownRoute.detail : flat.private_detail;
     const pending = privateState && !['ready', 'key-expiring'].includes(privateState);
-    // A document, design, board or notebook serves once it runs; a website
-    // once a version is live.
+    // A document, design, board, notebook or sheet serves once it runs; a
+    // website once a version is live.
     const serving = isDocs() ? flat.running : flat.live_version;
     // A reverse proxy route is ready once registered; its detail says that
     // Flats cannot check the proxy (rule 6).

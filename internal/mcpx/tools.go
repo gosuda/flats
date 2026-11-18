@@ -38,7 +38,7 @@ func register(s *mcp.Server, t *tools) {
 	mcp.AddTool(s, &mcp.Tool{Name: "get_flat", Annotations: ro,
 		Description: "Show one flat: visibility, live version, private/public URLs and open previews."}, t.getFlat)
 	mcp.AddTool(s, t.describe(&mcp.Tool{Name: "create_flat", InputSchema: notebookCreateSchema(), Annotations: write,
-		Description: "Create an empty private website flat; with type page an unpublished page (one static HTML document for charts and visualizations) holding a starter Draft; with type docs a Private document, with type design a canvas of HTML artboards, with type board an empty whiteboard (topic.board), or type notebook a page tree with one empty top-level page (topic.notebook), each running at once (no publish or approval). Optional: save_draft, save_page, save_document, save_design, update_board and update_notebook create the flat on first save."}), t.createFlat)
+		Description: "Create an empty private website flat; with type page an unpublished page (one static HTML document for charts and visualizations) holding a starter Draft; with type docs a Private document, with type design a canvas of HTML artboards, with type board an empty whiteboard (topic.board), type notebook a page tree with one empty top-level page (topic.notebook), or type sheet a spreadsheet with one empty tab (topic.sheet), each running at once (no publish or approval). Optional: save_draft, save_page, save_document, save_design, update_board, update_notebook and update_sheet create the flat on first save."}), t.createFlat)
 	addSaveTool(s, t, t.describe(&mcp.Tool{Name: "save_draft", Annotations: write,
 		Description: "Save complete build output as a Private Draft revision (files inline; utf8 for text, base64 for binary). This replaces the complete Draft; omitted files are deleted. Saving never creates a version or deployment; call create_version separately to request approval. For one Markdown document use save_document. Documents must use save_document (including bundles)."}), t.saveDraft)
 	addSaveTool(s, t, t.describe(&mcp.Tool{Name: "save_draft_from_dir", Annotations: write,
@@ -56,6 +56,7 @@ func register(s *mcp.Server, t *tools) {
 	registerDesign(s, t)
 	registerBoard(s, t)
 	registerNotebook(s, t)
+	registerSheet(s, t)
 	addSaveTool(s, t, t.describe(&mcp.Tool{Name: "save_page", Annotations: write,
 		Description: "Save a page (one static HTML document with charts, graphs or visualizations, plus its assets) as a Private Draft, creating the flat when absent. " +
 			"Saving never creates a version or deployment; call create_version separately to request approval. Replaces the whole Draft: send the html and every asset each time. " +
@@ -107,7 +108,7 @@ func register(s *mcp.Server, t *tools) {
 // FlatInfo describes a flat.
 type FlatInfo struct {
 	privateLinksOff       bool
-	Type                  string                  `json:"type" jsonschema:"flat (website), page (one static HTML page; website lifecycle), docs (document), design (canvas of HTML artboards), board (whiteboard) or notebook (structured pages and databases)"`
+	Type                  string                  `json:"type" jsonschema:"flat (website), page (one static HTML page; website lifecycle), docs (document), design (canvas of HTML artboards), board (whiteboard), notebook (structured pages and databases) or sheet (spreadsheet)"`
 	Publication           string                  `json:"publication,omitempty" jsonschema:"websites: published or unpublished; absent for documents, which have no publishing"`
 	Running               bool                    `json:"running,omitempty" jsonschema:"documents: true when the document runs and its private URL serves it"`
 	Draft                 *DraftInfo              `json:"draft" jsonschema:"websites: the current Private Draft; null for documents"`
@@ -266,7 +267,10 @@ func toolErr(err error, hint string) error {
 	if c := notebookCategory(err); c != "" {
 		category = c
 	}
-	hint = notebookHintForType(err, hint)
+	if c := sheetCategory(err); c != "" {
+		category = c
+	}
+	hint = sheetHintForType(err, notebookHintForType(err, hint))
 	detail["category"] = category
 
 	if v, ok := bundle.IsValidation(err); ok {
@@ -349,7 +353,7 @@ func stateText(fi FlatInfo) string {
 		return liveText(fi.LiveVersion)
 	}
 	what := "document"
-	if fi.Type == contenttype.Design || fi.Type == contenttype.Board || fi.Type == contenttype.Notebook {
+	if fi.Type == contenttype.Design || fi.Type == contenttype.Board || fi.Type == contenttype.Notebook || fi.Type == contenttype.Sheet {
 		what = fi.Type
 	}
 	if fi.Running {
@@ -402,6 +406,8 @@ func flatText(fi FlatInfo) string {
 			b.WriteString(" (get_logs has details; update_board starts it)")
 		} else if !fi.Running && fi.Type == contenttype.Notebook {
 			b.WriteString(" (get_logs has details; update_notebook starts it)")
+		} else if !fi.Running && fi.Type == contenttype.Sheet {
+			b.WriteString(" (get_logs has details; update_sheet starts it)")
 		} else if !fi.Running {
 			b.WriteString(" (save it with save_document to start it)")
 		}
@@ -457,12 +463,12 @@ func (t *tools) getFlat(ctx context.Context, _ *mcp.CallToolRequest, in SlugIn) 
 type CreateIn struct {
 	Slug string `json:"slug" jsonschema:"3-54 lowercase letters, digits and single hyphens, starting with a letter; becomes the private host name"`
 	Name string `json:"name,omitempty" jsonschema:"display name (default: the slug)"`
-	Type string `json:"type,omitempty" jsonschema:"flat (website, default), page (one static HTML page with a starter Draft; website lifecycle), docs (a document that runs Private at once), design (a canvas of HTML artboards that runs Private at once), board (a whiteboard of stickies, shapes and connectors that runs Private at once) or notebook (structured pages and databases with one empty top-level page, running Private at once)"`
+	Type string `json:"type,omitempty" jsonschema:"flat (website, default), page (one static HTML page with a starter Draft; website lifecycle), docs (a document that runs Private at once), design (a canvas of HTML artboards that runs Private at once), board (a whiteboard of stickies, shapes and connectors that runs Private at once), notebook (structured pages and databases with one empty top-level page, running Private at once) or sheet (a spreadsheet with one empty tab, running Private at once)"`
 }
 
 func (t *tools) createFlat(ctx context.Context, _ *mcp.CallToolRequest, in CreateIn) (*mcp.CallToolResult, FlatInfo, error) {
-	if in.Type != "" && in.Type != contenttype.Flat && in.Type != contenttype.Docs && in.Type != contenttype.Page && in.Type != contenttype.Design && in.Type != contenttype.Board && in.Type != contenttype.Notebook {
-		return nil, FlatInfo{}, toolErr(refuse(core.ErrInvalid, "type must be flat, docs, page, design, board or notebook"), "omit type for a website")
+	if in.Type != "" && in.Type != contenttype.Flat && in.Type != contenttype.Docs && in.Type != contenttype.Page && in.Type != contenttype.Design && in.Type != contenttype.Board && in.Type != contenttype.Notebook && in.Type != contenttype.Sheet {
+		return nil, FlatInfo{}, toolErr(refuse(core.ErrInvalid, "type must be flat, docs, page, design, board, notebook or sheet"), "omit type for a website")
 	}
 	var f core.FlatView
 	var err error
@@ -477,6 +483,8 @@ func (t *tools) createFlat(ctx context.Context, _ *mcp.CallToolRequest, in Creat
 		f, err = t.svc.CreateBoard(ctx, in.Slug, in.Name, core.ViaMCP)
 	case contenttype.Notebook:
 		f, err = t.notebooks().CreateNotebook(ctx, in.Slug, in.Name, core.ViaMCP)
+	case contenttype.Sheet:
+		f, err = t.svc.CreateSheet(ctx, in.Slug, in.Name, core.ViaMCP)
 	default:
 		f, err = t.svc.CreateFlat(ctx, in.Slug, in.Name, core.ViaMCP)
 	}
@@ -485,6 +493,8 @@ func (t *tools) createFlat(ctx context.Context, _ *mcp.CallToolRequest, in Creat
 	}
 	fi := flatInfo(f)
 	switch in.Type {
+	case contenttype.Sheet:
+		return result(fmt.Sprintf("Created sheet %s with one empty tab named Sheet1. %s. There is no publish step. Read guide topic.sheet, then get_sheet before update_sheet.", fi.Slug, flatText(fi)), fi), fi, nil
 	case contenttype.Notebook:
 		return result(fmt.Sprintf("Created notebook %s with one empty top-level page. %s. There is no publish step. Read guide topic.notebook, then get_notebook before update_notebook.", fi.Slug, flatText(fi)), fi), fi, nil
 	case contenttype.Docs:

@@ -6,11 +6,14 @@ import (
 	"database/sql"
 	"encoding/hex"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"strconv"
+	"sync"
 	"testing"
 
+	"github.com/gosuda/flats/internal/sheet"
 	"github.com/gosuda/flats/internal/sqliteuri"
 	"github.com/gosuda/flats/internal/store"
 )
@@ -144,6 +147,95 @@ func (f *fixture) notebook(slug, storeID string, last, cursor int64) {
 	f.sql("flats/"+slug+"/notebook/notebook.db", append(stmts, outboxSQL("outbox", last, cursor)...)...)
 }
 
+// sheet adds a sheet flat in the same way, with a sheet.db the sheet package
+// wrote (sheetTemplate). It names the files of its newest revision in meta and
+// those of each pending entry in the outbox, and it keeps the bytes of a file
+// that the host has not imported yet in snapshots.
+func (f *fixture) sheet(slug, storeID string, last, cursor int64) {
+	f.t.Helper()
+	f.flat(slug)
+	f.state(slug, typeSheet, storeID, cursor)
+	rel := "flats/" + slug + "/sheet/sheet.db"
+	f.write(rel, string(sheetTemplate(f.t)))
+	stmts := []string{
+		`UPDATE meta SET store = '` + storeID + `', files = '[]'`,
+		`DELETE FROM outbox`, `DELETE FROM snapshots`,
+		`UPDATE sqlite_sequence SET seq = 0 WHERE name = 'outbox'`,
+	}
+	for i := int64(0); i < last; i++ {
+		stmts = append(stmts, sheetEntry("'[]'"))
+	}
+	f.sql(rel, append(stmts, `DELETE FROM outbox WHERE seq <= `+strconv.FormatInt(cursor, 10))...)
+}
+
+// sheetEntry is the statement that adds an outbox entry to a sheet.db, with the
+// SQL expression files as its file list.
+func sheetEntry(files string) string {
+	return `INSERT INTO outbox(kind, authors, message, state_seq, calc_date, tabs, files, created) VALUES('edit', '[]', '', 1, '', '[]', ` + files + `, 0)`
+}
+
+// sheetBackend is the least a sheet needs of its host to be created.
+type sheetBackend struct{}
+
+func (sheetBackend) Limits() sheet.Limits                                  { return sheet.Limits{} }
+func (sheetBackend) MeasureOther(context.Context) (int64, error)           { return 0, nil }
+func (sheetBackend) PutBlob(context.Context, string, []byte) (bool, error) { return true, nil }
+func (sheetBackend) OpenBlob(context.Context, string) (io.ReadCloser, error) {
+	return nil, errors.New("no blobs")
+}
+func (sheetBackend) Lease([]string) func() { return func() {} }
+func (sheetBackend) Exclusive(ctx context.Context, fn func(context.Context, int64) error) error {
+	return fn(ctx, 0)
+}
+func (sheetBackend) OutboxReady() {}
+
+// sheetTemplate returns the bytes of a sheet.db that the sheet package
+// created, made once per test binary.
+var sheetTemplate = func() func(t *testing.T) []byte {
+	var once sync.Once
+	var raw []byte
+	var err error
+	return func(t *testing.T) []byte {
+		t.Helper()
+		once.Do(func() {
+			dir, derr := os.MkdirTemp("", "flats-backup-sheet-")
+			if derr != nil {
+				err = derr
+				return
+			}
+			defer os.RemoveAll(dir)
+			in, _, oerr := sheet.Open(dir, sheetBackend{}, sheet.Options{Slug: "h"})
+			if oerr != nil {
+				err = oerr
+				return
+			}
+			in.Stop()
+			path := filepath.Join(dir, "sheet.db")
+			if _, serr := os.Stat(path + "-wal"); serr == nil {
+				err = errors.New("the new sheet left a -wal file")
+				return
+			}
+			raw, err = os.ReadFile(path)
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return raw
+	}
+}()
+
+// sheetFiles is the file list of a sheet revision that names the hashes.
+func sheetFiles(hashes ...string) string {
+	list := "["
+	for i, h := range hashes {
+		if i > 0 {
+			list += ","
+		}
+		list += `{"path":"tabs/1/rows/` + strconv.Itoa(i) + `-0.json","hash":"` + h + `","size":1}`
+	}
+	return list + "]"
+}
+
 // docs adds a document flat. The docs worker keeps its store id as JSON.
 func (f *fixture) docs(slug, storeID string, last, cursor int64) {
 	f.t.Helper()
@@ -164,11 +256,15 @@ func (f *fixture) server(slug string) {
 	f.write("flats/"+slug+"/data/files/notes.txt", "guest file")
 }
 
+func hashOf(content string) string {
+	sum := sha256.Sum256([]byte(content))
+	return hex.EncodeToString(sum[:])
+}
+
 // blob stores content as a blob of the flat and returns its hash.
 func (f *fixture) blob(slug, root, content string) string {
 	f.t.Helper()
-	sum := sha256.Sum256([]byte(content))
-	h := hex.EncodeToString(sum[:])
+	h := hashOf(content)
 	f.write("flats/"+slug+"/"+root+"/blobs/"+h[:2]+"/"+h, content)
 	return h
 }

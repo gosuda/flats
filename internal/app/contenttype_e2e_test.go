@@ -1,6 +1,8 @@
 package app
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -10,9 +12,12 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
+	"time"
 
 	"github.com/gosuda/flats/internal/api"
 	"github.com/gosuda/flats/internal/bundle"
@@ -28,6 +33,9 @@ import (
 // The real manager re-executes this test binary as a disposable worker.
 func TestMain(m *testing.M) {
 	if os.Getenv("FLATS_CONTENT_TEST_WORKER") == "1" {
+		if dir := os.Getenv(spareHoldEnv); dir != "" {
+			holdPreStartedWorker(dir)
+		}
 		if err := runtime.WorkerMain(os.Args[1:]); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			os.Exit(1)
@@ -35,6 +43,47 @@ func TestMain(m *testing.M) {
 		os.Exit(0)
 	}
 	os.Exit(m.Run())
+}
+
+// spareHoldEnv names a directory in which pre-started workers wait before
+// they prepare; see holdPreStartedWorker.
+const spareHoldEnv = "FLATS_CONTENT_TEST_SPARE_HOLD"
+
+// holdPreStartedWorker holds a pre-started worker (its first line is the
+// prewarm message) after it created dir/<pid>, until dir/release exists, its
+// marker is gone or its parent exited. Other workers are not held. The worker
+// then reads its stdin unchanged.
+func holdPreStartedWorker(dir string) {
+	in := bufio.NewReader(os.Stdin)
+	line, err := in.ReadBytes('\n')
+	r, w, perr := os.Pipe()
+	if perr != nil {
+		fmt.Fprintln(os.Stderr, perr)
+		os.Exit(1)
+	}
+	os.Stdin = r
+	go func() {
+		w.Write(line)
+		io.Copy(w, in)
+		w.Close()
+	}()
+	if err != nil || !bytes.HasPrefix(line, []byte(`{"prewarm":`)) {
+		return
+	}
+	marker := filepath.Join(dir, strconv.Itoa(os.Getpid()))
+	if os.WriteFile(marker, nil, 0o600) != nil {
+		return
+	}
+	parent := os.Getppid()
+	for os.Getppid() == parent {
+		if _, err := os.Stat(filepath.Join(dir, "release")); err == nil {
+			return
+		}
+		if _, err := os.Stat(marker); err != nil {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 }
 
 const documentTestApp = `import content from "./content.js";
@@ -60,31 +109,62 @@ export default { async fetch(request, env) {
  return new Response("worker:"+access+":"+content.documents[0].text);
 }};`
 
-func TestDocsRealRuntimeEndToEnd(t *testing.T) {
-	ctx := context.Background()
+// docsRuntimeFixture is a core service with the real worker runtime on a
+// temporary data directory.
+type docsRuntimeFixture struct {
+	svc *core.Service
+	// cleanup closes everything in reverse order of creation. It is
+	// idempotent and registered with t.Cleanup after t.TempDir, so it runs
+	// before the directory is removed.
+	cleanup func()
+}
+
+func newDocsRuntimeFixture(t *testing.T, env ...string) *docsRuntimeFixture {
+	t.Helper()
 	dir := t.TempDir()
+	var closers []func()
+	var once sync.Once
+	f := &docsRuntimeFixture{cleanup: func() {
+		once.Do(func() {
+			for i := len(closers) - 1; i >= 0; i-- {
+				closers[i]()
+			}
+		})
+	}}
+	t.Cleanup(f.cleanup)
 	st, err := store.Open(filepath.Join(dir, "flats.db"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer st.Close()
+	closers = append(closers, func() { st.Close() })
 	net, err := local.Listen("127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer net.Close()
+	closers = append(closers, func() { net.Close() })
 	manager, err := provider.New(dir, provider.Options{Local: net})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer manager.Close()
-	rt := &runtime.Manager{DataDir: dir, Env: append([]string{"FLATS_CONTENT_TEST_WORKER=1"}, testImageEnv()...), Logf: t.Logf}
+	closers = append(closers, func() { manager.Close() })
+	workerEnv := append(append([]string{"FLATS_CONTENT_TEST_WORKER=1"}, testImageEnv()...), env...)
+	rt := &runtime.Manager{DataDir: dir, Env: workerEnv, Logf: t.Logf}
+	// Closed after the service: stopping the last instance only asks the
+	// pre-started worker to exit, and Close waits until it did.
+	closers = append(closers, rt.Close)
 	app := core.DocsApp{FS: fstest.MapFS{"server.js": &fstest.MapFile{Data: []byte(documentTestApp)}}, Hash: strings.Repeat("b", 64), Entry: "server.js", ContentModule: "content.js"}
-	svc, err := core.New(ctx, core.Config{DataDir: dir, Store: st, Private: net, Lifecycle: manager, Runtime: rt, DocsApp: app, Logf: t.Logf})
+	svc, err := core.New(context.Background(), core.Config{DataDir: dir, Store: st, Private: net, Lifecycle: manager, Runtime: rt, DocsApp: app, Logf: t.Logf})
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer svc.Close()
+	closers = append(closers, func() { svc.Close() })
+	f.svc = svc
+	return f
+}
+
+func TestDocsRealRuntimeEndToEnd(t *testing.T) {
+	ctx := context.Background()
+	svc := newDocsRuntimeFixture(t).svc
 	files := []bundle.File{{Path: "flats.json", Data: []byte(`{"type":"docs"}`)}, {Path: "index.md", Data: []byte("# Initial\n한글 😀")}, {Path: "image.txt", Data: []byte("host asset")}}
 	saved, err := svc.SaveVersion(ctx, "documents", files, core.SaveMeta{}, core.ViaMCP)
 	if err != nil {

@@ -89,6 +89,9 @@ func (b *backupCmd) report(dataDir string, res *backup.Result) {
 	for _, p := range res.Unstable {
 		b.printf("  %s changed while it was copied; the copy holds its last read\n", p)
 	}
+	for _, r := range res.Refused {
+		b.printf("  copied %s as it is: the sheet check refuses it (%s), so the sheet stays closed on this host and after a restore\n", r.Path, r.Reason)
+	}
 	b.printf("The copy holds the secrets of this host. Keep it as protected as the data directory, in a folder that only you can write.\n")
 	b.printf("Check it with `flats backup --verify %s` before you restore from it.\n", res.Out)
 }

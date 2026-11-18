@@ -87,6 +87,8 @@ type MetricsSnapshot struct {
 	Board BoardMetrics
 	// Notebook holds the host-wide notebook counters.
 	Notebook NotebookMetrics
+	// Sheet holds the host-wide sheet counters.
+	Sheet SheetMetrics
 }
 
 // FlatCount is the number of flats with one type, visibility and logical

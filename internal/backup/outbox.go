@@ -19,6 +19,7 @@ const (
 	typeDocs     = "docs"
 	typeBoard    = "board"
 	typeNotebook = "notebook"
+	typeSheet    = "sheet"
 )
 
 // cursor is the import cursor of one flat in flats.db (content_state).
@@ -28,8 +29,8 @@ type cursor struct {
 }
 
 // outboxPath is the database that holds a flat's outbox, below the data
-// directory of the copy (rule 5): the docs worker's data database, board.db or
-// notebook.db. It is "" for another content type.
+// directory of the copy (rule 5): the docs worker's data database, board.db,
+// notebook.db or sheet.db. It is "" for another content type.
 func outboxPath(flat, typ string) string {
 	base := join(nameFlats, flat)
 	switch typ {
@@ -39,13 +40,16 @@ func outboxPath(flat, typ string) string {
 		return join(base, "board", nameBoardDB)
 	case typeNotebook:
 		return join(base, "notebook", nameNotebookDB)
+	case typeSheet:
+		return join(base, "sheet", nameSheetDB)
 	}
 	return ""
 }
 
 // openCopy opens a finished copy of a database read-only and immutable, which
-// creates no file and changes no byte.
-func openCopy(path string) (*sql.DB, error) {
+// creates no file and changes no byte. A test replaces it to see which checks
+// read a file.
+var openCopy = func(path string) (*sql.DB, error) {
 	db, err := sql.Open("sqlite", sqliteuri.File(path)+"?mode=ro&immutable=1&_pragma=busy_timeout(5000)")
 	if err != nil {
 		return nil, err
@@ -86,7 +90,7 @@ type outboxState struct {
 }
 
 // readOutbox reads the store id and the sequence numbers of a copy of a board,
-// notebook or docs worker database, as the host's checkImportCursor does
+// notebook, sheet or docs worker database, as the host's checkImportCursor does
 // (rule 16).
 func readOutbox(ctx context.Context, path, typ string) (outboxState, error) {
 	if typ == typeNotebook {
@@ -99,40 +103,73 @@ func readOutbox(ctx context.Context, path, typ string) (outboxState, error) {
 		return outboxState{}, err
 	}
 	defer db.Close()
-	var storeQuery, table string
+	// The row of the store id is found by a key that is compared only when
+	// it is of the class and a length the writer stores, so a damaged key is
+	// not read whole either.
+	const key = `CASE WHEN typeof(key)='text' AND octet_length(key)<=64 THEN key END = 'store'`
+	var column, from, table string
 	switch typ {
 	case typeBoard:
-		storeQuery, table = `SELECT value FROM meta WHERE key = 'store'`, "outbox"
-	case typeNotebook:
-		storeQuery, table = `SELECT store FROM meta WHERE singleton = 1`, "outbox"
+		column, from, table = "value", `meta WHERE `+key, "outbox"
+	case typeNotebook, typeSheet:
+		column, from, table = "store", `meta WHERE CASE WHEN typeof(singleton)='integer' THEN singleton END = 1`, "outbox"
 	case typeDocs:
-		storeQuery, table = `SELECT value FROM flats_docs_meta WHERE key = 'store'`, "flats_docs_outbox"
+		column, from, table = "value", `flats_docs_meta WHERE `+key, "flats_docs_outbox"
 	default:
 		return outboxState{}, nil
 	}
+	// The store id is read only when it is no longer than any store id, so
+	// a damaged one of any size is refused without being read.
 	var st outboxState
-	var raw string
-	err = db.QueryRowContext(ctx, storeQuery).Scan(&raw)
+	var raw sql.NullString
+	var size sql.NullInt64
+	err = db.QueryRowContext(ctx, fmt.Sprintf(`SELECT CASE WHEN octet_length(%[1]s)<=%[2]d THEN %[1]s END,octet_length(%[1]s) FROM %[3]s`,
+		column, maxStoreBytes, from)).Scan(&raw, &size)
 	switch {
 	case errors.Is(err, sql.ErrNoRows) || isNoTable(err):
 		return outboxState{}, nil
 	case err != nil:
 		return outboxState{}, err
+	case size.Int64 > maxStoreBytes:
+		return outboxState{}, fmt.Errorf("the store id of %s holds %d bytes", path, size.Int64)
+	case !raw.Valid:
+		return outboxState{}, fmt.Errorf("the store id of %s is NULL", path)
 	}
-	st.store = raw
+	st.store = raw.String
 	if typ == typeDocs { // the docs worker stores its values as JSON
 		var s string
-		if json.Unmarshal([]byte(raw), &s) == nil {
+		if json.Unmarshal([]byte(raw.String), &s) == nil {
 			st.store = s
 		}
 	}
-	err = db.QueryRowContext(ctx, `SELECT seq FROM sqlite_sequence WHERE name = ?`, table).Scan(&st.last)
-	if err != nil && !errors.Is(err, sql.ErrNoRows) && !isNoTable(err) {
+	// The sequence is read only as a number, from the row of a name no
+	// longer than a table's, so a damaged value of either is not read
+	// whole.
+	var last sql.NullInt64
+	err = db.QueryRowContext(ctx, `SELECT CASE WHEN typeof(seq)='integer' THEN seq END FROM sqlite_sequence
+		WHERE CASE WHEN typeof(name)='text' AND octet_length(name)<=64 THEN name END = ?`, table).Scan(&last)
+	switch {
+	case errors.Is(err, sql.ErrNoRows) || isNoTable(err):
+	case err != nil:
 		return outboxState{}, err
+	case !last.Valid:
+		return outboxState{}, fmt.Errorf("the outbox sequence of %s is not a number", path)
+	default:
+		st.last = last.Int64
 	}
+	// The oldest entry is taken from the sequences that are numbers, as the
+	// writer stores them, and an entry with another is refused, so that no
+	// sequence is read whole.
 	var oldest sql.NullInt64
-	if err := db.QueryRowContext(ctx, `SELECT MIN(seq) FROM `+table).Scan(&oldest); err != nil && !isNoTable(err) {
+	var other int64
+	err = db.QueryRowContext(ctx, `SELECT MIN(CASE WHEN typeof(seq)='integer' THEN seq END),count(CASE WHEN typeof(seq)<>'integer' THEN 1 END) FROM `+
+		table).Scan(&oldest, &other)
+	switch {
+	case isNoTable(err):
+	case err != nil:
 		return outboxState{}, err
+	case other > 0:
+		return outboxState{}, fmt.Errorf("the outbox of %s holds %d entries whose sequence is not a number", path, other)
 	}
 	st.acked = st.last
 	if oldest.Valid {
@@ -141,6 +178,10 @@ func readOutbox(ctx context.Context, path, typ string) (outboxState, error) {
 	st.present = st.store != ""
 	return st, nil
 }
+
+// maxStoreBytes is room for the store id of any outbox database: 32 hex
+// digits, JSON-quoted in a docs database.
+const maxStoreBytes = 64
 
 func isNoTable(err error) bool { return err != nil && strings.Contains(err.Error(), "no such table") }
 

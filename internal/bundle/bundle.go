@@ -541,12 +541,12 @@ func parseManifest(files []File, historical bool) (Manifest, error) {
 	}
 	if m.Type == "" {
 		if _, explicit := fields["type"]; explicit && !bad["type"] {
-			verr.add(ManifestName, "type must be flat, docs, page, design, board or notebook", `use "flat", "docs", "page", "design", "board" or "notebook", or omit type`)
+			verr.add(ManifestName, "type must be flat, docs, page, design, board, notebook or sheet", `use "flat", "docs", "page", "design", "board", "notebook" or "sheet", or omit type`)
 		}
 		m.Type = contenttype.Flat
 	}
-	if m.Type != contenttype.Flat && m.Type != contenttype.Docs && m.Type != contenttype.Page && m.Type != contenttype.Design && m.Type != contenttype.Board && m.Type != contenttype.Notebook {
-		verr.add(ManifestName, fmt.Sprintf("unknown type %q", m.Type), `use "flat", "docs", "page", "design", "board" or "notebook"`)
+	if m.Type != contenttype.Flat && m.Type != contenttype.Docs && m.Type != contenttype.Page && m.Type != contenttype.Design && m.Type != contenttype.Board && m.Type != contenttype.Notebook && m.Type != contenttype.Sheet {
+		verr.add(ManifestName, fmt.Sprintf("unknown type %q", m.Type), `use "flat", "docs", "page", "design", "board", "notebook" or "sheet"`)
 	}
 	switch m.Type {
 	case contenttype.Docs:
@@ -559,6 +559,8 @@ func parseManifest(files []File, historical bool) (Manifest, error) {
 		return parseShell(files, fields, m, &verr, "board", "write board elements with update_board")
 	case contenttype.Notebook:
 		return parseShell(files, fields, m, &verr, "notebook", "write notebook pages, blocks and rows with update_notebook")
+	case contenttype.Sheet:
+		return parseShell(files, fields, m, &verr, "sheet", "write sheet cells, formats and tabs with update_sheet")
 	}
 	if (bad["*"] || bad["kind"]) && m.Kind == "" && !index["index.html"] {
 		// Guess the kind so the entry checks below stay useful.

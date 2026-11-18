@@ -230,7 +230,7 @@ func notebookRevisionQuery(in RevisionIn) (map[string]json.RawMessage, bool, err
 }
 
 func notebookCreateSchema() map[string]any {
-	return notebookSchemaObject(map[string]any{"slug": notebookSchemaString(), "name": notebookSchemaString(), "type": notebookSchemaEnum("flat", "page", "docs", "design", "board", "notebook")}, "name", "type")
+	return notebookSchemaObject(map[string]any{"slug": notebookSchemaString(), "name": notebookSchemaString(), "type": notebookSchemaEnum("flat", "page", "docs", "design", "board", "notebook", "sheet")}, "name", "type")
 }
 
 func notebookRevisionSchema() map[string]any {

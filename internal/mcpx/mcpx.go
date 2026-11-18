@@ -18,6 +18,7 @@ import (
 	"github.com/gosuda/flats/internal/api"
 	"github.com/gosuda/flats/internal/core"
 	"github.com/gosuda/flats/internal/notebook"
+	"github.com/gosuda/flats/internal/sheet"
 )
 
 // Options configures the MCP handler.
@@ -122,9 +123,10 @@ func maxBody(uploadLimit int64) int64 {
 		return math.MaxInt64
 	}
 	if notebookLimit+(1<<20) > limit {
-		return notebookLimit + (1 << 20)
+		limit = notebookLimit + (1 << 20)
 	}
-	return limit
+	// An update_sheet call may carry sheet.MaxUpdateBodyBytes of JSON.
+	return max(limit, sheet.MaxUpdateBodyBytes()+(1<<20))
 }
 
 type loopbackKey struct{}

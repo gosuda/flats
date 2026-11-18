@@ -327,6 +327,10 @@ func TestZrokDisconnectEvents(t *testing.T) {
 	useFakeZrok(t, true)
 	dir := t.TempDir()
 	h, _ := consoleHostWith(t, dir, nil)
+	// Stop the host's background work before inserting the test records.
+	// Startup enrollment consumes waiting tokens.
+	h.bgCancel()
+	h.bg.Wait()
 	// A record that only notes the connection.
 	if err := h.Store.PutHostKey(ctx, store.HostKey{ID: core.HostKeyZrok, Source: core.KeySourceConsole, UpdatedAt: time.Now()}, store.Audit{}); err != nil {
 		t.Fatal(err)

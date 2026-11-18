@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -11,8 +12,8 @@ import (
 	"testing"
 )
 
-// storeMark reads the highest outbox seq a board.db or notebook.db ever
-// assigned.
+// storeMark reads the highest outbox seq a board.db, notebook.db or sheet.db
+// ever assigned.
 func storeMark(t *testing.T, path string) int64 {
 	t.Helper()
 	db, err := sql.Open("sqlite", path)
@@ -86,6 +87,30 @@ func olderStoreCases() []olderStoreCase {
 			return err
 		},
 		live: func(s *Service) bool { return s.liveNotebook("notes") != nil },
+	}, {
+		name: "sheet",
+		slug: "budget",
+		rel:  filepath.Join("flats", "budget", "sheet", "sheet.db"),
+		create: func(t *testing.T, s *Service) {
+			newSheet(t, s, "budget")
+		},
+		write: func(s *Service, n int) error {
+			ctx := context.Background()
+			data, err := s.GetSheet(ctx, "budget", 0, []byte(`{}`))
+			if err != nil {
+				return err
+			}
+			var read struct {
+				State string `json:"state"`
+			}
+			if err := json.Unmarshal(data, &read); err != nil {
+				return err
+			}
+			body := fmt.Sprintf(`{"state":%q,"op_id":"older-store-%d","ops":[{"op":"write","tab":"Sheet1","at":"A%d","rows":[[%d]]}]}`, read.State, n, n, n)
+			_, err = s.UpdateSheet(ctx, "budget", []byte(body), ViaMCP)
+			return err
+		},
+		live: func(s *Service) bool { return s.sheetHandle("budget") != nil },
 	}}
 }
 

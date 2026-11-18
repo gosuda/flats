@@ -1,0 +1,69 @@
+{"id":"typed-001","fn":"typed","class":"normal","typed":"1200","sets":null,"value":1200,"shown":"1200","csv":"1200","note":"digits are a number"}
+{"id":"typed-002","fn":"typed","class":"normal","typed":"-0.5","sets":null,"value":-0.5,"shown":"-0.5","csv":"-0.5","note":"a negative decimal number"}
+{"id":"typed-003","fn":"typed","class":"normal","typed":"1e6","sets":null,"value":1000000,"shown":"1000000","csv":"1000000","note":"the exponent form of rule 4"}
+{"id":"typed-004","fn":"typed","class":"normal","typed":"1.5E+20","sets":null,"value":1.5e+20,"shown":"1.5E+20","csv":"1.5E+20","note":"a number that ends in an exponent"}
+{"id":"typed-005","fn":"typed","class":"normal","typed":"1,200.50","sets":null,"value":1200.5,"shown":"1200.5","csv":"1200.5","note":"commas between thousands; no format is set, so General shows it"}
+{"id":"typed-006","fn":"typed","class":"normal","typed":"1,200","sets":null,"value":1200,"shown":"1200","csv":"1200","note":"commas without decimals"}
+{"id":"typed-007","fn":"typed","class":"normal","typed":"1,200,000.5","sets":null,"value":1200000.5,"shown":"1200000.5","csv":"1200000.5","note":"two groups of thousands"}
+{"id":"typed-008","fn":"typed","class":"boundary","typed":"0","sets":null,"value":0,"shown":"0","csv":"0","note":"zero"}
+{"id":"typed-009","fn":"typed","class":"normal","typed":"007","sets":null,"value":7,"shown":"7","csv":"7","note":"leading zeros are dropped from a number; the apostrophe form keeps them"}
+{"id":"typed-010","fn":"typed","class":"normal","typed":"50%","sets":{"kind":"percent","decimals":0},"value":0.5,"shown":"50%","csv":"50%","note":"a trailing % divides by 100 and sets the percent format"}
+{"id":"typed-011","fn":"typed","class":"normal","typed":"12.5%","sets":{"kind":"percent","decimals":2},"value":0.125,"shown":"12.50%","csv":"12.50%","note":"a percent with decimals"}
+{"id":"typed-012","fn":"typed","class":"normal","typed":"-50%","sets":{"kind":"percent","decimals":0},"value":-0.5,"shown":"-50%","csv":"-50%","note":"a negative percent"}
+{"id":"typed-013","fn":"typed","class":"normal","typed":"1,200%","sets":{"kind":"percent","decimals":0},"value":12,"shown":"1200%","csv":"1200%","note":"a percent with commas between thousands"}
+{"id":"typed-014","fn":"typed","class":"normal","typed":"$1,200.50","sets":{"kind":"currency","symbol":"$","decimals":2},"value":1200.5,"shown":"$1,200.50","csv":"\"$1,200.50\"","note":"a leading $ sets the currency format"}
+{"id":"typed-015","fn":"typed","class":"normal","typed":"$5","sets":{"kind":"currency","symbol":"$","decimals":2},"value":5,"shown":"$5.00","csv":"$5.00","note":"a whole currency amount"}
+{"id":"typed-016","fn":"typed","class":"normal","typed":"€5","sets":{"kind":"currency","symbol":"€","decimals":2},"value":5,"shown":"€5.00","csv":"€5.00","note":"the euro sign"}
+{"id":"typed-017","fn":"typed","class":"normal","typed":"£0.5","sets":{"kind":"currency","symbol":"£","decimals":2},"value":0.5,"shown":"£0.50","csv":"£0.50","note":"the pound sign"}
+{"id":"typed-018","fn":"typed","class":"normal","typed":"¥1000","sets":{"kind":"currency","symbol":"¥","decimals":2},"value":1000,"shown":"¥1,000.00","csv":"\"¥1,000.00\"","note":"the yen sign"}
+{"id":"typed-019","fn":"typed","class":"normal","typed":"₩1000","sets":{"kind":"currency","symbol":"₩","decimals":2},"value":1000,"shown":"₩1,000.00","csv":"\"₩1,000.00\"","note":"the won sign"}
+{"id":"typed-020","fn":"typed","class":"normal","typed":"-$5","sets":{"kind":"currency","symbol":"$","decimals":2},"value":-5,"shown":"-$5.00","csv":"-$5.00","note":"a minus sign before the currency sign, the number form of rule 60"}
+{"id":"typed-021","fn":"typed","class":"normal","typed":"-€1,000","sets":{"kind":"currency","symbol":"€","decimals":2},"value":-1000,"shown":"-€1,000.00","csv":"\"-€1,000.00\"","note":"a negative amount with commas"}
+{"id":"typed-022","fn":"typed","class":"normal","typed":"TRUE","sets":null,"value":true,"shown":"TRUE","csv":"TRUE","note":"a boolean"}
+{"id":"typed-023","fn":"typed","class":"normal","typed":"true","sets":null,"value":true,"shown":"TRUE","csv":"TRUE","note":"capitals aside"}
+{"id":"typed-024","fn":"typed","class":"normal","typed":"False","sets":null,"value":false,"shown":"FALSE","csv":"FALSE","note":"capitals aside"}
+{"id":"typed-025","fn":"typed","class":"normal","typed":"FALSE","sets":null,"value":false,"shown":"FALSE","csv":"FALSE","note":"a boolean"}
+{"id":"typed-026","fn":"typed","class":"normal","typed":"2026-03-15","sets":{"kind":"date","pattern":"yyyy-mm-dd"},"value":{"date":"2026-03-15"},"shown":"2026-03-15","csv":"2026-03-15","note":"a date sets the matching date format"}
+{"id":"typed-027","fn":"typed","class":"normal","typed":"3/15/2026","sets":{"kind":"date","pattern":"m/d/yyyy"},"value":{"date":"2026-03-15"},"shown":"3/15/2026","csv":"3/15/2026","note":"a date written month first"}
+{"id":"typed-028","fn":"typed","class":"normal","typed":"Mar 15, 2026","sets":{"kind":"date","pattern":"mmm d, yyyy"},"value":{"date":"2026-03-15"},"shown":"Mar 15, 2026","csv":"\"Mar 15, 2026\"","note":"a date with a month name"}
+{"id":"typed-029","fn":"typed","class":"normal","typed":"mar 15, 2026","sets":{"kind":"date","pattern":"mmm d, yyyy"},"value":{"date":"2026-03-15"},"shown":"Mar 15, 2026","csv":"\"Mar 15, 2026\"","note":"the month name ignores capitals"}
+{"id":"typed-030","fn":"typed","class":"normal","typed":"2024-02-29","sets":{"kind":"date","pattern":"yyyy-mm-dd"},"value":{"date":"2024-02-29"},"shown":"2024-02-29","csv":"2024-02-29","note":"a leap day"}
+{"id":"typed-031","fn":"typed","class":"normal","typed":"2/29/2024","sets":{"kind":"date","pattern":"m/d/yyyy"},"value":{"date":"2024-02-29"},"shown":"2/29/2024","csv":"2/29/2024","note":"a leap day written month first"}
+{"id":"typed-032","fn":"typed","class":"boundary","typed":"2023-02-29","sets":null,"value":"2023-02-29","shown":"2023-02-29","csv":"2023-02-29","note":"a date that does not exist is text"}
+{"id":"typed-033","fn":"typed","class":"boundary","typed":"1900-02-29","sets":null,"value":"1900-02-29","shown":"1900-02-29","csv":"1900-02-29","note":"there is no 1900-02-29, so this is text; Excel reads it as a date"}
+{"id":"typed-034","fn":"typed","class":"normal","typed":"2026-02-30","sets":null,"value":"2026-02-30","shown":"2026-02-30","csv":"2026-02-30","note":"a day past the end of the month is text"}
+{"id":"typed-035","fn":"typed","class":"normal","typed":"13/1/2026","sets":null,"value":"13/1/2026","shown":"13/1/2026","csv":"13/1/2026","note":"the month comes first, so month 13 is text"}
+{"id":"typed-036","fn":"typed","class":"boundary","typed":"1900-01-01","sets":{"kind":"date","pattern":"yyyy-mm-dd"},"value":{"date":"1900-01-01"},"shown":"1900-01-01","csv":"1900-01-01","note":"day 2"}
+{"id":"typed-037","fn":"typed","class":"normal","typed":"Dec 31, 2026","sets":{"kind":"date","pattern":"mmm d, yyyy"},"value":{"date":"2026-12-31"},"shown":"Dec 31, 2026","csv":"\"Dec 31, 2026\"","note":"the last day of a year with a month name"}
+{"id":"typed-038","fn":"typed","class":"normal","typed":"14:30","sets":{"kind":"time","pattern":"hh:mm"},"value":{"time":"14:30:00"},"shown":"14:30","csv":"14:30","note":"a time sets the matching time format"}
+{"id":"typed-039","fn":"typed","class":"normal","typed":"14:30:05","sets":{"kind":"time","pattern":"hh:mm:ss"},"value":{"time":"14:30:05"},"shown":"14:30:05","csv":"14:30:05","note":"a time with seconds"}
+{"id":"typed-040","fn":"typed","class":"normal","typed":"2:30 PM","sets":{"kind":"time","pattern":"h:mm AM/PM"},"value":{"time":"14:30:00"},"shown":"2:30 PM","csv":"2:30 PM","note":"a twelve-hour time"}
+{"id":"typed-041","fn":"typed","class":"boundary","typed":"00:00","sets":{"kind":"time","pattern":"hh:mm"},"value":{"time":"00:00:00"},"shown":"00:00","csv":"00:00","note":"midnight"}
+{"id":"typed-042","fn":"typed","class":"boundary","typed":"12:00 AM","sets":{"kind":"time","pattern":"h:mm AM/PM"},"value":{"time":"00:00:00"},"shown":"12:00 AM","csv":"12:00 AM","note":"midnight in twelve hours"}
+{"id":"typed-043","fn":"typed","class":"boundary","typed":"12:00 PM","sets":{"kind":"time","pattern":"h:mm AM/PM"},"value":{"time":"12:00:00"},"shown":"12:00 PM","csv":"12:00 PM","note":"noon in twelve hours"}
+{"id":"typed-044","fn":"typed","class":"boundary","typed":"23:59:59","sets":{"kind":"time","pattern":"hh:mm:ss"},"value":{"time":"23:59:59"},"shown":"23:59:59","csv":"23:59:59","note":"the last second of the day"}
+{"id":"typed-045","fn":"typed","class":"normal","typed":"2026-03-15 14:30","sets":{"kind":"datetime","date":"yyyy-mm-dd","time":"hh:mm"},"value":{"datetime":"2026-03-15T14:30:00"},"shown":"2026-03-15 14:30","csv":"2026-03-15 14:30","note":"a date and a time together"}
+{"id":"typed-046","fn":"typed","class":"normal","typed":"3/15/2026 2:30 PM","sets":{"kind":"datetime","date":"m/d/yyyy","time":"h:mm AM/PM"},"value":{"datetime":"2026-03-15T14:30:00"},"shown":"3/15/2026 2:30 PM","csv":"3/15/2026 2:30 PM","note":"month first with a twelve-hour time"}
+{"id":"typed-047","fn":"typed","class":"normal","typed":"2026-03-15 14:30:05","sets":{"kind":"datetime","date":"yyyy-mm-dd","time":"hh:mm:ss"},"value":{"datetime":"2026-03-15T14:30:05"},"shown":"2026-03-15 14:30:05","csv":"2026-03-15 14:30:05","note":"a date and a time with seconds"}
+{"id":"typed-048","fn":"typed","class":"normal","typed":"'007","sets":null,"value":"007","shown":"007","csv":"007","note":"a leading apostrophe keeps the rest as text and is not shown"}
+{"id":"typed-049","fn":"typed","class":"normal","typed":"'=not a formula","sets":null,"value":"'=not a formula","shown":"=not a formula","csv":"'=not a formula","note":"the example of rule 5; a read returns it with the apostrophe (rule 42)"}
+{"id":"typed-050","fn":"typed","class":"normal","typed":"''tis","sets":null,"value":"''tis","shown":"'tis","csv":"'tis","note":"text that itself starts with an apostrophe"}
+{"id":"typed-051","fn":"typed","class":"normal","typed":"'TRUE","sets":null,"value":"TRUE","shown":"TRUE","csv":"TRUE","note":"an apostrophe keeps a boolean word as text"}
+{"id":"typed-052","fn":"typed","class":"normal","typed":"'2026-03-15","sets":null,"value":"2026-03-15","shown":"2026-03-15","csv":"2026-03-15","note":"an apostrophe keeps a date as text"}
+{"id":"typed-053","fn":"typed","class":"normal","typed":"'50%","sets":null,"value":"50%","shown":"50%","csv":"50%","note":"an apostrophe keeps a percent as text and sets no format"}
+{"id":"typed-054","fn":"typed","class":"normal","typed":"=1+1","sets":null,"value":2,"shown":"2","csv":"2","note":"text that starts with = and has more characters is a formula"}
+{"id":"typed-055","fn":"typed","class":"boundary","typed":"=","sets":null,"value":"'=","shown":"=","csv":"'=","note":"a lone = is text; a read returns it with an apostrophe (rule 42)"}
+{"id":"typed-056","fn":"typed","class":"error","typed":"=SUM(","sets":null,"value":{"error":"#ERROR!"},"shown":"#ERROR!","csv":"#ERROR!","note":"a formula that cannot be read is stored and shows #ERROR!"}
+{"id":"typed-057","fn":"typed","class":"normal","typed":"=DATE(2026,3,15)","sets":null,"value":46096,"shown":"2026-03-15","csv":"2026-03-15","note":"a typed formula with a date result shows as a date (rule 11)"}
+{"id":"typed-058","fn":"typed","class":"normal","typed":"hello","sets":null,"value":"hello","shown":"hello","csv":"hello","note":"anything else is text"}
+{"id":"typed-059","fn":"typed","class":"normal","typed":"Rent","sets":null,"value":"Rent","shown":"Rent","csv":"Rent","note":"a word"}
+{"id":"typed-060","fn":"typed","class":"normal","typed":"1,2","sets":null,"value":"1,2","shown":"1,2","csv":"\"1,2\"","note":"a comma that is not between thousands makes text"}
+{"id":"typed-061","fn":"typed","class":"normal","typed":"12abc","sets":null,"value":"12abc","shown":"12abc","csv":"12abc","note":"digits followed by letters are text"}
+{"id":"typed-062","fn":"typed","class":"normal","typed":"1.2.3","sets":null,"value":"1.2.3","shown":"1.2.3","csv":"1.2.3","note":"two periods are text"}
+{"id":"typed-063","fn":"typed","class":"normal","typed":"$","sets":null,"value":"$","shown":"$","csv":"$","note":"a currency sign alone is text"}
+{"id":"typed-064","fn":"typed","class":"normal","typed":"%","sets":null,"value":"%","shown":"%","csv":"%","note":"a percent sign alone is text"}
+{"id":"typed-065","fn":"typed","class":"normal","typed":"TRUE!","sets":null,"value":"TRUE!","shown":"TRUE!","csv":"TRUE!","note":"a boolean word with more characters is text"}
+{"id":"typed-066","fn":"typed","class":"normal","typed":"-","sets":null,"value":"-","shown":"-","csv":"'-","note":"a minus sign alone is text"}
+{"id":"typed-067","fn":"typed","class":"normal","typed":"5 apples","sets":null,"value":"5 apples","shown":"5 apples","csv":"5 apples","note":"a number followed by a word is text"}
+{"id":"typed-068","fn":"typed","class":"normal","typed":"한글","sets":null,"value":"한글","shown":"한글","csv":"한글","note":"Korean text"}
+{"id":"typed-069","fn":"typed","class":"normal","typed":"a😀","sets":null,"value":"a😀","shown":"a😀","csv":"a😀","note":"text with a character outside the basic plane"}
