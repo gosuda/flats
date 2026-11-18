@@ -649,23 +649,20 @@ func TestDeadlineIsReadWithoutCountedWork(t *testing.T) {
 		}
 	})
 	t.Run("a small action", func(t *testing.T) {
-		limit := e.setRecalcLimit(time.Nanosecond)
+		deadline := e.workDeadline()
 		before, kept := e.dump(), e.memory("Sheet1", alice)
-		if got := status(alice.set("A1", "2")); got != "refused:recalculation_time" {
-			t.Errorf("a person's edit after the deadline: %s", got)
-		}
-		if got := agentStatus(e, `{"ops":[{"op":"write","tab":"Sheet1","at":"A1","rows":[[3]]}]}`); got != "refused:recalculation_time" {
-			t.Errorf("an agent's write after the deadline: %s", got)
-		}
+		deadline.refusedAt(t, 0, 0, func() string { return status(alice.set("A1", "2")) })
+		deadline.refusedAt(t, 0, 0, func() string {
+			return agentStatus(e, `{"ops":[{"op":"write","tab":"Sheet1","at":"A1","rows":[[3]]}]}`)
+		})
 		if after := e.dump(); after != before {
 			t.Fatalf("the refused actions changed the sheet: %s", dumpDiff(before, after))
 		}
 		if !kept.equal(e.memory("Sheet1", alice)) {
 			t.Errorf("the refused actions changed the structural log or the undo stacks")
 		}
-		e.setRecalcLimit(limit)
 		if got := status(alice.set("A1", "2")); got != "applied" {
-			t.Errorf("the edit with the limit back: %s", got)
+			t.Errorf("the next edit: %s", got)
 		}
 	})
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"math"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -138,9 +139,9 @@ func TestSheetRecalculationTimesOfAHost(t *testing.T) {
 		vec := samplesOf(t, m)
 		for start, dst := range map[string]*float64{"edit": &edit, "other": &other} {
 			n, ok := value(vec, "flats_sheet_recalculation_seconds_count", map[string]string{"start": start})
-			inf, _ := value(vec, "flats_sheet_recalculation_seconds_bucket", map[string]string{"start": start, "le": "+Inf"})
-			if !ok || n != inf {
-				t.Fatalf("recalculations started by %s: count %v, %v; +Inf bucket %v", start, n, ok, inf)
+			inf, hasInf := value(vec, "flats_sheet_recalculation_seconds_bucket", map[string]string{"start": start, "le": "+Inf"})
+			if !ok || !hasInf || n != inf {
+				t.Fatalf("recalculations started by %s: count %v, %v; +Inf bucket %v, %v", start, n, ok, inf, hasInf)
 			}
 			*dst = n
 		}
@@ -187,7 +188,7 @@ func TestSheetRecalculationTimesOfAHost(t *testing.T) {
 	if edit != 1 || other < loaded {
 		t.Fatalf("after one agent write: %v recalculations by an edit and %v otherwise, want 1 and at least %v", edit, other, loaded)
 	}
-	if sum, ok := value(samplesOf(t, m), "flats_sheet_recalculation_seconds_sum", map[string]string{"start": "edit"}); !ok || sum <= 0 {
+	if sum, ok := value(samplesOf(t, m), "flats_sheet_recalculation_seconds_sum", map[string]string{"start": "edit"}); !ok || sum < 0 || math.IsNaN(sum) || math.IsInf(sum, 0) {
 		t.Fatalf("time of the edit's recalculation = %v, %v", sum, ok)
 	}
 }

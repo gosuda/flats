@@ -53,11 +53,14 @@ func TestUndoAfterItsDeadlineKeepsTheEntry(t *testing.T) {
 			bob.set("A1", "bob")
 			entry := alice.top(c.redo)
 			before, kept := e.dump(), e.memory("Sheet1", alice)
-			limit := e.setRecalcLimit(time.Nanosecond)
-			ack := alice.do(op)
-			e.setRecalcLimit(limit)
-			if status(ack) != "refused:recalculation_time" || ack.Undo != nil {
-				t.Fatalf("the %s after the deadline: %s, %+v", c.name, status(ack), ack.Undo)
+			deadline := e.workDeadline()
+			var ack ackBody
+			deadline.refusedAt(t, 0, 0, func() string {
+				ack = alice.do(op)
+				return status(ack)
+			})
+			if ack.Undo != nil {
+				t.Fatalf("the refused %s returned an undo result: %+v", c.name, ack.Undo)
 			}
 			if after := e.dump(); after != before {
 				t.Fatalf("the refused %s changed the sheet: %s", c.name, dumpDiff(before, after))
@@ -65,12 +68,12 @@ func TestUndoAfterItsDeadlineKeepsTheEntry(t *testing.T) {
 			if !kept.equal(e.memory("Sheet1", alice)) || alice.top(c.redo) != entry {
 				t.Fatalf("the refused %s changed the undo stacks or the structural log", c.name)
 			}
-			// With the limit back, the same entry is skipped and leaves.
+			// On retry, the same entry is skipped and leaves.
 			ack = alice.do(op)
 			if ack.Undo == nil {
-				t.Fatalf("the %s with the limit back: %s", c.name, status(ack))
+				t.Fatalf("the retried %s: %s", c.name, status(ack))
 			}
-			wantUndo(t, "the "+c.name+" with the limit back", ack.Undo, undoAck{Skipped: 1, Reason: "changed"})
+			wantUndo(t, "the retried "+c.name, ack.Undo, undoAck{Skipped: 1, Reason: "changed"})
 			if alice.top(c.redo) == entry {
 				t.Errorf("the skipped %s left its entry on the stack", c.name)
 			}

@@ -487,13 +487,29 @@ func TestLimitRecalculationTime(t *testing.T) {
 	// L-15: an action over the time limit, lowered by a test option. The
 	// limit is on the clock, so with it passed the sheet takes no action,
 	// whatever its size, and takes one again when the limit is back.
-	e := start(t, func(o *Options) { o.RecalcLimit = time.Nanosecond })
+	const limit = 50 * time.Millisecond
+	e := start(t, func(o *Options) { o.RecalcLimit = limit })
+	expireNextAction := func() {
+		onWriter(e, func() {
+			e.in.hook = func(step string) {
+				if step != "begin" {
+					return
+				}
+				e.in.hook = nil
+				// The writer has started this action's clock.
+				time.Sleep(2 * limit)
+			}
+		})
+	}
+	expireNextAction()
 	wantLimit(t, e, `{"ops":[{"op":"write","tab":"Sheet1","at":"B1","rows":[["=SUM(D1:M1000)"]]}]}`, "recalculation_time")
 	e.want("B1", "")
 	alice := e.person("Alice")
+	expireNextAction()
 	if ack := alice.set("B1", "=SUM(D1:M1000)"); status(ack) != "refused:recalculation_time" {
 		t.Fatal(status(ack))
 	}
+	expireNextAction()
 	if ack := alice.set("B1", "plain"); status(ack) != "refused:recalculation_time" {
 		t.Fatal(status(ack))
 	}

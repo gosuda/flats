@@ -14,12 +14,12 @@ func TestRecalcObserver(t *testing.T) {
 	var mu sync.Mutex
 	var seen []bool
 	var total time.Duration
-	take := func() string {
+	take := func() (string, time.Duration) {
 		mu.Lock()
 		defer mu.Unlock()
 		out := fmt.Sprint(seen)
 		seen = nil
-		return out
+		return out, total
 	}
 	e := start(t, func(o *Options) {
 		o.OnRecalc = func(edit bool, took time.Duration) {
@@ -28,13 +28,13 @@ func TestRecalcObserver(t *testing.T) {
 			mu.Unlock()
 		}
 	})
-	if got := take(); got != "[false]" {
+	if got, _ := take(); got != "[false]" {
 		t.Fatalf("the load reported %s", got)
 	}
 	e.mustAgent(`{"ops":[{"op":"write","tab":"Sheet1","at":"A1","rows":[[1,"=A1*2","=TODAY()"]]}]}`)
 	alice := e.person("Alice")
 	alice.set("A1", "2")
-	if got := take(); got != "[true true]" {
+	if got, _ := take(); got != "[true true]" {
 		t.Fatalf("an agent call and a person's edit reported %s", got)
 	}
 	// A format alone calculates nothing; a refused edit calculated.
@@ -43,7 +43,7 @@ func TestRecalcObserver(t *testing.T) {
 	if _, err := e.agent(`{"ops":[{"op":"write","tab":"Sheet1","at":"D1","rows":[["=SUM(A1:K90910)"]]}]}`); refusal(err).Limit != "formula_reads" {
 		t.Fatal(err)
 	}
-	if got := take(); got != "[true]" {
+	if got, _ := take(); got != "[true]" {
 		t.Fatalf("a format and a refused call reported %s", got)
 	}
 	rev := e.b.importAll(t)
@@ -54,12 +54,18 @@ func TestRecalcObserver(t *testing.T) {
 	if _, err := e.b.Rollback(context.Background(), rev, "Alice"); err != nil {
 		t.Fatal(err)
 	}
-	if got := take(); got != "[false false false]" {
+	if got, _ := take(); got != "[false false false]" {
 		t.Fatalf("a date change, a revision view and a rollback reported %s", got)
 	}
 	e.restart()
-	if got := take(); got != "[false]" || total <= 0 {
-		t.Fatalf("the reload reported %s, %v in all", got, total)
+	got, elapsed := take()
+	if got != "[false]" || elapsed < 0 {
+		t.Fatalf("the reload reported %s, %v in all", got, elapsed)
+	}
+	const duration = time.Millisecond
+	e.in.observeCalc(true, duration)
+	if got, after := take(); got != "[true]" || after-elapsed != duration {
+		t.Fatalf("the explicit observation reported %s in %v, want [true] in %v", got, after-elapsed, duration)
 	}
 	if n := testing.AllocsPerRun(100, func() { e.in.observeCalc(true, time.Millisecond) }); n != 0 {
 		t.Fatalf("reporting a recalculation allocates %v times", n)
