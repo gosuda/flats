@@ -76,6 +76,11 @@ func TestTabChurnLeavesNoMarks(t *testing.T) {
 	}
 	// A copy of the files as a crash leaves them opens with the same marks.
 	crashed := &env{t: t, dir: t.TempDir(), b: e.b, clock: e.clock, opts: e.opts}
+	t.Cleanup(func() {
+		if crashed.in != nil {
+			crashed.in.Stop()
+		}
+	})
 	for _, name := range []string{dbName, dbName + "-wal"} {
 		copyFile(t, filepath.Join(e.dir, name), filepath.Join(crashed.dir, name))
 	}

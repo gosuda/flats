@@ -432,14 +432,7 @@ func TestUndoKeepsCollectedStamps(t *testing.T) {
 	t.Run("the records are gone", func(t *testing.T) {
 		e, alice, _ := setup(t)
 		collect(t, e)
-		e.in.mu.Lock()
-		path := e.in.scratch.blanks.path
-		e.in.mu.Unlock()
-		if err := os.Remove(path); err != nil {
-			t.Fatal(err)
-		}
-		failing := true
-		fail(e, "blank-read", &failing)
+		removeBlankFileOnRead(e)
 		// Nothing is known about the cells without a record: they are
 		// skipped, and the cells that kept theirs are restored.
 		u := undo(t, alice)
@@ -448,6 +441,30 @@ func TestUndoKeepsCollectedStamps(t *testing.T) {
 		}
 		wantUndo(t, "undo of the first clear", undo(t, alice), undoAck{Skipped: 1, Reason: "lost"})
 	})
+}
+
+// removeBlankFileOnRead closes SQLite before unlinking, as Windows requires.
+// The failed read still finds the missing file and gives up the store itself.
+func removeBlankFileOnRead(e *env) {
+	e.in.mu.Lock()
+	defer e.in.mu.Unlock()
+	p := e.in.undoPool()
+	p.fault = func(op string) error {
+		if op != "blank-read" {
+			return nil
+		}
+		p.fault = nil
+		b := &p.blanks
+		if err := b.db.Close(); err != nil {
+			e.t.Errorf("close the scratch database before removal: %v", err)
+			return err
+		}
+		if err := os.Remove(b.path); err != nil {
+			e.t.Errorf("remove the scratch database: %v", err)
+			return err
+		}
+		return errors.New("input/output error")
+	}
 }
 
 // A read of the collected blank records scans a range of the store where
@@ -707,10 +724,17 @@ func TestCollectedStampStoreFillsWithManyHolders(t *testing.T) {
 				}
 			}
 			if how == "the file reaches its reserve" {
-				// The tick measures the file after every record, so it stops
-				// within a few pages of the reserve below its bound.
-				if n := e.blankBytes(); n > b.maxBytes-(blankReserve-8)*blankPage || n < b.maxBytes-(blankReserve+8)*blankPage {
-					t.Fatalf("the file takes %d bytes, bound %d with a reserve of %d", n, b.maxBytes, blankReserve*blankPage)
+				// The tick uses SQLite's page count, so it stops within a
+				// few pages of the reserve below its bound.
+				e.in.mu.RLock()
+				n, err := b.bytes()
+				bound := b.maxBytes
+				e.in.mu.RUnlock()
+				if err != nil {
+					t.Fatal(err)
+				}
+				if n > bound-(blankReserve-8)*blankPage || n < bound-(blankReserve+8)*blankPage {
+					t.Fatalf("the file takes %d bytes, bound %d with a reserve of %d", n, bound, blankReserve*blankPage)
 				}
 			}
 			if e.hasRecord("K1") {

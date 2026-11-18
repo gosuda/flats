@@ -147,27 +147,13 @@ func TestRollbackLetsGoOfTheCollectedWorkbook(t *testing.T) {
 				}
 				e.in.mu.Lock()
 				b := &e.in.scratch.blanks
-				path, dir := b.path, e.in.scratch.dir
+				dir := e.in.scratch.dir
 				e.in.mu.Unlock()
 				if lose {
-					// The file is gone, and the next read of it gives it up.
-					if err := os.Remove(path); err != nil {
-						t.Fatal(err)
-					}
-					e.in.mu.Lock()
-					e.in.undoPool().fault = func(op string) error {
-						if op == "blank-read" {
-							return errors.New("input/output error")
-						}
-						return nil
-					}
-					e.in.mu.Unlock()
+					removeBlankFileOnRead(e)
 					if u := undo(t, alice); u.Reason != "lost" {
 						t.Fatalf("the undo of the clear over a lost file = %+v", u)
 					}
-					e.in.mu.Lock()
-					e.in.undoPool().fault = nil
-					e.in.mu.Unlock()
 				}
 				e.in.mu.RLock()
 				closed, owned := b.db == nil, b.owner == e.in.wb

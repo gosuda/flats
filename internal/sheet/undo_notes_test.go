@@ -757,14 +757,13 @@ func TestUndoNoteSweepStaysInsideTheMemoryLimits(t *testing.T) {
 				}
 				e.in.mu.Lock()
 				e.in.undoPool().instanceMax = before.sheet + free
-				// The write marks of the fixture, which no entry asks
-				// about, go before the heap is read, so that the ticks
-				// change only the notes.
+				// Drop write marks that no entry needs before measuring
+				// the room available for the sweep.
 				e.in.pruneMarks()
 				e.in.mu.Unlock()
-				// The ticks and the readings after each are one piece of the
-				// writer's work. A tick of the instance's own allocates too,
-				// and cannot come between two readings.
+				// Run the note sweeps and readings together on the writer.
+				// The rest of a maintenance tick allocates unrelated memory,
+				// including scratch directory read buffers.
 				type reading struct {
 					sheet, sheetMax     int64
 					session, sessionMax int64
@@ -776,12 +775,18 @@ func TestUndoNoteSweepStaysInsideTheMemoryLimits(t *testing.T) {
 				readings := make([]reading, 0, 10)
 				var base int64
 				var baseNoise uint64
+				work := max(1, f.notes/6)
 				onWriter(e, func() {
 					if measures {
 						base, baseNoise = heapWithin(64<<10, 15*time.Second)
 					}
 					for range 10 {
-						sweepOnce(e, max(1, f.notes/6))
+						e.in.mu.Lock()
+						pool := e.in.undoPool()
+						pool.noteWork = work
+						e.in.sweepNotes()
+						pool.noteWork = 0
+						e.in.mu.Unlock()
 						m := f.alice.noteMemory()
 						r := reading{sheet: m.sheet, sheetMax: m.sheetMax, session: m.session, sessionMax: m.sessionMax,
 							sweeping: m.swept != nil, counts: f.alice.noteCounts()}
@@ -814,7 +819,8 @@ func TestUndoNoteSweepStaysInsideTheMemoryLimits(t *testing.T) {
 						// the size classes of its lists and what a collection reads
 						// beside it.
 						grown, said := r.heap-base, r.sheet-counted
-						t.Logf("tick %d: the heap grew by %d bytes, the counters by %d", tick, grown, said)
+						t.Logf("tick %d: the heap grew by %d bytes, the counters by %d (GC allocations: baseline %d, current %d)",
+							tick, grown, said, baseNoise, r.noise)
 						if d, slack := grown-said, 16<<10+max(said, -said)/8; d > slack || d < -slack {
 							t.Fatalf("after tick %d the heap grew by %d bytes and the counters by %d", tick, grown, said)
 						}
