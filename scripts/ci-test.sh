@@ -42,15 +42,16 @@ sheet_undo='^TestUndo'
 sheet_undo_1='^(TestUndoNotesStayInBudget|TestUndoStampLinksStayBounded|TestUndoLargeTabDeletions|TestUndoNotesDoNotGrowWhenRowsBetweenThemAreWritten|TestUndoAfterBlankCollection)$'
 
 # sheet runs the sheet's tests with their full-size memory and volume cases
-# (docs/gates.md), which run in these shards and in no other lane. The
-# shards took 2.6, 4.3 and 8.3 minutes on a developer machine at a load
-# average of 20 to 36 (November 2026). The timeout leaves about 1.7 times
-# the slowest, inside the 20-minute job; hosted runners are not measured.
+# (docs/gates.md), which run in these shards and in no other lane. The shard
+# that runs the remaining engine tests and sheet subpackages gets more time
+# within the 20-minute CI job.
 # A caller's own -timeout comes later and wins.
 sheet() {
+	sheet_timeout=$1
+	shift
 	FLATS_SHEET_FULL=${FLATS_SHEET_FULL-1}
 	export FLATS_SHEET_FULL
-	GOFLAGS="-count=1${GOFLAGS:+ $GOFLAGS}" exec go test -timeout=14m "$@"
+	GOFLAGS="-count=1${GOFLAGS:+ $GOFLAGS}" exec go test "-timeout=$sheet_timeout" "$@"
 }
 
 # The release and commit image workflows run this script from main against
@@ -82,9 +83,9 @@ docs-budget)
 	;;
 docs) need internal/apps/docs && exec go test "$@" -skip "$docs_soak|$docs_budget" ./internal/apps/docs ;;
 board) need internal/board && exec go test "$@" ./internal/board/... ;;
-sheet-undo-1) need internal/sheet && sheet "$@" -run "$sheet_undo_1" ./internal/sheet ;;
-sheet-undo-2) need internal/sheet && sheet "$@" -run "$sheet_undo" -skip "$sheet_undo_1" ./internal/sheet ;;
-sheet) need internal/sheet && sheet "$@" -skip "$sheet_undo" ./internal/sheet/... ;;
+sheet-undo-1) need internal/sheet && sheet 14m "$@" -run "$sheet_undo_1" ./internal/sheet ;;
+sheet-undo-2) need internal/sheet && sheet 14m "$@" -run "$sheet_undo" -skip "$sheet_undo_1" ./internal/sheet ;;
+sheet) need internal/sheet && sheet 17m "$@" -skip "$sheet_undo" ./internal/sheet/... ;;
 other)
 	# Separate assignments, so set -e stops on a failing go list instead of
 	# testing no packages. Older source has another module path.

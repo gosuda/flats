@@ -292,15 +292,16 @@ esac
             self.assertIn(f"\nfunc {name}(t *testing.T) {{", sources, f"{name} is no test of internal/sheet")
 
     def test_sheet_shards_keep_their_timeout(self):
-        for shard in self.SHEET_SHARDS:
+        packages = self.CURRENT + ["internal/sheet"]
+        for shard, timeout in (("sheet-undo-1", "14m"), ("sheet-undo-2", "14m"), ("sheet", "17m")):
             with self.subTest(shard=shard):
-                code, args, stderr = self.run_shard(shard, packages=self.CURRENT + ["internal/sheet"],
-                                                    extra=["-timeout=30m"])
+                code, defaults, stderr = self.run_shard(shard, packages=packages)
+                self.assertEqual(code, 0, stderr)
+                self.assertEqual(defaults[:1], [f"-timeout={timeout}"])
+                code, args, stderr = self.run_shard(shard, packages=packages, extra=["-timeout=30m"])
                 self.assertEqual(code, 0, stderr)
                 # go test keeps the last -timeout, so a caller's value overrides the default.
-                self.assertEqual(args[:2], ["-timeout=14m", "-timeout=30m"])
-        script = (SCRIPTS / "ci-test.sh").read_text()
-        self.assertIn('exec go test -timeout=14m "$@"', script)
+                self.assertEqual(args, [defaults[0], "-timeout=30m", *defaults[1:]])
         ci = (ROOT / ".github/workflows/ci.yml").read_text()
         job = ci.split("\n  test:\n", 1)[1].split("\n\n  ", 1)[0]
         self.assertIn("timeout-minutes: 20", job)
