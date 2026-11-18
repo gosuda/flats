@@ -72,9 +72,9 @@ func (s *Store) EnvironmentSnapshot(ctx context.Context, flat string) ([]EnvVar,
 // RuntimeSettingsSnapshot reads all desired runtime settings in one SQLite
 // statement. Concurrent writes cannot mix environment and network snapshots.
 func (s *Store) RuntimeSettingsSnapshot(ctx context.Context, flat string) ([]EnvVar, []SealedSecret, []string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT 0,name,value,X'',X'' FROM env_vars WHERE flat=?
- UNION ALL SELECT 1,name,'',nonce,ciphertext FROM secrets WHERE flat=?
- UNION ALL SELECT 2,'',origins,X'',X'' FROM network_settings WHERE flat=?`, flat, flat, flat)
+	rows, err := s.db.QueryContext(ctx, `SELECT 0,name,value,X'',X'','' FROM env_vars WHERE flat=?
+ UNION ALL SELECT 1,name,'',nonce,ciphertext,key_id FROM secrets WHERE flat=?
+ UNION ALL SELECT 2,'',origins,X'',X'','' FROM network_settings WHERE flat=?`, flat, flat, flat)
 	if err != nil {
 		return nil, nil, nil, err
 	}
@@ -84,16 +84,16 @@ func (s *Store) RuntimeSettingsSnapshot(ctx context.Context, flat string) ([]Env
 	origins := make([]string, 0)
 	for rows.Next() {
 		var kind int
-		var name, value string
+		var name, value, keyID string
 		var nonce, ciphertext []byte
-		if err := rows.Scan(&kind, &name, &value, &nonce, &ciphertext); err != nil {
+		if err := rows.Scan(&kind, &name, &value, &nonce, &ciphertext, &keyID); err != nil {
 			return nil, nil, nil, err
 		}
 		switch kind {
 		case 0:
 			vars = append(vars, EnvVar{Name: name, Value: value})
 		case 1:
-			secs = append(secs, SealedSecret{Name: name, Nonce: nonce, Ciphertext: ciphertext})
+			secs = append(secs, SealedSecret{Name: name, Nonce: nonce, Ciphertext: ciphertext, KeyID: keyID})
 		case 2:
 			origins, err = decodeNetworkOrigins(value)
 			if err != nil {

@@ -30,9 +30,10 @@ const (
 // lower it: one copy at the real factor takes a second, and ten under -race.
 var recoveryWorkFactor = core.RecoveryWorkFactor
 
-// SecretKeyCommand runs `flats secret backup-key|restore-key|reset` (see
-// docs/spec/secret-key-recovery.md). backup-key works beside a running host;
-// restore-key and reset take the host lock.
+// SecretKeyCommand runs `flats secret backup-key|restore-key|rotate-key|reset`
+// (see docs/spec/secret-key-recovery.md and docs/spec/secret-key-rotation.md).
+// backup-key works beside a running host; restore-key, rotate-key and reset
+// take the host lock.
 func SecretKeyCommand(ctx context.Context, args []string, in io.Reader, out io.Writer) error {
 	if len(args) == 0 {
 		return usagef("missing subcommand")
@@ -43,6 +44,8 @@ func SecretKeyCommand(ctx context.Context, args []string, in io.Reader, out io.W
 		return k.backup(rest)
 	case "restore-key":
 		return k.restore(rest)
+	case "rotate-key":
+		return k.rotate(rest)
 	case "reset":
 		return k.reset(rest)
 	default:
@@ -64,6 +67,11 @@ func (k *secretKeyCmd) backup(args []string) error {
 	}
 	dataDir, keyFile, err := k.location()
 	if err != nil {
+		return err
+	}
+	// Before the key and the password are read: a copy of a key that sealed none of the values restores nothing
+	// (rule 25 of the rotation spec).
+	if err := rotationRefusal(k.ctx, dataDir, keyFile); err != nil {
 		return err
 	}
 	keyPath := keyFile.Path()
@@ -118,6 +126,28 @@ func (k *secretKeyCmd) backup(args []string) error {
 	}
 	k.printf("Flats keeps no copy of the password. Without it the recovery file opens nothing; keep it apart from this host.\n")
 	return nil
+}
+
+// rotationRefusal is the check of rule 22 of docs/spec/secret-key-rotation.md for a command that holds no host
+// lock: it refuses while a pending key of a rotation waits, and while the key at the key path sealed none of the
+// values. It reads the key IDs of flats.db without a migration. When flats.db is missing, is not of the schema of
+// this binary or cannot be read, it makes no check of the labels: a copy of the key helps most beside a database
+// that is damaged. It still stops on a pending key file that cannot be classified.
+func rotationRefusal(ctx context.Context, dataDir string, keyFile core.KeyFile) error {
+	ids, ok, err := store.SealedKeyIDsBeside(ctx, filepath.Join(dataDir, "flats.db"))
+	if err != nil || !ok {
+		ids = nil
+	}
+	return rotationError(core.CheckRotation(keyFile, ids))
+}
+
+// rotationError makes the refusals of a rotation that stopped action errors, which exit with status 78. Any other
+// error stays as it is.
+func rotationError(err error) error {
+	if errors.Is(err, core.ErrRotationStopped) || errors.Is(err, core.ErrKeySealedNothing) || errors.Is(err, core.ErrPendingKey) {
+		return &ActionError{err}
+	}
+	return err
 }
 
 // outFile checks --out before anything is written: a new file in an existing
@@ -300,6 +330,15 @@ func (k *secretKeyCmd) reset(args []string) error {
 		return err
 	}
 	defer done()
+	// A pending key of a rotation that waits opens the values, so nothing is lost and reset refuses (rule 24 of the
+	// rotation spec). A pending key file that cannot be classified stops reset too, because it can be such a key.
+	ids, err := st.SealedKeyIDs(k.ctx)
+	if err != nil {
+		return err
+	}
+	if err := rotationError(core.CheckStoppedRotation(keyFile, ids)); err != nil {
+		return err
+	}
 	secrets, err := st.ListAllSecrets(k.ctx)
 	if err != nil {
 		return err
@@ -323,9 +362,13 @@ func (k *secretKeyCmd) reset(args []string) error {
 		return nil
 	}
 	keyPath := keyFile.Path()
-	keyMissing, err := k.resetAllowed(st, keyFile)
+	keyMissing, keyID, err := k.resetAllowed(st, keyFile)
 	if err != nil {
 		return err
+	}
+	// Before the confirmation: the values say which key sealed them, and that key can still be in a file.
+	if id, ok := ids.Single(); ok && id != keyID {
+		k.printf("The stored values carry the key ID %s: a key file with that ID opens them, for example the file that `flats secret rotate-key --out` wrote. Look for it before you delete the values.\n", id)
 	}
 	k.printf("This deletes:\n")
 	for _, v := range values {
@@ -386,28 +429,29 @@ func (k *secretKeyCmd) reset(args []string) error {
 
 // resetAllowed checks what is at the key's path: reset goes on only when nothing
 // is there, or when a valid key there opens none of the sealed values. With a
-// configured path it first makes the checks of rule 3 of the spec.
-func (k *secretKeyCmd) resetAllowed(st *store.Store, keyFile core.KeyFile) (keyMissing bool, err error) {
+// configured path it first makes the checks of rule 3 of the spec. keyID is the
+// ID of the key at the path, and "" when nothing is there.
+func (k *secretKeyCmd) resetAllowed(st *store.Store, keyFile core.KeyFile) (keyMissing bool, keyID string, err error) {
 	keyPath := keyFile.Path()
 	if err := keyFile.Check(); err != nil {
-		return false, &ActionError{err}
+		return false, "", &ActionError{err}
 	}
 	if _, err := os.Lstat(keyPath); errors.Is(err, fs.ErrNotExist) {
-		return true, nil
+		return true, "", nil
 	} else if err != nil {
-		return false, err
+		return false, "", err
 	}
 	key, err := readHostKey(keyFile)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	check, err := core.CheckKey(k.ctx, st, key)
 	if err != nil {
-		return false, err
+		return false, "", err
 	}
 	switch {
 	case check.All():
-		return false, actionf("%s opens all %d sealed values, so nothing is lost: remove single values with `flats secret rm` while the host runs, or with `flats key rm`", keyPath, check.Total)
+		return false, "", actionf("%s opens all %d sealed values, so nothing is lost: remove single values with `flats secret rm` while the host runs, or with `flats key rm`", keyPath, check.Total)
 	case check.Opened > 0:
 		var keys, secrets []string
 		for _, n := range check.Unopened {
@@ -424,10 +468,10 @@ func (k *secretKeyCmd) resetAllowed(st *store.Store, keyFile core.KeyFile) (keyM
 		if len(secrets) > 0 {
 			msg += fmt.Sprintf("; then start the host and remove %s with `flats secret rm`", strings.Join(secrets, ", "))
 		}
-		return false, actionf("%s", msg)
+		return false, "", actionf("%s", msg)
 	}
 	k.printf("%s opens none of the %d sealed values.\n", keyPath, check.Total)
-	return false, nil
+	return false, core.KeyID(key), nil
 }
 
 // location resolves the data directory and the host key of the selected

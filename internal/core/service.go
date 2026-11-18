@@ -145,6 +145,8 @@ type Service struct {
 	stop        chan struct{}
 	wg          sync.WaitGroup
 	secretKey   []byte
+	// secretKeyID is KeyID(secretKey), the label that each value sealed by this host carries.
+	secretKeyID string
 	runtime     runtimeGenerations
 	routeEpochs sync.Map // route key -> *routeEpoch
 	design      designCache
@@ -264,7 +266,7 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 	if err != nil {
 		return nil, err
 	}
-	s.secretKey = key
+	s.secretKey, s.secretKeyID = key, KeyID(key)
 	if w := RecoveryCopyWarning(cfg.DataDir, key); w != "" {
 		s.logf("warning: %s", w)
 	}

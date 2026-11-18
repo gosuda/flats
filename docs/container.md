@@ -328,6 +328,18 @@ do not. For those, `flats backup` needs `--exclude-secret-key`, and
 `flats secret restore-key` needs `--out FILE`. Back up the key file apart from
 the volume, because a copy of the volume no longer holds it.
 
+To replace a mounted key, stop the host and run
+`flats secret rotate-key --out FILE` in a one-off container that has the mounts
+of the service, for example with `docker compose run`. Give that container a
+folder outside the data volume for `FILE`. The mount of the key is read-only, so
+the command writes the new key to `FILE` and changes nothing at the key path.
+Then put the new key into the file of the secret and create the container
+again. Remove `FILE` only after that, and only when it is not the file of the
+secret itself. While `flats.db` holds sealed values, the host refuses to
+start until the new key is at the key path.
+[Rotating the key](configuration.md#rotating-the-key) has the commands and says
+what the old key still opens.
+
 ## Upgrading and backups
 
 Upgrade by replacing the container and keeping the volume:

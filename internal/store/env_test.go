@@ -113,9 +113,10 @@ func TestEnvMigrationPreservesSecrets(t *testing.T) {
 	if err != nil || info.Version != 7 {
 		t.Fatalf("migration: %+v %v", info, err)
 	}
-	secs, err := s.ListSecrets(t.Context(), "app")
-	if err != nil || len(secs) != 1 || string(secs[0].Ciphertext) != string([]byte{2}) {
-		t.Fatalf("secrets: %+v %v", secs, err)
+	// The schema ends at 7 here, before the key IDs, so the row is read as the code of that time read it.
+	var ciphertext []byte
+	if err := s.db.QueryRowContext(t.Context(), `SELECT ciphertext FROM secrets WHERE flat='app' AND name='TOKEN'`).Scan(&ciphertext); err != nil || string(ciphertext) != string([]byte{2}) {
+		t.Fatalf("secrets: %v %v", ciphertext, err)
 	}
 	if err := s.PutEnv(t.Context(), "app", EnvVar{Name: "TOKEN", Value: "no", UpdatedAt: now}); !errors.Is(err, ErrEnvCollision) {
 		t.Fatalf("migration collision: %v", err)

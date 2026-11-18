@@ -580,15 +580,69 @@ with a shell on the Flats host (see Approvals). Values reach JavaScript as
 `env.NAME` and WASI as environment variables from the captured activation
 snapshot. Changes apply on the next approved deployment, redeployment, rollback or standalone data snapshot restoration,
 or Flats host restart; automatic worker restarts reuse the captured settings.
-Every change of a sealed value, and every key backup, restore and reset, writes an event to the audit log in
-`flats.db`. A change of a sealed value and a reset write it in the transaction of the change; a key backup and a key
-restore change no row and append it after their work. An applied change of the visibility, of the origin grants or of a
-provider permission of a flat writes its event in the transaction of the change too. The log is append-only and outlives
-the flat; no agent surface reads it ([Audit log](configuration.md#audit-log)).
+Every change of a sealed value, and every key backup, restore, rotation and reset, writes an event to the audit log in
+`flats.db`. A change of a sealed value, a rotation and a reset write it in the transaction of the change; a key backup
+and a key restore change no row and append it after their work. An applied change of the visibility, of the origin
+grants or of a provider permission of a flat writes its event in the transaction of the change too. The log is
+append-only and outlives the flat; no agent surface reads it ([Audit log](configuration.md#audit-log)).
 `flats secret backup-key` keeps a copy of the key, encrypted under a recovery
 password the operator chooses, beside it, and `restore-key` and `reset` bring
 back a host whose key is lost; see
 [Recovering a lost secret.key](configuration.md#recovering-a-lost-secretkey).
+
+The key has this life. The host creates the first key, 32 random bytes, only at
+`<data>/secret.key` and only when no file is there: at a start, when
+`flats key set` stores the first operator key, and when the import of a legacy
+host stores a key. At a configured path the operator makes the first key. A
+rotation makes each later key, at either kind of path (see below). Each sealed
+value carries a key ID, which is the ID of the key that sealed it. The ID is a
+label. It is not part of the associated data, and the host never uses it to
+decide whether it tries to open a value. It tries the key. The start and the
+key commands read the labels to tell which key file belongs to the values. A
+value that was sealed before key IDs existed has an empty ID until it is sealed
+again.
+
+`flats secret rotate-key` replaces the key while the host is stopped
+([Rotating the key](configuration.md#rotating-the-key),
+[secret key rotation](spec/secret-key-rotation.md)). It makes a new key and
+seals every flat secret and operator key value again under it. No value
+changes, so no flat needs a new deployment. The command does not keep the old
+key. It works in four steps, and each step is durable before the next one
+starts, so after a stop at any point one file on the host holds the key that
+opens every value:
+
+1. The command writes the new key to a pending key file beside the key file
+   (`secret.key.next` in the data directory), or to the file that `--out`
+   names, and syncs it. The next step starts only when that file is complete,
+   so the new key is on the disk before a value depends on it.
+2. One transaction seals every value again, sets its key ID and writes the
+   `key.rotate` audit event. A complete checkpoint then makes the commit
+   durable. A loss of power can take back a commit that no checkpoint made
+   durable, and the key file must still hold the old key then.
+3. The command writes the new key into the key file, reads it again and
+   compares, and removes the pending key. The file keeps its owner, its mode
+   and its access list. With `--out` the command does not write the key path,
+   and the operator puts the key of the new file there.
+4. When a recovery copy exists, the command writes it again under the same
+   recovery password, so that the password opens the new key. Until then the
+   start warns that the copy holds another key.
+
+The start refuses while a rotation waits for its finish, and while a valid key
+is at the key path and every sealed value carries the ID of another key. A host
+in one of these states would seal new values under a key that does not open the
+others. The start never writes a key file for a rotation. A second run of
+`flats secret rotate-key` finishes a rotation that stopped.
+
+Back up `flats.db` together with the key of the same moment. A copy of
+`flats.db` from before a rotation opens only with the old key. The operator
+stores three things apart: the recovery password, away from the host and its
+backups; a recovery copy that `backup-key --out` wrote, away from the host; and
+a key at a configured path, which no copy of the data directory holds. After a
+rotation the copy from `backup-key --out` still holds the old key, so the
+operator writes it again and takes a new backup. `flats secret reset` is for a
+host that has lost both the key and the recovery password. It deletes the
+sealed values, and the operator sets them again. To replace a key that still
+opens the values, the operator rotates it.
 
 ## Approvals
 

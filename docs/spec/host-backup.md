@@ -56,10 +56,15 @@ Out of scope:
 - Scheduling, upload to a remote store, compression, encryption of the copy and
   incremental copies.
 - A pause of the running host. The requester chose a copy that checks itself.
-- Key rotation (#224 item 2). A rotation during a copy must fail the copy (rule
-  22). The key path setting (#224 item 1) is implemented, and the command reads
-  the key through the location that it adds. [Secret key path](secret-key-path.md)
-  says how rules 12, 22, 24, 28, 30, 31 and 35 apply to it.
+- Key rotation (#224 item 2). [Secret key rotation](secret-key-rotation.md)
+  adds it, and its rule 26 says what this command does around a rotation. The
+  command never copies a pending key (rule 3). It refuses in its preflight while
+  a rotation waits for its finish, and while the key at the key path sealed none
+  of the values (rule 12). A write of the key file during a copy fails the copy
+  (rule 22). The key path setting (#224 item 1) is implemented, and the command
+  reads the key through the location that it adds.
+  [Secret key path](secret-key-path.md) says how rules 12, 22, 24, 28, 30, 31
+  and 35 apply to it.
 
 ## The copy
 
@@ -88,7 +93,12 @@ Out of scope:
    - below a flat's directory: `health-check/`, `restore-trial/` and the
      temporary directories of a restore (`data.restore`, `data.restore-old`);
    - below `revisions/` and `design/`: `tmp/`;
-   - a snapshot that is being written (rule 14).
+   - a snapshot that is being written (rule 14);
+   - `secret.key.next`, the pending key of a rotation, and a temporary key file
+     `.secret-key-*`, which the creation of a key at the first start and
+     `flats secret restore-key` can leave after a crash. The command leaves them
+     out with and without `--exclude-secret-key`
+     ([secret key rotation](secret-key-rotation.md), rule 26).
 4. Each SQLite database is copied as a snapshot made with `VACUUM INTO` from a
    read-only connection with a busy timeout of 5 s. The snapshot holds every
    commit up to its moment, has no `-wal` or `-shm`, and is consistent by itself.
@@ -172,10 +182,26 @@ these steps and no other:
     [secret key path](secret-key-path.md) fail or the key cannot be read. Only the
     refusal for a key that cannot be read names `--exclude-secret-key`, which skips
     the read and not the checks. The database
-    check comes last, because
-    it is the only refusal that opens a database, and opening the database of a
+    check comes after the refusals above, because
+    it opens a database, and opening the database of a
     stopped host that left a `-wal` file and no `-shm` creates an empty `-shm`
-    (rule 11). It creates a new
+    (rule 11). The command also refuses in the two states of rule 22 of
+    [secret key rotation](secret-key-rotation.md), with the message of that
+    rule and before it writes anything: a pending key of a rotation waits, or
+    the key path holds a valid key and every sealed value carries the key ID of
+    another key. This covers a rotation that stopped before it wrote the key
+    file, and a rotation with `--out` whose new key is not at the key path yet.
+    The command reads the key IDs for this refusal from `flats.db` without the
+    host lock and without a migration, so the refusal comes after the database
+    check, and after the refusal for a configured key that cannot be read, also
+    while a pending key waits. That earlier refusal names the pending key file
+    and `flats secret rotate-key` when a file is at the pending name. With
+    `--exclude-secret-key` the command reads no key for the second
+    state and makes the copy there. For the first state it still reads the
+    pending key file when one exists. When a sealed value carries the ID of
+    that key, it reads the key file too, only to compare the two, and a key
+    file that is missing or cannot be read counts as different (rule 26 there).
+    It creates a new
     directory `PATH.partial-<random>` in the same folder, with mode 0700. All
     writes go there.
 13. **Survey.** For each flat directory below `flats/` it lists the directory and
@@ -280,7 +306,16 @@ these steps and no other:
     a rotation, never pairs one key with the other key's `flats.db`. With
     `host.secret_key_path`, both reads use the configured file, the second one
     without the refusal of a file at `<data>/secret.key`, and a file that is
-    gone at the second read fails the backup the same way.
+    gone at the second read fails the backup the same way. The rule holds for
+    the key file: `flats secret rotate-key` writes it during a rotation, and
+    that write during a copy fails the copy. The rule does not hold for the
+    recovery copy. While the recovery copy holds the old key, between the write
+    of the key file and the write of the recovery copy or after that write
+    failed, a copy holds a recovery copy that does not open its `flats.db`. A
+    copy with its `secret.key` is still complete, and a copy with
+    `--exclude-secret-key` cannot be restored with the password. The start
+    reports a recovery copy that is out of date, and this command does not
+    ([secret key rotation](secret-key-rotation.md), rule 26).
 23. On any failure, and on an interrupt (Ctrl-C or SIGTERM) before step 21, the
     command removes the partial directory and exits with a failure. `PATH` never
     holds an incomplete copy. After a crash a `PATH.partial-<random>` can stay. It
@@ -361,7 +396,9 @@ flats backup --verify PATH [--json]
     data directory with no `flats.db`, a `flats.db` that is no Flats database, and
     a `user_version` that rule 25 refuses, and, with `host.secret_key_path`, a
     key that the checks of rule 3 of [secret key path](secret-key-path.md) refuse
-    or that cannot be read.
+    or that cannot be read. A state in which the start refuses because of a key
+    rotation is a refusal too (rule 12, and rule 26 of
+    [secret key rotation](secret-key-rotation.md)).
     Any other failure exits with status 1: an unstable host file after 3 copies, a
     database that stays incoherent after 3 attempts, a change of the layout during
     the copy (rule 19), a changed key (rule 22), a failed verification, and an

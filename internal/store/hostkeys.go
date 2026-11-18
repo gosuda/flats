@@ -47,11 +47,15 @@ ALTER TABLE console_nodes_v14 RENAME TO console_nodes;`)
 }
 
 // HostKey is one operator key record. Nonce and Ciphertext are nil when the
-// row only records a connection (zrok, NetBird) without a value.
+// row only records a connection (zrok, NetBird) without a value. KeyID is the
+// ID of the key that sealed the value. It is empty for a value from before
+// the key IDs, and always for a record without a value
+// (docs/spec/secret-key-rotation.md, rule 1).
 type HostKey struct {
 	ID         string
 	Nonce      []byte
 	Ciphertext []byte
+	KeyID      string
 	Source     string
 	UpdatedAt  time.Time
 	LastError  string
@@ -68,8 +72,8 @@ func (s *Store) GetHostKey(ctx context.Context, id string) (HostKey, error) {
 func getHostKey(ctx context.Context, x executor, id string) (HostKey, error) {
 	k := HostKey{ID: id}
 	var at int64
-	err := x.QueryRowContext(ctx, `SELECT nonce, ciphertext, source, updated_at, last_error FROM host_keys WHERE id=?`, id).
-		Scan(&k.Nonce, &k.Ciphertext, &k.Source, &at, &k.LastError)
+	err := x.QueryRowContext(ctx, `SELECT nonce, ciphertext, source, updated_at, last_error, key_id FROM host_keys WHERE id=?`, id).
+		Scan(&k.Nonce, &k.Ciphertext, &k.Source, &at, &k.LastError, &k.KeyID)
 	if errors.Is(err, sql.ErrNoRows) {
 		return HostKey{}, ErrNotFound
 	}
@@ -82,7 +86,7 @@ func getHostKey(ctx context.Context, x executor, id string) (HostKey, error) {
 
 // ListHostKeys returns every key record, ordered by id.
 func (s *Store) ListHostKeys(ctx context.Context) ([]HostKey, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, nonce, ciphertext, source, updated_at, last_error FROM host_keys ORDER BY id`)
+	rows, err := s.db.QueryContext(ctx, `SELECT id, nonce, ciphertext, source, updated_at, last_error, key_id FROM host_keys ORDER BY id`)
 	if err != nil {
 		return nil, err
 	}
@@ -91,7 +95,7 @@ func (s *Store) ListHostKeys(ctx context.Context) ([]HostKey, error) {
 	for rows.Next() {
 		var k HostKey
 		var at int64
-		if err := rows.Scan(&k.ID, &k.Nonce, &k.Ciphertext, &k.Source, &at, &k.LastError); err != nil {
+		if err := rows.Scan(&k.ID, &k.Nonce, &k.Ciphertext, &k.Source, &at, &k.LastError, &k.KeyID); err != nil {
 			return nil, err
 		}
 		k.UpdatedAt = fromUnix(at)
@@ -103,17 +107,23 @@ func (s *Store) ListHostKeys(ctx context.Context) ([]HostKey, error) {
 // PutHostKey replaces the record of k.ID. A record that stores or replaces a sealed value writes a key.set audit
 // event, and one that removes the value of the old record writes a key.delete event, in the same transaction
 // (rules 10 and 11 of docs/spec/audit-events.md). A record that holds no value, over one that held none, writes nothing.
+// The key ID is stored with the value in the same row write. A record without a value gets an empty key ID, whatever
+// k.KeyID says, so that a record that a caller read and emptied does not keep the label of the value that it held.
 func (s *Store) PutHostKey(ctx context.Context, k HostKey, a Audit) error {
+	keyID := k.KeyID
+	if !k.HasValue() {
+		keyID = ""
+	}
 	_, err := s.immediate(ctx, func(x executor) (bool, error) {
 		old, err := getHostKey(ctx, x, k.ID)
 		if err != nil && !errors.Is(err, ErrNotFound) {
 			return false, err
 		}
 		had := err == nil && old.HasValue()
-		if _, err := x.ExecContext(ctx, `INSERT INTO host_keys (id, nonce, ciphertext, source, updated_at, last_error) VALUES (?,?,?,?,?,?)
+		if _, err := x.ExecContext(ctx, `INSERT INTO host_keys (id, nonce, ciphertext, source, updated_at, last_error, key_id) VALUES (?,?,?,?,?,?,?)
 ON CONFLICT(id) DO UPDATE SET nonce=excluded.nonce, ciphertext=excluded.ciphertext, source=excluded.source,
-  updated_at=excluded.updated_at, last_error=excluded.last_error`,
-			k.ID, k.Nonce, k.Ciphertext, k.Source, unix(k.UpdatedAt), k.LastError); err != nil {
+  updated_at=excluded.updated_at, last_error=excluded.last_error, key_id=excluded.key_id`,
+			k.ID, k.Nonce, k.Ciphertext, k.Source, unix(k.UpdatedAt), k.LastError, keyID); err != nil {
 			return false, err
 		}
 		switch {

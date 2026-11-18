@@ -869,7 +869,8 @@ func TestReaderOpensADatabaseWhoseWalFileIsEmpty(t *testing.T) {
 }
 
 // An older binary refuses a database of the latest schema, as Open does, and so does its reader (rule 25). The binaries
-// of schema 24 and 25 are the ones that exist before and after the audit log.
+// of schema 24 and 25 are the ones that exist before and after the audit log, and the one of schema 26 is the last one
+// before the key IDs (docs/spec/secret-key-rotation.md, rule 33).
 func TestAnOlderBinaryRefusesALaterSchemaDatabase(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "flats.db")
 	s, err := Open(path)
@@ -877,7 +878,7 @@ func TestAnOlderBinaryRefusesALaterSchemaDatabase(t *testing.T) {
 		t.Fatal(err)
 	}
 	s.Close()
-	for _, version := range []int{24, 25} {
+	for _, version := range []int{24, 25, 26} {
 		t.Run(fmt.Sprintf("a registry that ends at %d", version), func(t *testing.T) {
 			withMigrations(t, migrationsThrough(version))
 			if _, err := Open(path); !errors.Is(err, ErrSchemaTooNew) {
@@ -890,7 +891,7 @@ func TestAnOlderBinaryRefusesALaterSchemaDatabase(t *testing.T) {
 	}
 }
 
-// The reserved kind key.rotate is stored and listed like the others (rule 15).
+// The kind key.rotate is stored and listed like the others (rule 15). Store.Reseal writes it (reseal_test.go).
 func TestTheReservedKeyRotateKindIsListed(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()

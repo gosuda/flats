@@ -1160,15 +1160,17 @@ func (s *Store) PageViews(ctx context.Context, flat string, days int) ([]DayCoun
 
 // --- secrets ---
 
-// SealedSecret is an encrypted secret value.
+// SealedSecret is an encrypted secret value. KeyID is the ID of the key that sealed it, and it is empty for a
+// value from before the key IDs (docs/spec/secret-key-rotation.md, rule 1).
 type SealedSecret struct {
 	Name       string
 	Nonce      []byte
 	Ciphertext []byte
+	KeyID      string
 	UpdatedAt  time.Time
 }
 
-// PutSecret stores an encrypted secret and writes its secret.set audit event in the same transaction.
+// PutSecret stores an encrypted secret with its key ID and writes its secret.set audit event in the same transaction.
 func (s *Store) PutSecret(ctx context.Context, flat string, sec SealedSecret, a Audit) error {
 	_, err := s.immediate(ctx, func(x executor) (bool, error) {
 		uid, err := flatUID(ctx, x, flat)
@@ -1179,8 +1181,8 @@ func (s *Store) PutSecret(ctx context.Context, flat string, sec SealedSecret, a 
 		if err := x.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM secrets WHERE flat=? AND name=?)`, flat, sec.Name).Scan(&existed); err != nil {
 			return false, err
 		}
-		if _, err := x.ExecContext(ctx, `INSERT INTO secrets(flat,name,nonce,ciphertext,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(flat,name) DO UPDATE SET nonce=excluded.nonce, ciphertext=excluded.ciphertext, updated_at=excluded.updated_at`,
-			flat, sec.Name, sec.Nonce, sec.Ciphertext, unix(sec.UpdatedAt)); err != nil {
+		if _, err := x.ExecContext(ctx, `INSERT INTO secrets(flat,name,nonce,ciphertext,updated_at,key_id) VALUES(?,?,?,?,?,?) ON CONFLICT(flat,name) DO UPDATE SET nonce=excluded.nonce, ciphertext=excluded.ciphertext, updated_at=excluded.updated_at, key_id=excluded.key_id`,
+			flat, sec.Name, sec.Nonce, sec.Ciphertext, unix(sec.UpdatedAt), sec.KeyID); err != nil {
 			return false, envWriteError(err)
 		}
 		e := a.event(AuditSecretSet)
@@ -1222,7 +1224,7 @@ type FlatSecret struct {
 // ListAllSecrets returns the sealed secrets of every flat, ordered by flat
 // and name.
 func (s *Store) ListAllSecrets(ctx context.Context) ([]FlatSecret, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT flat,name,nonce,ciphertext,updated_at FROM secrets ORDER BY flat,name`)
+	rows, err := s.db.QueryContext(ctx, `SELECT flat,name,nonce,ciphertext,updated_at,key_id FROM secrets ORDER BY flat,name`)
 	if err != nil {
 		return nil, err
 	}
@@ -1231,7 +1233,7 @@ func (s *Store) ListAllSecrets(ctx context.Context) ([]FlatSecret, error) {
 	for rows.Next() {
 		var sec FlatSecret
 		var u int64
-		if err := rows.Scan(&sec.Flat, &sec.Name, &sec.Nonce, &sec.Ciphertext, &u); err != nil {
+		if err := rows.Scan(&sec.Flat, &sec.Name, &sec.Nonce, &sec.Ciphertext, &u, &sec.KeyID); err != nil {
 			return nil, err
 		}
 		sec.UpdatedAt = fromUnix(u)
@@ -1313,7 +1315,7 @@ func (s *Store) DeleteSealedValues(ctx context.Context, events []Event, a Audit)
 
 // ListSecrets returns sealed secrets of a flat.
 func (s *Store) ListSecrets(ctx context.Context, flat string) ([]SealedSecret, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT name,nonce,ciphertext,updated_at FROM secrets WHERE flat=? ORDER BY name`, flat)
+	rows, err := s.db.QueryContext(ctx, `SELECT name,nonce,ciphertext,updated_at,key_id FROM secrets WHERE flat=? ORDER BY name`, flat)
 	if err != nil {
 		return nil, err
 	}
@@ -1322,7 +1324,7 @@ func (s *Store) ListSecrets(ctx context.Context, flat string) ([]SealedSecret, e
 	for rows.Next() {
 		var sec SealedSecret
 		var u int64
-		if err := rows.Scan(&sec.Name, &sec.Nonce, &sec.Ciphertext, &u); err != nil {
+		if err := rows.Scan(&sec.Name, &sec.Nonce, &sec.Ciphertext, &u, &sec.KeyID); err != nil {
 			return nil, err
 		}
 		sec.UpdatedAt = fromUnix(u)
