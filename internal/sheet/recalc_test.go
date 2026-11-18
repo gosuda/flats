@@ -62,11 +62,33 @@ func TestRecalcObserver(t *testing.T) {
 	if got != "[false]" || elapsed < 0 {
 		t.Fatalf("the reload reported %s, %v in all", got, elapsed)
 	}
-	const duration = time.Millisecond
-	e.in.observeCalc(true, duration)
-	if got, after := take(); got != "[true]" || after-elapsed != duration {
-		t.Fatalf("the explicit observation reported %s in %v, want [true] in %v", got, after-elapsed, duration)
+	const pause = 50 * time.Millisecond
+	var paused bool
+	onWriter(e, func() {
+		e.in.deadline = func(x *txn) func() bool {
+			e.in.deadline = nil
+			pass := x.wb.pass
+			return func() bool {
+				// The first pass has started, but calc has not returned.
+				if !paused && x.wb.pass != pass && !x.calcRan {
+					paused = true
+					time.Sleep(pause)
+				}
+				return false
+			}
+		}
+	})
+	// The range is large enough for the formula budget to check the deadline.
+	e.mustAgent(`{"ops":[{"op":"write","tab":"Sheet1","at":"F1","rows":[["=SUM(G1:K1000)",7]]}]}`)
+	if !paused {
+		t.Fatal("the budget did not pause the recalculation")
 	}
+	got, after := take()
+	// Allow for the granularity of the clock used to measure the pause.
+	if took := after - elapsed; got != "[true]" || took < pause/2 {
+		t.Fatalf("the paused edit reported %s in %v, want [true] and at least %v", got, took, pause/2)
+	}
+	e.want("F1", "7")
 	if n := testing.AllocsPerRun(100, func() { e.in.observeCalc(true, time.Millisecond) }); n != 0 {
 		t.Fatalf("reporting a recalculation allocates %v times", n)
 	}

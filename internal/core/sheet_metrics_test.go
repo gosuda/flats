@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"testing"
+	"time"
 )
 
 // TestSheetBatchTotalsAcrossAnUnload runs an idle unload inside a metrics
@@ -90,5 +91,23 @@ func TestSheetRecalculationTimesAcrossAnUnload(t *testing.T) {
 	writeSheet(t, s, "budget", "after", `{"op":"write","tab":"Sheet1","at":"B2","rows":[[1300]]}`)
 	if e, o := counts(); e != edit+1 || o <= other {
 		t.Fatalf("after the reload and a write: %d by an edit and %d otherwise, were %d and %d", e, o, edit, other)
+	}
+}
+
+func TestSheetRecalculationDurationTotals(t *testing.T) {
+	s, _ := newTestService(t)
+	s.sheetStats.observeRecalc(true, time.Millisecond)
+	s.sheetStats.observeRecalc(false, 0)
+	s.sheetStats.observeRecalc(true, 2*time.Millisecond)
+	s.sheetStats.observeRecalc(false, 25*time.Millisecond)
+
+	recalc := s.Metrics().Sheet.Recalc
+	for start, want := range map[string]time.Duration{
+		"edit":  3 * time.Millisecond,
+		"other": 25 * time.Millisecond,
+	} {
+		if got, ok := recalc[start]; !ok || got.Count != 2 || got.Sum != want.Seconds() {
+			t.Errorf("recalculations started by %s = %+v, want 2 totaling %v", start, got, want)
+		}
 	}
 }
