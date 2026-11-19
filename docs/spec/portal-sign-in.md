@@ -52,9 +52,10 @@ issues.
   deletion of a flat treat every row.
 - The audit log has the kinds of [audit events](audit-events.md) and of [event webhook](event-webhook.md), rule 21. The
   webhook sends `approval.created`, `approval.decided`, `visibility.changed` and `network.changed`.
-- A change to Private ends the open connections of the public routes of a flat (`revokeRoute` in
-  `internal/core/lifecycle.go`, the route epoch of `internal/core/route_epoch.go`). A handler swap in the Portal entry
-  does not touch a request that runs.
+- A change to Private ends the open connections of the public routes of a flat (`revokeRoute` and the route epoch in
+  `internal/core/route_epoch.go`, called from `internal/core/lifecycle.go`). A public handler binds the epoch when the
+  host makes it, and a cancelled epoch answers 503. A handler swap in the Portal entry does not touch a request that
+  runs.
 - The loopback API takes a caller as the CLI when it sends the header `X-Flats-Client: cli` from the loopback address
   (`internal/api/api.go`, `isLoopback`). Any local process can send that header, also one of another account.
 - `StopSlug` of the Portal provider stops the route and keeps `portal/<slug>.json`
@@ -62,7 +63,10 @@ issues.
   same slug gets the same identity and token secret. The Tailscale provider removes the state of a slug for that reason.
 - A Portal relay routes a visitor connection by the SNI of its TLS client hello and forwards the bytes
   (`portal/server.go` and `portal/proxy.go` of the SDK module). For an exposure without a cache, the tenant TLS ends in
-  the process of the exposure, so the relay cannot read or change the `Host` header of a request.
+  the process of the exposure, so a relay that follows the protocol forwards ciphertext and does not change the `Host`
+  header of a request. The relay holds the certificate key and signs the TLS handshakes (keyless TLS), so the SDK keeps
+  the relay in its trust boundary: a relay that misuses that key can end the TLS itself. The MITM self-probes of the
+  SDK only log a warning, because Flats sets no ban.
 - Flats pins the SDK v2.7.4 (`go.mod`). No code imports `sdk/appauth`. In that package:
   - `New(next, id, cfg)` wraps a handler. It reads no network and derives its keys from the identity, also from its
     token secret. A gate that is built from the same identity and the same provider settings accepts the sessions of an
@@ -183,9 +187,10 @@ The author of this spec decided these points, and each can change before the imp
 1. The sign-in setting of a flat has a provider and the fields of that provider. The provider is `oidc`, `credential` or
    empty. Sign-in is on when the provider is not empty. A new flat has sign-in off.
 2. An `oidc` setting has an issuer, a client ID and an allowlist. The issuer is an `https` URL with a host name and
-   without user information, query or fragment, of at most 2048 bytes. The host removes spaces at the ends and keeps
-   the rest as written, also a trailing `/`, because the provider compares it byte for byte with the issuer of its
-   discovery document. The host refuses an `http` issuer, also on a loopback host, which the SDK accepts. The client ID
+   without user information, query or fragment, of at most 2048 bytes. The host removes spaces at the ends and a
+   trailing `/`, and stores that form. The SDK compares an issuer with the issuer of the discovery document without a
+   trailing `/` on both sides, so two issuers that differ only in it are the same issuer for the gate, for rule 27 and
+   for rule 39. The host refuses an `http` issuer, also on a loopback host, which the SDK accepts. The client ID
    has 1 to 256 bytes of visible ASCII. Each entry of the allowlist is a verified email address, an `@domain` entry or
    a `sub:<subject>` entry. The host normalizes each entry as `appauth.Config.Normalize` does: an email and a domain in
    lower case, a subject byte for byte.
@@ -195,8 +200,8 @@ The author of this spec decided these points, and each can change before the imp
 4. An allowlist has 1 to 100 entries. Each entry has only visible ASCII characters and the space. A credential subject
    has 1 to 256 bytes, and an `oidc` entry at most 256 bytes without the prefix `sub:`. The host removes duplicates after
    the normalization and stores the list in byte order. Two settings are the same when their providers, issuers, client
-   IDs and stored lists are equal. Each setting that the host stores also passes `appauth.Validate` with a placeholder
-   identity, so no value that the SDK refuses reaches the gate.
+   IDs and stored lists are equal. Each setting that the host stores also passes `appauth.Validate`, so no value that the
+   SDK refuses reaches the gate.
 5. An `oidc` setting can use a client secret (rules 24 to 32). Without one, the SDK uses the setting as a public client
    with PKCE.
 6. `flats.db` stores the setting with the flat. A redeploy, a rollback, a data restore, a rename and a host restart keep
@@ -280,19 +285,22 @@ console issues the access links.
        transaction, with the check of rule 9, as `CommitVisibility` writes its receipt.
     3. It ends the open connections of the public routes of the flat, as a change to Private ends them
        (`revokeRoute`). A visitor who holds a WebSocket or a long request reconnects through the gate.
-    4. When the flat has a Portal route, the Portal provider builds the new gate and puts it in place of the old one
-       (rules 33 and 35).
+    4. When the flat has a Portal route, the host makes a new public handler with the new route epoch, and the Portal
+       provider builds the new gate around it and puts it in place of the old one (rules 33 and 35). So an allowed
+       visitor gets the flat again, and the cancelled epoch of step 3 answers only the connections that were open.
     5. It writes the flat event and sends the webhook event of rule 68.
 21. Between steps 2 and 4, rule 44 refuses each request that the old gate lets in. When step 4 fails, the Portal route
     of the flat stops (rule 35). The approval is then `approved`, and its result says that the setting is stored and
     the Portal route is stopped, with the reason. When the host stops after step 2, `resumeApplying` finds the receipt
     at the next start, does steps 3 to 5 from the stored setting, and ends the approval as `approved` with one stored
-    change, one audit row and one webhook event. When the host stops before step 2 ends, nothing is stored, and the
+    change and one audit row. It sends no webhook event, because `resumeApplying` runs inside `core.New`, before the
+    host holds the sender ([event webhook](event-webhook.md), rules 1 and 17). When the host stops before step 2 ends, nothing is stored, and the
     approval applies again from step 1.
 22. The result of an applied approval says `done` and names the provider, the issuer and the number of entries. It never
     holds an entry of the allowlist, so that the flat event has none either.
-23. A pending `set_visibility` approval also freezes the sign-in sequence of the flat. A sign-in change makes it stale,
-    so a visibility approval never applies under a notice of rule 61 that described another sign-in setting.
+23. Each approval that freezes the visibility of a flat (`set_visibility`, `activate`, `rollback` and `create_version`)
+    also freezes the sign-in sequence of the flat. A sign-in change makes it stale, so such an approval never applies
+    under a notice of rule 61, or under an Autopilot decision, that knew another sign-in setting.
 
 ## The client secret
 
@@ -316,7 +324,8 @@ console issues the access links.
 28. A set or a removal needs no approval. It applies at once. When sign-in is `oidc` and the flat has a Portal route,
     the Portal provider builds the gate again with the new value (rule 33). When that fails, rule 35 stops the route.
 29. A set is allowed while sign-in is off or `credential`, and for another issuer than the stored one. The value then
-    waits for an `oidc` setting with its binding. Only an `oidc` gate reads it.
+    waits for an `oidc` setting with its binding. Only an `oidc` gate reads it. A set while sign-in is `oidc` with
+    another issuer or client ID stops the Portal route at once (rule 27), until the setting or the binding agrees.
 30. No text and no interface of the host holds the value: `env`, the injected list, a `fetch`, a log line, a flat event,
     an audit row, a webhook body, the export, an approval, the outputs of the API, MCP, the CLI and the console, and the
     status. An activation reads only the secret rows with an empty use, so the value never reaches a worker. `flats
@@ -366,7 +375,7 @@ console issues the access links.
     check.
 38. The Portal provider builds the gate when it opens a Portal route for a flat with sign-in on (an approved deploy or
     visibility change, a grant, a host start, a rename), when a sign-in change applies (rule 20), when the client
-    secret changes (rule 28), and after a new token secret (rules 41, 42 and 54). A redeploy, a rollback, a data restore
+    secret changes (rule 28), and after a new token secret of rule 54. A redeploy, a rollback, a data restore
     and a replacement of the worker put a new handler into the handler box and keep the gate. When sign-in goes off,
     the provider removes the gate and serves the handler box as today. Each open of the Portal route of a flat carries
     the stored setting, which the host reads under the lock of the flat, or the mark `redirect` of rule 41. An open that
@@ -382,18 +391,20 @@ console issues the access links.
     host name ends when the alias leaves and comes back (rule 34). An `oidc` session lasts as the SDK gives it: at
     least 15 minutes and at most 24 hours, after the life of the ID token.
 40. The gate answers its own endpoints, the exact paths that `sdk/appauth` serves under `/_portal/auth/` (login,
-    challenge, verify, redeem, the OIDC callback, the SAML endpoints and the email endpoints, as `types/paths.go` names
-    them). While sign-in is on, a request for one of those paths on the Portal URL never reaches the flat. Another path
+    challenge, verify, redeem, the OIDC callback, logout, the SAML endpoints and the email endpoints, as
+    `types/paths.go` names them). While sign-in is on, a request for one of those paths on the Portal URL never reaches the flat. Another path
     under `/_portal/auth/` is a path of the flat behind the gate, as any other path.
-41. A rename of a flat with sign-in on gives the old identity a new token secret before the old slug serves its
-    redirect, so every session and every access link of the old host names ends. The open of the redirect route of the
+41. A rename of a flat gives the old identity a new token secret, also while sign-in is off, because links of an
+    earlier `credential` setting can exist. The rename writes it before it commits: when the write fails, the rename
+    fails, changes nothing, and its message names the identity file. So every session and every access link of the old
+    host names ends. The open of the redirect route of the
     old slug carries the mark `redirect`, removes the gate of that entry, and serves only the redirect, before and
     after a host restart. The redirect sends no content of the flat, and its target has the gate of the new identity.
     A later sign-in change of the flat does not reach the old slug.
-42. The deletion of a flat gives its Portal identity a new token secret, when the identity file exists. A later flat
-    with the same slug keeps the host name of the identity, and no session or link of the deleted flat works there.
-    When the write fails, the deletion still ends, and the next open of that slug with sign-in on fails with rule 35
-    until the write passes.
+42. The deletion of a flat gives its Portal identity a new token secret, when the identity file exists. The deletion
+    writes it first: when the write fails, the deletion fails, changes nothing, and its message names the identity
+    file. A later flat with the same slug keeps the host name of the identity, and no session or link of the deleted
+    flat works there.
 43. A flat with sign-in on is served without a relay cache. Flats sets no cache on a Portal exposure, so the tenant TLS
     ends in the Flats process and the relay forwards only ciphertext (`portal/server.go` routes by SNI,
     `portal/proxy.go` bridges the bytes). A future option that sets a cache for a flat refuses sign-in, as the
@@ -437,7 +448,8 @@ console issues the access links.
 50. The host refuses the link and changes nothing:
     - with 409, when the provider of the flat is not `credential`;
     - with 400, when the subject, after the normalization of rule 3, is not on the allowlist;
-    - with 409, when the flat has no Portal route. The message says that the flat must be Public on Portal;
+    - with 409, when the flat has no Portal route, or no relay of the exposure has a canonical host name. The message
+      says that the flat must be Public on Portal with a ready relay;
     - with 400, when the expiry is less than 1 minute or more than 90 days from now.
     The default expiry is 7 days.
 51. The host makes the credential with `appauth.IssueCredential` from the identity of the entry, the canonical host name
@@ -448,8 +460,9 @@ console issues the access links.
 52. The link and the credential are in that response only. No log line, flat event, audit row, webhook body, export
     line, MCP output or other API output holds them, and the console keeps no copy after the dialog closes.
 53. A link works on its host name only and for the identity and the token secret of the flat. These end it: its
-    expiry; a new token secret (rules 41, 42 and 54); a new relay, so that the canonical host name changes; the removal
-    of its subject from the allowlist, for as long as the subject stays off the list. When the subject comes back on the
+    expiry; a new token secret (rules 41, 42 and 54); the removal of its subject from the allowlist, for as long as the
+    subject stays off the list. A change of the relay makes it fail on the new canonical host name, and it works again
+    when its relay comes back. When the subject comes back on the
     allowlist, its earlier links work again, because a credential has no date. The docs say to run `flats signin
     revoke` to end them for good. A machine client can send the credential in `X-Portal-Access-Credential` instead of a
     session, as the SDK allows.
@@ -466,8 +479,8 @@ console issues the access links.
 
 56. `GET /api/flats/{slug}/signin` returns `{"provider": ..., "issuer": ..., "client_id": ..., "allow": [...],
     "client_secret": {"name": "oidc-client-secret", "issuer": ..., "client_id": ..., "updated_at": ...}, "hosts": [...],
-    "callback_urls": [...], "seq": N}`. `client_secret` is `null` when no value is stored. `hosts` are the current
-    Portal host names of the flat. `callback_urls` are `https://<host>/_portal/auth/callback` for each host name when the
+    "callback_urls": [...], "seq": N}`. `client_secret` is `null` when no value is stored. `hosts` are the host names of the
+    `PublicHosts` of rule 34. `callback_urls` are `https://<host>/_portal/auth/callback` for each host name when the
     provider is `oidc`, and empty otherwise. The console and a loopback caller can read the route. A remote caller gets
     403.
 57. The flat view (`GET /flats`, `GET /flats/{slug}`, MCP `list_flats` and `get_flat`) has the member `sign_in` with
@@ -475,10 +488,14 @@ console issues the access links.
     `oidc-client-secret` when a value is stored, while sign-in is on. It has no member `sign_in` while sign-in is off.
     It holds no entry of the allowlist. The descriptions of the MCP tools say that `sign_in` protects the Portal URL
     only.
-58. No MCP output holds an entry of the allowlist. `get_approval` and `list_approvals` show the `from` and `to` of a
-    `set_signin` approval with the provider, the issuer, the client ID and the number of entries, and `get_logs` shows
-    the flat events of such an approval the same way. The entries are in `flats.db`, the route of rule 56, `flats signin
-    show`, and the console.
+58. No MCP output and no answer to a remote caller holds an entry of the allowlist. `get_approval` and
+    `list_approvals`, and the API routes of the approvals (`GET /api/approvals`, `GET /api/approvals/{id}`) for every
+    caller, show the `from` and `to` of a `set_signin` approval with the provider, the issuer, the client ID and the
+    number of entries. The flat event that `requestFrozen` writes for such a request holds that counted form, so
+    `get_logs` and `GET /api/flats/{slug}/logs` show no entry. The entries are in the stored approval and setting in
+    `flats.db`, the route of rule 56, `flats signin show`, the console page of the approval (rule 64), and the audit
+    rows of rule 65, which `flats audit ls` and `flats audit export` read on the host. Those two commands are for the
+    operator, who reads `flats.db` with them.
 59. `flats signin show <slug> [--json]` prints the setting, the binding of the client secret when one is stored, the
     current Portal host names and the callback URLs to register at the provider. `--json` prints the response of rule
     56.
@@ -519,17 +536,19 @@ console issues the access links.
     the fields that they write today.
 67. The issue of a link writes `signin.link` with `flat`, no `name`, `via` `console`, the actor of the console, and the
     data `{"subject": ..., "host": ..., "expires_at": ...}`. The row holds no credential and no link. A revocation
-    writes `signin.revoke` with `flat`, `via` `cli` or `console`, and the data `{}`. A new token secret of rule 41 or
-    rule 42 writes `signin.revoke` with `{"cause": "rename"}` or `{"cause": "delete"}`.
+    writes `signin.revoke` with `flat`, the via of its caller, and the data `{}`, after the write of the file passes.
+    A new token secret of rule 41 or rule 42 writes `signin.revoke` with the via of the rename or the deletion and
+    `{"cause": "rename"}` or `{"cause": "delete"}`, in the transaction of that rename or deletion.
 68. The webhook gets the type `signin.changed`, with `state` `applied` and `console_url` `<console>/flats/<slug>`:
 
     | `operation` | When | `change` |
     | --- | --- | --- |
     | `set_signin` | an approval applied a sign-in change. The body has `approval_id` and `decided_by`. | `{"from": {"provider": ..., "count": N}, "to": {"provider": ..., "count": M}}` |
     | `issue_signin_link` | an access link was issued | `{"expires_at": ...}` |
-    | `revoke_signin` | the sessions and links of the flat ended (rule 54, 41 or 42) | `{"cause": "revoke", "rename" or "delete"}` |
+    | `revoke_signin` | the operator ended the sessions and links of the flat (rule 54) | `{}` |
 
-    No body holds an entry of the allowlist, a subject, the client secret, a credential or a link. A set or a removal
+    A rename and a deletion send no `revoke_signin`: their audit row of rule 67 records the new token secret. No body
+    holds an entry of the allowlist, a subject, the client secret, a credential or a link. A set or a removal
     of the client secret sends no webhook event, as no secret change does ([event webhook](event-webhook.md), "Scope"):
     the secret decides the access of nobody, and its audit row of rule 66 records it.
 69. `approval.created` and `approval.decided` of a `set_signin` approval have the `operation` `set_signin`, as the other
@@ -537,10 +556,11 @@ console issues the access links.
 
 ## Compatibility
 
-70. A flat with sign-in off behaves as today, with two differences: rule 46 removes client copies of its seven headers
-    on every route that runs flat code, and the deletion of a flat gives its Portal identity a new token secret (rule
-    42), which no flat without sign-in uses. Flat code that read such a header from a client stops seeing it. The docs
-    say so.
+70. A flat with sign-in off behaves as today, with these differences: rule 46 removes client copies of its seven
+    headers on every route that runs flat code; a rename and the deletion of a flat give the Portal identity a new token
+    secret (rules 41 and 42), which no flat without sign-in uses; and a rename or a deletion now fails, and changes
+    nothing, when the identity file cannot be written. Flat code that read such a header from a client stops seeing it.
+    The docs say so.
 71. An older CLI has no `signin` command. An older host answers 404 to the routes of this spec, and the new CLI says
     that the host is older than the command.
 72. Schema 29 adds to `flats` the columns `signin_provider`, `signin_issuer` and `signin_client_id` (text, empty by
@@ -624,10 +644,18 @@ console issues the access links.
   issuer on a private network is reachable.
 - The headers of rule 45 reach server flats only. A static flat cannot read them. A guest name on a board or a document
   is still the name that the visitor types.
-- A short request that the gate passed before a sign-in change finishes after the change. Step 3 of rule 20 ends only
-  the connections that stay open.
+- A short request that the gate passed before a sign-in change can finish after the change, or step 3 of rule 20 can
+  cut it.
 - The console has no form that turns sign-in off. When the identity provider fails, an operator away from the host can
-  make the flat Private or revoke Portal for it in the console, but cannot open it without sign-in.
+  make the flat Private in the console, but cannot open it without sign-in.
+- A relay holds the certificate key of its host names and signs the TLS handshakes. A relay that misuses the key can
+  end the TLS itself and read sessions, credentials and content. The SDK checks for that with self-probes, and Flats
+  only logs their warnings. A flat with sign-in on is as safe as its relays; explicit relays that the operator trusts
+  are the safe choice.
+- A program that can reach the console address can send console requests ([Autopilot](autopilot.md), rule 2), also
+  to the link route of rule 49.
+- A restore of an older backup brings back the token secret of that time, so the links that a later `flats signin
+  revoke` ended work again until their expiry.
 
 ## Completion criteria
 
@@ -653,8 +681,9 @@ step after the commit. No test needs the network.
   the host settings of a provider leave the approval valid; a change and its reverse make an earlier request stale
   (rule 19); `AutopilotNeeds("set_signin", ...)` is unclassified, and an Autopilot decision is refused; a console
   decision applies the setting; the result and the flat event hold no entry; a stop after step 2 of rule 20 ends, after
-  the next start, as `approved` with one stored change, one audit row, one webhook event and a gate from the stored
-  setting; a sign-in change makes a pending `set_visibility` approval stale (rule 23).
+  the next start, as `approved` with one stored change, one audit row, no webhook event and a gate from the stored
+  setting; a sign-in change makes a pending `set_visibility`, `activate`, `rollback` and `create_version` approval
+  stale (rule 23); a revocation of rule 54 leaves a pending `set_signin` approval valid.
 - Portal only: each refusal of rule 8, with 409 and its message for a Private and a Public flat; a grant and a sign-in
   apply that run at the same time, many times, give the result of one order; a `flats.db` that a test wrote with
   sign-in on and a `tailscale-funnel` grant makes `ensureLifecycle` ask no Funnel route, and a request marked with
@@ -674,8 +703,11 @@ step after the commit. No test needs the network.
   and another path under `/_portal/auth/` reaches it behind the gate; a reopen of the route without a setting keeps the
   gate; an open with a setting of a lower sequence keeps the gate of the higher one.
 - Open connections: a WebSocket that is open on the Portal route ends at step 3 of rule 20 when sign-in goes on, when
-  its subject leaves the allowlist, and at a revocation of rule 54, and a new upgrade goes through the gate.
-- Rename and deletion: a live rename gives the old identity a new token secret, so its sessions and links are refused;
+  its subject leaves the allowlist, and at a revocation of rule 54, and a new upgrade goes through the gate; after each
+  of those, an allowed visitor gets the page of the flat, not 503.
+- Rename and deletion: a live rename gives the old identity a new token secret, so its sessions and links are refused,
+  also for a flat with sign-in off that had links of an earlier `credential` setting; a failed write makes the rename
+  and the deletion fail and change nothing;
   the old slug serves only the redirect, without a gate, before and after a host restart; a later sign-in change of the
   flat does not reach the old slug; a deletion gives the identity a new token secret, and a new flat with the same slug
   and the same subject on its allowlist refuses a link of the deleted flat and keeps the host name.
@@ -710,10 +742,11 @@ step after the commit. No test needs the network.
   for an older host.
 - The views: the route of rule 56 with its members and the binding of the client secret, and no value; `sign_in` in the
   flat view while sign-in is on, with `allow_count` and no entry, and absent while it is off; a distinctive entry is in
-  no output of `get_flat`, `list_flats`, `get_approval`, `list_approvals` and `get_logs`; `flats signin show` with and
+  no output of `get_flat`, `list_flats`, `get_approval`, `list_approvals` and `get_logs`, and in no answer of the
+  approval and log routes to a remote caller; `flats signin show` with and
   without `--json`; the notices of rule 61, also for the level `edit`.
-- Audit and the webhook: each row of rules 65 to 67 with its `via` and its data, in the transaction of its change (a
-  failing audit write leaves the change undone); `added` and `removed` that do not fit have `truncated`; each operation
+- Audit and the webhook: each row of rules 65 to 67 with its `via` and its data, in the transaction of its change where
+  rule 67 says so (a failing audit write leaves the change undone), and after the write of the file for a revocation; `added` and `removed` that do not fit have `truncated`; each operation
   of rule 68 sends one `signin.changed` with the fields of its row and no entry, subject, secret, credential or link.
 - The console: the UI test shows `Public · Sign-in` for a Public flat with sign-in on and `Public` for one without it,
   the Sign-in row with the texts of rule 63, the link form that shows a link once and keeps no copy, the button of rule
