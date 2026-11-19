@@ -1,7 +1,7 @@
 # Sheet export fixture
 
 One tab and the exact bytes of its CSV export (spec rule 60, technical
-design section 22.2, cases E-01 to E-130; E-86, the byte order mark, is a property of the
+design section 22.2, cases E-01 to E-132; E-86, the byte order mark, is a property of the
 file and has no cell).
 
 | File | Holds |
@@ -12,7 +12,9 @@ file and has no cell).
 Column A names the case of each row. E-87 to E-110 are the full-width signs
 `＝`, `＋`, `－` and `＠` with 0, 1 and 3 leading spaces, typed (odd) and calculated (even)
 like E-01 to E-42. E-111 to E-120 are dates and times under their formats, and
-E-121 to E-130 the numbers and the dates that rule 60 writes in full. E-126 holds
+E-121 to E-132 the numbers and the dates that rule 60 writes in full, a number
+to 15 significant digits: E-129 (`=LOG10(1000)`) and E-132 (`=-0`) are new, and
+E-130 and E-131 are the dates and times of the former E-129 and E-130. E-126 holds
 two cells, a percent in B and a currency amount in C, for the one case of
 technical design section 22.2. Odd cases of E-01 to E-58 are content
 as typed and even ones the same value as a formula calculates it. The row

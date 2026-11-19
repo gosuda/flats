@@ -274,7 +274,7 @@ one means changing its rows and the checker together.
 | Text order (rule 22, section 9.3): `<`, `<=`, `>`, `>=`, text criteria and the sorted approximate match order two texts by `CompareText`: digits, then the ASCII punctuation in the listed order, then the letters, then other code points by value, with apostrophes and hyphens skipped in the first pass; then the text with fewer apostrophes and hyphens comes first; then code point order. `=` is still equality apart from capitals. | neither in effect; the apostrophe and non-ASCII order is open question 4 of the spec | `operators-490` to `operators-514`, `countif-046` to `countif-052`, `match-047` to `match-050` |
 | Typed entry (rule 5, section 9.5): a whole number of more than 15 digits, before any `%`, stays text. Leading zeros and zeros after the decimal point do not count. `VALUE`, criteria and arithmetic still read such text as a number. | Excel (15 digits kept, the rest zeroed) | `typed-070` to `typed-075` are text; `typed-076` to `typed-079` are numbers (`typed-079` is the 15-digit boundary); `value-025` to `value-032`, `operators-523`, `countif-053` |
 | The last date is 9999-12-31 (rule 12): a date function whose result is after it, or whose argument is after it or before day 0, gives `#NUM!`. Arithmetic on a date is a number, and a date format shows a number past the last date in General. | neither in effect, except that `DATE` and `DAYS` agree with Excel; the date format rule is not confirmed | `date-042`, `date-043`, `edate-023`, `eomonth-022`, `year-017`, `year-018`, `weekday-027`, `hour-016`, `days-020`, `days-021`; `date-044`, `edate-024`, `eomonth-023`, `weekday-028`, `hour-017`, `days-022` as the boundary that is still valid; `operators-521`, `operators-522` |
-| The CSV field of a cell (rule 60, section 9.5) is computed from its value, content kind and number format, not from the shown text: a number is written in full precision, the shortest decimal that reads back as the same double (17 digits at most), plain up to 17 digits before the point and 9 zeros after it, otherwise with an exponent. | Excel and the earlier rule (shown text) | the 154 rows listed under "Revision of 2026-11-19" |
+| The CSV field of a cell (rule 60, section 9.5) is computed from its value, content kind and number format, not from the shown text: a number is rounded to 15 significant digits, half away from zero, as `Show` rounds it, and written plain up to 15 digits before the point and 9 zeros after it, otherwise with an exponent; negative zero is `0`. | Excel (shown text) and the earlier rules (17 digits, shown text) | the rows listed under "Revision of 2026-11-19" and "Revision of 2026-11-19: 15 significant digits" |
 | A date, time or date and time value under a date or time pattern is written in ISO 8601 form, rounded to the millisecond. A time that carries to a whole day is `00:00:00`, and a value of a whole day or more under a time format is a date with time (rule 60, spec open question 5). | neither; the earlier rule shows the pattern | the rows listed under "Revision of 2026-11-19" |
 | A text whose first character, after leading spaces, is `=`, `+`, `-`, `@`, a tab, a carriage return, a line feed or one of the full-width `＝`, `＋`, `－`, `＠` gets an apostrophe in the CSV field, also a text that reads as a number, such as `-5` from a formula. A number never does. | Excel (no apostrophe; the full-width signs are not in its list) | `operators-364` to `operators-370`, `operators-379`, `operators-404`, `text-010`, `text-014`, `text-043`, `text-044`; `operators-515` to `operators-520` |
 | `LOG10` of a power of ten is the exact logarithm (`math.log10` of the checker), so its full-precision CSV is `3`, not `2.9999999999999996`; `LOG` with base 10 is the same. | neither | `log10-001`, `log10-002`, `log-005` |
@@ -345,15 +345,46 @@ Not in the table: `#LIMIT!`, which needs 50,000,000 characters of
 calculated text, the limits on formula length and nesting, which refuse a
 write and give no value, and `####`, which the browser draws.
 
+### Revision of 2026-11-19: 15 significant digits
+
+The requester decided on 2026-11-19 that a number in a CSV export has up to 15
+significant digits, whatever its number format: the precision that comparisons
+use and that Excel keeps (rule 60, section 9.5 step 3). The checker was changed
+first. `csv_number` rounds the exact value of the double to 15 significant
+digits, half away from zero, as `Show` rounds a number, and writes the digits
+with no zeros at the end: plain when the rounded number needs at most 15 digits
+before the point and 9 zeros after it, otherwise with an exponent such as
+`1.23456789012346E+15` or `1E-11`. Negative zero is `0`. Dates, times and text
+keep their rules.
+
+Before any row was updated, the checker flagged 64 rows: conditional 3, date 9,
+math 13, operators 17, statistics 11, text 10 and typed 1. Each had a changed
+`csv` field and no other field: no `value`, `shown` or `sets` changed. Each
+row's `csv` was then taken from the checker. The kind, with its reason and
+rows (ids in ranges are consecutive):
+
+| Kind | Rows | Reason and rows |
+|---|---|---|
+| A number is rounded to 15 significant digits | 64 | Rule 60, section 9.5 step 3, in place of the 17 digits of the revision above. `averageif-004`, `averageif-013`, `averageifs-012`, `exp-002` to `exp-004`, `exp-012`, `ln-003`, `log-006`, `log10-004`, `operators-047`, `operators-049`, `operators-051` to `operators-055`, `operators-246` to `operators-247`, `operators-249` to `operators-250`, `operators-255`, `operators-261`, `operators-275`, `operators-338`, `operators-523` to `operators-524`, `pi-001` to `pi-002`, `pi-005`, `pi-008`, `sqrt-003`, `stdev-001` to `stdev-003`, `stdev-005`, `stdev-008` to `stdev-009`, `stdev-013`, `stdevp-003`, `sum-004`, `time-002`, `time-006`, `time-008`, `time-010`, `time-015`, `time-018` to `time-019`, `time-021`, `time-023`, `typed-078`, `value-012` to `value-014`, `value-025` to `value-030`, `value-032`, `var-001` to `var-003` |
+
+The export fixture changed in four cells, `E-121`, `E-122`, `E-123` and
+`E-128`, which now write `0.333333333333333`, `0.3`, `1.23456789012346E+15` and
+`1.23456789012346E+19`. The cases after `E-127` have one id each: `E-128` is
+`=12345678901234567890`, `E-129` is `=LOG10(1000)` (new, `3`), `E-130` is
+`=DATE(2026,3,15)+0.75` under a date format, `E-131` is `=1.5` under a time
+format, and `E-132` is `=-0` (new, `0`). The fixture has 134 rows and 536 cells.
+
 ### Exact doubles
 
-A full-precision `csv` field (rule 60) shows the last digit of the double a
-function gives. The checker computes `EXP`, `LN`, `LOG` and `LOG10` with
+A `csv` field (rule 60) shows the 15th significant digit of the double a
+function gives, rounded. The checker computes `EXP`, `LN`, `LOG` and `LOG10` with
 Python's `math` library (`LOG` with base 10 with `math.log10`), `STDEV`,
 `STDEVP` and `VAR` with exact sums (`math.fsum`) and the mean and square
 sums of their numbers, and `SUM` and `AVERAGE` the same way. An engine with
 another library or another order of additions may give a double one step
-away, and its `csv` then differs in the last digit. The rows that depend on
-this are the rows named in the revision list above for EXP, LN, LOG, LOG10,
-STDEV, STDEVP and VAR. The requester decides whether these results are written at 15 digits or whether
-the order of the sums is fixed; until then these rows are the contract.
+away. At 15 digits that changes the field only where the digits after the 15th
+lie near a rounding boundary, as they do for `EXP(1)` and `SQRT(2)`. The rows
+that depend on this are the rows named in the revision list above for EXP, LN,
+LOG, LOG10, STDEV, STDEVP and VAR. The requester chose 15 significant digits on
+2026-11-19; the design does not fix the order of the sums, so these rows remain
+the contract.

@@ -444,26 +444,30 @@ def text_to_number(text):
 # The field is computed from the value, its content kind and its number format,
 # never from the shown text (section 9.5, AppendCSVField steps 1 to 5).
 
-def shortest(x):
-    """The shortest decimal that reads back as the same double, with at most 17
-    significant digits: plain when it needs at most 17 digits before the point and
-    at most 9 zeros after it, else with an exponent such as 1.5E+20 or 1E-11."""
-    if x == 0:
+def csv_number(x):
+    """A number of rule 60 (section 9.5, step 3): the exact value of the double
+    rounded to 15 significant digits, half away from zero, as Show rounds a number,
+    with no zeros at the end. Plain when it needs at most 15 digits before the point
+    and at most 9 zeros after it, else with an exponent such as 1.23456789012346E+15
+    or 1E-11. Negative zero is 0."""
+    t = dec15(x)
+    if t == 0:
         return "0"
-    t = Decimal(repr(float(x))).copy_abs().normalize()
-    sign = "-" if x < 0 else ""
+    t = t.normalize()
+    sign = "-" if t < 0 else ""
+    t = t.copy_abs()
     digits = "".join(str(c) for c in t.as_tuple().digits)
     adj = t.as_tuple().exponent + len(digits) - 1      # exponent of the first digit
     if adj >= 0:
-        plain = adj + 1 <= 17
+        is_plain = adj + 1 <= 15
     else:
-        plain = -adj - 1 <= 9
-    if plain and adj >= 0:
+        is_plain = -adj - 1 <= 9
+    if is_plain and adj >= 0:
         if len(digits) <= adj + 1:
             body = digits + "0" * (adj + 1 - len(digits))
         else:
             body = digits[:adj + 1] + "." + digits[adj + 1:]
-    elif plain:
+    elif is_plain:
         body = "0." + "0" * (-adj - 1) + digits
     else:
         body = digits[0] + ("." + digits[1:] if len(digits) > 1 else "") \
@@ -522,7 +526,7 @@ def csv_value(v, nf, date_result):
     x = float(v)
     if nf and nf["kind"] in ("date", "time", "datetime") and not outside_dates(x):
         return iso_field(x, nf)
-    return shortest(x)
+    return csv_number(x)
 
 
 # ---------------------------------------------------------------- parser (section 9.2)
