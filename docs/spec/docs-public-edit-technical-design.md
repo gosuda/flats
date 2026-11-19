@@ -520,7 +520,7 @@ edited paragraph after every change, and one paragraph's inline parse cannot
 be split. Three measures keep the cost bounded (spec rule 21b):
 
 - **Linear inline parsing.** `src/markdown-inline.js` (`editorMarkdown()`)
-  replaces lezer 1.7.2's link closing, emphasis resolution, unclosed inline
+  replaces lezer 1.8.1's link closing, emphasis resolution, unclosed inline
   HTML search and link destination/title scans with linear-time equivalents
   that produce the same syntax tree (pinned version; equality tests against
   the stock parser on hand-written and seeded random inputs).
