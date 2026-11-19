@@ -413,12 +413,18 @@ func TestUndoWaitingStaysInBudget(t *testing.T) {
 			if before.waiting != count || before.lost != 0 || before.pool != before.stacks {
 				t.Fatalf("before the rename: %+v, want %d payloads that wait", before, count)
 			}
-			// The new name is 96 bytes longer, in what the entry depends
-			// on now. What its file depends on stays as it was written.
-			// The limit leaves room for the payloads as they are, and for
-			// all but the last of the longer names.
-			long := strings.Repeat("N", maxTabName)
-			grows := int64(len(long) - len("Data"))
+			// The new name takes more of the heap in what the entry depends
+			// on now: the name of the most bytes, of a letter of four, takes
+			// 112 bytes more. What its file depends on stays as it was
+			// written. The limit leaves room for the payloads as they are,
+			// for the rename's own entry, which is admitted before the
+			// payloads are counted again, and for all but the last of the
+			// longer names.
+			long := strings.Repeat("\U00020000", maxTabName)
+			if formula.TabNameNeedsQuotes(long) {
+				t.Fatal("the long name needs apostrophes in a formula")
+			}
+			grows := formula.TextBytes(len(long)) - formula.TextBytes(len("Data"))
 			e.in.mu.Lock()
 			if shared {
 				p.instanceMax = before.pool + count*grows - grows/2

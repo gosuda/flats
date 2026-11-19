@@ -53,7 +53,9 @@ func TestActionShape(t *testing.T) {
 // form longer than nine bytes for each character of the limit.
 func TestUndoRefusesFormulaOverLimit(t *testing.T) {
 	long := "=" + strings.TrimSuffix(strings.Repeat("D!A1+", 1600), "+")
-	longName := strings.Repeat("L", maxTabName)
+	// The tab name of the most bytes, of a character of four, which each
+	// reference takes.
+	longName := strings.Repeat("\U0001F600", maxTabName)
 	if f, err := formula.Parse(long, formula.Pos{Row: 1, Col: 1}, formula.Limits{}); err != nil {
 		t.Fatal(err)
 	} else if g, _, _ := f.Apply("Sheet1", formula.Pos{Row: 1, Col: 1}, formula.Transform{Kind: formula.RenameTab, Tab: "D", Name: longName}); len(g.Stored()) <= formula.MaxStoredBytes {

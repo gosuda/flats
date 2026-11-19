@@ -132,8 +132,10 @@ func TestSheetToolsRoundTrip(t *testing.T) {
 				t.Fatalf("second page: %s %+v", text, out)
 			}
 			out = nil
+			// The CSV holds values (spec rule 60): the currency cells and
+			// the formula's result are written as plain numbers.
 			_, bad = call(t, cs, "get_sheet", map[string]any{"slug": "budget", "tab": "Sheet1", "range": "A1:B4", "format": "csv"}, &out)
-			if csv, _ := out["csv"].(string); bad || !strings.Contains(csv, "Venue,\"$1,200.00\"\r\n") || !strings.Contains(csv, "Total,\"$2,100.00\"") || out["rows"] != nil {
+			if csv, _ := out["csv"].(string); bad || !strings.Contains(csv, "\r\nVenue,1200\r\n") || !strings.Contains(csv, "\r\nTotal,2100\r\n") || out["rows"] != nil {
 				t.Fatalf("csv: %+v", out)
 			}
 

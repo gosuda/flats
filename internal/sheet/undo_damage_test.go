@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -250,7 +251,8 @@ func TestUndoScratchLengthsAreChecked(t *testing.T) {
 			enc.iv(0)
 			enc.uv(tooLong)
 		}},
-		{"a name longer than a tab's", "a count of 401 with", func(enc *spillEnc) {
+		// One byte more than a tab name of the most bytes.
+		{"a name longer than a tab's", "a count of " + strconv.Itoa(maxNameBytes+1) + " with", func(enc *spillEnc) {
 			step(enc)
 			rest(enc)
 			for i := 0; i < 2; i++ {
@@ -266,7 +268,7 @@ func TestUndoScratchLengthsAreChecked(t *testing.T) {
 			enc.flag(false)
 			enc.iv(0)
 			enc.iv(0)
-			enc.str(strings.Repeat("n", 4*maxTabName+1))
+			enc.str(strings.Repeat("n", maxNameBytes+1))
 			zeros(enc, 64)
 		}},
 		{"the last sorts of a deleted tab", long, func(enc *spillEnc) {
