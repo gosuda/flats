@@ -76,7 +76,9 @@ poll `get_approval`.
 * Autopilot grants no public provider, key or secret. A flat made Public is
   reachable only through the public providers the operator permitted for
   that flat. Public is NOT access control: anyone on the internet can open a
-  ready Public route.
+  ready Public route, except the Portal URL of a flat with Portal sign-in on
+  (`topic.approvals`). No agent decides a change of Portal sign-in
+  (`set_signin`): no switch allows it.
 * Never change the Experiments settings of the console, where the operator
   controls Autopilot, also not through a browser or by calling the console.
   Never call console routes or send console headers.

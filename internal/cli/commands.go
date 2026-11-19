@@ -283,6 +283,10 @@ func printPending(w io.Writer, state, detail string) {
 // notice of its own (it always should; this keeps the warning unconditional).
 const publicURLNotice = "Anyone with a public URL can open it. Unlisted only hides a flat from Portal relay listings; it is NOT access control."
 
+// signInHostsNote follows publicURLNotice under the public hosts of `flats status`: the Portal URL of a flat with
+// sign-in on is the exception (docs/spec/portal-sign-in.md, rule 61).
+const signInHostsNote = "On the Portal URL of a flat with sign-in on, only the visitors that its sign-in allows can open it."
+
 // publicNotice returns what to print next to f's public URL.
 func publicNotice(f flatView) string {
 	if f.PublicNotice != "" {
@@ -529,7 +533,7 @@ func (a *app) preview(args []string) error {
 func (a *app) visibility(args []string) error {
 	fs := a.flags("visibility")
 	reason := fs.String("reason", "", "why (shown to the operator when approval is needed)")
-	access := fs.String("access", "", "public only: view (default) or edit (boards and documents: anyone on the internet can edit)")
+	access := fs.String("access", "", "public only: view (default) or edit (boards and documents: anyone on the internet can edit, or with Portal sign-in on anyone who passes it)")
 	pos, err := a.parse(fs, args, 2, 2)
 	if err != nil {
 		return err

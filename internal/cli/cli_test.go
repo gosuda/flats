@@ -948,8 +948,8 @@ func TestPublicURLsAlwaysCarryTheNotice(t *testing.T) {
 		}
 	}
 	r = runEnv(t, Env{GOOS: "linux"}, srv.URL, "status")
-	if r.code != 0 || !strings.Contains(r.stdout, "https://blog.portal.example") || !strings.Contains(r.stdout, publicURLNotice) {
-		t.Errorf("status must print the notice with public hosts:\n%s", r.stdout)
+	if r.code != 0 || !strings.Contains(r.stdout, "https://blog.portal.example") || !strings.Contains(r.stdout, publicURLNotice+" "+signInHostsNote) {
+		t.Errorf("status must print the notice with public hosts, and the exception of Portal sign-in:\n%s", r.stdout)
 	}
 }
 

@@ -87,7 +87,9 @@ The author of this spec decided these points, and each can change before the imp
 
 1. An injected secret is a flat secret with a binding: one origin and one header name. Every other flat secret is a
    readable secret. A secret has its binding from its first set until its removal (decision 1). In `flats.db` a row of
-   `secrets` is an injected secret when its column `fetch_origin` or its column `fetch_header` is not empty.
+   `secrets` is an injected secret when its column `fetch_origin` or its column `fetch_header` is not empty. A row with
+   the use `signin` is the OIDC client secret of [Portal sign-in](portal-sign-in.md) (its rule 24). It is neither a
+   readable nor an injected secret: no worker gets it, and only the sign-in gate of the flat sends it.
 2. The result of a set depends on what is stored under the name, and on whether the set names a binding:
 
    | Stored under the name | The set names no binding | The set names a binding |
@@ -164,7 +166,9 @@ The author of this spec decided these points, and each can change before the imp
 ## Capture
 
 19. An activation captures the injected secrets with the ordinary variables, the other secrets and the origin grants,
-    in the same statement (`Store.RuntimeSettingsSnapshot`). The capture times stay as they are. An approved deploy, a
+    in the same statement (`Store.RuntimeSettingsSnapshot`). The capture reads only the secret rows with an empty use,
+    so the client secret of [Portal sign-in](portal-sign-in.md) never reaches a worker. The capture times stay as they
+    are. An approved deploy, a
     redeploy, a rollback, a data restore, a host start and a new preview capture the current settings. The health check
     and the live worker use the same capture. An automatic worker replacement and a rename of the flat keep it. A set or
     a removal does not change a running worker. Redeploy to apply it.

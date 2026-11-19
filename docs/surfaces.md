@@ -83,7 +83,7 @@ Errors are JSON: `{"error", "category", "problems": [{"path","message","fix"}], 
 | 400 | Invalid input, including malformed or repeated `expected_revision` |
 | 403 | Not allowed from this surface, or a cross-site browser request |
 | 404 | Not found, or the host does not manage that feature |
-| 409 | Conflict: stale Draft revision, unpublished flat made Public through an approval, not deployed, unavailable, stale approval, provider not permitted or not ready, unconfirmed public stop, unchanged content, provider in use, unusable or changed public instance network, preview while public instance mode is on |
+| 409 | Conflict: stale Draft revision, unpublished flat made Public through an approval, not deployed, unavailable, stale approval, provider not permitted or not ready, unconfirmed public stop, unchanged content, provider in use, unusable or changed public instance network, preview while public instance mode is on, a public provider that Portal sign-in excludes |
 | 412 | `config_changed`: `config.json` changed since the host read it, or the console page is stale |
 | 415 | A mutating `/api` request without a JSON or archive type or `X-Flats-Client` |
 | 422 | Bundle validation, a failed health check or runtime start, a board write or import over the disk quota (`board_capacity`), or a notebook write over a content limit or the disk quota (`notebook_capacity`) |
@@ -139,8 +139,13 @@ mounted under both prefixes; **console** routes exist only under
 | GET | `/flats/{slug}/stats` | both | `?days=` (1–365, default 30): daily page views, top paths and `usage` (below) |
 | GET | `/flats/{slug}/snapshots` | both | Data snapshots taken before deploys |
 | POST | `/flats/{slug}/providers` | both | `{provider, permitted}`: per-flat network permission. Console only: other surfaces get 403 |
-| GET | `/approvals` | both | `?status=pending\|approved\|rejected\|failed` |
-| GET | `/approvals/{id}` | both | Poll one approval |
+| GET | `/flats/{slug}/signin` | both | The [Portal sign-in](networking.md#portal-sign-in) of the flat with its allowlist: `{provider, issuer, client_id, allow, client_secret, hosts, callback_urls, seq}`. `client_secret` is `{name, issuer, client_id, updated_at}`, the binding of a stored OIDC client secret and never its value, or `null`; `hosts` are the Portal host names, and `callback_urls` their OIDC callback URLs for `oidc`. The console, or a caller on loopback; 403 for a remote caller |
+| POST | `/flats/{slug}/signin` | both | `{provider: "oidc", issuer, client_id, allow, reason?}`, `{provider: "credential", allow, reason?}` or `{provider: "", reason?}` (off): 202 `set_signin` request, which only the operator decides in the console; the stored setting answers 200 `status: "done"`, `sign-in unchanged`. A member that the provider does not take, a missing member and a value outside the rules are 400. The console, or a caller on loopback; 403 for a remote caller. Under `/api` the approval in the answer has its settings without their entries |
+| PUT, DELETE | `/flats/{slug}/signin/secret` | api | PUT `{value, issuer, client_id}` stores the OIDC client secret of sign-in, bound to that issuer and client ID; DELETE removes it, and answers 404 when there is none. Both apply at once without approval. The CLI on loopback only; 403 otherwise, and the console has no route |
+| POST | `/flats/{slug}/signin/links` | both | `{subject, expires?}`: 201 `{url, subject, host, expires_at}`, an access link of a `credential` sign-in for one subject of the allowlist, which only this answer holds. `expires` is an RFC 3339 time from 1 minute to 90 days away, 7 days when missing or empty. 409 for another provider and for a flat without a Portal route with a ready relay. Console only: `/api` callers get 403 |
+| POST | `/flats/{slug}/signin/revoke` | both | Gives the Portal identity of the flat a new token secret, which ends every sign-in session and access link; `done` with `no Portal identity` when the flat has no identity file. No approval. The console, or a caller on loopback; 403 for a remote caller |
+| GET | `/approvals` | both | `?status=pending\|approved\|rejected\|failed`. Under `/api` a `set_signin` approval shows its settings with the number of entries, never an entry |
+| GET | `/approvals/{id}` | both | Poll one approval, with a `set_signin` approval as above |
 | POST | `/approvals/{id}/approve`, `/approvals/{id}/reject` | console | Decide. Answers the approval with `decided_by` |
 | POST | `/flats/{slug}/name` | console | `{name}`: display name |
 | PUT | `/flats/{slug}/listing` | console | `{listing}`: `default`, `hidden` or `listed` relay listing of the Portal route |
@@ -174,8 +179,10 @@ Autopilot allows the operation, for an agent decision
 ([Autopilot tools](#autopilot-tools)). The console does
 not skip the approval request: for those same actions it creates the request
 and approves it at once (its confirm dialog is the decision), except flat
-deletion and version deletion, which it applies directly. Previews, provider
-permissions and the Portal listing take effect immediately.
+deletion and version deletion, which it applies directly. A change of the Portal sign-in of a flat
+waits for a console decision only; no agent decides it. Previews, provider
+permissions, the Portal listing, and the client secret, the access links and
+the revocation of Portal sign-in take effect immediately.
 
 ### Response details
 
@@ -186,6 +193,9 @@ permissions and the Portal listing take effect immediately.
   `effective_version_quota`, `version_count`, `next_version`, `latest_version`,
   `latest_deployed`, `disk_bytes`, `running` and `portal_listing` /
   `portal_hidden` (the listing Flats asks the relays for, not what they show).
+  While Portal sign-in is on, it adds `sign_in`: `{provider, issuer,
+  client_id, allow_count, client_secret?: {name}}`, with the number of
+  allowlist entries and never an entry. It protects the Portal URL only.
   Visibility outputs are `private` or `public`; legacy listed/unlisted inputs
   are stored as public. URLs are never authorization or proof of publication.
   A flat created by public instance mode carries
@@ -331,6 +341,7 @@ for server flats); `flats config`, `flats key`, and
 | `visibility <slug> private\|public [--access view\|edit] [--reason r]` | Request a visibility change; `--access edit` lets anyone edit a Public board |
 | `rename <slug> <new-slug>`, `delete <slug> [--reason r]` | Rename; request deletion |
 | `env`, `network`, `secret` | Manage server settings; changing `network` origins or `secret` values works only from the host itself (loopback). `secret set <slug> <NAME> --origin URL --header NAME` makes an injected secret, and `secret ls` shows its binding in the column `INJECTED` ([Calling external APIs](external-api.md)). `secret backup-key`, `restore-key [--out file]`, `rotate-key [--out file] [--password-file path] [--yes]` and `reset` work on the data directory and never call the host. They find the key at `host.secret_key_path` when it is set, and `restore-key --out` writes the recovered key to a new file instead ([Recovering a lost secret.key](configuration.md#recovering-a-lost-secretkey), [Keeping the key outside the data directory](configuration.md#keeping-the-key-outside-the-data-directory)). `rotate-key` makes a new key and seals every flat secret and operator key value again under it while the host is stopped, and `rotate-key --out` writes the new key to a new file when it cannot write the key file ([Rotating the key](configuration.md#rotating-the-key)) |
+| `signin show <slug> [--json]`, `signin set <slug> oidc --issuer URL --client-id ID --allow ENTRY [--allow ENTRY ...]`, `signin set <slug> credential --allow SUBJECT [--allow SUBJECT ...]`, `signin off <slug>` (`set` and `off` take `[--reason r]`), `signin secret set <slug> --issuer URL --client-id ID`, `signin secret rm <slug>`, `signin revoke <slug>` | The [Portal sign-in](networking.md#portal-sign-in) of a flat. `show` prints the setting with its entries, the binding of the client secret, the Portal host names and the callback URLs, and `--json` the API response. `set` and `off` request a change that only the console approves (exit 3). `secret set` reads the OIDC client secret as `secret set` does and binds it to the issuer and the client ID. `secret set`, `secret rm` and `revoke` apply at once without approval, and they work only from the host itself (loopback). No command issues an access link. A missing flag, a flag that the provider does not take and an extra argument are usage errors; an older host gets a message that it is older than the command |
 | `audit ls [--since time] [--kind kind] [--flat slug] [--flat-id id] [--limit n] [--json] [--config path\|--data dir]` | List the audit log of secret and key operations, oldest first. Works on the data directory, with the host running or stopped, and never calls the host ([Audit log](configuration.md#audit-log)) |
 | `audit export [--since time] [--config path\|--data dir]` | Write the audit log and the approval records as JSON lines, oldest first, up to 30 seconds before now, and print that time on standard error for the next `--since` ([Audit export](configuration.md#audit-export)) |
 | `backup --out path [--exclude-secret-key] [--config path\|--data dir]`, `backup --verify path` | Copy the data directory of a running or stopped host into a new folder with a manifest, or check such a copy. With `host.secret_key_path` the key is outside the copy. Works on the data directory and never calls the host ([What to back up](configuration.md#what-to-back-up)) |
@@ -341,7 +352,7 @@ for server flats); `flats config`, `flats key`, and
 
 `flats help` lists the commands, then names `status` and `mcp-config` before the
 exit codes. `flats help <command>` prints the usage line, the synopsis and, for
-`connect`, `mcp`, `mcp-config`, `client` and `agent-setup`, a longer
+`connect`, `mcp`, `mcp-config`, `client`, `agent-setup` and `signin`, a longer
 description. `flats <command> -h` prints the same for commands that take flags,
 then lists the flags. Subcommand groups such as `board`, `notebook`, `config`,
 `env`, `key`, `network` and `secret`, and `serve`, handle `-h` themselves.
@@ -350,8 +361,10 @@ Exit codes: 0 success, 1 error, 2 usage, 3 pending approval, 78 configuration
 the operator must fix. Every request that waits for approval exits 3 in text
 and JSON modes, with the approval URL, its status and how to poll it. A pending
 Private-to-Public request says that internet access begins only after approval;
-it never describes the flat as already Public. The CLI has no approve, reject,
-provider-permission, key or Experiments command against a running host.
+it never describes the flat as already Public. For a flat with Portal sign-in
+on, it prints the pending notice of the host, which says that the flat becomes
+Public behind sign-in. The CLI has no approve, reject,
+provider-permission, key, access-link or Experiments command against a running host.
 While public instance mode is on, text output uses the public URL with its
 notice, or reports `no link yet (<connection_state>)`; it never prints a
 private link. Preview creation is refused, and successful creation still
@@ -381,10 +394,24 @@ Document saves return `flat` without a Draft or version. Version operations use
 positive numbers and return the pending approval, its status and link. There is
 no provider-permission, settings or key tool, no decision tool except the
 Autopilot tools while Autopilot is on, and the MCP handler never gains console
-authority. With public instance mode off, the server instructions describe
+authority. No tool changes the Portal sign-in of a flat, sets its client
+secret, issues an access link or ends its sessions. With public instance mode off, the server instructions describe
 Private URLs as Local loopback or explicitly permitted Tailscale, NetBird or
 reverse proxy routes, and pending visibility notices use the future tense. Removed tools (`save_version`,
 `save_version_from_dir`, `publish`) have no aliases.
+
+Portal sign-in in MCP texts: `get_flat` and `list_flats` carry `sign_in` while
+it is on, with `allow_count` and never an entry of the allowlist, and their
+descriptions, the `sign_in` schema and a line of the `get_flat` text say that
+it protects the Portal URL only. Every output that holds an approval
+(`get_approval`, the Autopilot tools and the pending results) shows a
+`set_signin` approval with the provider, the issuer, the client ID and the
+number of entries of each setting. For a flat with sign-in on, the notices say
+that only the visitors that its sign-in allows can open it on its Portal
+address, and the texts that say who can edit a Public flat name the visitors
+who pass its sign-in ([Portal sign-in](spec/portal-sign-in.md), rule 61). The
+server instructions say that a Public route behind Portal sign-in is the
+exception to "Public is NOT access control".
 
 Revision management of documents, designs, boards and notebooks also happens inside the
 flat's own Private route while private links are enabled; see
@@ -634,7 +661,9 @@ publishing: they run once saved.
   deletes the flat directly, as Settings does
   ([Delete from the flat list](spec/console-row-delete.md)). Each row has its
   type's label and icon (Flat, Document, Page, Design, Board, Notebook); a running board's open link goes to
-  its canvas, and a running notebook's to its editor. Rows do not repeat a public-access banner.
+  its canvas, and a running notebook's to its editor. Rows do not repeat a public-access banner. Both
+  visibility badges of a Public flat with Portal sign-in on add ` · Sign-in` to its level, as in
+  `Public · Sign-in` or `Public, view only · Sign-in`.
 - **Flat page.** Tabs: Deployments (Overview for documents, designs, boards and notebooks) at
   `/flats/{slug}`, Analytics, Database (server flats only) and Settings.
   Deployments shows the addresses and live state, the Versions table, open
@@ -644,7 +673,7 @@ publishing: they run once saved.
   version and `Roll back to vN` below it. The Overview of a document, design,
   board or notebook has the addresses, running state and logs, and no Versions or
   previews. Database lists data snapshots. Settings holds the name, slug,
-  sharing, networks, version history quota (websites and pages), revision
+  sharing, sign-in, networks, version history quota (websites and pages), revision
   quotas (documents, designs, boards and notebooks), environment variables,
   secrets, server HTTP(S) permissions and deletion. A notebook has no
   database, environment variable, secret or server network settings, and its
@@ -658,11 +687,31 @@ publishing: they run once saved.
   cannot be newly allowed. A flat that allows Portal also has its relay
   listing choice (follow the host setting, hidden or listed), described as the
   listing requested from the relays, which follow at their next lease renewal,
-  and not as access control.
+  and not as access control. While the flat has Portal sign-in on, the switches
+  of Tailscale Funnel, zrok, Cloudflare Quick Tunnel, NetBird Expose and
+  Reverse proxy (public) are disabled, each with `Off while Portal sign-in is
+  on`, and a paragraph above them says why and that sign-in goes off only with
+  `flats signin off <slug>` and an approval.
+- **Sign-in** on a flat's Settings, below Sharing ([Portal sign-in](networking.md#portal-sign-in)):
+  the provider (`OpenID Connect · <host of the issuer>`, `Access links` or
+  `Off`), for `oidc` the issuer, the client ID and the callback URLs, the
+  allowlist with its number of entries, and whether a client secret is stored
+  and for which issuer and client ID, never its value. A stored secret whose
+  binding differs from the `oidc` setting gets a warning with the
+  `flats signin secret set` command. Two texts say that sign-in protects the
+  Portal address only and that `flats signin set` on the host changes it. For
+  `credential` the row has **Issue a link…**: a subject of the allowlist and
+  an expiry as a number and a unit, 7 days unless changed. The dialog shows
+  the link once as text, with Copy and the sentence of who can open the flat
+  until when, and empties itself when it closes. Every row has **End all
+  sessions and links**, which asks for confirmation. A pending `set_signin`
+  shows below as `Waiting for approval` with View request.
 - **Share.** Private or Public, with Visit and Copy link. Making a flat Public
   is refused in the console until it has a live version and allows a public
-  network. The public URL is `public_url`, or the URL of a current public
-  endpoint.
+  network; with Portal sign-in on, until it allows Portal (`Allow Portal
+  first`). The public URL is `public_url`, or the URL of a current public
+  endpoint. With sign-in on, the Share texts and the warning before Public say
+  that only the visitors that its sign-in allows can open the Portal link.
 - **Settings.** Five pages behind a left nav. Networks: the defaults for new
   flats, then Private and Public providers, each opening its own page with
   Turn on / Turn off, its key (Tailscale auth key, NetBird setup key, zrok
@@ -725,8 +774,16 @@ publishing: they run once saved.
   queue.
 - **Approval page.** Names version creation (including legacy `publish`
   requests), version deletion, activation, rollback, data restore, visibility
-  changes and deletion, so requests made by agents can be reviewed and decided
-  there. A decided approval shows "Decided by": "the console", the tailnet
+  changes, deletion and sign-in changes, so requests made by agents can be reviewed and decided
+  there. A `set_signin` approval reads `Turn on sign-in for <slug>`,
+  `Change the sign-in of <slug>` or `Turn off sign-in for <slug>: anyone can
+  open its Portal address`. Its page shows the setting when requested, the
+  requested one, and the added and the removed entries. It warns when the
+  change widens access (sign-in goes off, an entry is added, or the provider,
+  the issuer or the client ID changes), and when the stored client secret
+  belongs to another issuer or client ID, so that the Portal route would stop.
+  A request whose sign-in changed since can only be dismissed. A decided
+  approval shows "Decided by": "the console", the tailnet
   login or "NetBird peer <name>" as recorded, or for an agent decision
   `Autopilot: agent "<name>" via <network>` with a note that Flats did not
   verify the name. Other values, including an unreadable `autopilot:` value,

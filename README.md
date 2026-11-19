@@ -351,6 +351,11 @@ Configuration alone never publishes or changes visibility. Wait for a route to r
 its endpoint before sharing it: relay availability and network connectivity
 are external dependencies.
 
+Public is not access control, with one exception: [Portal sign-in](docs/networking.md#portal-sign-in)
+puts the Portal URL of a flat behind a sign-in at your OpenID Connect provider or behind
+access links, for an allowlist that you approve. It protects the Portal URL only, not the
+private routes, previews, the console or MCP.
+
 See [Private and public access](docs/networking.md) for provider setup,
 tailnet consoles, [serving flats behind your own reverse proxy](docs/networking.md#serving-flats-behind-a-reverse-proxy)
 and upgrades from older hosts.
