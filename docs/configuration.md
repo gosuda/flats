@@ -69,7 +69,9 @@ the data directory is.
   tsnet/                      tailnet node state: one node per flat, preview
                               and console domain
   portal/                     Portal identities (<slug>.json), the pinned relay
-                              (<slug>.relay) and remembered aliases (<slug>.alias)
+                              (<slug>.relay) and remembered aliases (<slug>.alias);
+                              on Windows each identity file has the Portal SDK's own
+                              access list (Windows support spec, rule 18)
   netbird/peers/<name>/       one NetBird peer per flat and console domain:
                               identity (mode 0600) and state (builds with NetBird only)
   zrok/                       zrok names this host reserved, until released
