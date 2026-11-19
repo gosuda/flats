@@ -172,7 +172,7 @@ func asciiEqualFold(s, name string) bool {
 
 // fillNames continues weekday and month names. One name steps by one, and
 // two or more by the distance from one to the next in the cycle, which must
-// be the same each time.
+// be the same each time; equal names step by none and repeat the name.
 func fillNames(src []Content, n int, back bool) ([]Content, bool) {
 	at := make([]int, len(src))
 	var form nameForm // the three-letter form unless a cell says otherwise
@@ -182,8 +182,9 @@ func fillNames(src []Content, n int, back bool) ([]Content, bool) {
 			return nil, false
 		}
 		at[i], form.months = place, f.months
-		// The form is that of the last cell. May is both forms, and leaves
-		// the form of a cell before it.
+		// The form is that of the last cell whose name has one form. May is
+		// both forms, and leaves the form of a cell before it, or the
+		// three-letter form when no cell has one.
 		if !f.both {
 			form.full = f.full
 		}

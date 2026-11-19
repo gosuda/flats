@@ -22,7 +22,7 @@ const referenceDir = "testdata/reference"
 
 // referenceRows is the number of cases the technical design, section 9.6,
 // and the README of the table state.
-const referenceRows = 2521
+const referenceRows = 2603
 
 // knownFailures lists rows that cannot pass without contradicting another
 // row or the spec. It is empty: every row of the table passes.
