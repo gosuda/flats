@@ -308,8 +308,8 @@ func runStoredReaders(dir string, b *classBase) readerResult {
 	_, err = in.resumeSession(ctx, b.Token)
 	note("resume", err)
 	count := func() string {
-		var n int
-		if err := in.rdb.QueryRowContext(ctx, `SELECT count(*) FROM groups`).Scan(&n); err != nil {
+		n, err := groupCount(ctx, dir)
+		if err != nil {
 			return "unknown: " + err.Error()
 		}
 		return fmt.Sprint(n)
@@ -330,6 +330,19 @@ func runStoredReaders(dir string, b *classBase) readerResult {
 	}
 	note("write", err)
 	return out
+}
+
+// groupCount counts the groups of the sheet.db in dir through a connection
+// of its own: a load that refused the sheet closed the instance's.
+func groupCount(ctx context.Context, dir string) (int, error) {
+	db, err := sql.Open("sqlite", sqliteuri.File(filepath.Join(dir, dbName))+"?mode=ro")
+	if err != nil {
+		return 0, err
+	}
+	defer db.Close()
+	var n int
+	err = db.QueryRowContext(ctx, `SELECT count(*) FROM groups`).Scan(&n)
+	return n, err
 }
 
 // wantRefused checks what the readers of a sheet.db with the substitution
