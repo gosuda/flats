@@ -470,8 +470,7 @@ func FuzzParseTyped(f *testing.F) {
 		if sets != nil {
 			format = *sets
 		}
-		shown := Show(content.Value(), content.Kind, format)
-		AppendCSVField(nil, shown)
+		AppendCSVField(nil, content.Value(), content.Kind, format)
 		edit := EditText(content, Pos{})
 		if back, _ := ParseTyped(edit); back != readBack(content, edit) {
 			t.Fatalf("ParseTyped(%q) = %+v is shown as %q, which reads back as %+v", text, content, edit, back)

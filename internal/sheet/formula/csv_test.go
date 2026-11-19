@@ -84,7 +84,7 @@ func TestExportFixture(t *testing.T) {
 			if cell == nil {
 				continue
 			}
-			got = AppendCSVField(got, Show(sheet.Value(0, p), cell.showKind(), formats[p]))
+			got = AppendCSVField(got, sheet.Value(0, p), cell.showKind(), formats[p])
 		}
 		got = append(got, '\r', '\n')
 	}

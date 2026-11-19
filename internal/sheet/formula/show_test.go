@@ -2,6 +2,7 @@ package formula
 
 import (
 	"encoding/json"
+	"math"
 	"strings"
 	"testing"
 )
@@ -156,152 +157,225 @@ func TestShow(t *testing.T) {
 	}
 }
 
-// csvCase is one export case of the technical design, section 22.2: what a
-// cell shows and the exact CSV field.
+// csvCase is one export case of the technical design, section 22.2: a
+// cell's value, its content kind and its number format, and the exact CSV
+// field.
 type csvCase struct {
-	id    string
-	shown string
-	want  string
+	id   string
+	v    Value
+	kind ContentKind
+	nf   NumberFormat
+	want string
 }
 
-// TestCSVFields holds the field cases E-01 to E-84. The rows that name a
-// formula or a typed entry get their shown text from the engine.
+// TestCSVFields holds the field cases E-01 to E-130 that one cell decides.
+// The rows that name a formula or a typed entry get their value from the
+// engine. A field is written from the value, never from the shown text.
 func TestCSVFields(t *testing.T) {
 	var cases []csvCase
-	add := func(id, shown, want string) { cases = append(cases, csvCase{id, shown, want}) }
 	today, _ := ParseDate("2026-11-13")
-	typed := func(text string, nf string) string {
+	format := func(nf string) NumberFormat {
+		t.Helper()
+		if nf == "" {
+			return NumberFormat{}
+		}
+		return numberFormat(t, nf)
+	}
+	// typed adds a cell that holds a typed entry, under nf or else under the
+	// format the entry sets.
+	typed := func(id, text, nf, want string) {
 		t.Helper()
 		content, sets := ParseTyped(text)
-		format := NumberFormat{}
-		if sets != nil {
-			format = *sets
+		f := format(nf)
+		if sets != nil && nf == "" {
+			f = *sets
 		}
-		if nf != "" {
-			format = numberFormat(t, nf)
-		}
-		return Show(content.Value(), content.Kind, format)
+		cases = append(cases, csvCase{id, content.Value(), content.Kind, f, want})
 	}
-	calculated := func(formula string, nf string) string {
+	// calculated adds a formula cell under nf.
+	calculated := func(id, formula, nf, want string) {
 		t.Helper()
-		var format *NumberFormat
-		if nf != "" {
-			f := numberFormat(t, nf)
-			format = &f
-		}
-		return formulaResult(t, &refRow{}, formula, today, format).shown
+		cell := evalIn(t, &refRow{}, formula, today)
+		cases = append(cases, csvCase{id, cell.val, cell.showKind(), format(nf), want})
+	}
+	text := func(id, s, want string) {
+		cases = append(cases, csvCase{id, TextValue(s), ContentText, NumberFormat{}, want})
+	}
+	number := func(id string, x float64, kind ContentKind, nf, want string) {
+		cases = append(cases, csvCase{id, NumberValue(x), kind, format(nf), want})
 	}
 
-	// E-01 to E-42: each first character that a program could read as the
-	// start of a formula, with 0, 1 and 3 leading spaces, as typed text
-	// and as text a formula calculates.
+	// E-01 to E-42 and E-87 to E-110: each first character that a program
+	// could read as the start of a formula, the full-width ones included,
+	// with 0, 1 and 3 leading spaces, as typed text and as text a formula
+	// calculates.
 	n := 0
-	for _, first := range []string{"=", "+", "-", "@", "\t", "\r", "\n"} {
+	for _, first := range []string{"=", "+", "-", "@", "\t", "\r", "\n", "＝", "＋", "－", "＠"} {
 		for _, spaces := range []int{0, 1, 3} {
-			text := strings.Repeat(" ", spaces) + first + "x"
-			want := "'" + text
+			s := strings.Repeat(" ", spaces) + first + "x"
+			want := "'" + s
 			if strings.ContainsAny(first, "\t\r\n") {
 				want = `"` + want + `"`
 			}
-			n++
-			add("E-typed", typed("'"+text, ""), want)
-			n++
-			add("E-calculated", calculated(`=REPT(" ",`+string(rune('0'+spaces))+`)&"`+first+`x"`, ""), want)
+			typed("E-typed "+first, "'"+s, "", want)
+			calculated("E-calculated "+first, `=REPT(" ",`+string(rune('0'+spaces))+`)&"`+first+`x"`, "", want)
+			n += 2
 		}
 	}
-	if n != 42 {
-		t.Fatalf("E-01 to E-42 are %d cases", n)
+	if n != 42+24 {
+		t.Fatalf("E-01 to E-42 and E-87 to E-110 are %d cases", n)
 	}
 
 	// E-43 to E-58: a negative number under each number format, typed and
-	// calculated. None gets an apostrophe.
-	for _, c := range []struct{ nf, want string }{
-		{"", "-1234.5"},
-		{`{"kind":"general"}`, "-1234.5"},
-		{`{"kind":"number","decimals":2,"thousands":true}`, `"-1,234.50"`},
-		{`{"kind":"number","decimals":2,"thousands":false}`, "-1234.50"},
-		{`{"kind":"number","decimals":0,"thousands":true}`, `"-1,235"`},
-		{`{"kind":"percent","decimals":1}`, "-123450.0%"},
-		{`{"kind":"currency","symbol":"$","decimals":2}`, `"-$1,234.50"`},
-		{`{"kind":"text"}`, "-1234.5"},
+	// calculated, is written as the plain number.
+	for _, nf := range []string{
+		"",
+		`{"kind":"general"}`,
+		`{"kind":"number","decimals":2,"thousands":true}`,
+		`{"kind":"number","decimals":2,"thousands":false}`,
+		`{"kind":"number","decimals":0,"thousands":true}`,
+		`{"kind":"percent","decimals":1}`,
+		`{"kind":"currency","symbol":"$","decimals":2}`,
+		`{"kind":"text"}`,
 	} {
-		add("E-43 typed "+c.nf, typed("-1234.5", c.nf), c.want)
-		add("E-43 calculated "+c.nf, calculated("=-2469/2", c.nf), c.want)
+		typed("E-43 typed "+nf, "-1234.5", nf, "-1234.5")
+		calculated("E-43 calculated "+nf, "=-2469/2", nf, "-1234.5")
 	}
 
-	// E-59 to E-64: negative currency. A symbol made of letters makes the
-	// field text, so it gets the apostrophe.
-	add("E-59", typed("-5", `{"kind":"currency","symbol":"€","decimals":2}`), "-€5.00")
-	add("E-60", typed("-5", `{"kind":"currency","symbol":"£","decimals":0}`), "-£5")
-	add("E-61", typed("-1234", `{"kind":"currency","symbol":"¥","decimals":0}`), `"-¥1,234"`)
-	add("E-62", calculated("=-5", `{"kind":"currency","symbol":"₩","decimals":0}`), "-₩5")
-	add("E-63", typed("-5", `{"kind":"currency","symbol":"CHF","decimals":2}`), "'-CHF5.00")
-	add("E-64", calculated("=-1234", `{"kind":"currency","symbol":"kr","decimals":0}`), `"'-kr1,234"`)
+	// E-59 to E-64: negative currency, a symbol made of letters included.
+	typed("E-59", "-5", `{"kind":"currency","symbol":"€","decimals":2}`, "-5")
+	typed("E-60", "-5", `{"kind":"currency","symbol":"£","decimals":0}`, "-5")
+	typed("E-61", "-1234", `{"kind":"currency","symbol":"¥","decimals":0}`, "-1234")
+	calculated("E-62", "=-5", `{"kind":"currency","symbol":"₩","decimals":0}`, "-5")
+	typed("E-63", "-5", `{"kind":"currency","symbol":"CHF","decimals":2}`, "-5")
+	calculated("E-64", "=-1234.25", `{"kind":"currency","symbol":"kr","decimals":0}`, "-1234.25")
 
-	// E-65 to E-68: a negative number under a date and a time format, one
-	// that General shows with an exponent, and text that reads as a number.
-	add("E-65", typed("-5", `{"kind":"date","pattern":"yyyy-mm-dd"}`), "-5")
-	add("E-65 time", calculated("=-0.5", `{"kind":"time","pattern":"hh:mm"}`), "-0.5")
-	add("E-66", calculated("=-1.5*10^20", ""), "-1.5E+20")
-	add("E-67", typed("'-5", ""), "-5")
-	add("E-68", calculated(`="-"&"5"`, ""), "-5")
+	// E-65 to E-68: a negative number under a date and a time format, which
+	// Show draws in General, and one with an exponent. Text that reads as a
+	// number gets the apostrophe and arrives as text.
+	typed("E-65", "-5", `{"kind":"date","pattern":"yyyy-mm-dd"}`, "-5")
+	calculated("E-65 time", "=-0.5", `{"kind":"time","pattern":"hh:mm"}`, "-0.5")
+	calculated("E-66", "=-1.5*10^20", "", "-1.5E+20")
+	typed("E-66 typed", "-1.5E20", "", "-1.5E+20")
+	typed("E-67", "'-5", "", "'-5")
+	calculated("E-68", `="-"&"5"`, "", "'-5")
 
 	// E-69 to E-76: characters that need quotation marks.
-	add("E-69", "a,b", `"a,b"`)
-	add("E-70", "a;b", `"a;b"`)
-	add("E-71", "a\tb", "\"a\tb\"")
-	add("E-72", `say "hi"`, `"say ""hi"""`)
-	add("E-73", "a\nb", "\"a\nb\"")
-	add("E-74", "a\r\nb", "\"a\r\nb\"")
-	add("E-75", "a;=1+1", `"a;=1+1"`)
-	add("E-76", "=1,2", `"'=1,2"`)
-	add("E-76 plus", "+1,2", `"'+1,2"`)
-	add("E-76 quote", `@"x"`, `"'@""x"""`)
+	text("E-69", "a,b", `"a,b"`)
+	text("E-70", "a;b", `"a;b"`)
+	text("E-71", "a\tb", "\"a\tb\"")
+	text("E-72", `say "hi"`, `"say ""hi"""`)
+	text("E-73", "a\nb", "\"a\nb\"")
+	text("E-74", "a\r\nb", "\"a\r\nb\"")
+	text("E-75", "a;=1+1", `"a;=1+1"`)
+	text("E-76", "=1,2", `"'=1,2"`)
+	text("E-76 plus", "+1,2", `"'+1,2"`)
+	text("E-76 quote", `@"x"`, `"'@""x"""`)
 
 	// E-77 to E-84: booleans, errors, text outside ASCII, text typed with
 	// an apostrophe and a blank cell.
-	add("E-77", calculated("=1=1", ""), "TRUE")
-	add("E-77 typed", typed("false", ""), "FALSE")
+	calculated("E-77", "=1=1", "", "TRUE")
+	typed("E-77 typed", "false", "", "FALSE")
 	for e := ErrSyntax; e <= ErrLimit; e++ {
-		add("E-78", Show(ErrorValue(e), ContentFormula, NumberFormat{}), e.String())
+		cases = append(cases, csvCase{"E-78", ErrorValue(e), ContentFormula, NumberFormat{}, e.String()})
 	}
-	add("E-78 calculated", calculated("=1/0", ""), "#DIV/0!")
-	add("E-79", typed("예산", ""), "예산")
-	add("E-80", typed("😀", ""), "😀")
-	add("E-81", typed("'007", ""), "007")
-	add("E-82", typed("''tis", ""), "'tis")
-	add("E-83", typed("", ""), "")
-	add("E-84", calculated("=A1", ""), "")
+	calculated("E-78 calculated", "=1/0", `{"kind":"date","pattern":"yyyy-mm-dd"}`, "#DIV/0!")
+	typed("E-79", "예산", "", "예산")
+	typed("E-80", "😀", "", "😀")
+	typed("E-81", "'007", "", "007")
+	typed("E-82", "''tis", "", "'tis")
+	typed("E-83", "", "", "")
+	calculated("E-84", "=A1", `{"kind":"number","decimals":2,"thousands":true}`, "")
 
-	// More of the number form of rule 5: these read as numbers.
-	for _, field := range []string{"-5", "-5.5", "-1,234", "-1,234,567.89", "-$5", "-€1,000.50", "-5%", "-0.5%", "-1.5E+20", "-1e5", "-2E-3", "-£5E3", "-007"} {
-		want := field
-		if strings.Contains(field, ",") {
-			want = `"` + field + `"`
-		}
-		add("number "+field, field, want)
+	// E-111 to E-120: dates, times and dates with time under every date and
+	// time format, in ISO 8601 form.
+	for _, nf := range []string{"", `{"kind":"date","pattern":"yyyy-mm-dd"}`, `{"kind":"date","pattern":"m/d/yyyy"}`, `{"kind":"date","pattern":"mmm d, yyyy"}`} {
+		typed("E-111 "+nf, "3/15/2026", nf, "2026-03-15")
 	}
-	// And these do not.
-	for _, field := range []string{"-", "--5", "- 5", "-5-", "-.5", "-5.", "-1,23", "-12,345,6", "-1234,567", "-$$5", "-5$", "-CHF5", "-5 %", "-5%%", "-1E", "-1E+", "-5E3%", "-₩", "-x", " -5", "-5 ", "-٥", "-5\n"} {
-		want := "'" + field
-		if strings.ContainsAny(field, ",\n") {
-			want = `"` + want + `"`
-		}
-		add("text "+field, field, want)
+	for _, nf := range []string{"", `{"kind":"time","pattern":"hh:mm"}`, `{"kind":"time","pattern":"hh:mm:ss"}`, `{"kind":"time","pattern":"h:mm AM/PM"}`} {
+		typed("E-114 "+nf, "2:30 PM", nf, "14:30:00")
 	}
-	// Only the space counts as a leading space.
-	add("no-break space", " =1", " =1")
-	add("spaces only", "   ", "   ")
-	add("plain", "Rent", "Rent")
-	add("apostrophe inside", "it's", "it's")
-	add("leading apostrophe", "'=1", "'=1")
+	for _, nf := range []string{"", `{"kind":"datetime","date":"mmm d, yyyy","time":"h:mm AM/PM"}`} {
+		typed("E-117 "+nf, "2026-03-15 14:30", nf, "2026-03-15 14:30:00")
+	}
+	calculated("E-118", "=TIME(14,30,0)+0.25/86400", `{"kind":"time","pattern":"hh:mm:ss"}`, "14:30:00.250")
+	calculated("E-119", "=DATE(2026,3,15)", "", "2026-03-15")
+	calculated("E-119 EOMONTH", "=EOMONTH(DATE(2026,2,15),0)", "", "2026-02-28")
+	calculated("E-120", "=TIME(9,5,7)", `{"kind":"time","pattern":"h:mm AM/PM"}`, "09:05:07")
+	calculated("E-120 number", "=DATE(2026,3,15)+0", "", "46096")
+
+	// E-121 to E-126: numbers in full precision, plain up to 17 digits
+	// before the point and 9 zeros after it.
+	calculated("E-121", "=1/3", "", "0.3333333333333333")
+	calculated("E-122", "=0.1+0.2", "", "0.30000000000000004")
+	calculated("E-123", `=VALUE("1234567890123456")`, "", "1234567890123456")
+	calculated("E-124", "=10^-10", "", "0.0000000001")
+	calculated("E-125", "=10^-11", "", "1E-11")
+	typed("E-126 percent", "12.5%", "", "0.125")
+	typed("E-126 currency", "$1,234.50", "", "1234.5")
+	// E-127: text that typed entry kept as text.
+	typed("E-127", "1234567890123456", "", "1234567890123456")
+	// E-128 to E-130.
+	calculated("E-128", "=12345678901234567890", "", "1.2345678901234567E+19")
+	calculated("E-129", "=DATE(2026,3,15)+0.75", `{"kind":"date","pattern":"m/d/yyyy"}`, "2026-03-15 18:00:00")
+	calculated("E-130", "=1.5", `{"kind":"time","pattern":"hh:mm"}`, "1899-12-31 12:00:00")
+
+	// The bounds of the plain form, and the exponent form beyond them.
+	number("17 digits", 12345678901234567, ContentNumber, "", "12345678901234568")
+	number("18 digits", 123456789012345678, ContentNumber, "", "1.2345678901234568E+17")
+	number("1E+17", 1e17, ContentNumber, "", "1E+17")
+	number("1E+16", 1e16, ContentNumber, "", "10000000000000000")
+	number("tiny", 5e-324, ContentNumber, "", "5E-324")
+	number("largest", math.MaxFloat64, ContentNumber, "", "1.7976931348623157E+308")
+	number("zero", 0, ContentNumber, "", "0")
+	number("negative zero", math.Copysign(0, -1), ContentNumber, "", "0")
+	number("a tenth", 0.1, ContentNumber, `{"kind":"number","decimals":0,"thousands":false}`, "0.1")
+	number("past the last date", lastDateDay+1, ContentDate, "", "2958466")
+
+	// Milliseconds: rounded, with a carry into the seconds, minutes, hours
+	// and days. A value below one day under a time format stays a time.
+	ms := func(h, m, s int, milli float64) float64 {
+		return (float64(h*3600+m*60+s) + milli/1000) / daySeconds
+	}
+	hms := `{"kind":"time","pattern":"hh:mm:ss"}`
+	day := float64(DateOf(2026, 3, 15))
+	number("a part of a millisecond", ms(14, 30, 0, 0.4), ContentTime, hms, "14:30:00")
+	number("a millisecond rounded up", ms(14, 30, 0, 0.6), ContentTime, hms, "14:30:00.001")
+	number("a carry into the minutes", ms(14, 29, 59, 999.6), ContentTime, hms, "14:30:00")
+	number("a carry to midnight", ms(23, 59, 59, 999.6), ContentTime, "", "00:00:00")
+	number("a carry to midnight under a time format", ms(23, 59, 59, 999.9), ContentNumber, `{"kind":"time","pattern":"h:mm AM/PM"}`, "00:00:00")
+	number("a carry into the next day", day+ms(23, 59, 59, 999.6), ContentDateTime, "", "2026-03-16 00:00:00")
+	number("a date with milliseconds", day+ms(6, 0, 0, 125), ContentNumber, `{"kind":"datetime","date":"yyyy-mm-dd","time":"hh:mm"}`, "2026-03-15 06:00:00.125")
+	number("a date at midnight under a datetime format", day, ContentNumber, `{"kind":"datetime","date":"yyyy-mm-dd","time":"hh:mm"}`, "2026-03-15 00:00:00")
+	number("a whole day under a time format", 1, ContentNumber, hms, "1899-12-31 00:00:00")
+	number("a fraction of a day under a date format", day+ms(0, 0, 0, 1), ContentNumber, `{"kind":"date","pattern":"yyyy-mm-dd"}`, "2026-03-15 00:00:00.001")
+	number("a date fraction under a millisecond", day+ms(0, 0, 0, 0.2), ContentDate, "", "2026-03-15")
+	number("a date with time on the last day", lastDateDay+0.5, ContentDateTime, "", "9999-12-31 12:00:00")
+
+	// Only the space counts as a leading space, and text that reads as a
+	// number is written as it is.
+	text("no-break space", " =1", " =1")
+	text("spaces only", "   ", "   ")
+	text("plain", "Rent", "Rent")
+	text("apostrophe inside", "it's", "it's")
+	text("leading apostrophe", "'=1", "'=1")
+	text("a number as text", "1,234", `"1,234"`)
+	text("a date as text", "2026-03-15", "2026-03-15")
+	text("full-width inside", "a＝1", "a＝1")
 
 	for _, c := range cases {
-		if got := string(AppendCSVField(nil, c.shown)); got != c.want {
-			t.Errorf("%s: the field for %q is %q, want %q", c.id, c.shown, got, c.want)
+		if got := string(AppendCSVField(nil, c.v, c.kind, c.nf)); got != c.want {
+			t.Errorf("%s: the field for %v is %q, want %q", c.id, c.v, got, c.want)
 		}
-		if got := string(AppendCSVField([]byte("a,"), c.shown)); got != "a,"+c.want {
-			t.Errorf("%s: appended to a row the field for %q is %q", c.id, c.shown, got)
+		if got := string(AppendCSVField([]byte("a,"), c.v, c.kind, c.nf)); got != "a,"+c.want {
+			t.Errorf("%s: appended to a row the field for %v is %q", c.id, c.v, got)
+		}
+	}
+	// A field takes no memory beyond the row it is appended to.
+	row := make([]byte, 0, 1<<10)
+	for _, c := range cases {
+		if allocs := testing.AllocsPerRun(5, func() { AppendCSVField(row[:0], c.v, c.kind, c.nf) }); allocs != 0 {
+			t.Errorf("%s: the field allocates %v times", c.id, allocs)
 		}
 	}
 }

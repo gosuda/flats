@@ -31,14 +31,9 @@ func (c *capture) csvField(dst []byte, row *capRow, ci *int, col int32) []byte {
 		}
 		if *ci < len(row.cells) && row.cells[*ci].col == col {
 			cell := &row.cells[*ci]
-			if cell.val.Kind() == formula.KindText {
-				// A text shows as it is: the field is built from the
-				// cell's own text, with no copy between.
-				dst = formula.AppendCSVField(dst, cell.val.Text())
-			} else {
-				var shown [shownMax]byte
-				dst = formula.AppendCSVField(dst, string(cell.appendShown(shown[:0], c.formats)))
-			}
+			// The field is built from the cell's value, its kind and its
+			// number format, with no copy of its text between.
+			dst = formula.AppendCSVField(dst, cell.val, showKind(cell.content, cell.f), c.formats[cell.style].Number)
 		}
 	}
 	if col < c.last.Col {
