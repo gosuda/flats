@@ -362,10 +362,19 @@ func (wb *Workbook) restoredName(name string) string {
 	}
 }
 
+// reservedTabName is the name rule 2 keeps for Excel, apart from
+// capitals, in its folded form.
+const reservedTabName = "history"
+
 // validTabName checks a name against spec rule 2, uniqueness aside.
 func validTabName(name string) bool {
 	n := utf8.RuneCountInString(name)
 	if n < 1 || n > maxTabName || !utf8.ValidString(name) {
+		return false
+	}
+	// Capitals are ignored as for the uniqueness of a name, so the fold is
+	// that of FoldName. Only a name of seven code points can fold to it.
+	if n == len(reservedTabName) && formula.FoldName(name) == reservedTabName {
 		return false
 	}
 	if strings.ContainsAny(name, `[]:*?/\`) {

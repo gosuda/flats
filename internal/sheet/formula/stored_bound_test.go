@@ -145,7 +145,7 @@ func TestRetainedFormulaPastTheLimitKeepsItsReferences(t *testing.T) {
 
 // The parts of the bound match what the stored lexer reads: a row part of
 // at most 13 bytes, a column part of at most 9 and a quoted tab name of at
-// most 402, two apostrophes and 100 code points of four bytes.
+// most 126, two apostrophes and 31 code points of four bytes.
 func TestStoredBoundParts(t *testing.T) {
 	if n := len("R[-" + strconv.Itoa(rowCap-1) + "]"); n != maxRowPart {
 		t.Errorf("the longest row part has %d bytes, maxRowPart %d", n, maxRowPart)
@@ -221,7 +221,7 @@ func TestMaxStoredBytes(t *testing.T) {
 
 // A stored form holds at most as many tokens as a formula has code points
 // at the limit. A sum of ones of MaxStoredBytes bytes, and one of
-// 1,875,968 bytes for ParseRetained, has far more: each is refused once
+// MaxRetainedBytes for ParseRetained, has far more: each is refused once
 // the lexer reaches the token past the bound, so the refusal allocates no
 // more than that many tokens take and builds no tree. A form of exactly
 // that many tokens is read.
