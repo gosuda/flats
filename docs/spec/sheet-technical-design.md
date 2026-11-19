@@ -1335,13 +1335,23 @@ no series for any other source. Its cases:
   values at positions 1 to n, and the series is the line at positions n+1,
   n+2 and so on, or at 0, -1 and so on for a target before the source. The
   values are not rounded.
-- Dates and times. Two or more contents of one kind among date, time and
-  date with time are fitted in the same way. A date result is rounded half
-  away from zero to a whole day, a date with time is not rounded, and a
-  time result is taken modulo one day, so that it lies in [0, 1). One date
-  or date with time adds one day per cell, and one time adds one hour per
-  cell, modulo one day. A line whose dates or dates with time would come
-  before day 0 or after 9999-12-31 (rule 12) has no series.
+- Dates and times. Every content a series writes is stored content of
+  section 4.3: a date is a whole day from 1900-01-01 (day 2) to 9999-12-31,
+  a time a whole second of a day, and a date with time a whole second of
+  such a day. So `FillSeries` counts in those units: days for dates, and
+  seconds for times and dates with time. Two or more contents of one kind
+  among date, time and date with time are fitted by least squares in that
+  unit, and each result is rounded half away from zero to a whole day or
+  a whole second. One date or date with time adds one day per cell, and
+  one time adds 3,600 seconds per cell. A time result is taken modulo
+  86,400 seconds. Each content is built from its whole counts the way
+  typed entry (`readValue`) builds it: a date is its whole days, a time is
+  its seconds divided by 86,400, and a date with time is its whole days
+  plus the seconds of that day divided by 86,400, never its total seconds
+  divided by 86,400, which can be another double. So a filled `23:00`
+  holds the same number as a typed `23:00`, compares equal
+  to it and sorts with it. A line whose dates or dates with time would
+  come before 1900-01-01 or after 9999-12-31 has no series.
 - Names. The contents are texts that are all weekday names or all month
   names, matched without regard to capitals in their full and three-letter
   English forms, with Saturday and Sunday among the weekdays. One name
@@ -4913,8 +4923,9 @@ packages, and the browser suite for the ones marked B:
 
 | Id | Case | Expected |
 |---|---|---|
-| F-01 | `FillSeries` for each case of rule 21a, down and up: one date, one date with time, one time from `22:00`, full and short weekday and month names in all capitals, an initial capital, small letters and `mONDAY`, `Monday, Wednesday`, `Jan, Apr, Jul`, `May`, `April, May`, `Mon, Mon`, `Item1`, `Item09`, `Item1` dragged up past 0, `1, 2`, `100, 95`, `1, 2, 4`, `2026-01-01, 2026-01-02, 2026-01-04`, two dates with time, `22:00, 23:00`, `00:30, 01:00` dragged up, `Item1, Item3`, `Item1, Item2, Item4`. | The values of rule 21a, exactly: `Friday, Sunday`; `Oct, Jan`; `mONDAY` gives `tuesday`; `May` gives `Jun`; `April, May` gives `June`; `Mon, Mon` gives `Mon, Mon`; `1, 2, 4` gives 16/3 and 41/6 as doubles; the three dates give whole days; `00:00` after `23:00`; `00:00, 23:30` up; `Item5, Item7`. |
+| F-01 | `FillSeries` for each case of rule 21a, down and up: one date, one date with time, one time from `22:00`, full and short weekday and month names in all capitals, an initial capital, small letters and `mONDAY`, `Monday, Wednesday`, `Jan, Apr, Jul`, `May`, `April, May`, `Mon, Mon`, `Item1`, `Item09`, `Item1` dragged up past 0, `1, 2`, `100, 95`, `1, 2, 4`, `2026-01-01, 2026-01-02, 2026-01-04`, two dates with time, `22:00, 23:00`, `00:30, 01:00` dragged up, `Item1, Item3`, `Item1, Item2, Item4`. | The values of rule 21a, exactly: `Friday, Sunday`; `Oct, Jan`; `mONDAY` gives `tuesday`; `May` gives `Jun`; `April, May` gives `June`; `Mon, Mon` gives `Mon, Mon`; `1, 2, 4` gives 16/3 and 41/6 as doubles; the three dates give whole days; `00:00` after `23:00`; `00:00, 23:30` up; `09:00, 09:20` gives `09:40, 10:00`; two dates with time twenty minutes apart that run through `1900-01-25 20:09:37` give it with the number of the typed `1900-01-25 20:09:37`; `Item5, Item7`. Every date, time and date with time is compared by its number with the content that typed entry gives for the same text. `1900-01-02` dragged up two cells has no series. |
 | F-02 | `FillSeries` with no series: one plain number in `auto`, `TRUE`, a formula, a blank among numbers, a number and a text, text with no final number, `Mon, Tue, Thu`, a weekday and a month name, `Item1, Task2`, a final number of 16 digits, a date series that passes 9999-12-31. | No series, so the line is a copy. One plain number in `series` adds 1 per cell, and takes 1 per cell up. |
+| F-06 | A fill in `auto` and in `series` of each source of F-01 and F-02 that holds dates or times, down and up, then a stop and a load of the sheet: `22:00` down three cells, `09:00, 09:20` down four, `1900-01-01` up two, two dates with time twenty minutes apart down four, a series of dates with time that runs through `1900-01-25 20:09:37`, and a series past midnight. | The sheet loads again. Each filled cell shows the same value as before the stop, and the grid, `get_sheet`, the formula bar, the CSV, the revision and an undo read from its scratch file give the same date or time. A filled time equals, and sorts with, the typed time it shows. |
 | F-05 | A fill in `auto` whose target is both below and beside the source, and one whose series makes a text of 32,768 characters. | Refused as `invalid`, and refused with `text_length`. The same target in `copy` applies as a copy does. |
 | F-03 (B) | Cells `A1:C2` hold `1, 2` in column A, `Mon, Tue` in column B and `=ROW()*10` twice in column C. A drag of the handle down over two rows, then "Copy cells", then undo twice. | `3, 4`, `Wed, Thu` and `=ROW()*10` moved; then `1, 2`, `Mon, Tue` and the formulas copied; then the series again; then the cells as before. Ctrl+D over `A1:C4` copies row 1 over the rest. |
 | F-04 | A fill whose target is larger than the limit of an action, and one whose source row is deleted before it applies. | Refused whole as a copy is; ignored as gone. |
@@ -4988,7 +4999,7 @@ digest, cache state, network conditions and raw samples as JSON.
 | Remote display | `remote.mjs`. Five sessions, two edits per second each for 60 seconds, server receive to remote paint, with clock calibration and its uncertainty. |
 | Concurrent editing | `convergence.mjs`. The same load plus an insert every 5 seconds and a sort every 10 seconds. After the drain every screen equals a fresh server capture and the reference model replayed in receive order. |
 | Structure cases | Section 22.2, S-01 to S-48, and the contract cases C-01 to C-14 for the rules outside structure. |
-| Value and editing cases | Section 22.2, the fill, order and entry cases F-01 to F-05, O-01, O-02 and T-01 to T-04, and the tab name case L-19. |
+| Value and editing cases | Section 22.2, the fill, order and entry cases F-01 to F-06, O-01, O-02 and T-01 to T-04, and the tab name case L-19. |
 | Formulas | `TestReferenceTable`, then `scripts/sheet-e2e/reference.mjs` loads every file through `update_sheet` and compares the grid's shown text, `get_sheet` values and the CSV field. |
 | Calculation date | `TestCalculationDate` with an injected clock. On the offsite budget with one `TODAY` formula an open connection shows the new value within 60 seconds. On the reference sheet the pass starts within 60 seconds and one delta brings the new values together. A paged read begun before returns the old date on every page. A revision closed before shows the old value, also after a rollback to it on a later day and after a restart (C-02). |
 | Limits | L-01 to L-20, with the stated outcome of each: a refusal, `#VALUE!` or `#LIMIT!`. `scripts/sheet-perf/isolation.mjs` requests another flat once per 100 ms while the `limits` fixture is refused a write, recalculated by an edit, loaded after a restart, rolled back, moved to a new date, viewed as a revision and downloaded as CSV. Every answer arrives within 1 second and every read of the sheet is whole or refused. |

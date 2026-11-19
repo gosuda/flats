@@ -601,14 +601,20 @@ A typical flow:
       name has one form, and the short form when no source cell has one, so
       `May` gives `Jun` and `April, May` gives `June`. Two or more equal
       names keep a step of none and repeat the name.
-    - One time continues hour by hour. A trend of two or more times is not
-      rounded. A series of times stays inside one day: a value of a whole
+    - One time continues hour by hour, and two or more times continue
+      their trend. A cell holds a time to the whole second and a date to
+      the whole day (technical design section 4.3), so a series of times or of dates
+      with time is rounded to the whole second, and a series of dates to
+      the whole day: `09:00, 09:20` gives `09:40` and `10:00`, and each
+      filled time holds the same value as the same time typed. A series of
+      times stays inside one day: a value of a whole
       day or more, or below 0, goes round by whole days. So `23:00` is followed by `00:00`, and `00:30` and `01:00`
       dragged up give `00:00` and then `23:30`.
     - One date with time continues day by day.
     - The values of a trend of numbers are not rounded. Two or more dates
       continue their trend in whole days, rounded half away from zero. Two
-      or more dates with time continue their trend without rounding.
+      or more dates with time continue their trend in whole seconds,
+      rounded half away from zero.
     - A number at the end of a text keeps at least its number of digits, so
       `Item09` gives `Item10`. Two or more texts with the same text before
       a final number continue the trend of those numbers, rounded half away
@@ -617,8 +623,9 @@ A typical flow:
       sign, so `Item1` dragged up gives `Item0` and then `Item1`. A final
       number of more than 15 digits is not continued.
     - A drag up or left continues a date, a time, a name or a text
-      backward. A line whose series would pass the first or the last date
-      (rule 12) is copied instead.
+      backward. A line whose series would come before 1900-01-01 or after
+      9999-12-31, the first and the last date a cell holds (technical
+      design section 4.3), is copied instead.
     - Any other source is repeated in order, as a copy does: one cell of
       another kind, a formula, which shifts by rule 15, names that do not
       keep one step, and a line whose source mixes kinds or holds a blank
