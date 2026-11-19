@@ -1,7 +1,6 @@
 package formula
 
 import (
-	"bytes"
 	"math"
 	"strconv"
 	"strings"
@@ -15,7 +14,8 @@ import (
 // A blank value is an empty field, a boolean TRUE or FALSE and an error its
 // name. A number that Show draws as a date, a time or a date with time is
 // written in ISO 8601 form, rounded to the millisecond, and any other
-// number in full precision. Text is written as it is, with a leading
+// number with up to 15 significant digits, rounded as Show rounds it. Text
+// is written as it is, with a leading
 // apostrophe where a program could read it as a formula. A field that
 // needs them is put in quotation marks. Nothing but dst is allocated.
 func AppendCSVField(dst []byte, v Value, kind ContentKind, nf NumberFormat) []byte {
@@ -48,7 +48,7 @@ func AppendCSVField(dst []byte, v Value, kind ContentKind, nf NumberFormat) []by
 				return appendISO(dst, x, nf.Kind)
 			}
 		}
-		return appendFullNumber(dst, v.num)
+		return appendCSVNumber(dst, v.num)
 	}
 	return dst
 }
@@ -85,28 +85,18 @@ func appendISO(dst []byte, x float64, kind NumberKind) []byte {
 	return dst
 }
 
-// appendFullNumber writes the shortest decimal that reads back as x, with
-// at most 17 significant digits: plain with at most 17 digits before the
-// point and 9 zeros after it, and otherwise with an exponent, as in
-// 1.2345678901234567E+19 and 1E-11. Zero of either sign is 0.
-func appendFullNumber(dst []byte, x float64) []byte {
-	if x == 0 {
-		return append(dst, '0')
+// appendCSVNumber writes x rounded to 15 significant digits, half away from
+// zero as Show rounds it, with no zeros at the end: plain with at most 15
+// digits before the point and 9 zeros after it, and otherwise with an
+// exponent, as in 1.23456789012346E+15 and 1E-11. Zero of either sign is 0.
+func appendCSVNumber(dst []byte, x float64) []byte {
+	d := toDecimal(x)
+	if d.zero || (d.exp < sigDigits && d.exp > -11) {
+		return d.appendPlain(dst)
 	}
-	var buf [32]byte
-	s := strconv.AppendFloat(buf[:0], x, 'e', -1, 64) // such as 1.5e+20
-	mark := bytes.LastIndexByte(s, 'e')
-	exp := 0
-	for _, c := range s[mark+2:] {
-		exp = exp*10 + int(c-'0')
-	}
-	if s[mark+1] == '-' {
-		exp = -exp
-	}
-	if exp >= -10 && exp <= 16 {
-		return strconv.AppendFloat(dst, x, 'f', -1, 64)
-	}
-	dst = append(dst, s[:mark]...)
+	exp := d.exp
+	d.exp = 0
+	dst = d.appendPlain(dst)
 	dst = append(dst, 'E')
 	if exp < 0 {
 		dst = append(dst, '-')

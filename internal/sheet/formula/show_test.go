@@ -168,7 +168,7 @@ type csvCase struct {
 	want string
 }
 
-// TestCSVFields holds the field cases E-01 to E-130 that one cell decides.
+// TestCSVFields holds the field cases E-01 to E-132 that one cell decides.
 // The rows that name a formula or a typed entry get their value from the
 // engine. A field is written from the value, never from the shown text.
 func TestCSVFields(t *testing.T) {
@@ -304,29 +304,48 @@ func TestCSVFields(t *testing.T) {
 	calculated("E-120", "=TIME(9,5,7)", `{"kind":"time","pattern":"h:mm AM/PM"}`, "09:05:07")
 	calculated("E-120 number", "=DATE(2026,3,15)+0", "", "46096")
 
-	// E-121 to E-126: numbers in full precision, plain up to 17 digits
-	// before the point and 9 zeros after it.
-	calculated("E-121", "=1/3", "", "0.3333333333333333")
-	calculated("E-122", "=0.1+0.2", "", "0.30000000000000004")
-	calculated("E-123", `=VALUE("1234567890123456")`, "", "1234567890123456")
+	// E-121 to E-126: numbers rounded to 15 significant digits as Show
+	// rounds them, plain up to 15 digits before the point and 9 zeros after
+	// it.
+	calculated("E-121", "=1/3", "", "0.333333333333333")
+	calculated("E-122", "=0.1+0.2", "", "0.3")
+	calculated("E-123", `=VALUE("1234567890123456")`, "", "1.23456789012346E+15")
 	calculated("E-124", "=10^-10", "", "0.0000000001")
 	calculated("E-125", "=10^-11", "", "1E-11")
 	typed("E-126 percent", "12.5%", "", "0.125")
 	typed("E-126 currency", "$1,234.50", "", "1234.5")
 	// E-127: text that typed entry kept as text.
 	typed("E-127", "1234567890123456", "", "1234567890123456")
-	// E-128 to E-130.
-	calculated("E-128", "=12345678901234567890", "", "1.2345678901234567E+19")
-	calculated("E-129", "=DATE(2026,3,15)+0.75", `{"kind":"date","pattern":"m/d/yyyy"}`, "2026-03-15 18:00:00")
-	calculated("E-130", "=1.5", `{"kind":"time","pattern":"hh:mm"}`, "1899-12-31 12:00:00")
+	// E-128 to E-132.
+	calculated("E-128", "=12345678901234567890", "", "1.23456789012346E+19")
+	calculated("E-129", "=LOG10(1000)", "", "3")
+	calculated("E-130", "=DATE(2026,3,15)+0.75", `{"kind":"date","pattern":"m/d/yyyy"}`, "2026-03-15 18:00:00")
+	calculated("E-131", "=1.5", `{"kind":"time","pattern":"hh:mm"}`, "1899-12-31 12:00:00")
+	calculated("E-132", "=-0", "", "0")
+	// NumberValue keeps one zero, so a value of negative zero is made here.
+	cases = append(cases, csvCase{"E-132 negative zero", Value{kind: KindNumber, num: math.Copysign(0, -1)}, ContentNumber, NumberFormat{}, "0"})
 
-	// The bounds of the plain form, and the exponent form beyond them.
-	number("17 digits", 12345678901234567, ContentNumber, "", "12345678901234568")
-	number("18 digits", 123456789012345678, ContentNumber, "", "1.2345678901234568E+17")
+	// The bounds of the plain form, and the exponent form beyond them, with
+	// the digits rounded half away from zero and no zeros at the end.
+	number("15 digits", 999999999999999, ContentNumber, "", "999999999999999")
+	number("15 digits negative", -123456789012345, ContentNumber, "", "-123456789012345")
+	number("15 digits with a fraction", 1234.56789012345, ContentNumber, "", "1234.56789012345")
+	number("16 digits", 1234567890123456, ContentNumber, "", "1.23456789012346E+15")
+	number("1E+15", 1e15, ContentNumber, "", "1E+15")
+	number("rounded up to 1E+15", 999999999999999.9, ContentNumber, "", "1E+15")
+	number("17 digits", 12345678901234567, ContentNumber, "", "1.23456789012346E+16")
+	number("18 digits", 123456789012345678, ContentNumber, "", "1.23456789012346E+17")
 	number("1E+17", 1e17, ContentNumber, "", "1E+17")
-	number("1E+16", 1e16, ContentNumber, "", "10000000000000000")
-	number("tiny", 5e-324, ContentNumber, "", "5E-324")
-	number("largest", math.MaxFloat64, ContentNumber, "", "1.7976931348623157E+308")
+	number("negative with an exponent", -1.5e20, ContentNumber, "", "-1.5E+20")
+	number("half away from zero", 123456789012345.5, ContentNumber, "", "123456789012346")
+	number("half away from zero negative", -123456789012345.5, ContentNumber, "", "-123456789012346")
+	number("half away from zero with an exponent", 1000000000000005, ContentNumber, "", "1.00000000000001E+15")
+	number("9 zeros after the point", 1.23456789012345e-10, ContentNumber, "", "0.000000000123456789012345")
+	number("10 zeros after the point", 1.5e-11, ContentNumber, "", "1.5E-11")
+	number("rounded up to 9 zeros", 9.999999999999999e-11, ContentNumber, "", "0.0000000001")
+	number("the last bit of a sum", 0.30000000000000004, ContentNumber, "", "0.3")
+	number("tiny", 5e-324, ContentNumber, "", "4.94065645841247E-324")
+	number("largest", math.MaxFloat64, ContentNumber, "", "1.79769313486232E+308")
 	number("zero", 0, ContentNumber, "", "0")
 	number("negative zero", math.Copysign(0, -1), ContentNumber, "", "0")
 	number("a tenth", 0.1, ContentNumber, `{"kind":"number","decimals":0,"thousands":false}`, "0.1")
