@@ -1,13 +1,13 @@
 module github.com/gosuda/flats
 
-go 1.27.1
+go 1.27.3
 
 require (
 	filippo.io/age v1.3.2
 	github.com/go-openapi/runtime v0.29.0
 	github.com/go-openapi/strfmt v0.24.0
 	github.com/google/jsonschema-go v0.4.3
-	github.com/gosuda/portal-tunnel/v2 v2.6.3
+	github.com/gosuda/portal-tunnel/v2 v2.7.4
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	github.com/oesni/libtunnel v0.0.0-20261011195643-61501adfbebe
 	github.com/openziti/sdk-golang v1.2.8
@@ -99,7 +99,7 @@ require (
 	github.com/gorilla/mux v1.8.1 // indirect
 	github.com/gorilla/securecookie v1.1.2 // indirect
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674 // indirect
-	github.com/gosuda/keyless_tls v0.0.4-0.20260919135918-b58f4ae3ae41 // indirect
+	github.com/gosuda/keyless_tls v0.0.5 // indirect
 	github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 // indirect
 	github.com/hashicorp/yamux v0.1.2 // indirect
 	github.com/hdevalence/ed25519consensus v0.2.0 // indirect

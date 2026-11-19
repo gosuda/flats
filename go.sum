@@ -377,10 +377,10 @@ github.com/gorilla/securecookie v1.1.2 h1:YCIWL56dvtr73r6715mJs5ZvhtnY73hBvEF8kX
 github.com/gorilla/securecookie v1.1.2/go.mod h1:NfCASbcHqRSY+3a8tlWJwsQap2VX5pwzwo4h3eOamfo=
 github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674 h1:JeSE6pjso5THxAzdVpqr6/geYxZytqFMBCOtn/ujyeo=
 github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674/go.mod h1:r4w70xmWCQKmi1ONH4KIaBptdivuRPyosB9RmPlGEwA=
-github.com/gosuda/keyless_tls v0.0.4-0.20260919135918-b58f4ae3ae41 h1:ijG3C9ff8d/i9ycKT1bupWczSb2SmKPseapa4Fn9biU=
-github.com/gosuda/keyless_tls v0.0.4-0.20260919135918-b58f4ae3ae41/go.mod h1:Kymj8rE/o2D0LVW3dMiXd14P9aVr0wx3oAWO4jBThYo=
-github.com/gosuda/portal-tunnel/v2 v2.6.3 h1:qQl7EV0rg+vOntnr0hFmwPYhlGOESTqb1g8Ggp4DY1g=
-github.com/gosuda/portal-tunnel/v2 v2.6.3/go.mod h1:aMKjio8LBpM/Ru3HFYonvQjRMDXfyTBypgQZUPVyXhg=
+github.com/gosuda/keyless_tls v0.0.5 h1:OVwjLRU9zf6EoicaK4FgsMZBP+uinxmbUsGxZql/++c=
+github.com/gosuda/keyless_tls v0.0.5/go.mod h1:Kymj8rE/o2D0LVW3dMiXd14P9aVr0wx3oAWO4jBThYo=
+github.com/gosuda/portal-tunnel/v2 v2.7.4 h1:1mlBqK4BZO5P1FLVKLPuNuyfXsR9QpFa0/XstBXXtok=
+github.com/gosuda/portal-tunnel/v2 v2.7.4/go.mod h1:GfqWVlqI6txkY5oRRE12qWqoGEsxbuqRHHJ4h0DzvRM=
 github.com/grpc-ecosystem/grpc-gateway v1.16.0/go.mod h1:BDjrQk3hbvj6Nolgz8mAMFbcEtjT1g+wF4CSlocrBnw=
 github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0 h1:5VipnvEpbqr2gA2VbM+nYVbkIF28c5ZQfqCBQ5g2xfk=
 github.com/grpc-ecosystem/grpc-gateway/v2 v2.29.0/go.mod h1:Hyl3n6Twe1hvtd9XUXDec4pTvgMSEixRuQKPTMH2bNs=

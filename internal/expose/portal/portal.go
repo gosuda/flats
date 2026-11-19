@@ -110,7 +110,7 @@ type Net struct {
 }
 
 // sdkLeaseTTL is the lease lifetime the Portal SDK requests and renews
-// (portal-tunnel v2.6.3 sdk/listener.go defaultLeaseTTL). Once SDK Close has
+// (portal-tunnel v2.7.4 sdk/listener.go defaultLeaseTTL, the same as in v2.6.3). Once SDK Close has
 // returned, nothing renews the lease, so a relay that missed the unregister
 // request drops it within this time.
 const sdkLeaseTTL = 2 * time.Minute
