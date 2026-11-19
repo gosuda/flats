@@ -202,7 +202,7 @@ running host needs its own data directory and ports; see
 
 #### From source
 
-Requires Go 1.27.1 or newer:
+Requires Go 1.27.3 or newer:
 
 ```sh
 go install github.com/gosuda/flats/cmd/flats@latest

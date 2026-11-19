@@ -47,7 +47,8 @@ const ConflictHint = "another Portal user owns this name on that relay; rename t
 type Config struct {
 	// ShutdownTimeout bounds HTTP drain, SDK close and listener-pump waits (default 30s).
 	ShutdownTimeout time.Duration
-	// Dir holds one identity file per slug (<Dir>/<slug>.json, mode 0600).
+	// Dir holds one identity file per slug (<Dir>/<slug>.json, mode 0600; on
+	// Windows the Portal SDK gives it an access list of its own).
 	Dir string
 	// Relays lists explicit relays. Empty means the Portal CLI default:
 	// discovery over the bootstrap relays only.
@@ -110,9 +111,9 @@ type Net struct {
 }
 
 // sdkLeaseTTL is the lease lifetime the Portal SDK requests and renews
-// (portal-tunnel v2.6.3 sdk/listener.go defaultLeaseTTL). Once SDK Close has
-// returned, nothing renews the lease, so a relay that missed the unregister
-// request drops it within this time.
+// (portal-tunnel v2.7.4 sdk/listener.go defaultLeaseTTL, the same as in
+// v2.6.3). Once SDK Close has returned, nothing renews the lease, so a relay
+// that missed the unregister request drops it within this time.
 const sdkLeaseTTL = 2 * time.Minute
 
 func (n *Net) leaseExpiry() time.Duration {
@@ -263,7 +264,9 @@ func (n *Net) loadIdentity(slug string) (types.Identity, error) {
 	if err != nil {
 		return types.Identity{}, fmt.Errorf("portal: identity for %s: %w", slug, err)
 	}
-	// LoadOrCreate writes new files 0600 but leaves an existing file as is.
+	// LoadOrCreate writes new files 0600 but does not change the mode of an
+	// existing file. On Windows it sets the access list of the file instead
+	// (Windows support spec, rule 18), and Chmod changes only its read-only bit.
 	if err := os.Chmod(path, 0o600); err != nil {
 		return types.Identity{}, fmt.Errorf("portal: identity for %s: %w", slug, err)
 	}
