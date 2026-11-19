@@ -167,8 +167,8 @@ The author of this spec decided these points, and each can change before the imp
 - The rename redirect of an old slug has no gate (rule 41). It sends no content, its target has the gate, and the old
   identity gets a new token secret at the rename.
 - The issuer is `https` only (rule 2). The host fetches the issuer itself, and an `http` issuer on the loopback address
-  can reach a local service. The host keeps the issuer as the operator writes it, with a trailing `/` when there is one,
-  because the provider compares it byte for byte with the issuer of its discovery document.
+  can reach a local service. The host stores the issuer without a trailing `/`, because the SDK compares issuers without it
+  on both sides, so one stored form serves the gate, the binding of rule 27 and the sessions of rule 39.
 - An allowlist entry has visible ASCII characters and the space only, a list has at most 100 entries, and the host
   stores it in byte order (rule 4). An entry goes into a header, the console and the approval page, and the order makes
   two equal lists equal.
@@ -670,7 +670,7 @@ step after the commit. No test needs the network.
 
 - The setting: the migration from schema 28 gives every flat sign-in off and every secret an empty use, also a row named
   `oidc-client-secret`; a reader of schema 28 refuses schema 29; each limit and each normalization of rules 2 to 4, with
-  the order and the duplicates; an issuer keeps its trailing `/`; each value that `appauth.Validate` refuses gives 400
+  the order and the duplicates; an issuer is stored without its trailing `/`; each value that `appauth.Validate` refuses gives 400
   at the request; an `http` issuer on a loopback host is refused; a rename keeps the setting and the deletion removes
   it.
 - The request and the approval: each 400 of rule 14 with its message; a remote caller gets 403 from the routes of rules
