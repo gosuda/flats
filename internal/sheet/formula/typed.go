@@ -518,9 +518,14 @@ func textReadsAsItself(s string) bool {
 }
 
 // editNumber writes a number with the fewest digits that read back as the
-// same number, in a form typed entry reads.
+// same number, in a form typed entry reads. A whole number of more than 15
+// digits before the point is written with an exponent when its digits are
+// at most 15, so that entry reads it back as the number, and as its plain
+// digits otherwise, which entry keeps as text (technical design, section
+// 9.5).
 func editNumber(x float64) string {
-	if x == math.Trunc(x) && math.Abs(x) < 1e15 {
+	whole := x == math.Trunc(x)
+	if whole && math.Abs(x) < 1e15 {
 		return strconv.FormatInt(int64(x), 10)
 	}
 	var buf [32]byte
@@ -534,7 +539,17 @@ func editNumber(x float64) string {
 			break
 		}
 	}
-	if e >= -7 && e < 21 {
+	plain := e >= -7 && e < 21
+	if whole {
+		digits := 0
+		for _, c := range mant {
+			if c >= '0' && c <= '9' {
+				digits++
+			}
+		}
+		plain = digits > sigDigits
+	}
+	if plain {
 		return strconv.FormatFloat(x, 'f', -1, 64)
 	}
 	out := append([]byte(nil), mant...)
