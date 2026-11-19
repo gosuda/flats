@@ -131,8 +131,12 @@ func gated(t *testing.T, h http.Handler, seq int64) (http.Handler, *http.Request
 	if err != nil {
 		t.Fatal(err)
 	}
+	// A sequence below 0 lets the request in with a principal but without the mark of a Flats gate.
 	g, err := appauth.New(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		h.ServeHTTP(w, r.WithContext(WithSignInGate(r.Context(), seq)))
+		if seq >= 0 {
+			r = r.WithContext(WithSignInGate(r.Context(), seq))
+		}
+		h.ServeHTTP(w, r)
 	}), id, appauth.Config{Provider: appauth.ProviderCredential, Allow: []string{"guest-7Qx"}})
 	if err != nil {
 		t.Fatal(err)
@@ -214,6 +218,37 @@ func TestSignInPortalOnly(t *testing.T) {
 	req.URL.Path = "/" // the page of the static flat
 	if rec := serve(g, req); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "page") {
 		t.Fatalf("a gate of the stored sequence = %d %q", rec.Code, rec.Body)
+	}
+	// A principal that no Flats gate marked is no sign-in of this flat: 403, not the 503 of a changing setting.
+	g, req = gated(t, portalHandler, -1)
+	if rec := serve(g, req); rec.Code != http.StatusForbidden || strings.TrimSpace(rec.Body.String()) != signInNeededText {
+		t.Fatalf("a principal without the gate mark = %d %q", rec.Code, rec.Body)
+	}
+
+	// Rule 10 also when the host serves the public routes again (rule 54 here) and when a rename serves the
+	// redirect of the old slug: the Funnel route that is open from before is not served again.
+	s.cfg.Lifecycle = network
+	network.file = true
+	before := len(network.reqs)
+	if _, err := s.RevokeSignIn(ctx, "app", ViaCLI); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.RenameSlug(ctx, "app", "moved", ViaCLI); err != nil {
+		t.Fatal(err)
+	}
+	reopened, redirect := false, false
+	for _, req := range network.reqs[before:] {
+		if req.Visibility != "public" {
+			continue
+		}
+		if slices.Contains(req.Permitted, ProviderFunnel) {
+			t.Fatalf("a public open after sign-in permits Funnel: host %s, %+v", req.Host, req.Permitted)
+		}
+		reopened = reopened || (req.Host == "app" && req.SignIn != nil && !req.SignIn.Redirect)
+		redirect = redirect || (req.Host == "app" && req.SignIn != nil && req.SignIn.Redirect)
+	}
+	if !reopened || !redirect {
+		t.Fatalf("the test did not reach both opens: reopened %t, redirect %t", reopened, redirect)
 	}
 }
 
