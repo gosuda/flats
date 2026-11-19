@@ -746,7 +746,12 @@ func (s *Service) agentDecisionEvent(ctx context.Context, a store.Approval, msg 
 func (s *Service) applyApproval(ctx context.Context, a store.Approval) (ActionResult, error) {
 	switch a.Action {
 	case "delete":
-		return s.applyDelete(ctx, a.Flat, applyVia(a), a.ID)
+		via := applyVia(a)
+		if via == ViaAutopilot {
+			// The signin.revoke row of the deletion names the agent, as visibility.set does (audit events, rule 5).
+			ctx = WithAuditActor(ctx, DeciderText(a.DecidedBy))
+		}
+		return s.applyDelete(ctx, a.Flat, via, a.ID)
 	case "set_visibility":
 		return s.applyVisibilityApproval(ctx, a)
 	case "publish", "create_version":

@@ -348,6 +348,30 @@ func TestSignInRenewalBeforeARenameAndADeletion(t *testing.T) {
 	}
 }
 
+// A deletion that an agent approved writes its signin.revoke row with the via autopilot and the text of the agent as
+// its actor, as visibility.set does (docs/spec/audit-events.md, rule 5); the operator's deletion keeps the console.
+func TestSignInRevokeRowOfAnAgentDeletion(t *testing.T) {
+	ctx := t.Context()
+	network := newSignInRouteNet()
+	s, _ := newAutopilotServiceWith(t, time.Time{}, network)
+	network.file = true
+	lifecycleSave(t, s, "app", "page")
+	allowAutopilot(t, s, OpDeleteFlat)
+	id := resultID(t)(s.Delete(ctx, "app", ViaMCP, ""))
+	if a, err := s.DecideAsAgent(ctx, id, true, bot); err != nil || a.Status != "approved" {
+		t.Fatalf("decide = %+v, %v", a, err)
+	}
+	lifecycleSave(t, s, "mine", "page")
+	if _, err := s.Delete(ctx, "mine", ViaConsole, ""); err != nil {
+		t.Fatal(err)
+	}
+	rows := signInRows(t, s, s.cfg.DataDir, store.AuditSignInRevoke)
+	if len(rows) != 2 || rows[0].Flat != "app" || rows[0].Via != "autopilot" || rows[0].Actor != botText ||
+		string(rows[0].Data) != `{"cause":"delete"}` || rows[1].Flat != "mine" || rows[1].Via != "console" || rows[1].Actor != "" {
+		t.Fatalf("rows = %+v", rows)
+	}
+}
+
 func TestSignInRevokeWithoutAnIdentity(t *testing.T) {
 	ctx := t.Context()
 	s, _ := newTestService(t)
