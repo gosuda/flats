@@ -158,35 +158,36 @@ func TestEditText(t *testing.T) {
 		"1.5E+21":             {Kind: ContentNumber, Num: 1.5e21},
 		// A whole number of at most 15 significant digits with more than
 		// 15 digits before the point has an exponent, and one of more
-		// significant digits its plain digits, however large.
-		"1.5E+20":                 {Kind: ContentNumber, Num: 1.5e20},
-		"1E+15":                   {Kind: ContentNumber, Num: 1e15},
-		"-1.23456789012345E+15":   {Kind: ContentNumber, Num: -1234567890123450},
-		"999999999999999":         {Kind: ContentNumber, Num: 999999999999999},
-		"12345678901234568":       {Kind: ContentNumber, Num: 12345678901234568},
-		"12345678901234568000000": {Kind: ContentNumber, Num: 1.2345678901234568e22},
-		"1234567890123456.5":      {Kind: ContentNumber, Num: 1234567890123456.5},
-		"1E-10":                   {Kind: ContentNumber, Num: 1e-10},
-		"0.000001":                {Kind: ContentNumber, Num: 1e-6},
-		"Rent":                    {Kind: ContentText, Text: "Rent"},
-		"'007":                    {Kind: ContentText, Text: "007"},
-		"'=not a formula":         {Kind: ContentText, Text: "=not a formula"},
-		"''tis":                   {Kind: ContentText, Text: "'tis"},
-		"'TRUE":                   {Kind: ContentText, Text: "TRUE"},
-		"'2026-03-15":             {Kind: ContentText, Text: "2026-03-15"},
-		"'50%":                    {Kind: ContentText, Text: "50%"},
-		"1234567890123456":        {Kind: ContentText, Text: "1234567890123456"},
-		"'123456789012345":        {Kind: ContentText, Text: "123456789012345"},
-		"'":                       {Kind: ContentText},
-		"=":                       {Kind: ContentText, Text: "="},
-		"TRUE":                    {Kind: ContentBool, Num: 1},
-		"FALSE":                   {Kind: ContentBool},
-		"2026-03-15":              {Kind: ContentDate, Num: day},
-		"14:30":                   {Kind: ContentTime, Num: 52200.0 / 86400},
-		"14:30:05":                {Kind: ContentTime, Num: 52205.0 / 86400},
-		"00:00":                   {Kind: ContentTime},
-		"2026-03-15 14:30":        {Kind: ContentDateTime, Num: day + 52200.0/86400},
-		"2026-03-15 00:00:01":     {Kind: ContentDateTime, Num: day + 1.0/86400},
+		// significant digits its plain digits below 10^21 and an exponent
+		// of all its digits from 10^21 on.
+		"1.5E+20":                {Kind: ContentNumber, Num: 1.5e20},
+		"1E+15":                  {Kind: ContentNumber, Num: 1e15},
+		"-1.23456789012345E+15":  {Kind: ContentNumber, Num: -1234567890123450},
+		"999999999999999":        {Kind: ContentNumber, Num: 999999999999999},
+		"12345678901234568":      {Kind: ContentNumber, Num: 12345678901234568},
+		"1.2345678901234568E+22": {Kind: ContentNumber, Num: 1.2345678901234568e22},
+		"1234567890123456.5":     {Kind: ContentNumber, Num: 1234567890123456.5},
+		"1E-10":                  {Kind: ContentNumber, Num: 1e-10},
+		"0.000001":               {Kind: ContentNumber, Num: 1e-6},
+		"Rent":                   {Kind: ContentText, Text: "Rent"},
+		"'007":                   {Kind: ContentText, Text: "007"},
+		"'=not a formula":        {Kind: ContentText, Text: "=not a formula"},
+		"''tis":                  {Kind: ContentText, Text: "'tis"},
+		"'TRUE":                  {Kind: ContentText, Text: "TRUE"},
+		"'2026-03-15":            {Kind: ContentText, Text: "2026-03-15"},
+		"'50%":                   {Kind: ContentText, Text: "50%"},
+		"1234567890123456":       {Kind: ContentText, Text: "1234567890123456"},
+		"'123456789012345":       {Kind: ContentText, Text: "123456789012345"},
+		"'":                      {Kind: ContentText},
+		"=":                      {Kind: ContentText, Text: "="},
+		"TRUE":                   {Kind: ContentBool, Num: 1},
+		"FALSE":                  {Kind: ContentBool},
+		"2026-03-15":             {Kind: ContentDate, Num: day},
+		"14:30":                  {Kind: ContentTime, Num: 52200.0 / 86400},
+		"14:30:05":               {Kind: ContentTime, Num: 52205.0 / 86400},
+		"00:00":                  {Kind: ContentTime},
+		"2026-03-15 14:30":       {Kind: ContentDateTime, Num: day + 52200.0/86400},
+		"2026-03-15 00:00:01":    {Kind: ContentDateTime, Num: day + 1.0/86400},
 		// Content that typed entry does not give is written as its number.
 		"46096.5": {Kind: ContentDate, Num: day + 0.5},
 		"1.5":     {Kind: ContentTime, Num: 1.5},
@@ -255,7 +256,10 @@ func TestEditText(t *testing.T) {
 // reads back as the number. A number typed as 12345678901234567.5 is the
 // whole number 12345678901234568, and it and the JSON number
 // 1234567890123456 of an agent's write cells are edited as their plain
-// digits, which entry keeps as text (rule 5).
+// digits, which entry keeps as text (rule 5). Such a whole number is
+// written with its plain digits below 10^21 and from 10^21 on with an
+// exponent of all its significant digits (section 9.5), and entry keeps
+// either as text.
 func TestEditTextOfLongNumbers(t *testing.T) {
 	typed := func(s string) Content {
 		t.Helper()
@@ -274,6 +278,10 @@ func TestEditTextOfLongNumbers(t *testing.T) {
 		{"typed as 1.5E+20", typed("1.5E+20"), "1.5E+20", Content{Kind: ContentNumber, Num: 1.5e20}},
 		{"typed as 12345678901234567.5", typed("12345678901234567.5"), "12345678901234568", Content{Kind: ContentText, Text: "12345678901234568"}},
 		{"the JSON number 1234567890123456", Content{Kind: ContentNumber, Num: 1234567890123456}, "1234567890123456", Content{Kind: ContentText, Text: "1234567890123456"}},
+		{"the largest number below 10^21", Content{Kind: ContentNumber, Num: math.Nextafter(1e21, 0)}, "999999999999999900000", Content{Kind: ContentText, Text: "999999999999999900000"}},
+		{"10^21", Content{Kind: ContentNumber, Num: 1e21}, "1E+21", Content{Kind: ContentNumber, Num: 1e21}},
+		{"the smallest number above 10^21", Content{Kind: ContentNumber, Num: math.Nextafter(1e21, math.Inf(1))}, "1.0000000000000001E+21", Content{Kind: ContentText, Text: "1.0000000000000001E+21"}},
+		{"the JSON number -12345678901234567890123", Content{Kind: ContentNumber, Num: -12345678901234567890123}, "-1.2345678901234568E+22", Content{Kind: ContentText, Text: "-1.2345678901234568E+22"}},
 	} {
 		edit := EditText(c.content, Pos{})
 		if edit != c.edit {
