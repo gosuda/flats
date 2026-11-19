@@ -337,14 +337,14 @@ func (ev *evaluator) textNumber(s string) (float64, ErrorCode) {
 	return 0, ErrValue
 }
 
-// compareText orders two texts without regard to capitals and counts the
-// bytes it goes through: the start the two have in common, and the code
-// point that decides. After the deadline it compares nothing and returns 0.
+// compareText orders two texts in the text order of rule 22 (CompareText)
+// and counts the bytes it goes through, and one step for the code point
+// that decides. After the deadline it compares nothing and returns 0.
 func (ev *evaluator) compareText(a, b string) int {
 	if ev.late() {
 		return 0
 	}
-	order, walked := foldOrder(a, b)
+	order, walked := compareTextCounted(a, b)
 	ev.spend(walked + 1)
 	return order
 }
@@ -599,7 +599,10 @@ func kindRank(k ValueKind) int {
 
 // compare orders two values that are no errors (technical design, section
 // 9.3). A blank value counts as 0, as empty text or as FALSE, whichever
-// the other side is. Comparing two texts is counted (compareText).
+// the other side is. Two texts are in the text order of rule 22
+// (compareText), which gives 0 exactly for texts that are equal after case
+// folding, so = and <> compare the case-folded texts. Comparing two texts
+// is counted.
 func (ev *evaluator) compare(a, b Value) int {
 	if a.kind == KindBlank && b.kind == KindBlank {
 		return 0
