@@ -185,6 +185,8 @@ type Service struct {
 	pi publicInstanceCache
 	// notifier receives the webhook events (webhook.go). The host sets it after New returns.
 	notifier atomic.Pointer[notifierBox]
+	// signInHooks replace, for a test, the steps of sign-in that act on the routes (signin.go).
+	signInHooks signInHooks
 }
 
 // redirect owns an old slug while its route is served or provider teardown is
@@ -1752,7 +1754,7 @@ func (s *Service) RestoreSnapshot(ctx context.Context, slugName, name string, vi
 	if err != nil {
 		return DeployResult{}, err
 	}
-	res, err := s.requestFrozen(ctx, slugName, "restore_data", rollbackParams{Version: f.LiveVersion, ExpectedLive: f.LiveVersion, RestoreData: true, Visibility: string(f.Visibility.Canonical()), Providers: key, Hash: v.Hash, Snapshot: name, SnapshotHash: hash}, via, "")
+	res, err := s.requestFrozen(ctx, slugName, "restore_data", rollbackParams{Version: f.LiveVersion, ExpectedLive: f.LiveVersion, RestoreData: true, Visibility: string(f.Visibility.Canonical()), Providers: key, Hash: v.Hash, Snapshot: name, SnapshotHash: hash, SignInSeq: &f.SignInSeq}, via, "")
 	if err != nil {
 		return DeployResult{}, err
 	}

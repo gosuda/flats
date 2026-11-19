@@ -20,12 +20,13 @@ type Notifier interface {
 // already run in tests.
 type notifierBox struct{ n Notifier }
 
-// The types of the four events.
+// The types of the events.
 const (
 	eventApprovalCreated  = "approval.created"
 	eventApprovalDecided  = "approval.decided"
 	eventVisibilityChange = "visibility.changed"
 	eventNetworkChange    = "network.changed"
+	eventSignInChange     = "signin.changed" // docs/spec/portal-sign-in.md, rule 68
 )
 
 // SetNotifier sets the receiver of the webhook events. The host calls it after New returns and before the management

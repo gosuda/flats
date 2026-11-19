@@ -174,6 +174,17 @@ func TestChangeShapes(t *testing.T) {
 			Change{Grant: "provider", Provider: "zrok", Origins: []string{"x"}, From: &Access{"a", "b"}},
 			`{"grant":"provider","provider":"zrok","permitted":false}`,
 		},
+		{
+			// docs/spec/portal-sign-in.md, rule 68: a provider and a count, also 0 for off.
+			"sign-in",
+			Change{SignInFrom: &SignIn{Provider: ""}, SignInTo: &SignIn{Provider: "oidc", Count: 3}},
+			`{"from":{"provider":"","count":0},"to":{"provider":"oidc","count":3}}`,
+		},
+		{
+			"sign-in with stray fields",
+			Change{SignInFrom: &SignIn{Provider: "credential", Count: 2}, SignInTo: &SignIn{}, From: &Access{"a", "b"}, Count: 9},
+			`{"from":{"provider":"credential","count":2},"to":{"provider":"","count":0}}`,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

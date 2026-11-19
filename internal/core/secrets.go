@@ -310,6 +310,10 @@ func (s *Service) DeleteSecret(ctx context.Context, slugName, name string, via V
 		return forbiddenf("only the operator can delete secrets")
 	}
 	if err := s.st.DeleteSecret(ctx, slugName, name, s.audit(ctx, via)); err != nil {
+		if errors.Is(err, store.ErrSignInSecretRow) {
+			// The gate of the flat may send it, and its own command keeps that in step (rule 31 of docs/spec/portal-sign-in.md).
+			return withKind(ErrConflict, fmt.Errorf("secret %s of %s is the client secret of its Portal sign-in. Remove it with `flats signin secret rm %s`", name, slugName, slugName))
+		}
 		return err
 	}
 	s.Event(ctx, slugName, "info", "secret", fmt.Sprintf("secret %s deleted via %s; redeploy to apply", name, via), nil)
