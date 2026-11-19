@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"reflect"
+	"sync/atomic"
 
 	"modernc.org/libc"
 	sqlite3 "modernc.org/sqlite/lib"
@@ -20,11 +21,24 @@ import (
 // still holds its shared lock of the file, so none of them is the last
 // connection, and the writer closes without that checkpoint when the log
 // holds more than walTruncateBytes, the size the writer truncates a log
-// above after its commits. The close then costs no work in proportion to
-// a longer log; the log stays, and the next open recovers every commit from
-// it at the gate. A shorter log is checkpointed, as the writer does after
-// a commit, and the file is left without one.
+// above after its commits, and when there is no log. The close then costs
+// no work in proportion to a longer log; the log stays, and the next open
+// recovers every commit from it at the gate. A shorter log is
+// checkpointed, as the writer does after a commit, and the file is left
+// without one.
 func closeDB(path string, db, rdb *sql.DB) error {
+	info, err := os.Stat(path + "-wal")
+	return closeConns(db, rdb, err != nil || info.Size() > walTruncateBytes)
+}
+
+// closeConns closes rdb, then db, either of which can be nil. With keepLog
+// it first turns off the checkpoint on close of db, so that sheet.db and its
+// -wal file keep their bytes whatever the length of the log: closeDB asks
+// for that for a long log, and the close of a load that refused the sheet
+// for any log (refuseLoad). When keepLogOnClose fails, both still close and
+// the error is returned; SQLite may then checkpoint the log, which changes
+// the bytes of sheet.db and not its rows.
+func closeConns(db, rdb *sql.DB, keepLog bool) error {
 	var err error
 	if rdb != nil {
 		err = rdb.Close()
@@ -32,7 +46,7 @@ func closeDB(path string, db, rdb *sql.DB) error {
 	if db == nil {
 		return err
 	}
-	if info, serr := os.Stat(path + "-wal"); serr != nil || info.Size() > walTruncateBytes {
+	if keepLog {
 		conn, cerr := db.Conn(context.Background())
 		if cerr == nil {
 			cerr = conn.Raw(func(dc any) error { return keepLogOnClose(dc) })
@@ -50,6 +64,9 @@ func closeDB(path string, db, rdb *sql.DB) error {
 // connection, and fails when the driver no longer has the fields that hold
 // it.
 func keepLogOnClose(conn any) error {
+	if err := keepLogFault.Load(); err != nil {
+		return *err
+	}
 	v := reflect.ValueOf(conn)
 	if v.Kind() != reflect.Pointer || v.Elem().Kind() != reflect.Struct {
 		return fmt.Errorf("sheet.db connection %T has no SQLite handle", conn)
@@ -70,3 +87,8 @@ func keepLogOnClose(conn any) error {
 	}
 	return nil
 }
+
+// keepLogFault, when a test sets it, makes keepLogOnClose fail with its
+// error, as it fails when the driver no longer has the fields that hold the
+// handle of a connection. It is nil outside tests.
+var keepLogFault atomic.Pointer[error]

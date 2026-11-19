@@ -94,6 +94,13 @@ type Options struct {
 	// the goroutine that calculated, outside the workbook lock, and must
 	// not block.
 	OnRecalc func(edit bool, took time.Duration)
+	// OnLoadError, when set, is called once when the load ends with an
+	// error that is not a stop: a store behind the import cursor, a failed
+	// preflight or a damaged file. It is called from the load's goroutine,
+	// after the load has closed every connection it opened, and must not
+	// block. The instance then refuses every read and write with that
+	// error until it stops.
+	OnLoadError func(error)
 	// ScratchDir is where the instance keeps large undo payloads while it
 	// runs, outside the flat's disk quota. Empty means the system's
 	// temporary directory. The instance removes its files when it stops;
@@ -156,6 +163,9 @@ type Instance struct {
 
 	ready   chan struct{} // closed when the workbook is loaded and calculated
 	loadErr error
+	// refused is set when the load ended with an error that is not a stop
+	// (refuseLoad), before ready is closed.
+	refused bool
 	// attached is closed once db, rdb and storeID are set: in Open, or in
 	// the load (openStorage).
 	attached chan struct{}
@@ -276,7 +286,9 @@ func Open(dir string, b Backend, opts Options) (*Instance, bool, error) {
 	if !logged {
 		db, fresh, pageSize, err := openDB(path)
 		if err == nil {
-			created, err = in.attachDB(ctx, db, fresh, pageSize)
+			if created, err = in.attachDB(ctx, db, fresh, pageSize); err != nil {
+				err = errors.Join(err, closeDB(path, in.db, in.rdb))
+			}
 		}
 		if err != nil {
 			cancel()
@@ -297,7 +309,7 @@ func Open(dir string, b Backend, opts Options) (*Instance, bool, error) {
 
 // hasLog reports whether sheet.db has a -wal file beside it. A stopped
 // instance leaves one only when its log was longer than walTruncateBytes
-// (closeDB).
+// (closeDB), or when its load refused the sheet (refuseLoad).
 func hasLog(path string) (bool, error) {
 	switch _, err := os.Stat(path + "-wal"); {
 	case err == nil:
@@ -312,15 +324,11 @@ func hasLog(path string) (bool, error) {
 // attachDB makes db the instance's database: it checks the row of meta and
 // the import cursor, writes the first commit of a sheet without one, and
 // opens the reading connections. It reports whether it wrote the first
-// commit. On failure it closes what it opened, db included, and leaves
-// attached and usable open.
+// commit. On failure it leaves db and what it opened in in.db and in.rdb,
+// which its caller closes: Open as a stop does (closeDB), the load as its
+// refusal does (refuseLoad). It leaves attached and usable open then.
 func (in *Instance) attachDB(ctx context.Context, db *sql.DB, fresh bool, pageSize int64) (created bool, err error) {
 	in.db, in.pageSize = db, pageSize
-	fail := func(err error) (bool, error) {
-		err = errors.Join(err, closeDB(in.path, db, in.rdb))
-		in.db, in.rdb = nil, nil
-		return false, err
-	}
 	// The row of meta is checked whole before anything of it is used, and
 	// the outbox's sequence before the import cursor is compared with it;
 	// the load checks the rest.
@@ -329,15 +337,15 @@ func (in *Instance) attachDB(ctx context.Context, db *sql.DB, fresh bool, pageSi
 	var fault int64
 	if err := db.QueryRowContext(ctx, `SELECT `+storedValues("meta", "", "store", "seq")+`,`+storedFault("meta", "")+
 		` FROM meta WHERE singleton=1`).Scan(&store, &seq, &fault); err != nil {
-		return fail(fmt.Errorf("sheet.db state: %w", err))
+		return false, fmt.Errorf("sheet.db state: %w", err)
 	}
 	if err := faultError("meta", fault); err != nil {
-		return fail(err)
+		return false, err
 	}
 	in.storeID = store.String
 	in.checked.mark("meta")
 	if err := checkImportCursor(ctx, db, in.storeID, in.opts); err != nil {
-		return fail(err)
+		return false, err
 	}
 	in.checked.mark("sqlite_sequence")
 	// A crash after the schema but before the first content commit must
@@ -347,7 +355,7 @@ func (in *Instance) attachDB(ctx context.Context, db *sql.DB, fresh bool, pageSi
 	created = fresh || seq == 0
 	if created && !fresh {
 		if err := checkUnwritten(ctx, db); err != nil {
-			return fail(err)
+			return false, err
 		}
 	}
 	if created {
@@ -355,19 +363,19 @@ func (in *Instance) attachDB(ctx context.Context, db *sql.DB, fresh bool, pageSi
 		// is short, and it runs before the first commit writes beside
 		// them. The load checks every other sheet.db at the gate.
 		if err := checkNew(ctx, db); err != nil {
-			return fail(err)
+			return false, err
 		}
 		if err := in.initialize(ctx); err != nil {
-			return fail(err)
+			return false, err
 		}
 	}
 	in.rdb, err = sql.Open("sqlite", sqliteuri.File(in.path)+"?mode=ro&_pragma=busy_timeout(5000)")
 	if err != nil {
-		return fail(err)
+		return false, err
 	}
 	in.rdb.SetMaxOpenConns(4)
 	if err := in.rdb.PingContext(ctx); err != nil {
-		return fail(err)
+		return false, err
 	}
 	close(in.attached)
 	if created {
@@ -510,13 +518,17 @@ func (in *Instance) awaitUsable(ctx context.Context, patience time.Duration) err
 	// The outcome is one observation: the end of the load and the stop are
 	// read first, and usable after them. usable closes before ready, so
 	// once the load has ended usable says how: a load that succeeds
-	// between the reads is seen as usable, never as a failure.
+	// between the reads is seen as usable, never as a failure. A load that
+	// refused the sheet after its preflight closed the connections, so its
+	// refusal comes first.
 	settled := func() (error, bool) {
 		loaded, stopped := isClosed(in.ready), in.ctx.Err() != nil
 		if fn := readinessRead.Load(); fn != nil {
 			(*fn)(in)
 		}
 		switch {
+		case loaded && in.refused:
+			return in.loadRefusal(), true
 		case isClosed(in.usable):
 			return nil, true
 		case loaded:
@@ -771,6 +783,13 @@ func (in *Instance) today() formula.Date {
 // enters the gate.
 func (in *Instance) load() {
 	defer in.workers.Done()
+	// OnLoadError hears of a refusal once the load has left the gate and
+	// readers see the refusal.
+	defer func() {
+		if in.refused && in.opts.OnLoadError != nil {
+			in.opts.OnLoadError(in.loadErr)
+		}
+	}()
 	defer close(in.ready)
 	if in.prev != nil {
 		select {
@@ -805,8 +824,7 @@ func (in *Instance) load() {
 			in.loadErr = unavailable("stopped")
 			return
 		}
-		in.loadErr = err
-		in.log.Error("sheet load", "slug", in.slug, "err", err)
+		in.refuseLoad(err)
 		return
 	}
 	// The load checked every table.
@@ -828,8 +846,7 @@ func (in *Instance) load() {
 			return
 		}
 		// A stored state meets the read limits; one that does not is damaged.
-		in.loadErr = cerr
-		in.log.Error("sheet load", "slug", in.slug, "err", cerr)
+		in.refuseLoad(cerr)
 		return
 	}
 	if fn := loadPublishing.Load(); fn != nil {
@@ -842,6 +859,20 @@ func (in *Instance) load() {
 	in.structs.clear(wb.seq)
 	in.hub.start(wb.seq)
 	in.mu.Unlock()
+}
+
+// refuseLoad ends a load that failed for another reason than a stop: err
+// answers every read and write until the instance stops. The connections
+// the load opened close without a checkpoint, whatever the length of the
+// log (closeConns), so sheet.db and its -wal file keep their bytes, and the
+// instance holds no handle of them. A failure of that close is a warning:
+// the connections are closed all the same.
+func (in *Instance) refuseLoad(err error) {
+	in.loadErr, in.refused = err, true
+	in.log.Error("sheet load", "slug", in.slug, "err", err)
+	if cerr := closeConns(in.db, in.rdb, true); cerr != nil {
+		in.log.Warn("sheet close", "slug", in.slug, "err", cerr)
+	}
 }
 
 // loadPublishing lets a test hold a load whose recalculation succeeded
@@ -1087,8 +1118,9 @@ func (in *Instance) Shutdown(code string) {
 		in.conns.Wait()
 		in.captures.close()
 		in.scratch.close()
-		// A load that did not open sheet.db left neither set.
-		if in.db != nil {
+		// A load that did not open sheet.db left neither set, and one that
+		// refused it closed both.
+		if in.db != nil && !in.refused {
 			if err := closeDB(in.path, in.db, in.rdb); err != nil {
 				in.log.Warn("sheet close", "code", code, "err", err)
 			}
