@@ -4,7 +4,7 @@
 'use strict';
 
 import { button, h, icon, replace } from './dom.js';
-import { MAX_TABS } from './protocol.js';
+import { MAX_TAB_NAME, MAX_TABS } from './protocol.js';
 
 const DRAG_START = 6; // pixels a press travels before it is a drag
 
@@ -12,11 +12,12 @@ const DRAG_START = 6; // pixels a press travels before it is a drag
 // null. The server checks again; this only spares a round trip.
 export function tabNameError(name, tabs, self) {
   const n = [...name].length;
-  if (n < 1 || n > 100) return 'A tab name has 1 to 100 characters.';
+  if (n < 1 || n > MAX_TAB_NAME) return `A tab name has 1 to ${MAX_TAB_NAME} characters.`;
+  const key = name.toLowerCase();
+  if (key === 'history') return 'A tab cannot be named History, in any capitals.';
   // biome-ignore lint/suspicious/noControlCharactersInRegex: rule 2 excludes control characters
   if (/[[\]:*?/\\\u0000-\u001f\u007f]/.test(name)) return 'A tab name cannot hold [ ] : * ? / \\ or a control character.';
   if (/^[ ']|[ ']$/.test(name)) return 'A tab name cannot start or end with a space or an apostrophe.';
-  const key = name.toLowerCase();
   if (tabs.some((t) => t.id !== self && t.name.toLowerCase() === key)) return 'Another tab already has this name.';
   return null;
 }
@@ -158,7 +159,10 @@ export class Tabs {
   }
 
   #renameField(t) {
-    const input = h('input', { type: 'text', 'aria-label': `New name for tab ${t.name}`, maxlength: '100' });
+    // maxlength counts UTF-16 units, and a code point takes one or two, so
+    // the field holds every name of MAX_TAB_NAME code points; a longer one
+    // gets the message of tabNameError.
+    const input = h('input', { type: 'text', 'aria-label': `New name for tab ${t.name}`, maxlength: String(2 * MAX_TAB_NAME) });
     input.value = t.name;
     let done = false;
     this.endRename = () => { done = true; };

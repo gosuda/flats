@@ -18,6 +18,7 @@ export const MAX_WIDTH = 1000;
 export const MAX_FROZEN_ROWS = 20;
 export const MAX_FROZEN_COLS = 10;
 export const MAX_TABS = 50;
+export const MAX_TAB_NAME = 31; // code points of a tab name (rule 2)
 
 // POSITION_BASE is the index of the first row or column wherever the wire
 // carries a position instead of an id: `at` of `set`, `rebase` and
