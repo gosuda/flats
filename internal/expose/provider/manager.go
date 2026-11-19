@@ -1098,6 +1098,33 @@ func (m *Manager) PortalHosts(slug string) []string {
 	return nil
 }
 
+// FailPortalGate stops the Portal route of slug as servePortal stops one whose
+// gate cannot be built (rule 35). A stopped route is forgotten, and its
+// endpoint shows the reason as the endpoint of an open whose gate failed does.
+func (m *Manager) FailPortalGate(ctx context.Context, slug, reason string) error {
+	p := m.portalNet()
+	if p == nil {
+		return nil
+	}
+	var err error
+	switch g, ok := p.(SignInPortalNet); {
+	case ok:
+		err = g.FailPortalGate(ctx, slug, reason)
+	case m.hasRoute(slug, slug, Portal):
+		err = &core.SignInGateError{Reason: reason, StopErr: p.Stop(slug)}
+	}
+	if gerr := (*core.SignInGateError)(nil); errors.As(err, &gerr) && gerr.StopErr == nil {
+		m.forgetRoutes(slug, slug, Portal)
+		ep := ExposureEndpoint{Provider: Portal, State: stateError, Detail: err.Error(), Configured: m.configured(Portal), Audience: AudienceCurrent, Host: slug}
+		m.mu.Lock()
+		m.pruneStateLocked(slug, AudienceCurrent, slug, Portal)
+		k := stateKey(slug, AudienceCurrent, slug)
+		m.states[k] = append(slices.Clone(m.states[k]), observedEndpoint{endpoint: ep})
+		m.mu.Unlock()
+	}
+	return err
+}
+
 var _ core.LifecycleSignInNet = (*Manager)(nil)
 
 // tagged marks every request h serves with the provider id it arrived on.

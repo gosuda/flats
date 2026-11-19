@@ -123,10 +123,11 @@ type host struct {
 	dir   string
 	st    *store.Store
 	svc   *core.Service
+	mgr   *provider.Manager
 	loop  *local.Net
 	px    *portal.TestExposures
 	notes *notes
-	logs  *logLines
+	logs  *logLines // the log of the service and of the Portal Net
 	stop  func()
 }
 
@@ -151,12 +152,12 @@ func startHost(t *testing.T, dir string) *host {
 	if err != nil {
 		t.Fatal(err)
 	}
-	svc, err := core.New(ctx, core.Config{DataDir: dir, Store: st, Private: loop, Lifecycle: mgr, Runtime: flatRuntime{},
-		ConsoleURL: func() string { return "http://console.test" }, Logf: t.Logf})
+	svc, err := core.New(ctx, core.Config{DataDir: dir, Store: st, Private: loop, Lifecycle: mgr, Runtime: flatRuntime{}, DocsApp: docsApp(),
+		ConsoleURL: func() string { return "http://console.test" }, Logf: func(format string, args ...any) { t.Logf(format, args...); logs.logf(format, args...) }})
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &host{dir: dir, st: st, svc: svc, loop: loop, px: px, notes: &notes{}, logs: logs}
+	h := &host{dir: dir, st: st, svc: svc, mgr: mgr, loop: loop, px: px, notes: &notes{}, logs: logs}
 	svc.SetNotifier(h.notes)
 	var once sync.Once
 	h.stop = func() { once.Do(func() { svc.Close(); mgr.Close(); pn.Close(); loop.Close(); st.Close() }) }
@@ -463,8 +464,7 @@ func TestSignInOnThePortalRoute(t *testing.T) {
 		t.Fatalf("redeem = %d", code)
 	}
 	wantPage(t, other, "/", "v1 /")
-	sock = openSocketOK(t, other)
-	// Rule 53: the link of a subject that left works again when the subject comes back.
+	// Rule 53: the link of a subject that left fails while the subject stays off the list.
 	if code := portal.NewTestVisitor(exp.Addr(), appHost).Redeem(t, portal.CredentialOf(t, l1.URL)); code != http.StatusUnauthorized {
 		t.Fatalf("a link of a removed subject = %d", code)
 	}
@@ -473,6 +473,17 @@ func TestSignInOnThePortalRoute(t *testing.T) {
 	if code, _ := portal.NewTestVisitor(exp.Addr(), appHost).Get(t, "/style.css", http.Header{"X-Portal-Access-Credential": {portal.CredentialOf(t, l1.URL)}}); code != http.StatusSeeOther {
 		t.Fatalf("a credential of a removed subject = %d", code)
 	}
+
+	// Rule 53: when the subject comes back on the allowlist, its earlier link works again, because a credential has
+	// no date; the revocation below ends it for good.
+	approveSignIn(t, h, "app", credential("guest-7Qx", "visitor-9Kz"))
+	back := portal.NewTestVisitor(exp.Addr(), appHost)
+	if code := back.Redeem(t, portal.CredentialOf(t, l1.URL)); code != http.StatusOK {
+		t.Fatalf("the earlier link of a subject that came back = %d", code)
+	}
+	wantPage(t, back, "/", "v1 /")
+	wantPage(t, other, "/", "v1 /")
+	sock = openSocketOK(t, other)
 
 	// A redeploy and a rollback keep the gate and its sessions.
 	deployServer(t, h, "app")
@@ -505,8 +516,11 @@ func TestSignInOnThePortalRoute(t *testing.T) {
 	}
 	waitClosed(t, sock)
 	wantSignInPage(t, other, "/")
-	if code := portal.NewTestVisitor(exp.Addr(), appHost).Redeem(t, portal.CredentialOf(t, l2.URL)); code != http.StatusUnauthorized {
-		t.Fatalf("a link from before the revocation = %d", code)
+	wantSignInPage(t, back, "/")
+	for _, l := range []core.SignInLink{l1, l2} {
+		if code := portal.NewTestVisitor(exp.Addr(), appHost).Redeem(t, portal.CredentialOf(t, l.URL)); code != http.StatusUnauthorized {
+			t.Fatalf("a link of %s from before the revocation = %d", l.Subject, code)
+		}
 	}
 	if !slices.Equal(h.svc.SignInHosts("app"), hosts) {
 		t.Fatal("the revocation changed the host names")
@@ -567,7 +581,7 @@ func TestSignInOnThePortalRoute(t *testing.T) {
 			}
 		}
 	}
-	if want := []string{"set_signin", "issue_signin_link", "set_signin", "issue_signin_link", "revoke_signin", "issue_signin_link"}; !slices.Equal(ops, want) {
+	if want := []string{"set_signin", "issue_signin_link", "set_signin", "issue_signin_link", "set_signin", "revoke_signin", "issue_signin_link"}; !slices.Equal(ops, want) {
 		t.Fatalf("signin.changed operations = %q, want %q", ops, want)
 	}
 

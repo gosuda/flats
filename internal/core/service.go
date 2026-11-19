@@ -2085,7 +2085,7 @@ func (s *Service) applyDelete(ctx context.Context, slugName string, via Via, exc
 }
 
 // deleteLocked deletes a flat; the caller holds its lock.
-func (s *Service) deleteLocked(ctx context.Context, slugName string, via Via, exceptApproval string) (ActionResult, error) {
+func (s *Service) deleteLocked(ctx context.Context, slugName string, via Via, exceptApproval string) (_ ActionResult, err error) {
 	flat, err := s.st.GetFlat(ctx, slugName)
 	if err != nil {
 		return ActionResult{}, err
@@ -2096,6 +2096,12 @@ func (s *Service) deleteLocked(ctx context.Context, slugName string, via Via, ex
 	if err != nil {
 		return ActionResult{}, err
 	}
+	committed := false
+	defer func() {
+		if !committed && err != nil {
+			err = s.renewalOutlived(ctx, slugName, store.SignInRevokeDelete, revoke, err)
+		}
+	}()
 	type alias struct {
 		old, cur string
 		restore  bool
@@ -2155,6 +2161,7 @@ func (s *Service) deleteLocked(ctx context.Context, slugName string, via Via, ex
 		restoreErr = errors.Join(restoreErr, s.restoreDeletePreviews(restoreCtx, previews))
 		return ActionResult{}, errors.Join(err, journalErr, restoreErr)
 	}
+	committed = true
 	s.mu.Lock()
 	lf := s.live[slugName]
 	delete(s.live, slugName)

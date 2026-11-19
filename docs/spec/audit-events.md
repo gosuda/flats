@@ -130,7 +130,7 @@ Out of scope:
 | `key.reset` (14) | none | none | `{"secrets": N, "keys": M}` | `command` |
 | `key.rotate` (15) | none | none | `{"from": ..., "to": ..., "secrets": N, "keys": M, "out": true or false}` | `command` |
 | `visibility.set`, `network.set`, `provider.set` | the flat | none, none, the provider | [event webhook](event-webhook.md), rule 21 | `console`, `cli`, `autopilot` |
-| `signin.set` | the flat | none | [Portal sign-in](portal-sign-in.md), rule 65 | `console` |
+| `signin.set` | the flat | none | [Portal sign-in](portal-sign-in.md), rule 65. A row whose issuers are cut keeps the first 512 bytes of each, so two issuers that differ only after byte 512 look equal in it | `console` |
 | `signin.link` | the flat | none | [Portal sign-in](portal-sign-in.md), rule 67: `{"subject": ..., "host": ..., "expires_at": ...}` | `console` |
 | `signin.revoke` | the flat | none | `{}` for a revocation, `{"cause": "rename"}` or `{"cause": "delete"}` for the new token secret of a rename or a deletion ([Portal sign-in](portal-sign-in.md), rule 67) | `cli`, `api` or `console` for a revocation or a rename; `console` or `autopilot` for a deletion; `mcp`, `cli` or `api` for the removal of a new board or notebook whose first write failed |
 

@@ -5,6 +5,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -26,15 +27,35 @@ import (
 // each request (rule 44), the headers (rules 45 and 46) and the new token secret of a rename and a deletion (rules 41
 // and 42). The gate itself is the Portal provider's; internal/expose/portal tests it with this service.
 
-// signInRouteNet is lifecycleRouteNet with the sign-in part of the Portal route. It records the opens and lets a test
-// fail the write of a new token secret.
+// signInRouteNet is lifecycleRouteNet with the sign-in part of the Portal route. It records the opens and the stops of
+// rule 35, and lets a test fail the write of a new token secret and the read of the routes.
 type signInRouteNet struct {
 	*lifecycleRouteNet
-	mu       sync.Mutex
-	reqs     []ExposureRequest
-	file     bool  // the slug has an identity file
-	renewErr error // the write of a new token secret fails
-	renewed  []string
+	mu        sync.Mutex
+	reqs      []ExposureRequest
+	file      bool  // the slug has an identity file
+	renewErr  error // the write of a new token secret fails
+	statusErr error // ExposureStatus fails
+	renewed   []string
+	failed    []string // the reasons of FailPortalGate
+}
+
+func (n *signInRouteNet) ExposureStatus(ctx context.Context, host string) (ExposureResult, error) {
+	if n.statusErr != nil {
+		return ExposureResult{}, n.statusErr
+	}
+	return n.lifecycleRouteNet.ExposureStatus(ctx, host)
+}
+
+// FailPortalGate stops the Portal route of slug, as the provider manager does, when it has one.
+func (n *signInRouteNet) FailPortalGate(ctx context.Context, slug, reason string) error {
+	if !n.serves(slug, ProviderPortal) {
+		return nil
+	}
+	n.mu.Lock()
+	n.failed = append(n.failed, reason)
+	n.mu.Unlock()
+	return &SignInGateError{Reason: reason, StopErr: n.StopProviderRoutes(ctx, slug, ProviderPortal)}
 }
 
 func newSignInRouteNet() *signInRouteNet {
@@ -345,6 +366,123 @@ func TestSignInRenewalBeforeARenameAndADeletion(t *testing.T) {
 	}
 	if rows := signInRows(t, s, dir, store.AuditSignInRevoke); len(rows) != 2 {
 		t.Fatalf("rows = %+v", rows)
+	}
+}
+
+// A rename and a deletion that fail after the new token secret, here because a preview route does not stop, leave the
+// flat as it was, but its sessions and links ended: the signin.revoke row of the cause, a flat event and the error
+// say so (rules 41, 42 and 67).
+func TestSignInRenewalOutlivesAFailedRenameAndDeletion(t *testing.T) {
+	ctx := t.Context()
+	s, dir := newTestService(t)
+	network := newSignInRouteNet()
+	s.cfg.Lifecycle = network
+	lifecycleSave(t, s, "app", "page")
+	lifecycleApprove(t, s, lifecycleRequest(t, s, "app"))
+	network.file = true
+	p, err := s.OpenPreview(ctx, "app", 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	network.stopExposure[p.Host] = errors.New("preview route still reachable")
+	const ended = "every sign-in session and access link of app ended: its Portal identity got a new token secret before the "
+	if _, err := s.RenameSlug(ctx, "app", "moved", ViaCLI); err == nil || !strings.Contains(err.Error(), "close previews before rename") || !strings.Contains(err.Error(), ended+"rename failed") {
+		t.Fatalf("rename = %v", err)
+	}
+	if _, err := s.Delete(ctx, "app", ViaConsole, ""); err == nil || !strings.Contains(err.Error(), "stop previews") || !strings.Contains(err.Error(), ended+"deletion failed") {
+		t.Fatalf("delete = %v", err)
+	}
+	if _, err := s.st.GetFlat(ctx, "app"); err != nil || !network.serves("app", ProviderLocal) {
+		t.Fatalf("the failed changes changed the flat: %v", err)
+	}
+	if !slices.Equal(network.renewed, []string{"app", "app"}) {
+		t.Fatalf("renewed = %q", network.renewed)
+	}
+	rows := signInRows(t, s, dir, store.AuditSignInRevoke)
+	if len(rows) != 2 || rows[0].Flat != "app" || rows[0].Via != "cli" || string(rows[0].Data) != `{"cause":"rename"}` ||
+		rows[1].Flat != "app" || rows[1].Via != "console" || string(rows[1].Data) != `{"cause":"delete"}` {
+		t.Fatalf("rows = %+v", rows)
+	}
+	evs, err := s.st.ListEvents(ctx, "app", "signin", 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var warned []string
+	for _, e := range evs {
+		if e.Level == "warn" && strings.HasPrefix(e.Message, ended) {
+			warned = append(warned, strings.TrimPrefix(e.Message, ended))
+		}
+	}
+	slices.Sort(warned)
+	if !slices.Equal(warned, []string{"deletion failed", "rename failed"}) {
+		t.Fatalf("signin events = %+v", evs)
+	}
+	// A flat without an identity file writes nothing more.
+	network.file = false
+	if _, err := s.RenameSlug(ctx, "app", "moved", ViaCLI); err == nil || strings.Contains(err.Error(), "ended") {
+		t.Fatalf("rename without an identity file = %v", err)
+	}
+	if rows := signInRows(t, s, dir, store.AuditSignInRevoke); len(rows) != 2 {
+		t.Fatalf("rows = %+v", rows)
+	}
+}
+
+// When reopenPublic cannot read what the gate needs, the Portal route stops as rule 35 stops it, so no gate of a
+// removed client secret or of an old token secret stays in front, and each message says the state of the routes
+// (rules 28 and 54).
+func TestSignInReopenThatCannotRead(t *testing.T) {
+	ctx := t.Context()
+	s, _ := newTestService(t)
+	network := newSignInRouteNet()
+	network.file = true
+	s.cfg.Lifecycle = network
+	for _, slug := range []string{"app", "other"} {
+		publicLifecycleFlat(t, s, slug, store.ProviderPortal)
+		approveSignIn(t, s, slug, oidcRequest)
+		if !network.serves(slug, ProviderPortal) {
+			t.Fatalf("%s has no Portal route", slug)
+		}
+	}
+	publicLifecycleFlat(t, s, "open", store.ProviderFunnel)
+	if _, err := s.SetSignInSecret(ctx, "app", signInValue, "https://idp.example.com", "flats-app", ViaCLI); err != nil {
+		t.Fatal(err)
+	}
+	network.statusErr = errors.New("status-unreadable")
+	const reason = "sign-in gate: the routes of %s cannot be read to build its gate again: read current routes: status-unreadable"
+
+	// Rule 28: a removal of the client secret stops the Portal route, whose gate held the removed value.
+	r, err := s.DeleteSignInSecret(ctx, "app", ViaCLI)
+	if err != nil || !strings.Contains(r.Message, "; the Portal route of app is stopped: "+fmt.Sprintf(reason, "app")) {
+		t.Fatalf("removal = %+v, %v", r, err)
+	}
+	if network.serves("app", ProviderPortal) || !network.serves("app", ProviderLocal) {
+		t.Fatal("the Portal route of app stayed, or another route stopped")
+	}
+	evs, _ := s.st.ListEvents(ctx, "app", "signin", 0, 100)
+	if len(evs) == 0 || evs[len(evs)-1].Level != "error" || !strings.HasPrefix(evs[len(evs)-1].Message, "the Portal route of app is stopped: "+fmt.Sprintf(reason, "app")) {
+		t.Fatalf("signin events = %+v", evs)
+	}
+
+	// Rule 54: a revocation stops the Portal route, and its other public routes answer 503 on the cancelled epoch.
+	r, err = s.RevokeSignIn(ctx, "other", ViaCLI)
+	if err != nil || !strings.Contains(r.Message, "; "+SignInRoutesNotReopened+": the Portal route of other is stopped: "+fmt.Sprintf(reason, "other")) ||
+		!strings.Contains(r.Message, "any other public route of other answers 503 until a deploy, a grant or a restart serves it again") {
+		t.Fatalf("revoke = %+v, %v", r, err)
+	}
+	if network.serves("other", ProviderPortal) {
+		t.Fatal("the Portal route of other stayed")
+	}
+	// A flat without a Portal route has nothing to stop, and the message says what its public routes do.
+	r, err = s.RevokeSignIn(ctx, "open", ViaCLI)
+	if err != nil || !strings.Contains(r.Message, "; "+SignInRoutesNotReopened+": the routes of open cannot be read: read current routes: status-unreadable; it has no Portal route, and its public routes answer 503") ||
+		strings.Contains(r.Message, "is stopped") {
+		t.Fatalf("revoke without a Portal route = %+v, %v", r, err)
+	}
+	if code := network.status("open", ProviderFunnel); code != http.StatusServiceUnavailable {
+		t.Fatalf("the Funnel route of open = %d, want 503", code)
+	}
+	if len(network.failed) != 2 {
+		t.Fatalf("FailPortalGate = %q", network.failed)
 	}
 }
 

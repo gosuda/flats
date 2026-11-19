@@ -579,11 +579,12 @@ func (s *Store) AppendSignInLink(ctx context.Context, flat string, l SignInLink,
 	return s.appendFlatAudit(ctx, flat, AuditSignInLink, SignInLinkData(l), a)
 }
 
-// AppendSignInRevoke writes the signin.revoke event of a revocation of the operator (rule 54), after the write of the
-// identity file passed. The new token secret of a rename or a deletion writes its event in the transaction of that
-// change instead, with SignInRevokeData of its cause.
-func (s *Store) AppendSignInRevoke(ctx context.Context, flat string, a Audit) error {
-	return s.appendFlatAudit(ctx, flat, AuditSignInRevoke, SignInRevokeData(""), a)
+// AppendSignInRevoke writes the signin.revoke event of flat with SignInRevokeData of cause, after the write of the
+// identity file passed: cause is empty for a revocation of the operator (rule 54), and the cause of a rename or a
+// deletion that failed after its new token secret. A rename or a deletion that commits writes its event in its
+// transaction instead.
+func (s *Store) AppendSignInRevoke(ctx context.Context, flat, cause string, a Audit) error {
+	return s.appendFlatAudit(ctx, flat, AuditSignInRevoke, SignInRevokeData(cause), a)
 }
 
 // appendSignInRevoke writes the signin.revoke event of the new token secret that a rename or a deletion of flat gave

@@ -294,8 +294,10 @@ console issues the access links.
     the Portal route is stopped, with the reason. When the host stops after step 2, `resumeApplying` finds the receipt
     at the next start, does steps 3 to 5 from the stored setting, and ends the approval as `approved` with one stored
     change and one audit row. It sends no webhook event, because `resumeApplying` runs inside `core.New`, before the
-    host holds the sender ([event webhook](event-webhook.md), rules 1 and 17). When the host stops before step 2 ends, nothing is stored, and the
-    approval applies again from step 1.
+    host holds the sender ([event webhook](event-webhook.md), rules 1 and 17). When the stored setting cannot be read
+    at that start, the approval stays `applying`, and the next start resumes it. When the frozen parameters cannot be
+    read, the result and the flat event say that the setting before the change is unknown, never that it was off.
+    When the host stops before step 2 ends, nothing is stored, and the approval applies again from step 1.
 22. The result of an applied approval says `done` and names the provider, the issuer and the number of entries. It never
     holds an entry of the allowlist, so that the flat event has none either.
 23. Each approval that freezes the visibility of a flat (`set_visibility`, `activate`, `rollback` and `create_version`)
@@ -326,6 +328,8 @@ console issues the access links.
     the same of a stored `oidc` setting whose client secret has another binding, and that its Portal route is stopped.
 28. A set or a removal needs no approval. It applies at once. When sign-in is `oidc` and the flat has a Portal route,
     the Portal provider builds the gate again with the new value (rule 33). When that fails, rule 35 stops the route.
+    When the host cannot read the flat or its routes to build the gate again, it stops the Portal route as rule 35
+    does, so no gate keeps the earlier value, and the message says that the route is stopped and why.
 29. A set is allowed while sign-in is off or `credential`, and for another issuer than the stored one. The value then
     waits for an `oidc` setting with its binding. Only an `oidc` gate reads it. A set while sign-in is `oidc` with
     another issuer or client ID stops the Portal route at once (rule 27), until the setting or the binding agrees.
@@ -370,7 +374,9 @@ console issues the access links.
 36. Before the first build for an identity, the Portal provider checks that the identity file holds a token secret. When
     the file has none, the provider writes the file again with the identity that it loaded, atomically and with mode
     0600 (on Windows the access list of the SDK). The address, the keys and the canonical host name stay the same. When
-    the write fails, rule 35 applies.
+    the write fails, rule 35 applies. Once the rename of the write passed, the file holds the new content: a failed
+    sync of the folder after it is a warning line in the host log with the path, and the write passes, so the gate in
+    service and the file hold the same token secret.
 37. After each build of an `oidc` gate, the Portal provider runs `appauth.Check` in the background, with a limit of 15
     seconds, outside the lock of the slug and outside the path of a request. A failure writes one warning line in the
     host log and the detail `sign-in provider check failed: <reason>` on the Portal endpoint, until a later build passes
@@ -402,16 +408,21 @@ console issues the access links.
     under `/_portal/auth/` is a path of the flat behind the gate, as any other path.
 41. A rename of a flat gives the old identity a new token secret, also while sign-in is off, because links of an
     earlier `credential` setting can exist. The rename writes it before it commits: when the write fails, the rename
-    fails, changes nothing, and its message names the identity file. So no session and no access link of the old host
-    names works again: the old slug serves only the redirect, and a later gate of the old identity, such as the gate of
-    a flat that takes the old slug, refuses them. The open of the redirect route of the
+    fails, changes nothing, and its message names the identity file. When the rename fails after the write passed, the
+    flat stays as it was, but every session and access link of the old identity ended: the host writes the row of rule
+    67 with `{"cause": "rename"}` and a flat event that says so, and the message of the failed rename says so too. So
+    no session and no access link of the old host names works again: the old slug serves only the redirect, and a
+    later gate of the old identity, such as the gate of a flat that takes the old slug, refuses them. The open of the
+    redirect route of the
     old slug carries the mark `redirect`, removes the gate of that entry, and serves only the redirect, before and
     after a host restart. The redirect sends no content of the flat, and its target has the gate of the new identity.
     A later sign-in change of the flat does not reach the old slug.
 42. The deletion of a flat gives its Portal identity a new token secret, when the identity file exists. The deletion
     writes it first: when the write fails, the deletion fails, changes nothing, and its message names the identity
-    file. A later flat with the same slug keeps the host name of the identity, and no session or link of the deleted
-    flat works there.
+    file. When the deletion fails after the write passed, the flat stays, but every session and access link of it
+    ended: the host writes the row of rule 67 with `{"cause": "delete"}` and a flat event that says so, and the message
+    of the failed deletion says so too. A later flat with the same slug keeps the host name of the identity, and no
+    session or link of the deleted flat works there.
 43. A flat with sign-in on is served without a relay cache. Flats sets no cache on a Portal exposure, so the tenant TLS
     ends in the Flats process and the relay forwards only ciphertext (`portal/server.go` routes by SNI,
     `portal/proxy.go` bridges the bytes). A future option that sets a cache for a flat refuses sign-in, as the
@@ -485,7 +496,11 @@ console issues the access links.
     because it narrows access. The host gives the identity of the flat a new token secret with the write of rule 36,
     ends the open connections of the public routes of the flat (as rule 20, step 3), and builds the gate again (rule
     38). Every session and every access link of the flat then ends, and the host names stay. A revocation of a flat
-    without a Portal identity file returns `done` with the message `no Portal identity`.
+    without a Portal identity file returns `done` with the message `no Portal identity`. When the public routes do not
+    open again, the message says `its public routes did not open again` and their state: the Portal route is stopped
+    because its gate cannot be built (rule 35), or the host cannot read the flat or its routes, and then it stops the
+    Portal route as rule 35 does, and every other public route of the flat answers 503 on the cancelled epoch until a
+    deploy, a grant or a restart serves it again. The console shows such a message as an error.
 55. The issue of a link writes the audit row of rule 67, a revocation writes the row of rule 67, and each sends the
     webhook event of rule 68.
 
@@ -508,7 +523,11 @@ console issues the access links.
     `GET /api/approvals/{id}` and the answer of `POST /api/flats/{slug}/signin`), show the `from` and `to` of a
     `set_signin` approval with the provider, the issuer, the client ID and the number of entries. The flat event that
     `requestFrozen` writes for such a request holds that counted form, so `get_logs` and `GET /api/flats/{slug}/logs`
-    show no entry. The entries are in the stored approval and setting in `flats.db`, the route of rule 56, `flats signin
+    show no entry. An error of the SDK quotes an entry that it refuses, which a setting that a hand wrote into
+    `flats.db` or a later SDK can hold: wherever such an error reaches the detail of rule 35, the host log, the result
+    of an approval or a flat event, the host writes `<entry>` in place of each entry, raw or quoted. The 400 of rule 14
+    keeps the entries, which only the caller who sent them gets. The entries are in the stored approval and setting in
+    `flats.db`, the route of rule 56, `flats signin
     show`, the routes of the approvals under `/console/api`, which the console page of the approval reads (rule 64), and
     the audit rows of rule 65, which `flats audit ls` and `flats audit export` read on the host. Those two commands are
     for the operator, who reads `flats.db` with them.
@@ -577,7 +596,8 @@ console issues the access links.
     writes `signin.revoke` with `flat`, the via of its caller (`cli`, `api` for a loopback caller without the CLI
     header, or `console`), and the data `{}`, after the write of the file passes. A new token secret of rule 41 or rule
     42 writes `signin.revoke` with the via of the rename or the deletion and `{"cause": "rename"}` or `{"cause":
-    "delete"}`, in the transaction of that rename or deletion. The via of a rename is `cli`, `api` or `console`. The via
+    "delete"}`, in the transaction of that rename or deletion, or, when the change fails after the write and before its
+    commit, after that failure and outside its transaction. The via of a rename is `cli`, `api` or `console`. The via
     of a deletion is `console`, or `autopilot` with the Autopilot record of the agent as the actor when an agent approved
     it under [Autopilot](autopilot.md) ([audit events](audit-events.md), rule 5). When the host
     removes a new board or notebook because the first write that created it failed, the via is the one of that write
@@ -750,7 +770,8 @@ step after the commit. No test needs the network.
   of those, an allowed visitor gets the page of the flat, not 503.
 - Rename and deletion: a live rename gives the old identity a new token secret, so its sessions and links are refused,
   also for a flat with sign-in off that had links of an earlier `credential` setting; a failed write makes the rename
-  and the deletion fail and change nothing;
+  and the deletion fail and change nothing; a failure after the write writes the row of rule 67 and a flat event, and
+  its message says that the sessions and links ended;
   the old slug serves only the redirect, without a gate, before and after a host restart; a later sign-in change of the
   flat does not reach the old slug; a deletion gives the identity a new token secret, and a new flat with the same slug
   and the same subject on its allowlist refuses a link of the deleted flat and keeps the host name.
@@ -773,8 +794,9 @@ step after the commit. No test needs the network.
   at the new address gets no token request that holds the value, and the route stops with the detail of rule 27;
   rule 31 refuses `flats secret rm` and the console delete of it, and a readable row named `oidc-client-secret` makes
   `flats signin secret set` refuse; `rotate-key` keeps its use and binding and opens it; `restore-key` counts it;
-  `reset` names and removes it; a set while sign-in is `oidc` rebuilds the gate; a set or a removal sends no webhook
-  event.
+  `reset` names and removes it; a set while sign-in is `oidc` rebuilds the gate; a removal while the routes of the flat
+  cannot be read stops the Portal route, and so does a revocation of rule 54, whose message names the state of the
+  routes; a set or a removal sends no webhook event.
 - Access links: the route of rule 49 gives 403 to a loopback caller with and without the CLI header and to a remote
   caller, MCP has no tool for it, and the console issues the link; each refusal of rule 50 and each 400 of the body of
   rule 49; the link has the form of `CredentialRedeemURL` for the canonical host name; the default and the limits of the

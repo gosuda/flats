@@ -234,6 +234,14 @@ type LifecycleSignInNet interface {
 	// PortalHosts returns the host names of the PublicHosts of the Portal
 	// route of slug (rule 34), and nil without a route.
 	PortalHosts(slug string) []string
+	// FailPortalGate stops the Portal route of slug as a gate that cannot
+	// be built stops it (rule 35), with reason as the detail of its
+	// endpoint: the route answers 503, stops and unregisters, and the host
+	// log has one line. The host calls it when it cannot read what the gate
+	// needs, so that no gate of an earlier setting or token secret stays in
+	// front. It returns the *SignInGateError of the stop, and nil when slug
+	// has no Portal route.
+	FailPortalGate(ctx context.Context, slug, reason string) error
 }
 
 // SignInPublicNet is a Portal backend that runs the sign-in gate

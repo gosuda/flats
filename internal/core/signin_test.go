@@ -681,6 +681,63 @@ func TestSignInStopAfterTheCommit(t *testing.T) {
 			t.Errorf("%d signin.set rows, want 1", n)
 		}
 	})
+	t.Run("a stored setting that cannot be read", func(t *testing.T) {
+		dir := t.TempDir()
+		st, err := store.Open(filepath.Join(dir, "flats.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer st.Close()
+		s, a := stoppedService(t, dir, st)
+		defer s.Close()
+		var calls int
+		s.signInHooks.applied = func(context.Context, string, store.SignIn, int64) error { calls++; return nil }
+		db := rawDB(t, dir)
+		if _, err := db.Exec(`UPDATE flats SET signin_allow='not a list' WHERE slug='app'`); err != nil {
+			t.Fatal(err)
+		}
+		// Rule 21: the approval stays applying, and steps 3 to 5 do not run.
+		s.resumeApplying(ctx)
+		if got, _ := s.GetApproval(ctx, a.ID); got.Status != "applying" || calls != 0 {
+			t.Fatalf("after a resume that cannot read: %+v, %d calls", got, calls)
+		}
+		if evs, _ := s.st.ListEvents(ctx, "app", "signin", 0, 10); len(evs) != 0 {
+			t.Fatalf("signin events = %+v", evs)
+		}
+		// The next start resumes it.
+		if _, err := db.Exec(`UPDATE flats SET signin_allow='["guest one","guest two"]' WHERE slug='app'`); err != nil {
+			t.Fatal(err)
+		}
+		s.resumeApplying(ctx)
+		if got, _ := s.GetApproval(ctx, a.ID); got.Status != "approved" || got.Result != "sign-in set to credential with 2 entries" || calls != 1 {
+			t.Fatalf("after the next resume: %+v, %d calls", got, calls)
+		}
+	})
+	t.Run("frozen parameters that cannot be read", func(t *testing.T) {
+		dir := t.TempDir()
+		st, err := store.Open(filepath.Join(dir, "flats.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer st.Close()
+		s, a := stoppedService(t, dir, st)
+		defer s.Close()
+		s.signInHooks.applied = func(context.Context, string, store.SignIn, int64) error { return nil }
+		if _, err := rawDB(t, dir).Exec(`UPDATE approvals SET params='not json' WHERE id=?`, a.ID); err != nil {
+			t.Fatal(err)
+		}
+		s.resumeApplying(ctx)
+		got, _ := s.GetApproval(ctx, a.ID)
+		const unknown = "; the setting before it is unknown, because the frozen parameters of the approval cannot be read"
+		if got.Status != "approved" || got.Result != "sign-in set to credential with 2 entries"+unknown {
+			t.Fatalf("after the resume: %+v", got)
+		}
+		// The flat event says that the earlier setting is unknown, not off.
+		evs, _ := s.st.ListEvents(ctx, "app", "signin", 0, 10)
+		if len(evs) != 1 || evs[0].Message != got.Result || !strings.Contains(string(evs[0].Data), `"from":"unknown"`) {
+			t.Fatalf("signin events = %+v", evs)
+		}
+	})
 	t.Run("a stop before the commit", func(t *testing.T) {
 		s, dir := newTestService(t)
 		if _, err := s.CreateFlat(ctx, "app", "", ViaCLI); err != nil {
@@ -921,6 +978,39 @@ func TestSignInSecretAndTheHostKey(t *testing.T) {
 	s.secretKey, s.secretKeyID = newKey, KeyID(newKey)
 	if got, ok, err := s.SignInClientSecret(ctx, "app", oidcStored); err != nil || !ok || got != signInValue {
 		t.Fatalf("the value after the re-seal: %q, %v, %v", got, ok, err)
+	}
+}
+
+// HideSignInEntries replaces each entry in its raw and its Go-quoted form, a longer form before a part of it, and
+// never an empty entry (rule 58).
+func TestHideSignInEntries(t *testing.T) {
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		text  string
+		allow []string
+		want  string
+	}{
+		"the quoted form": {`principal "leak-9Qz" must be an email`, []string{"leak-9Qz"}, `principal <entry> must be an email`},
+		"an escape":       {`principal "a\"b\\c" must be an email`, []string{`a"b\c`}, `principal <entry> must be an email`},
+		"the raw form":    {`entry leak-9Qz refused`, []string{"leak-9Qz"}, `entry <entry> refused`},
+		"a longer entry":  {`principal "ab@c.example": bad, ab`, []string{"ab", "ab@c.example"}, `principal <entry>: bad, <entry>`},
+		"no entry":        {`principal "x": bad`, nil, `principal "x": bad`},
+		"an empty entry":  {`a "" b`, []string{""}, `a "" b`},
+		"the replacement": {`e n t r y`, []string{"e", "n"}, `<entry> <entry> t r y`},
+	} {
+		if got := HideSignInEntries(tc.text, tc.allow); got != tc.want {
+			t.Errorf("%s: %q, want %q", name, got, tc.want)
+		}
+	}
+	// The SDK quotes the entry that it refuses, and the gate of a stored setting gives the text without it.
+	in := store.SignIn{Provider: "oidc", Issuer: "https://idp.example.com", ClientID: "c", Allow: []string{"leak\"entry-9Qz"}}
+	err := sdkValidate(in)
+	if err == nil || !strings.Contains(err.Error(), `"leak\"entry-9Qz"`) {
+		t.Fatalf("the SDK error = %v, want the quoted entry", err)
+	}
+	s := signInService(t)
+	if _, err := s.SignInGate(t.Context(), "app", in); err == nil || strings.Contains(err.Error(), "entry-9Qz") || !strings.Contains(err.Error(), "principal <entry> must be") {
+		t.Fatalf("SignInGate = %v", err)
 	}
 }
 

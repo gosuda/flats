@@ -3510,6 +3510,17 @@ const minutesEdit = { ...minutes, public_access: 'edit', public_presence: { gues
     await tick();
     assert.equal(revokes(), 1);
     assert.ok(toasts.textContent.includes('Every sign-in session and access link of gated ended via console.'), toasts.textContent);
+    const toastOf = (text) => all(toasts, (e) => e.className.split(' ').includes('toast') && e.textContent.includes(text));
+    assert.deepEqual(toastOf('ended via console.').map((e) => e.className), ['toast toast-success']);
+    // A revocation whose public routes did not open again shows as an error, by the phrase of the host (rule 54).
+    routes['POST /console/api/flats/gated/signin/revoke'] = { status: 'done', message: 'every sign-in session and access link of gated ended via console; ' +
+      signin.SIGN_IN_ROUTES_NOT_REOPENED + ': the routes of gated cannot be read: disk I/O error; it has no Portal route, and its public routes answer 503 until a deploy, a grant or a restart serves them again' };
+    byText(row, 'End all sessions and links')[0].dispatch('click');
+    await tick();
+    openDialogs().pop().close('ok');
+    await tick();
+    assert.equal(revokes(), 2);
+    assert.deepEqual(toastOf('did not open again').map((e) => e.className), ['toast toast-error'], toasts.textContent);
     stop(); stops.pop();
 
     // An oidc row: the host of the issuer, the client ID, the binding of the

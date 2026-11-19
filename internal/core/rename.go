@@ -18,7 +18,7 @@ import (
 // RenameSlug changes a flat's slug (and therefore its addresses). The old
 // addresses redirect to the new ones, keeping path and query, for the
 // configured redirect window (7 days by default).
-func (s *Service) RenameSlug(ctx context.Context, from, to string, via Via) (FlatView, error) {
+func (s *Service) RenameSlug(ctx context.Context, from, to string, via Via) (_ FlatView, err error) {
 	if err := slug.Validate(to); err != nil {
 		return FlatView{}, invalid(err)
 	}
@@ -59,6 +59,12 @@ func (s *Service) RenameSlug(ctx context.Context, from, to string, via Via) (Fla
 	if err != nil {
 		return FlatView{}, err
 	}
+	committed := false
+	defer func() {
+		if !committed && err != nil {
+			err = s.renewalOutlived(ctx, from, store.SignInRevokeRename, revoke, err)
+		}
+	}()
 	// Preview data lives below the flat directory. Do not rename while an
 	// old-slug preview route remains reachable; leave all flat state retryable.
 	if err := s.dropPreviews(ctx, from); err != nil {
@@ -161,6 +167,7 @@ func (s *Service) RenameSlug(ctx context.Context, from, to string, via Via) (Fla
 		}
 		return FlatView{}, err
 	}
+	committed = true
 	// Keep the journal until the metadata commit is durable: after a power
 	// loss the database could otherwise return to the old slug with nothing
 	// left that links it to the moved directory.

@@ -494,7 +494,8 @@ func (s *Service) applySignInApproval(ctx context.Context, a store.Approval) (Ac
 	// stored value passed rule 26, so the SDK checks nothing else of it.
 	if p.To.On() {
 		if err := sdkValidate(p.To); err != nil {
-			return ActionResult{}, invalidf("the sign-in gate refuses the approved setting: %v; nothing changed", err)
+			// The result of the approval reaches MCP and every caller of /api (rule 58).
+			return ActionResult{}, invalidf("the sign-in gate refuses the approved setting: %s; nothing changed", HideSignInEntries(err.Error(), p.To.Allow))
 		}
 	}
 	// Step 2.
@@ -506,35 +507,45 @@ func (s *Service) applySignInApproval(ctx context.Context, a store.Approval) (Ac
 	}
 	lifecyclePhase(ctx, "after_signin_commit", a.Flat, a.ID)
 	// Steps 3 to 5.
-	msg := s.finishSignIn(ctx, a.Flat, from, p.To, p.Seq+1)
+	msg := s.finishSignIn(ctx, a.Flat, &from, p.To, p.Seq+1)
 	s.notifySignIn(ctx, a, st.FlatID, from, p.To)
 	return ActionResult{Status: "done", Message: msg}, nil
 }
 
 // finishSignIn does steps 3 to 5 of rule 20, without the webhook event, for a setting that is stored with sequence
-// seq, and returns the result of the approval (rules 21 and 22). It runs under the lock of the flat.
-func (s *Service) finishSignIn(ctx context.Context, slugName string, from, to store.SignIn, seq int64) string {
+// seq, and returns the result of the approval (rules 21 and 22). from is the setting before, nil when it is unknown.
+// It runs under the lock of the flat.
+func (s *Service) finishSignIn(ctx context.Context, slugName string, from *store.SignIn, to store.SignIn, seq int64) string {
 	msg := signInResult(to)
 	if err := s.signInApplied(ctx, slugName, to, seq); err != nil {
-		msg += fmt.Sprintf("; the setting is stored, and the Portal route of %s is stopped: %v", slugName, err)
+		msg += "; the setting is stored, and " + routesText(slugName, err, true)
 	}
-	s.Event(ctx, slugName, "info", "signin", msg, map[string]any{"from": SignInSummaryOf(from), "to": SignInSummaryOf(to)})
+	var before any = "unknown"
+	if from != nil {
+		before = SignInSummaryOf(*from)
+	} else {
+		msg += "; the setting before it is unknown, because the frozen parameters of the approval cannot be read"
+	}
+	s.Event(ctx, slugName, "info", "signin", msg, map[string]any{"from": before, "to": SignInSummaryOf(to)})
 	return msg
 }
 
 // resumeSignIn finishes an approval whose commit of step 2 survived a stop of the host (rule 21): steps 3 to 5 from
-// the stored setting, without the webhook event, because the host does not hold the sender yet.
-func (s *Service) resumeSignIn(ctx context.Context, a store.Approval) string {
+// the stored setting, without the webhook event, because the host does not hold the sender yet. When the stored
+// setting cannot be read, it returns the error, and the approval stays applying for the next start.
+func (s *Service) resumeSignIn(ctx context.Context, a store.Approval) (string, error) {
+	var from *store.SignIn
 	var p signInParams
-	_ = json.Unmarshal(a.Params, &p)
+	if json.Unmarshal(a.Params, &p) == nil {
+		from = &p.From
+	}
 	unlock := s.lock(a.Flat)
 	defer unlock()
 	st, err := s.st.GetSignIn(ctx, a.Flat)
 	if err != nil {
-		s.logf("resume sign-in approval %s: %v", a.ID, err)
-		return signInResult(p.To)
+		return "", fmt.Errorf("the stored sign-in of %s cannot be read, so the approval stays applying until the next start: %w", a.Flat, err)
 	}
-	return s.finishSignIn(ctx, a.Flat, p.From, st.SignIn, st.Seq)
+	return s.finishSignIn(ctx, a.Flat, from, st.SignIn, st.Seq), nil
 }
 
 // signInResult is the result of an applied setting (rule 22): the provider, the issuer and the number of entries,
@@ -600,8 +611,12 @@ func (s *Service) signInSecretChanged(ctx context.Context, slugName string) erro
 		return h(ctx, slugName)
 	}
 	f, err := s.st.GetFlat(ctx, slugName)
-	if err != nil || f.SignInProvider != store.SignInOIDC {
-		return err
+	if err != nil {
+		// The gate in front may hold the earlier value.
+		return s.closePortal(ctx, slugName, err)
+	}
+	if f.SignInProvider != store.SignInOIDC {
+		return nil
 	}
 	// The epoch stays, so the new public handler binds the one that the open connections use.
 	return s.reopenPublic(ctx, slugName, true)
@@ -671,7 +686,8 @@ func (s *Service) SignInGate(ctx context.Context, slugName string, in store.Sign
 		return SignInGate{}, nil
 	}
 	if err := sdkValidate(in); err != nil {
-		return SignInGate{}, fmt.Errorf("the stored sign-in of %s is not one that the gate accepts: %w", slugName, err)
+		// The reason becomes the detail of the Portal endpoint and a line of the host log (rule 35).
+		return SignInGate{}, fmt.Errorf("the stored sign-in of %s is not one that the gate accepts: %s", slugName, HideSignInEntries(err.Error(), in.Allow))
 	}
 	g := SignInGate{Provider: in.Provider, Allow: slices.Clone(in.Allow), Issuer: in.Issuer, ClientID: in.ClientID}
 	secret, ok, err := s.SignInClientSecret(ctx, slugName, in)
@@ -773,8 +789,9 @@ func (s *Service) DeleteSignInSecret(ctx context.Context, slugName string, via V
 // afterSignInSecret runs the rebuild of rule 28 and adds its failure to msg.
 func (s *Service) afterSignInSecret(ctx context.Context, slugName, msg string) string {
 	if err := s.signInSecretChanged(ctx, slugName); err != nil {
-		s.Event(ctx, slugName, "error", "signin", fmt.Sprintf("the Portal route of %s is stopped: %v", slugName, err), nil)
-		return msg + fmt.Sprintf("; the Portal route of %s is stopped: %v", slugName, err)
+		text := routesText(slugName, err, false)
+		s.Event(ctx, slugName, "error", "signin", text, nil)
+		return msg + "; " + text
 	}
 	return msg
 }

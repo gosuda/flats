@@ -49,6 +49,15 @@ type gateState struct {
 	kept bool
 }
 
+// String writes the state without the client secret of its gate: fmt does not call the String of the unexported
+// field cfg, so a formatted state would otherwise hold the value.
+func (g gateState) String() string {
+	return fmt.Sprintf("gate state (set %t, redirect %t, sequence %d, on %t, stale %t, kept %t, %s)", g.set, g.redirect, g.seq, g.on, g.stale, g.kept, g.cfg)
+}
+
+// GoString keeps %#v from writing the client secret.
+func (g gateState) GoString() string { return g.String() }
+
 // frontHandler is what RunHTTP of an entry serves through.
 type frontHandler struct{ h http.Handler }
 
@@ -136,12 +145,17 @@ func (n *Net) frontFor(e *entry, si *core.PortalSignIn) (http.Handler, error) {
 	if err := n.keepTokenSecret(e); err != nil {
 		return nil, err
 	}
-	h, err := appauth.New(markSeq(si.Seq, plain), e.id, gateConfig(e, si.Gate))
+	h, err := newGate(markSeq(si.Seq, plain), e.id, gateConfig(e, si.Gate))
 	if err != nil {
-		return nil, fmt.Errorf("the gate refuses the stored setting: %v; request one that it accepts with `flats signin set %s`", err, e.slug)
+		// The SDK quotes an entry that it refuses, and the reason reaches the endpoint detail and the host log.
+		return nil, fmt.Errorf("the gate refuses the stored setting: %s; request one that it accepts with `flats signin set %s`",
+			core.HideSignInEntries(err.Error(), si.Gate.Allow), e.slug)
 	}
 	return h, nil
 }
+
+// newGate builds a gate; tests replace it to fail a build.
+var newGate = appauth.New
 
 // gateConfig is the configuration of a gate of rule 33: no identity headers and no identity proof, because the host
 // sets its own headers (rule 45), and the host names of rule 34.
@@ -204,17 +218,19 @@ func (n *Net) startCheck(e *entry) {
 		if n.ctx.Err() != nil {
 			return
 		}
+		reason := ""
+		if err != nil {
+			// Check validates the configuration first, and that error can quote an entry.
+			reason = core.HideSignInEntries(err.Error(), g.cfg.Allow)
+		}
 		e.mu.Lock()
 		latest := e.checkGen == gen
 		if latest {
-			e.checkErr = ""
-			if err != nil {
-				e.checkErr = err.Error()
-			}
+			e.checkErr = reason
 		}
 		e.mu.Unlock()
 		if latest && err != nil {
-			n.logf("portal: %s: sign-in provider check failed: %v; visitors cannot sign in until the provider answers", e.slug, err)
+			n.logf("portal: %s: sign-in provider check failed: %s; visitors cannot sign in until the provider answers", e.slug, reason)
 		}
 	}()
 }
@@ -255,7 +271,7 @@ func (n *Net) keepTokenSecret(e *entry) error {
 	}
 	data, err := identity.Marshal(e.id)
 	if err == nil {
-		err = writePrivateFile(path, data)
+		err = writePrivateFile(path, data, n.logf)
 	}
 	if err != nil {
 		return fmt.Errorf("the identity file %s has no token secret, and it cannot be written with one: %v; make it writable, then deploy again or restart", path, err)
@@ -264,9 +280,14 @@ func (n *Net) keepTokenSecret(e *entry) error {
 	return nil
 }
 
+// syncDir syncs the folder of an identity file after the rename of a write; tests replace it to fail.
+var syncDir = durable.SyncDir
+
 // writePrivateFile replaces path with data atomically through a new private file: mode 0600, and on Windows the
 // access list that the SDK gives an identity file, which the rename keeps (docs/spec/windows-support.md, rule 18).
-func writePrivateFile(path string, data []byte) error {
+// Once the rename passed, the file holds data, so a failed sync of the folder is a warning in logf, which may be nil,
+// and the write passes: the caller then serves what the file holds.
+func writePrivateFile(path string, data []byte, logf func(string, ...any)) error {
 	var b [8]byte
 	_, _ = rand.Read(b[:])
 	dir := filepath.Dir(path)
@@ -283,7 +304,10 @@ func writePrivateFile(path string, data []byte) error {
 		os.Remove(tmp)
 		return err
 	}
-	return durable.SyncDir(dir)
+	if err := syncDir(dir); err != nil && logf != nil {
+		logf("portal: warning: the identity file %s holds its new content, but its folder was not synced: %v; a power loss can bring back the file from before", path, err)
+	}
+	return nil
 }
 
 func syncFile(path string) error {
@@ -294,9 +318,9 @@ func syncFile(path string) error {
 	return errors.Join(f.Sync(), f.Close())
 }
 
-// renewTokenSecret gives the identity in path a new token secret and writes it with writePrivateFile. It reports
-// false without an error when there is no identity file.
-func renewTokenSecret(path string) (types.Identity, bool, error) {
+// renewTokenSecret gives the identity in path a new token secret and writes it with writePrivateFile, which warns in
+// logf. It reports false without an error when there is no identity file.
+func renewTokenSecret(path string, logf func(string, ...any)) (types.Identity, bool, error) {
 	raw, err := os.ReadFile(path)
 	if errors.Is(err, fs.ErrNotExist) {
 		return types.Identity{}, false, nil
@@ -316,7 +340,7 @@ func renewTokenSecret(path string) (types.Identity, bool, error) {
 	if err != nil {
 		return types.Identity{}, false, err
 	}
-	if err := writePrivateFile(path, data); err != nil {
+	if err := writePrivateFile(path, data, logf); err != nil {
 		return types.Identity{}, false, err
 	}
 	return id, true, nil
@@ -324,12 +348,13 @@ func renewTokenSecret(path string) (types.Identity, bool, error) {
 
 // RenewTokenSecretFile gives the identity file of slug in dir a new token secret, for a host whose Portal backend
 // does not run (rules 41 and 42). It returns the path of the file, and false without an error when there is none.
+// Such a host has no Portal log, so a failed sync of the folder after the write is not reported.
 func RenewTokenSecretFile(dir, slug string) (string, bool, error) {
 	path, err := identityFile(dir, slug)
 	if err != nil {
 		return "", false, err
 	}
-	_, renewed, err := renewTokenSecret(path)
+	_, renewed, err := renewTokenSecret(path, nil)
 	return path, renewed, err
 }
 
@@ -353,7 +378,7 @@ func (n *Net) RenewPortalIdentity(ctx context.Context, slug string) (string, boo
 	if err != nil {
 		return "", false, err
 	}
-	id, renewed, err := renewTokenSecret(path)
+	id, renewed, err := renewTokenSecret(path, n.logf)
 	if err != nil || !renewed {
 		return path, false, err
 	}
@@ -378,6 +403,27 @@ func (n *Net) RenewPortalIdentity(ctx context.Context, slug string) (string, boo
 	e.gate.stale = false
 	n.startCheck(e)
 	return path, true, nil
+}
+
+// FailPortalGate stops the served route of slug as a gate that cannot be built stops it (rule 35): the front answers
+// 503, the route stops and unregisters, the endpoint shows reason, and the host log has one line. So no gate of an
+// earlier setting or token secret stays in front while the host cannot read what the gate needs. A slug that is not
+// served has no route to stop, and the result is nil.
+func (n *Net) FailPortalGate(_ context.Context, slug, reason string) error {
+	if !n.beginOp() {
+		// Close stops every route.
+		return nil
+	}
+	defer n.ops.Done()
+	l := n.slugLock(slug)
+	l.Lock()
+	defer l.Unlock()
+	e := n.entry(slug)
+	if e == nil {
+		return nil
+	}
+	e.front.Store(&frontHandler{closedFront})
+	return n.gateFailed(slug, errors.New(reason), n.finishStop(slug, e))
 }
 
 // IssuePortalCredential makes an access link from the identity of the entry of slug for the canonical host name of

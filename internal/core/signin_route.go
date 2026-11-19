@@ -131,12 +131,13 @@ func (s *Service) servePublicNet(ctx context.Context, slugName string, h http.Ha
 // reopenPublic serves the public routes that a flat uses now again, with a new public handler and the stored sign-in,
 // so the Portal route builds its gate from the stored setting (rules 20 and 38). After revokeRoute the new handler
 // binds a new epoch; without it the epoch of the open connections stays. rebuild builds the gate again also when one
-// of the stored sequence is in place. It runs under the lock of the flat, and returns the error of a Portal route
-// that stopped. A flat without a public route has nothing to open: its gate is built when one opens (rule 7).
+// of the stored sequence is in place. It runs under the lock of the flat. Its error says that the Portal route stopped
+// (a *SignInGateError), or that a read failed and stopped it (a *routesUnread). A flat without a public route has
+// nothing to open: its gate is built when one opens (rule 7).
 func (s *Service) reopenPublic(ctx context.Context, slugName string, rebuild bool) error {
 	f, err := s.st.GetFlat(ctx, slugName)
 	if err != nil {
-		return err
+		return s.closePortal(ctx, slugName, err)
 	}
 	if !f.Visibility.Public() || s.state(slugName).cur.Load() == nil {
 		return nil
@@ -148,10 +149,11 @@ func (s *Service) reopenPublic(ctx context.Context, slugName string, rebuild boo
 			return nil
 		}
 		hidden, err := s.portalHidden(ctx, slugName)
-		if err != nil {
-			return err
+		if err == nil {
+			_, err = s.servePublicNet(ctx, slugName, s.siteHandler(slugName, true), hidden, rebuild)
+		} else {
+			err = s.closePortal(ctx, slugName, err)
 		}
-		_, err = s.servePublicNet(ctx, slugName, s.siteHandler(slugName, true), hidden, rebuild)
 		if ge := (*SignInGateError)(nil); errors.As(err, &ge) && ge.StopErr == nil {
 			lf.publicServed = false
 		}
@@ -159,11 +161,11 @@ func (s *Service) reopenPublic(ctx context.Context, slugName string, rebuild boo
 	}
 	observer, ok := s.cfg.Lifecycle.(LifecycleObserver)
 	if !ok {
-		return errors.New("cannot read the current public routes")
+		return s.closePortal(ctx, slugName, errors.New("the provider manager does not report the current routes"))
 	}
 	permitted, err := s.permittedIDs(ctx, slugName)
 	if err != nil {
-		return err
+		return s.closePortal(ctx, slugName, err)
 	}
 	si := s.portalSignIn(ctx, slugName)
 	si.Rebuild = rebuild
@@ -172,7 +174,7 @@ func (s *Service) reopenPublic(ctx context.Context, slugName string, rebuild boo
 	}
 	status, err := observer.ExposureStatus(ctx, slugName)
 	if err != nil {
-		return fmt.Errorf("read current routes: %w", err)
+		return s.closePortal(ctx, slugName, fmt.Errorf("read current routes: %w", err))
 	}
 	// The public routes that the approved exposure uses, as reapplyExposure takes them: a Portal route whose gate
 	// failed before is among them, so a sign-in or a client secret change tries it again (rule 35).
@@ -189,7 +191,7 @@ func (s *Service) reopenPublic(ctx context.Context, slugName string, rebuild boo
 	}
 	hidden, err := s.portalHidden(ctx, slugName)
 	if err != nil {
-		return err
+		return s.closePortal(ctx, slugName, err)
 	}
 	_, err = ln.ServeExposure(ctx, ExposureRequest{Slug: slugName, Host: slugName, Visibility: "public", Audience: AudienceCurrent,
 		Handler: s.siteHandler(slugName, true), PrivateHandler: s.siteHandler(slugName, false), Permitted: serving, Hidden: hidden, SignIn: si})
@@ -210,6 +212,60 @@ func (s *Service) signInNet() (LifecycleSignInNet, bool) {
 	}
 	n, ok := s.cfg.Public.(SignInPublicNet)
 	return n, ok
+}
+
+// closePortal is reopenPublic for a read that failed with cause: the host cannot tell which gate the Portal route
+// needs, so it stops the route as rule 35 stops one whose gate cannot be built, and no gate of an earlier setting,
+// client secret or token secret stays in front (rules 28 and 54).
+func (s *Service) closePortal(ctx context.Context, slugName string, cause error) error {
+	u := &routesUnread{slug: slugName, cause: cause}
+	if n, ok := s.signInNet(); ok {
+		reason := fmt.Sprintf("the routes of %s cannot be read to build its gate again: %v; a deploy, a grant, a restart or a sign-in change tries again", slugName, cause)
+		u.portal = n.FailPortalGate(context.WithoutCancel(ctx), slugName, reason)
+	}
+	return u
+}
+
+// routesUnread is the error of a reopenPublic whose read failed. portal is the stop of the Portal route of the flat, a
+// *SignInGateError, and nil when the flat had no Portal route.
+type routesUnread struct {
+	slug   string
+	cause  error
+	portal error
+}
+
+func (e *routesUnread) Error() string {
+	if e.portal != nil {
+		return e.portal.Error()
+	}
+	return fmt.Sprintf("the routes of %s cannot be read: %v", e.slug, e.cause)
+}
+
+func (e *routesUnread) Unwrap() error { return e.portal }
+
+// SignInRoutesNotReopened is the phrase of the message of a revocation (rule 54) whose public routes did not open
+// again: its Portal route is stopped, or a read failed. The console shows such a message as an error.
+const SignInRoutesNotReopened = "its public routes did not open again"
+
+// routesText is the clause of a message that says the state of the public routes of a flat after reopenPublic failed
+// with err (rules 21, 28 and 54). revoked says that revokeRoute ran before, so a public route that did not open again
+// answers 503 on the cancelled epoch.
+func routesText(slugName string, err error, revoked bool) string {
+	u := (*routesUnread)(nil)
+	if !errors.As(err, &u) {
+		return fmt.Sprintf("the Portal route of %s is stopped: %v", slugName, err)
+	}
+	switch {
+	case u.portal != nil && revoked:
+		return fmt.Sprintf("the Portal route of %s is stopped: %v; any other public route of %s answers 503 until a deploy, a grant or a restart serves it again",
+			slugName, u.portal, slugName)
+	case u.portal != nil:
+		return fmt.Sprintf("the Portal route of %s is stopped: %v", slugName, u.portal)
+	case revoked:
+		return fmt.Sprintf("the routes of %s cannot be read: %v; it has no Portal route, and its public routes answer 503 until a deploy, a grant or a restart serves them again",
+			slugName, u.cause)
+	}
+	return fmt.Sprintf("the routes of %s cannot be read: %v; it has no Portal route, so no gate was built again", slugName, u.cause)
 }
 
 // SignInHosts returns the host names of the Portal route of a flat (rule 56): every host name that its gate accepts,
@@ -254,6 +310,27 @@ func (s *Service) renewForChange(ctx context.Context, slugName string, via Via, 
 	return &a, nil
 }
 
+// renewalOutlived records the new token secret of a rename or a deletion that failed after renewForChange, before its
+// commit (rules 41, 42 and 67): the flat stays as it was, but every session and access link of its identity ended.
+// The signin.revoke row of the cause, with the audit a of renewForChange, and a flat event say so, and so does the
+// returned error. a is nil when the flat had no identity file, and err comes back as it is.
+func (s *Service) renewalOutlived(ctx context.Context, slugName, cause string, a *store.Audit, err error) error {
+	if a == nil {
+		return err
+	}
+	change := "rename"
+	if cause == store.SignInRevokeDelete {
+		change = "deletion"
+	}
+	bg := context.WithoutCancel(ctx)
+	text := fmt.Sprintf("every sign-in session and access link of %s ended: its Portal identity got a new token secret before the %s failed", slugName, change)
+	if auditErr := s.st.AppendSignInRevoke(bg, slugName, cause, *a); auditErr != nil {
+		text += ", and its audit row could not be written: " + auditErr.Error()
+	}
+	s.Event(bg, slugName, "warn", "signin", text, nil)
+	return fmt.Errorf("%w; %s", err, text)
+}
+
 // RevokeSignIn ends every sign-in session and every access link of a flat (rule 54): the Portal identity gets a new
 // token secret, the open connections of the public routes end, and the gate is built again. The host names stay. It
 // needs no approval, because it narrows access. MCP cannot call it.
@@ -284,11 +361,11 @@ func (s *Service) RevokeSignIn(ctx context.Context, slugName string, via Via) (A
 		return ActionResult{Status: "done", Message: "no Portal identity"}, nil
 	}
 	// The row follows the write of the file (rule 67); a failure does not undo the new token secret.
-	auditErr := s.st.AppendSignInRevoke(ctx, slugName, s.audit(ctx, via))
+	auditErr := s.st.AppendSignInRevoke(ctx, slugName, "", s.audit(ctx, via))
 	s.revokeRoute("public:" + slugName)
 	msg := fmt.Sprintf("every sign-in session and access link of %s ended via %s", slugName, via)
 	if err := s.reopenPublic(ctx, slugName, false); err != nil {
-		msg += fmt.Sprintf("; the Portal route of %s is stopped: %v", slugName, err)
+		msg += "; " + SignInRoutesNotReopened + ": " + routesText(slugName, err, true)
 	}
 	s.Event(ctx, slugName, "info", "signin", msg, nil)
 	s.notifySignInAction(ctx, f, "revoke_signin", &webhook.Change{Empty: true})

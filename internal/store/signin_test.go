@@ -318,7 +318,8 @@ func TestConcurrentGrantAndSignIn(t *testing.T) {
 	}
 	defer b.Close()
 	grants, signIns := 0, 0
-	for i := range 60 {
+	// At least 60 runs, and more until each order occurred, up to 600: a run with one order is no test of the other.
+	for i := 0; i < 60 || (grants == 0 || signIns == 0) && i < 600; i++ {
 		flat := fmt.Sprintf("race-%d", i)
 		makeFlat(t, a, flat)
 		st, err := b.GetSignIn(ctx, flat)
@@ -375,6 +376,9 @@ func TestConcurrentGrantAndSignIn(t *testing.T) {
 		}
 	}
 	t.Logf("the grant first %d times, sign-in first %d times", grants, signIns)
+	if grants == 0 || signIns == 0 {
+		t.Fatalf("one order only: the grant first %d times, sign-in first %d times", grants, signIns)
+	}
 }
 
 // The client secret is a row with the use signin and a binding (rules 24 to 27, 30 and 66).
@@ -614,15 +618,20 @@ func TestSignInLinkAndRevokeRows(t *testing.T) {
 	if err := s.AppendSignInLink(ctx, "app", SignInLink{Subject: "guest one", Host: "abc.portal.example", ExpiresAt: at}, Audit{Via: AuditViaConsole, Actor: "op"}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AppendSignInRevoke(ctx, "app", Audit{Via: AuditViaCLI}); err != nil {
+	if err := s.AppendSignInRevoke(ctx, "app", "", Audit{Via: AuditViaCLI}); err != nil {
+		t.Fatal(err)
+	}
+	// A rename that failed after its new token secret writes its row outside the failed transaction.
+	if err := s.AppendSignInRevoke(ctx, "app", SignInRevokeRename, Audit{Via: "api"}); err != nil {
 		t.Fatal(err)
 	}
 	got := allAudit(t, s)
 	want := []AuditEvent{
 		{Kind: AuditSignInLink, Flat: "app", FlatID: flat.ID, Via: AuditViaConsole, Actor: "op", Data: json.RawMessage(`{"expires_at":"2026-11-26T07:30:00Z","host":"abc.portal.example","subject":"guest one"}`)},
 		{Kind: AuditSignInRevoke, Flat: "app", FlatID: flat.ID, Via: AuditViaCLI, Data: json.RawMessage(`{}`)},
+		{Kind: AuditSignInRevoke, Flat: "app", FlatID: flat.ID, Via: "api", Data: json.RawMessage(`{"cause":"rename"}`)},
 	}
-	if len(got) != 2 {
+	if len(got) != 3 {
 		t.Fatalf("rows = %v", auditKinds(got))
 	}
 	for i := range got {

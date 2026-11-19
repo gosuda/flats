@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -664,6 +665,185 @@ func TestRenewPortalIdentity(t *testing.T) {
 	}
 	if _, again := storedTokenSecret(t, path); again == after {
 		t.Fatal("RenewTokenSecretFile kept the token secret")
+	}
+}
+
+// A failed sync of the folder after the rename of a renewal leaves the new token secret in the file, so the renewal
+// passes and the served gate takes it: the file and the gate never differ (rules 36 and 54).
+func TestRenewPortalIdentityWithAFailedFolderSync(t *testing.T) {
+	var logs logLines
+	dir := t.TempDir()
+	n, ff := newTestNet(t, Config{Dir: dir, Discovery: true, Logf: logs.logf})
+	var flat flatRecorder
+	v, _ := serveGated(t, n, ff, flat.handler("flat"), credentialGate(1, "guest"))
+	signInWith(t, n, v, "guest")
+	wantFlat(t, v, "/", "flat /")
+	old := syncDir
+	syncDir = func(string) error { return errors.New("sync-refused") }
+	t.Cleanup(func() { syncDir = old })
+
+	path, renewed, err := n.RenewPortalIdentity(t.Context(), "app")
+	if err != nil || !renewed || path != filepath.Join(dir, "app.json") {
+		t.Fatalf("RenewPortalIdentity = %q %v %v, want renewed without an error", path, renewed, err)
+	}
+	// The old session is refused, and a session of the token secret in the file is accepted.
+	wantLogin(t, v, "/")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stored, err := identity.Parse(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cred, err := appauth.IssueCredential(stored, testHost, "guest", time.Now().Add(time.Hour))
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh := NewTestVisitor(v.Addr, v.Host)
+	if code := fresh.Redeem(t, cred); code != http.StatusOK {
+		t.Fatalf("a credential of the token secret in the file = %d", code)
+	}
+	wantFlat(t, fresh, "/", "flat /")
+	if lines := logs.with("warning"); len(lines) != 1 || !strings.Contains(lines[0], path) || !strings.Contains(lines[0], "sync-refused") {
+		t.Fatalf("log = %q, want one warning with the path", lines)
+	}
+}
+
+// failingClose is an exposure whose unregister the relay refuses, so the stop of its route is not confirmed.
+type failingClose struct{ exposure }
+
+func (f failingClose) Close() error {
+	_ = f.exposure.Close()
+	return errors.New("relay refused unregister")
+}
+
+// The front of a served entry whose gate failed answers 503 while its stop is not confirmed, and never passes a
+// request to the flat through the gate of the earlier setting (rule 35).
+func TestSignInGateFailureWithAnUnconfirmedStop(t *testing.T) {
+	n, ff := newTestNet(t, Config{Discovery: true})
+	n.expose = func(ctx context.Context, id types.Identity, relays []string, maxActive int, meta types.LeaseMetadata) (exposure, error) {
+		exp, err := ff.expose(ctx, id, relays, maxActive, meta)
+		return failingClose{exp}, err
+	}
+	var flat flatRecorder
+	v, _ := serveGated(t, n, ff, flat.handler("flat"), credentialGate(1, "guest"))
+	signInWith(t, n, v, "guest")
+	wantFlat(t, v, "/", "flat /")
+	before := flat.count()
+	_, err := n.ServeSignIn(t.Context(), "app", flat.handler("other"), false, &core.PortalSignIn{Seq: 2, Err: errors.New("the setting cannot be read")})
+	var ge *core.SignInGateError
+	if !errors.As(err, &ge) || ge.StopErr == nil {
+		t.Fatalf("ServeSignIn = %v, want a gate error with an unconfirmed stop", err)
+	}
+	e := n.entry("app")
+	if e == nil {
+		t.Fatal("the entry of an unconfirmed stop is gone")
+	}
+	// A request with the session of the earlier gate, as one that the drain of the route still serves.
+	req := httptest.NewRequest(http.MethodGet, "https://"+testHost+"/", nil)
+	for _, c := range v.Cookies {
+		req.AddCookie(&http.Cookie{Name: c.Name, Value: c.Value})
+	}
+	rec := httptest.NewRecorder()
+	e.serveFront(rec, req)
+	if rec.Code != http.StatusServiceUnavailable || flat.count() != before {
+		t.Fatalf("a request after the failure = %d, %d flat calls, want 503 and none", rec.Code, flat.count()-before)
+	}
+}
+
+// A rebuild that fails after a new token secret leaves a front that answers 503, never the gate of the old token
+// secret, and the next open builds the gate again.
+func TestRenewPortalIdentityWithAFailedRebuild(t *testing.T) {
+	var logs logLines
+	n, ff := newTestNet(t, Config{Discovery: true, Logf: logs.logf})
+	var flat flatRecorder
+	v, _ := serveGated(t, n, ff, flat.handler("flat"), credentialGate(1, "guest"))
+	signInWith(t, n, v, "guest")
+	wantFlat(t, v, "/", "flat /")
+	before := flat.count()
+	old := newGate
+	newGate = func(http.Handler, types.Identity, appauth.Config) (http.Handler, error) {
+		return nil, errors.New("gate-refused")
+	}
+	t.Cleanup(func() { newGate = old })
+	if _, renewed, err := n.RenewPortalIdentity(t.Context(), "app"); err != nil || !renewed {
+		t.Fatalf("RenewPortalIdentity = %v %v", renewed, err)
+	}
+	if code, _ := v.Get(t, "/", nil); code != http.StatusServiceUnavailable || flat.count() != before {
+		t.Fatalf("a request after the failed rebuild = %d, %d flat calls, want 503 and none", code, flat.count()-before)
+	}
+	if lines := logs.with("gate-refused"); len(lines) != 1 {
+		t.Fatalf("log = %q", lines)
+	}
+	newGate = old
+	if _, err := n.ServeSignIn(t.Context(), "app", flat.handler("flat"), false, credentialGate(1, "guest")); err != nil {
+		t.Fatal(err)
+	}
+	wantLogin(t, v, "/")
+	fresh := NewTestVisitor(v.Addr, v.Host)
+	signInWith(t, n, fresh, "guest")
+	wantFlat(t, fresh, "/", "flat /")
+}
+
+// FailPortalGate stops a served route as a gate that cannot be built stops it (rule 35), and a slug that is not
+// served has nothing to stop.
+func TestFailPortalGate(t *testing.T) {
+	var logs logLines
+	n, ff := newTestNet(t, Config{Discovery: true, Logf: logs.logf})
+	var flat flatRecorder
+	v, f := serveGated(t, n, ff, flat.handler("flat"), credentialGate(1, "guest"))
+	signInWith(t, n, v, "guest")
+	wantFlat(t, v, "/", "flat /")
+	if err := n.FailPortalGate(t.Context(), "other", "unused"); err != nil {
+		t.Fatalf("a slug that is not served = %v", err)
+	}
+	err := n.FailPortalGate(t.Context(), "app", "the routes of app cannot be read")
+	if ge := (*core.SignInGateError)(nil); !errors.As(err, &ge) || ge.StopErr != nil || err.Error() != "sign-in gate: the routes of app cannot be read" {
+		t.Fatalf("FailPortalGate = %v", err)
+	}
+	if f.closeCount() != 1 || n.entry("app") != nil {
+		t.Fatalf("the route did not stop: %d closes", f.closeCount())
+	}
+	wantGateError(t, n, "the routes of app cannot be read")
+	if lines := logs.with("sign-in gate"); len(lines) != 1 || !strings.Contains(lines[0], "app") {
+		t.Fatalf("log = %q", lines)
+	}
+	// The next build opens the route again and clears the failure.
+	if _, err := n.ServeSignIn(t.Context(), "app", flat.handler("flat"), false, credentialGate(1, "guest")); err != nil || ff.count() != 2 {
+		t.Fatalf("the next build = %v, %d exposures", err, ff.count())
+	}
+	for _, h := range n.Status().Hosts {
+		if strings.Contains(h.Detail, "sign-in gate") {
+			t.Fatalf("status still holds the failure: %+v", h)
+		}
+	}
+}
+
+// A formatted gate state holds no client secret (rule 30).
+func TestGateStateHidesTheClientSecret(t *testing.T) {
+	g := gateState{set: true, seq: 3, on: true, cfg: core.SignInGate{Provider: appauth.ProviderOIDC, Issuer: "https://idp.example", ClientID: "c",
+		ClientSecret: "cs-state-distinct-8Yt", Allow: []string{"ann@example.com"}}}
+	text := fmt.Sprintf("%v %+v %#v", g, g, g)
+	if strings.Contains(text, "cs-state-distinct-8Yt") || !strings.Contains(text, "client secret set") || !strings.Contains(text, "sequence 3") {
+		t.Fatalf("a formatted gate state = %s", text)
+	}
+}
+
+// An SDK error that quotes an entry never reaches the detail or the log (rule 58).
+func TestSignInGateErrorHidesEntries(t *testing.T) {
+	var logs logLines
+	n, _ := newTestNet(t, Config{Discovery: true, Logf: logs.logf})
+	var flat flatRecorder
+	si := &core.PortalSignIn{Seq: 1, Gate: core.SignInGate{Provider: appauth.ProviderOIDC, Issuer: "https://idp.example", ClientID: "c", Allow: []string{"leak-entry-4Wq"}}}
+	_, err := n.ServeSignIn(t.Context(), "app", flat.handler("flat"), false, si)
+	if err == nil || !strings.Contains(err.Error(), "principal <entry> must be") {
+		t.Fatalf("ServeSignIn = %v", err)
+	}
+	wantGateError(t, n, "principal <entry> must be")
+	text := err.Error() + fmt.Sprint(n.Status()) + strings.Join(logs.with(""), "\n")
+	if strings.Contains(text, "leak-entry-4Wq") {
+		t.Fatalf("an output holds the entry: %s", text)
 	}
 }
 

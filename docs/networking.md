@@ -695,7 +695,10 @@ also the links of an earlier `credential` setting, and the host names stay. It
 needs no approval. One link cannot be ended alone. After you remove a subject
 from the allowlist, run `flats signin revoke` to end its links for good:
 without it, they work again when the subject comes back. A rename and the
-deletion of a flat give its Portal identity a new token secret too.
+deletion of a flat give its Portal identity a new token secret too. When the
+public routes of the flat do not open again after a revocation, the message
+says so: the Portal route is stopped, with the reason on its endpoint, until a
+deploy, a grant, a restart or a sign-in change serves it again.
 
 **Visitor headers.** A server flat gets the visitor who signed in through the
 headers `X-Flats-Visitor-Provider`, `X-Flats-Visitor-Subject` and
@@ -729,7 +732,9 @@ still the name that the visitor types.
 `X-Portal-Access-Credential` no longer reach flat code on any route. A rename
 and a deletion give the Portal identity of the flat a new token secret, and
 when the identity file cannot be written, they fail, change nothing and name
-the file. The upgrade to `flats.db` schema 29 needs a backup with
+the file. When one fails after that write, the flat stays as it was, but its
+sessions and access links ended: the audit log, the logs of the flat and the
+message say so. The upgrade to `flats.db` schema 29 needs a backup with
 [`flats backup`](configuration.md#what-to-back-up) first
 ([Audit log](configuration.md#audit-log)).
 

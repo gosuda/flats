@@ -50,6 +50,10 @@ func (p *signInPublic) PortalHosts(slug string) []string {
 	return []string{slug + ".portal.example", slug + "-alias.relay.example"}
 }
 
+func (p *signInPublic) FailPortalGate(_ context.Context, slug, reason string) error {
+	return &core.SignInGateError{Reason: reason, StopErr: p.Stop(slug)}
+}
+
 func signInSetup(t *testing.T) (*httptest.Server, *core.Service, http.Handler) {
 	t.Helper()
 	srv, svc := setupWith(t, t.TempDir(), func(c *core.Config) { c.Public = &signInPublic{c.Public.(*local.Public)} })
@@ -384,6 +388,55 @@ func TestSignInRoutesByCaller(t *testing.T) {
 		t.Fatalf("logs = %d %s", code, out)
 	} else {
 		noEntry(t, "the logs", out)
+	}
+}
+
+// A request through a declared external origin comes from the reverse proxy of the operator, also when it arrives on
+// the loopback address, so each route of sign-in refuses it with 403, with the CLI header and without it, and changes
+// nothing (rules 13, 25, 49, 54 and 56).
+func TestSignInRoutesThroughAnExternalOrigin(t *testing.T) {
+	_, svc, h := signInSetup(t)
+	ctx := context.Background()
+	if _, err := svc.CreateFlat(ctx, "app", "", core.ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	const origin = "https://flats.example.org"
+	guard := &api.HostGuard{Hosts: func() []string { return []string{"localhost"} }, ExternalOrigins: func() []string { return []string{origin} }, Next: h}
+	for _, tc := range []struct{ method, path, body string }{
+		{"GET", "/api/flats/app/signin", ""},
+		{"POST", "/api/flats/app/signin", oidcBody},
+		{"PUT", "/api/flats/app/signin/secret", `{"value":"` + apiSecret + `","issuer":"https://idp.example.com","client_id":"flats-app"}`},
+		{"DELETE", "/api/flats/app/signin/secret", ""},
+		{"POST", "/api/flats/app/signin/links", `{"subject":"` + apiGuest + `"}`},
+		{"POST", "/api/flats/app/signin/revoke", ""},
+	} {
+		for _, withCLI := range []bool{true, false} {
+			r := httptest.NewRequest(tc.method, origin+tc.path, strings.NewReader(tc.body))
+			r.Host = "flats.example.org"
+			r.RemoteAddr = "127.0.0.1:12345"
+			r.Header.Set("Content-Type", "application/json")
+			if withCLI {
+				r.Header.Set("X-Flats-Client", "cli")
+			}
+			rec := httptest.NewRecorder()
+			guard.ServeHTTP(rec, r)
+			if rec.Code != 403 {
+				t.Errorf("%s %s through %s (CLI header %v) = %d %s", tc.method, tc.path, origin, withCLI, rec.Code, rec.Body)
+			}
+			noEntry(t, "a refusal through an external origin", rec.Body.String())
+		}
+	}
+	if v, err := svc.GetSignIn(ctx, "app"); err != nil || v.ClientSecret != nil || v.Provider != "" || v.Seq != 0 || pendingCount(t, svc) != 0 {
+		t.Fatalf("a refused request changed the sign-in: %+v %v", v, err)
+	}
+	events, err := svc.Events(ctx, "app", "", 0, 1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range events {
+		if strings.Contains(e.Message, "sign-in") || strings.Contains(e.Message, "access link") {
+			t.Errorf("a refused request wrote %q", e.Message)
+		}
 	}
 }
 

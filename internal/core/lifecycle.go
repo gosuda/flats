@@ -664,7 +664,10 @@ func (s *Service) finishApplying(ctx context.Context, a store.Approval) (store.A
 			msg = fmt.Sprintf("deleted version %d", receipt.Version)
 		}
 		if a.Action == actionSetSignIn {
-			msg = s.resumeSignIn(ctx, a)
+			var err error
+			if msg, err = s.resumeSignIn(ctx, a); err != nil {
+				return a, err
+			}
 		}
 		if err := s.st.FinishApprovalData(ctx, a.ID, "approved", msg, raw, s.now()); err != nil {
 			return a, err

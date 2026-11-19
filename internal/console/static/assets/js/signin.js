@@ -16,6 +16,11 @@ const SIGN_IN_SCOPE = 'Sign-in protects the Portal address of this flat only. It
 const changeText = () => h('p', { class: 'muted small' },
   'Change it with ', h('code', { text: 'flats signin set' }), ' on the host. Each change waits for your approval here.');
 
+// SIGN_IN_ROUTES_NOT_REOPENED is the phrase of the answer of a revocation
+// whose public routes did not open again (core.SignInRoutesNotReopened,
+// rule 54); the console shows such an answer as an error.
+export const SIGN_IN_ROUTES_NOT_REOPENED = 'its public routes did not open again';
+
 const signInOn = (s) => !!(s && s.provider);
 const PROVIDERS = { oidc: 'OpenID Connect', credential: 'Access links' };
 const providerName = (s) => (signInOn(s) ? PROVIDERS[s.provider] || s.provider : 'Off');
@@ -218,8 +223,8 @@ async function endSessions(flat) {
   try {
     const res = await api.revokeSignIn(flat.slug);
     const msg = (res && res.message) || 'every session and access link ended';
-    // The sessions end also when the gate cannot be built again; the message then says that the route is stopped.
-    toast(msg[0].toUpperCase() + msg.slice(1) + '.', msg.includes('is stopped') ? 'error' : 'success');
+    // The sessions end also when the routes do not open again; the message then says so.
+    toast(msg[0].toUpperCase() + msg.slice(1) + '.', msg.includes(SIGN_IN_ROUTES_NOT_REOPENED) ? 'error' : 'success');
   } catch (err) {
     toast(err.message, 'error');
   }
