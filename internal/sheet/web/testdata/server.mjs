@@ -172,7 +172,7 @@ const OP = variant('op', {
   format: [['tab', 'rows', 'cols', 'set'], []],
   width: [['tab', 'cols', 'width'], []],
   copy: [['from', 'to', 'mode'], ['cut']],
-  fill: [['tab', 'source', 'target'], []],
+  fill: [['tab', 'source', 'target'], ['mode']],
   insert_rows: [['tab', 'beside', 'side', 'count'], []],
   insert_cols: [['tab', 'beside', 'side', 'count'], []],
   append_rows: [['tab', 'count'], []],
@@ -289,6 +289,8 @@ function checkOp(op) {
     case 'copy': case 'fill': {
       const [from, to] = op.op === 'copy' ? [op.from, op.to] : [op.source, op.target];
       if (op.op === 'copy' && op.mode !== 'all' && op.mode !== 'values') invalid(`the mode ${op.mode}`);
+      // A fill without a mode is a copy.
+      if (op.op === 'fill' && 'mode' in op && !['copy', 'auto', 'series'].includes(op.mode)) invalid(`the mode ${op.mode}`);
       checkIds(from.rows, ROWS_MAX, false);
       checkIds(from.cols, COLS_MAX, false);
       checkIds(to.rows, ROWS_MAX, true);

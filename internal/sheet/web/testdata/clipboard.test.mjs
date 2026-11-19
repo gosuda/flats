@@ -275,7 +275,8 @@ test('the fill handle names the source and the cells the drag adds', async () =>
   assert.deepEqual(t.grid.overlays.fill, { r1: 3, r2: 5, c1: 1, c2: 1 }, 'the target is previewed');
   assert.equal(t.server.socket.frames('action').length, 0);
   t.grid.h.up(ev);
-  assert.deepEqual(lastOps(t.server), [{ op: 'fill', tab: 1, source: { rows: [[m.rowAt(2), 1]], cols: [[m.colAt(1), 1]] }, target: { rows: [[m.rowAt(3), 3]], cols: [[m.colAt(1), 1]] } }]);
+  // A drag fills by rule 21a: mode auto.
+  assert.deepEqual(lastOps(t.server), [{ op: 'fill', tab: 1, source: { rows: [[m.rowAt(2), 1]], cols: [[m.colAt(1), 1]] }, target: { rows: [[m.rowAt(3), 3]], cols: [[m.colAt(1), 1]] }, mode: 'auto' }]);
   assert.deepEqual(t.sel.box(), { r1: 2, c1: 1, r2: 5, c2: 1 }, 'the filled range is selected');
   assert.equal(t.grid.overlays.fill, null);
 });
@@ -295,6 +296,10 @@ test('Ctrl+D and Ctrl+R fill the selection from its first row or column', async 
   t.sel.range(1, 0, 1, 3);
   key(t, 'r', { metaKey: true });
   assert.deepEqual(lastOps(t.server)[0], { op: 'fill', tab: 1, source: { rows: [[m.rowAt(1), 1]], cols: [[m.colAt(0), 1]] }, target: { rows: [[m.rowAt(1), 1]], cols: [[m.colAt(1), 3]] } });
+  // Ctrl+D and Ctrl+R copy: their fill names no mode, which is a copy,
+  // and leaves no button to change it.
+  for (const a of t.server.socket.frames('action')) assert.equal(Object.hasOwn(a.ops[0], 'mode'), false);
+  assert.equal(t.doc.querySelector('.fillopts').hidden, true);
 });
 
 // built counts the array entries added while fn runs, and ends fn once

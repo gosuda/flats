@@ -81,6 +81,24 @@ test('every operation builder passes the schema of section 7.1', () => {
   assert.throws(() => checkFrame({ type: 'action', n: '1', base: '10', ops: [ops.format(1, [[5, 1]], [[6, 1]], { number: { kind: 'date', date: 'm/d/yyyy' } })] }), /set\.number of kind date has the field date/);
 });
 
+test('a fill names its mode only when it is given one', () => {
+  const source = { rows: [[5, 1]], cols: [[6, 1]] };
+  const target = { rows: [[7, 2]], cols: [[6, 1]] };
+  // Without a mode a fill is a copy (Appendix A), in the shape the host
+  // has always read: Ctrl+D and Ctrl+R send it so.
+  const plain = ops.fill(1, source, target);
+  assert.deepEqual(plain, { op: 'fill', tab: 1, source, target });
+  assert.equal(Object.hasOwn(plain, 'mode'), false);
+  for (const mode of ['copy', 'auto', 'series']) {
+    assert.deepEqual(ops.fill(1, source, target, mode), { op: 'fill', tab: 1, source, target, mode });
+    checkFrame({ type: 'action', n: '1', base: '10', ops: [ops.fill(1, source, target, mode)] });
+  }
+  // The server refuses any other mode of a fill as invalid (TECH 7.1).
+  for (const mode of ['all', 'values', 'Auto', '']) {
+    assert.throws(() => checkFrame({ type: 'action', n: '1', base: '10', ops: [ops.fill(1, source, target, mode)] }), /the mode/, mode);
+  }
+});
+
 test('an action holds content and format operations, or one operation of another kind alone', () => {
   const cell = ops.set(1, 5, 6, 'x', [0, 0]);
   const together = [cell, ops.write(1, [5], [6], [['a']]), ops.clear(1, [[5, 1]], [[6, 1]]), ops.format(1, [[5, 1]], [[6, 1]], { bold: true }), ops.width(1, [[6, 1]], 180),

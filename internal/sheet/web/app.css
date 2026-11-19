@@ -193,6 +193,8 @@ svg.i { width: 16px; height: 16px; flex: none; stroke: currentColor; fill: none;
 .pop.find input { width: 100%; height: 30px; border: 1px solid var(--line); background: var(--bg); border-radius: 6px; padding: 0 8px; }
 .pop.find .btn { padding: 5px 7px; }
 .find-count { color: var(--muted); font-size: 12px; white-space: nowrap; }
+.fillopts { position: absolute; z-index: 125; }
+.fillopts .btn { padding: 2px; box-shadow: 0 2px 8px var(--shadow); }
 .pop.keys { width: 440px; }
 .pop.keys dl { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; margin: 0; }
 .pop.keys dt { font-family: var(--mono); font-size: 12px; }
