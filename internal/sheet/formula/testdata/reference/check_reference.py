@@ -93,6 +93,15 @@ ARITY = {
 }
 DATE_RESULT = {"DATE", "TODAY", "EDATE", "EOMONTH"}
 MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
+LAST_DAY = 2958465          # 9999-12-31, the last date (rule 12, section 9.4)
+# Text order of CompareText (section 9.3): the ASCII punctuation after the digits,
+# in this order; the letters a to z follow, then every other code point by value.
+PUNCT_ORDER = " !\"#$%&()*,./:;?@[\\]^_`{|}~+<=>"
+# First characters that make a text field a formula for a program that opens the
+# CSV file, so that it gets an apostrophe (rule 60, section 9.5 step 4).
+LEAD_CHARS = ("=", "+", "-", "@", chr(9), chr(13), chr(10), chr(0xFF1D), chr(0xFF0B), chr(0xFF0D), chr(0xFF20))
+DATE_FORMAT = {"kind": "date", "pattern": "yyyy-mm-dd"}   # rule 11: a DateResult shows as a date
+MS_PER_DAY = 86400000
 
 
 # ---------------------------------------------------------------- values
@@ -264,6 +273,12 @@ TIME_PATTERNS = ("hh:mm", "hh:mm:ss", "h:mm AM/PM")
 
 # ---------------------------------------------------------------- formats (rule 6)
 
+def outside_dates(x):
+    """A date or time format shows General for a negative number, and for a number
+    of day 2,958,466 or later, which is no date (rules 6 and 12)."""
+    return x < 0 or math.floor(x) > LAST_DAY
+
+
 def show_number(x, nf):
     kind = nf["kind"] if nf else "general"
     if kind in ("general", "text"):
@@ -278,8 +293,8 @@ def show_number(x, nf):
     if kind == "currency":
         neg, body = fixed(d, nf["decimals"], nf.get("thousands", True))
         return ("-" if neg else "") + nf["symbol"] + body
-    if x < 0:
-        return general(x)        # a date or time format on a negative number
+    if outside_dates(x):
+        return general(x)
     days, secs = split_day_time(x)
     if kind == "date":
         return date_text(days, nf["pattern"])
@@ -311,8 +326,17 @@ T24_RE = re.compile(r"^(\d{1,2}):(\d{2})(?::(\d{2}))?$")
 T12_RE = re.compile(r"^(\d{1,2}):(\d{2})(?::(\d{2}))? ([AaPp][Mm])$")
 
 
-def read_number(text):
-    """(value, format) for the number forms of rule 5, else None."""
+def entry_digits(whole, frac):
+    """The digits rule 5 counts for typed entry: no leading zeros, and no zeros at
+    the end after the decimal point."""
+    digits = whole.replace(",", "") + (frac or "")[1:].rstrip("0")
+    return len(digits.lstrip("0"))
+
+
+def read_number(text, entry=False):
+    """(value, format) for the number forms of rule 5, else None. For typed entry
+    (entry is True) a whole number, before any %, of more than 15 digits is no
+    number: it stays text, so that no digit is lost (rule 5, section 9.5)."""
     m = NUMBER_RE.match(text)
     if not m:
         return None
@@ -320,6 +344,8 @@ def read_number(text):
     d = Decimal(whole.replace(",", "") + (frac or ""))
     if exp:
         d = d * (Decimal(10) ** int(exp[1:]))
+    if entry and d == d.to_integral_value() and entry_digits(whole, frac) > 15:
+        return None
     if pct:
         d = d / 100
     if sign:
@@ -373,9 +399,12 @@ def read_time(text):
     return None
 
 
-def read_typed(text):
-    """(kind, value, format) for text read as rule 5 reads a typed entry.
-    kind is one of blank, formula, text, bool, number, date, time, datetime."""
+def read_typed(text, entry=False):
+    """(kind, value, format) for text read as rule 5 reads a typed entry, or as
+    VALUE, criteria and arithmetic read a text (entry False). kind is one of blank,
+    formula, text, bool, number, date, time, datetime. entry is True for typed
+    entry (the typed rows and import csv), which keeps a number of more than 15
+    digits as text."""
     if text == "":
         return "blank", BLANK, None
     if text.startswith("'"):
@@ -384,7 +413,7 @@ def read_typed(text):
         return "formula", text, None
     if text.upper() in ("TRUE", "FALSE"):
         return "bool", text.upper() == "TRUE", None
-    n = read_number(text)
+    n = read_number(text, entry)
     if n:
         return "number", n[0], n[1]
     d = read_date(text)
@@ -403,6 +432,8 @@ def read_typed(text):
 
 
 def text_to_number(text):
+    """The number a text reads as in arithmetic, VALUE and criteria (rule 11): no
+    15-digit rule, which applies to typed entry only."""
     kind, value, _ = read_typed(text) if not text.startswith(("'", "=")) else ("text", text, None)
     if kind in ("number", "date", "time", "datetime"):
         return value
@@ -410,20 +441,88 @@ def text_to_number(text):
 
 
 # ---------------------------------------------------------------- CSV (rule 60)
+# The field is computed from the value, its content kind and its number format,
+# never from the shown text (section 9.5, AppendCSVField steps 1 to 5).
 
-CSV_NUMBER_RE = re.compile(
-    r"^-[%s]?(\d{1,3}(,\d{3})+|\d+)(\.\d+)?([Ee][+-]?\d+|%%)?$" % re.escape(CURRENCY_SIGNS))
+def shortest(x):
+    """The shortest decimal that reads back as the same double, with at most 17
+    significant digits: plain when it needs at most 17 digits before the point and
+    at most 9 zeros after it, else with an exponent such as 1.5E+20 or 1E-11."""
+    if x == 0:
+        return "0"
+    t = Decimal(repr(float(x))).copy_abs().normalize()
+    sign = "-" if x < 0 else ""
+    digits = "".join(str(c) for c in t.as_tuple().digits)
+    adj = t.as_tuple().exponent + len(digits) - 1      # exponent of the first digit
+    if adj >= 0:
+        plain = adj + 1 <= 17
+    else:
+        plain = -adj - 1 <= 9
+    if plain and adj >= 0:
+        if len(digits) <= adj + 1:
+            body = digits + "0" * (adj + 1 - len(digits))
+        else:
+            body = digits[:adj + 1] + "." + digits[adj + 1:]
+    elif plain:
+        body = "0." + "0" * (-adj - 1) + digits
+    else:
+        body = digits[0] + ("." + digits[1:] if len(digits) > 1 else "") \
+            + "E" + ("+" if adj >= 0 else "-") + str(abs(adj))
+    return sign + body
 
 
-def csv_field(shown):
-    t = shown.lstrip(" ")
-    apostrophe = t[:1] in ("=", "+", "@", "\t", "\r", "\n") and t != ""
-    if t.startswith("-") and not CSV_NUMBER_RE.match(shown):
-        apostrophe = True
-    out = ("'" if apostrophe else "") + shown
-    if any(c in out for c in ',;\t"\r\n'):
-        out = '"' + out.replace('"', '""') + '"'
-    return out
+def iso_field(x, nf):
+    """A number that a date, time or date and time pattern draws, in ISO 8601 form.
+    The value is rounded to the millisecond first, and a carry goes on into the
+    days. A time below one day that carries to a whole day is midnight. A date
+    with a fraction of a day, and a value of a whole day or more under a time
+    format, are written as a date with time."""
+    ms = int((Decimal(x) * MS_PER_DAY).quantize(Decimal(1), rounding=ROUND_HALF_UP))
+    if nf["kind"] == "time" and x < 1 and ms >= MS_PER_DAY:
+        ms = 0
+    days, rem = divmod(ms, MS_PER_DAY)
+    secs, msec = divmod(rem, 1000)
+    h, mi, s = secs // 3600, secs // 60 % 60, secs % 60
+    clock = "%02d:%02d:%02d" % (h, mi, s) + ("" if msec == 0 else ".%03d" % msec)
+    day = "%04d-%02d-%02d" % civil_of(days)
+    if nf["kind"] == "date" and rem == 0:
+        return day
+    if nf["kind"] == "time" and days == 0:
+        return clock
+    return day + " " + clock
+
+
+def text_field(text):
+    """A text field, before quoting: an apostrophe when its first character, after
+    the leading spaces, is one that starts a formula (rule 60, step 4)."""
+    t = text.lstrip(" ")
+    return "'" + text if t[:1] in LEAD_CHARS else text
+
+
+def quote_field(field):
+    """RFC 4180 quoting (step 5)."""
+    if any(c in field for c in ',;\t"\r\n'):
+        return '"' + field.replace('"', '""') + '"'
+    return field
+
+
+def csv_value(v, nf, date_result):
+    """The CSV field of a cell value under its number format; date_result says the
+    outermost function is one that shows a date when no format is set (rule 11)."""
+    if v is BLANK:
+        return ""
+    if isinstance(v, XErr):
+        return quote_field(v.code)
+    if isinstance(v, bool):
+        return "TRUE" if v else "FALSE"
+    if isinstance(v, str):
+        return quote_field(text_field(v))
+    if nf is None and date_result:
+        nf = DATE_FORMAT
+    x = float(v)
+    if nf and nf["kind"] in ("date", "time", "datetime") and not outside_dates(x):
+        return iso_field(x, nf)
+    return shortest(x)
 
 
 # ---------------------------------------------------------------- parser (section 9.2)
@@ -993,6 +1092,38 @@ def kind_rank(v):
     return 0 if is_num(v) else (1 if isinstance(v, str) else 2)
 
 
+def text_rank(ch):
+    """Rank of a case-folded code point in the first pass of CompareText (section 9.3):
+    the digits, the ASCII punctuation of PUNCT_ORDER, the letters a to z, then the
+    other code points by value."""
+    if "0" <= ch <= "9":
+        return ord(ch) - 48
+    i = PUNCT_ORDER.find(ch)
+    if i >= 0:
+        return 10 + i
+    if "a" <= ch <= "z":
+        return 10 + len(PUNCT_ORDER) + ord(ch) - ord("a")
+    return 100 + ord(ch)
+
+
+def compare_text(a, b):
+    """CompareText (section 9.3): -1, 0 or 1 in three passes over the case-folded
+    code points. Pass 1 skips the apostrophes and hyphens and ranks the rest;
+    pass 2 takes the text with fewer apostrophes and hyphens as the smaller; pass 3
+    compares the folded code points by value. Texts equal after folding tie."""
+    fa, fb = fold(a), fold(b)
+    ka = [text_rank(ch) for ch in fa if ch not in "'-"]
+    kb = [text_rank(ch) for ch in fb if ch not in "'-"]
+    if ka != kb:
+        return -1 if ka < kb else 1
+    na = sum(1 for ch in fa if ch in "'-")
+    nb = sum(1 for ch in fb if ch in "'-")
+    if na != nb:
+        return -1 if na < nb else 1
+    ca, cb = [ord(ch) for ch in fa], [ord(ch) for ch in fb]
+    return (ca > cb) - (ca < cb)
+
+
 def compare(a, b):
     """-1, 0 or 1 by section 9.3; None when the kinds differ and are unordered equal."""
     if a is BLANK and b is BLANK:
@@ -1007,7 +1138,7 @@ def compare(a, b):
     if ra == 0:
         a, b = dec15(a), dec15(b)
     elif ra == 1:
-        a, b = [ord(ch) for ch in fold(a)], [ord(ch) for ch in fold(b)]
+        return compare_text(a, b)
     return (a > b) - (a < b)
 
 
@@ -1097,16 +1228,15 @@ def criterion(c):
     else:
         # after = and <> the text is a pattern; after < and > it is compared
         rx = pattern_regex(operand) if op in ("=", "<>") else None
-        key = [ord(ch) for ch in fold(operand)]
 
         def eq(v):
             return isinstance(v, str) and rx.fullmatch(fold(v)) is not None
 
         def rel(v):
+            # text after < <= > >= is compared by CompareText (section 9.3)
             if not isinstance(v, str):
                 return None
-            k = [ord(ch) for ch in fold(v)]
-            return (k > key) - (k < key)
+            return compare_text(v, operand)
 
     def pred(v):
         if isinstance(v, XErr):
@@ -1316,6 +1446,8 @@ class Evaluator:
             raise XErr("#NUM!")
         if base == 1:
             raise XErr("#DIV/0!")
+        if base == 10:
+            return math.log10(x)     # exact for the powers of ten, which full precision CSV shows
         return math.log(x) / math.log(base)
 
     def f_LN(self, a):
@@ -1933,8 +2065,10 @@ class Evaluator:
 
     # ---- date and time
     def day_number(self, node):
+        """The day of a date or time argument: before day 0 and from day 2,958,466
+        on it is #NUM! (section 9.4)."""
         x = self.num(node)
-        if x < 0:
+        if x < 0 or math.floor(x) > LAST_DAY:
             raise XErr("#NUM!")
         return int(math.floor(x))
 
@@ -1946,7 +2080,7 @@ class Evaluator:
         y += (m - 1) // 12
         m = (m - 1) % 12 + 1
         s = serial_of(y, m, 1) + d - 1
-        if s < 0:
+        if s < 0 or s > LAST_DAY:
             raise XErr("#NUM!")
         return s
 
@@ -1963,8 +2097,8 @@ class Evaluator:
         return float(civil_of(self.day_number(a[0]))[2])
 
     def f_DAYS(self, a):
-        end, start = self.num(a[0]), self.num(a[1])
-        return float(math.floor(end) - math.floor(start))
+        end, start = self.day_number(a[0]), self.day_number(a[1])
+        return float(end - start)
 
     def f_WEEKDAY(self, a):
         s = self.day_number(a[0])
@@ -1984,7 +2118,7 @@ class Evaluator:
         y, m = total // 12, total % 12 + 1
         last = month_len(y, m)
         s = serial_of(y, m, last if to_end else min(d, last))
-        if s < 0:
+        if s < 0 or s > LAST_DAY:
             raise XErr("#NUM!")
         return float(s)
 
@@ -2022,7 +2156,7 @@ class Evaluator:
 
     def seconds_of(self, node):
         x = self.num(node)
-        if x < 0:
+        if x < 0 or math.floor(x) > LAST_DAY:
             raise XErr("#NUM!")
         return split_day_time(x)[1]
 
@@ -2084,13 +2218,13 @@ def compute(row):
         y, m, d = (int(p) for p in row["date"].split("-"))
         v, date_result = evaluate_formula(row, row["formula"], serial_of(y, m, d))
         shown = shown_of(v, row["format"], date_result)
-        return json_value(v), shown, csv_field(shown), None
-    kind, value, sets = read_typed(row["typed"])
+        return json_value(v), shown, csv_value(v, row["format"], date_result), None
+    kind, value, sets = read_typed(row["typed"], entry=True)
     if kind == "formula":
         y, m, d = (int(p) for p in TYPED_DATE.split("-"))
         v, date_result = evaluate_formula({"cells": {}}, value, serial_of(y, m, d))
         shown = shown_of(v, None, date_result)
-        return json_value(v), shown, csv_field(shown), None
+        return json_value(v), shown, csv_value(v, None, date_result), None
     shown = show(value, sets)
     if kind == "date":
         jv = {"date": date_text(int(value), "yyyy-mm-dd")}
@@ -2103,7 +2237,7 @@ def compute(row):
         jv = "'" + value                  # a read returns such text with one more apostrophe
     else:
         jv = value
-    return jv, shown, csv_field(shown), sets
+    return jv, shown, csv_value(value, sets, False), sets
 
 
 def agree_15(want, got):
@@ -2117,6 +2251,62 @@ def same_value(want, got):
     if isinstance(want, (int, float)) and isinstance(got, (int, float)):
         return agree_15(want, got)        # the comparison of the contract (section 9.6)
     return type(want) == type(got) and want == got
+
+
+# ---------------------------------------------------------------- export fixture (rule 60)
+
+EXPORT_DIR = os.path.normpath(os.path.join(HERE, "..", "export"))
+CONTENT_FORMATS = {
+    "date": DATE_FORMAT,
+    "time": {"kind": "time", "pattern": "hh:mm:ss"},
+    "datetime": {"kind": "datetime", "date": "yyyy-mm-dd", "time": "hh:mm:ss"},
+}
+
+
+def export_bytes():
+    """The CSV bytes of export/cells.json without the byte order mark, and the field
+    of each cell by address. The used range runs from A1 to the last filled row and
+    column, and each row ends with CR LF (rule 60, section 9.5). A date, time or
+    date and time content without a format of its own takes the format of its kind."""
+    with open(os.path.join(EXPORT_DIR, "cells.json"), encoding="utf-8") as f:
+        spec = json.load(f, object_pairs_hook=lambda pairs: dict(pairs))
+    y, m, d = (int(p) for p in spec["date"].split("-"))
+    cells_json, formats, width = {}, {}, 0
+    for r, row in enumerate(spec["rows"], 1):
+        width = max(width, len(row))
+        for c, v in enumerate(row, 1):
+            if v is not None:
+                cells_json[chr(64 + c) + str(r)] = v
+    for item in spec["formats"]:
+        if not re.match(r"^[A-Z]{1,2}\d+$", item["range"]):
+            raise Unsupported("format range " + item["range"])
+        formats[item["range"]] = item["format"]["number"]
+    sheet = Sheet(cells_json, None, None, DEFAULT_AT, serial_of(y, m, d))
+    fields, lines = {}, []
+    for r in range(1, len(spec["rows"]) + 1):
+        out = []
+        for c in range(1, width + 1):
+            addr = chr(64 + c) + str(r)
+            cell = sheet.tabs[sheet.home].cells.get((r, c))
+            nf = formats.get(addr)
+            if cell is None:
+                text = ""
+            elif cell.kind == "formula":
+                try:
+                    v = sheet.cell_value(sheet.home, r, c)
+                except XErr as e:
+                    v = e
+                ast = cell.ast
+                date_result = bool(ast) and ast[0] == "call" and ast[1] in DATE_RESULT
+                text = csv_value(v, nf, date_result)
+            else:
+                if cell.kind in CONTENT_FORMATS and not (nf and nf["kind"] == cell.kind):
+                    nf = CONTENT_FORMATS[cell.kind]
+                text = csv_value(cell.value, nf, False)
+            fields[addr] = text
+            out.append(text)
+        lines.append(",".join(out) + "\r\n")
+    return "".join(lines).encode("utf-8"), fields
 
 
 # ---------------------------------------------------------------- files
@@ -2243,6 +2433,23 @@ def main():
         if without:
             remarks.append("functions without a %s case: %s" % (cls, ", ".join(without)))
 
+    export_cells, export_diffs = 0, []
+    try:
+        data, fields = export_bytes()
+        export_cells = len(fields)
+        with open(os.path.join(EXPORT_DIR, "expected.csv"), "rb") as f:
+            want = f.read()
+        if data != want:
+            got_lines = data.decode("utf-8").split("\r\n")
+            want_lines = want.decode("utf-8", "replace").split("\r\n")
+            diffs = ["line %d: fixture %r, checker %r" % (i + 1, a, b)
+                     for i, (a, b) in enumerate(zip(want_lines, got_lines)) if a != b]
+            if len(want_lines) != len(got_lines):
+                diffs.append("%d lines in the fixture, %d from the checker" % (len(want_lines), len(got_lines)))
+            export_diffs.append(("export", "export/expected.csv", diffs[:50]))
+    except (Unsupported, OSError, ValueError, KeyError, RecursionError) as e:
+        problems.append("export fixture: %s" % e)
+
     print("Sheet function reference table check")
     print("  Python %s, Unicode %s" % (sys.version.split()[0], unicodedata.unidata_version))
     for name in names:
@@ -2251,6 +2458,7 @@ def main():
     print("  rows cross-checked    %5d" % checked)
     print("  rows in agreement     %5d" % (checked - len(mismatches)))
     print("  rows not cross-checked %4d" % len(unchecked))
+    print("  export fixture cells  %4d" % export_cells)
     print("  functions of rule 12 with %d rows or more: %d of %d" %
           (MIN_ROWS_PER_FUNCTION,
            sum(1 for fn in FN_FILE if per_fn.get(fn, 0) >= MIN_ROWS_PER_FUNCTION), len(FN_FILE)))
@@ -2260,13 +2468,13 @@ def main():
         print("  not checked: %s: %s" % (rid, reason))
     for p in problems:
         print("  PROBLEM: " + p)
-    for rid, formula, diffs in mismatches:
+    for rid, formula, diffs in mismatches + export_diffs:
         print("  MISMATCH %s  %s" % (rid, formula))
         for d in diffs:
             print("      " + d)
-    ok = not problems and not mismatches and not unchecked
+    ok = not problems and not mismatches and not export_diffs and not unchecked
     print("RESULT: " + ("OK" if ok else "FAILED (%d mismatches, %d rows not checked, %d problems)"
-                        % (len(mismatches), len(unchecked), len(problems))))
+                        % (len(mismatches) + len(export_diffs), len(unchecked), len(problems))))
     return 0 if ok else 1
 
 
