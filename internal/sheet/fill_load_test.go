@@ -19,20 +19,28 @@ import (
 // it shows was typed, and its content is that typed content, bit for bit.
 // So a filled time equals, and sorts with, the typed time it shows.
 func TestFillOpsF06(t *testing.T) {
-	sources := []struct {
-		texts []string
-		n     int // the target cells down, and again up
-	}{
-		{[]string{"22:00"}, 3},
-		{[]string{"09:00", "09:20"}, 4},
-		{[]string{"1900-01-01"}, 2}, // no series up: it is copied
-		{[]string{"2026-03-15 08:00", "2026-03-15 08:20"}, 4},
-		{[]string{"1900-01-25 19:29:37", "1900-01-25 19:49:37"}, 4},
-		{[]string{"23:00", "23:30"}, 4}, // a series of times past midnight
-		{[]string{"00:30", "01:00"}, 4}, // and up past midnight
-		{[]string{"2026-03-15 23:20", "2026-03-15 23:40"}, 4},
-		{[]string{"2026-03-15"}, 3},
-		{[]string{"9999-12-30"}, 2}, // F-02: no series past 9999-12-31
+	// Each source is filled down and up over as many cells as down names:
+	// down is what they show from the source on, and up from row 1.
+	sources := []struct{ texts, down, up []string }{
+		{[]string{"22:00"}, []string{"23:00", "00:00", "01:00"}, []string{"19:00", "20:00", "21:00"}},
+		{[]string{"09:00", "09:20"}, []string{"09:40", "10:00", "10:20", "10:40"}, []string{"07:40", "08:00", "08:20", "08:40"}},
+		// No series up from the first date: the line is copied.
+		{[]string{"1900-01-01"}, []string{"1900-01-02", "1900-01-03"}, []string{"1900-01-01", "1900-01-01"}},
+		{[]string{"2026-03-15 08:00", "2026-03-15 08:20"},
+			[]string{"2026-03-15 08:40", "2026-03-15 09:00", "2026-03-15 09:20", "2026-03-15 09:40"},
+			[]string{"2026-03-15 06:40", "2026-03-15 07:00", "2026-03-15 07:20", "2026-03-15 07:40"}},
+		{[]string{"1900-01-25 19:29:37", "1900-01-25 19:49:37"},
+			[]string{"1900-01-25 20:09:37", "1900-01-25 20:29:37", "1900-01-25 20:49:37", "1900-01-25 21:09:37"},
+			[]string{"1900-01-25 18:09:37", "1900-01-25 18:29:37", "1900-01-25 18:49:37", "1900-01-25 19:09:37"}},
+		// Series of times past midnight, down and up.
+		{[]string{"23:00", "23:30"}, []string{"00:00", "00:30", "01:00", "01:30"}, []string{"21:00", "21:30", "22:00", "22:30"}},
+		{[]string{"00:30", "01:00"}, []string{"01:30", "02:00", "02:30", "03:00"}, []string{"22:30", "23:00", "23:30", "00:00"}},
+		{[]string{"2026-03-15 23:20", "2026-03-15 23:40"},
+			[]string{"2026-03-16 00:00", "2026-03-16 00:20", "2026-03-16 00:40", "2026-03-16 01:00"},
+			[]string{"2026-03-15 22:00", "2026-03-15 22:20", "2026-03-15 22:40", "2026-03-15 23:00"}},
+		{[]string{"2026-03-15"}, []string{"2026-03-16", "2026-03-17", "2026-03-18"}, []string{"2026-03-12", "2026-03-13", "2026-03-14"}},
+		// F-02: no series down past 9999-12-31.
+		{[]string{"9999-12-30"}, []string{"9999-12-30", "9999-12-30"}, []string{"9999-12-28", "9999-12-29"}},
 	}
 	// Each source fills one column down from its top and one column up to
 	// row 1. The typed copy of a filled cell is typedRows below it, and a
@@ -55,7 +63,7 @@ func TestFillOpsF06(t *testing.T) {
 			var timeCols []int
 			lastRow := 0
 			for i, src := range sources {
-				m, n := len(src.texts), src.n
+				m, n := len(src.texts), len(src.down)
 				down, up := 2*i, 2*i+1
 				if typed, _ := formula.ParseTyped(src.texts[0]); typed.Kind == formula.ContentTime {
 					timeCols = append(timeCols, down, up)
@@ -75,6 +83,14 @@ func TestFillOpsF06(t *testing.T) {
 				}
 				for k := 1; k <= n; k++ {
 					filled = append(filled, cellRef{down, m + k}, cellRef{up, k})
+					for _, c := range []struct {
+						at   cellRef
+						want string
+					}{{cellRef{down, m + k}, src.down[k-1]}, {cellRef{up, k}, src.up[k-1]}} {
+						if got := e.shown(addr(c.at)); got != c.want {
+							t.Errorf("%s filled from %q shows %q, want %q", addr(c.at), src.texts, got, c.want)
+						}
+					}
 				}
 				lastRow = max(lastRow, m+n)
 			}
