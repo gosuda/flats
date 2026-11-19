@@ -237,7 +237,7 @@ export class App {
     this.badge = h('span', { class: 'badge', text: 'Public · read-only', hidden: true });
     this.facesEl = h('span', { class: 'faces-slot' });
     this.findBtn = h('button', { type: 'button', class: 'btn', 'aria-label': 'Find in this tab (Ctrl or Cmd+F)', title: 'Find in this tab (Ctrl or Cmd+F)', onclick: () => this.find.show() }, icon('find'), h('span', { class: 'hide-s', text: 'Find' }));
-    this.csvBtn = h('button', { type: 'button', class: 'btn', 'aria-label': 'Download this tab as CSV', title: 'Download this tab as a CSV file of its shown values', onclick: () => this.downloadCSV() }, icon('download'), h('span', { class: 'hide-s', text: 'CSV' }));
+    this.csvBtn = h('button', { type: 'button', class: 'btn', 'aria-label': 'Download this tab as CSV', title: 'Download this tab as a CSV file', onclick: () => this.downloadCSV() }, icon('download'), h('span', { class: 'hide-s', text: 'CSV' }));
     this.histBtn = h('button', { type: 'button', class: 'btn', 'aria-pressed': 'false', 'aria-label': 'History: revisions, tab recovery, rollback', title: 'History: revisions, tab recovery, rollback', onclick: () => this.toggleHistory() }, icon('history'), h('span', { class: 'hide-s', text: 'History' }));
     this.keysBtn = h('button', { type: 'button', class: 'btn', 'aria-haspopup': 'dialog', 'aria-label': `Keyboard paths. ${GRID_KEYS}`, title: 'Keyboard paths', onclick: (e) => this.#keysDialog(e.currentTarget) }, icon('keys'), h('span', { class: 'hide-s', text: 'F6: next region' }));
     this.top = h('header', { class: 'top' }, h('span', { class: 'kind' }, icon('sheet'), h('span', { text: 'Sheet' })), this.titleEl, this.badge, h('span', { class: 'grow' }),
@@ -1278,7 +1278,7 @@ export class App {
     this.root.appendChild(a);
     a.click();
     a.remove();
-    this.notices.show({ id: 'csv', kind: 'ok', text: `Downloading “${t.name}.csv”: the shown values of this tab, one field per cell, up to the last filled cell.` });
+    this.notices.show({ id: 'csv', kind: 'ok', text: `Downloading “${t.name}.csv”: a CSV file of this tab, one field per cell, up to the last filled cell.` });
   }
 
   // ---- keyboard ----
