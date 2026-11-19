@@ -139,6 +139,7 @@ func TestFillOpsF06(t *testing.T) {
 				data, _ := json.Marshal(firstCell(out))
 				return string(data)
 			}
+			csv := func(at string) any { return e.read(ReadQuery{Tab: "Sheet1", Range: at, Format: "csv"})["csv"] }
 			for _, c := range filled {
 				a, typed := addr(c), addr(below(c, typedRows))
 				if got := e.shown(a); got != shown[c] {
@@ -163,7 +164,6 @@ func TestFillOpsF06(t *testing.T) {
 				if want := value(e.read(ReadQuery{Tab: "Sheet1", Range: typed})); live != want || live == "null" {
 					t.Errorf("get_sheet reads %s as %s and the typed %s as %s", a, live, typed, want)
 				}
-				csv := func(at string) any { return e.read(ReadQuery{Tab: "Sheet1", Range: at, Format: "csv"})["csv"] }
 				if got, want := csv(a), csv(typed); got != want || got == "" {
 					t.Errorf("the CSV writes %s as %q and the typed %s as %q", a, got, typed, want)
 				}

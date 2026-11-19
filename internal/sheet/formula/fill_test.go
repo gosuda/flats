@@ -23,12 +23,6 @@ func typedC(s string) Content {
 	return c
 }
 
-// isDateKind reports whether a content of kind k is a date, a time or a
-// date with time.
-func isDateKind(k ContentKind) bool {
-	return k == ContentDate || k == ContentTime || k == ContentDateTime
-}
-
 // sameAsTyped reports whether a content of a series is, bit for bit, the
 // content that typed entry gives for the text it shows.
 func sameAsTyped(c Content, text string) bool {
@@ -194,14 +188,16 @@ func TestFillSeries(t *testing.T) {
 		if s := shownSeries(got); s != c.want {
 			t.Errorf("%s: %q, want %q", c.name, s, c.want)
 		}
+		// A date or a time is compared by its number, not by the text that
+		// shows it.
+		dated := c.kind == ContentDate || c.kind == ContentTime || c.kind == ContentDateTime
+		want := strings.Split(c.want, ", ")
 		for i, g := range got {
 			if g.Kind != c.kind {
 				t.Errorf("%s: a content of kind %d, want %d", c.name, g.Kind, c.kind)
 			}
-			// A date or a time is compared by its number, not by the text
-			// that shows it.
-			if text := strings.Split(c.want, ", ")[i]; isDateKind(c.kind) && !sameAsTyped(g, text) {
-				t.Errorf("%s: cell %d holds %v, and a typed %s holds %v", c.name, i, g.Num, text, typedC(text).Num)
+			if dated && !sameAsTyped(g, want[i]) {
+				t.Errorf("%s: cell %d holds %v, and a typed %s holds %v", c.name, i, g.Num, want[i], typedC(want[i]).Num)
 			}
 		}
 	}
@@ -233,11 +229,11 @@ func TestFillSeries(t *testing.T) {
 // shows. The sources start at every quarter hour of a day and fill ten
 // cells down and up.
 func TestFillSeriesWritesStoredContent(t *testing.T) {
+	clock := func(secs int) string {
+		secs %= daySeconds
+		return fmt.Sprintf("%02d:%02d:%02d", secs/3600, secs/60%60, secs%60)
+	}
 	for start := 0; start < daySeconds; start += 900 {
-		clock := func(secs int) string {
-			secs %= daySeconds
-			return fmt.Sprintf("%02d:%02d:%02d", secs/3600, secs/60%60, secs%60)
-		}
 		sources := [][]string{
 			{clock(start)},
 			{clock(start), clock(start + 3600)},

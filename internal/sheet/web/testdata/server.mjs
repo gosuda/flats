@@ -941,7 +941,7 @@ export class FakeServer {
       // applied. A fill names one tab, and its target.
       const dest = op.op === 'copy' ? op.to : { ...op.target, tab: op.tab };
       const to = this.tab(dest.tab);
-      if (!to || !this.tab(op.op === 'copy' ? op.from.tab : op.tab)) return { status: 'ignored', reason: 'gone' };
+      if (!to || (op.op === 'copy' && !this.tab(op.from.tab))) return { status: 'ignored', reason: 'gone' };
       let applied = 0;
       let ignored = 0;
       for (const row of targets(dest.rows, to.rows)) {
