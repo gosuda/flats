@@ -412,6 +412,7 @@ test('tabs are added, renamed in place and reordered from the menu and by draggi
   const input = list.querySelector('input');
   assert.equal(t.doc.activeElement, input);
   assert.equal(input.getAttribute('aria-label'), 'New name for tab Notes');
+  assert.equal(input.getAttribute('maxlength'), '62', 'room for 31 code points of two UTF-16 units');
   input.value = 'budget';
   fire(input, 'keydown', { key: 'Enter' });
   assert.match(notices(t)[0][1], /The name was not changed\. Another tab already has this name\./);
