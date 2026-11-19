@@ -56,10 +56,17 @@ test('Ctrl or Cmd+F opens the field, counts the matches and moves the selection 
 
 // T-03 (TECH 22.2): B2 and D2 hold xy, B5 holds x, and the active cell
 // is C2. Find starts from its anchor, steps from the active cell, and
-// keeps its anchor where the person last put the selection.
+// keeps its anchor where the person, or a reload of the tab, last put the
+// selection.
 const anchored = () => new FakeServer({ tabs: [{ id: 1, name: 'T', rows: 10, cols: 6, cells: { '1,1': 'xy', '1,3': 'xy', '4,1': 'x', '7,0': 'a*', '7,1': 'ab', '8,0': 'οδοσ' } }] });
 const click = (t, r, c) => { const ev = { preventDefault() {}, clientX: 0, clientY: 0, button: 0 }; t.grid.h.down({ zone: 'cell', r, c }, ev); t.grid.h.up(ev); };
 const at = (t) => { const a = t.sel.active(); return `${String.fromCharCode(65 + a.c)}${a.r + 1}`; };
+// reload loads the tab again the way a resync and its snapshot do (apply.test.mjs).
+const reload = (t) => {
+  const generation = t.net.generation + 1;
+  t.server.socket.recv({ type: 'resync', generation, seq: String(t.server.seq), date: t.server.date, tabs: t.server.tabInfo() });
+  t.server.snapshot(t.server.socket, generation, 1);
+};
 
 test('T-03: Find starts at its anchor, steps from the active cell and keeps the anchor the person set', async () => {
   const t = await startApp({ server: anchored() });
@@ -84,6 +91,17 @@ test('T-03: Find starts at its anchor, steps from the active cell and keeps the 
   search(t, 'xyz');
   assert.equal(at(t), 'B2', 'with no match the selection stays');
   assert.equal(f.count.textContent, 'No matches');
+  // clear the text, then reload the tab with the selection restored to D2:
+  // the reload keeps the selection the tab has, so D2 is put back first
+  search(t, '');
+  t.sel.set(1, 3);
+  reload(t);
+  assert.equal(t.model.stale, false, 'the snapshot loaded the tab again');
+  assert.equal(at(t), 'D2', 'the reload keeps the selection at D2');
+  fire(t.grid.input, 'keydown', { key: 'f', ctrlKey: true });
+  search(t, 'x');
+  assert.equal(at(t), 'D2', 'after the reload, x selects D2, the first match at the restored anchor');
+  assert.equal(f.count.textContent, '2 of 3');
   // *, ? and ~ are plain characters, and capitals are ignored by toLowerCase.
   assert.deepEqual(findMatches(t.model, 'a*'), [{ r: 7, c: 0 }]);
   search(t, 'a*');
