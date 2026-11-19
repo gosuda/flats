@@ -386,7 +386,7 @@ func (s *Service) requestVisibility(ctx context.Context, slugName string, vis st
 		} else if existing, err := s.st.FindOpenApprovalByKey(ctx, key); err == nil && existing.Flat == slugName {
 			res := ActionResult{Status: "pending_approval", Approval: &existing, ApprovalURL: s.ApprovalURL(ctx, existing.ID),
 				Message: "This action is already waiting for the operator. Nothing changes until they approve it in the web console."}
-			res.Notice = pendingVisibilityNotice(vis, access, t)
+			res.Notice = pendingVisibilityNotice(vis, access, t, f.SignInProvider != "")
 			return res, nil
 		} else if err != nil && !errors.Is(err, store.ErrNotFound) {
 			return ActionResult{}, err
@@ -396,18 +396,18 @@ func (s *Service) requestVisibility(ctx context.Context, slugName string, vis st
 	if err != nil {
 		return ActionResult{}, err
 	}
-	res.Notice = pendingVisibilityNotice(vis, access, t)
+	res.Notice = pendingVisibilityNotice(vis, access, t, f.SignInProvider != "")
 	return res, nil
 }
 
 // pendingVisibilityNotice is the notice of a pending visibility request
-// for a flat of type t.
-func pendingVisibilityNotice(vis store.Visibility, access, t string) string {
+// for a flat of type t, which has sign-in on when signIn is true.
+func pendingVisibilityNotice(vis store.Visibility, access, t string, signIn bool) string {
 	switch {
 	case access == store.AccessEdit:
-		return PendingPublicEditNoticeFor(t)
+		return PendingPublicNotice(t, store.AccessEdit, signIn)
 	case vis.Public():
-		return PendingPublicAccessNotice
+		return PendingPublicNotice(t, store.AccessView, signIn)
 	}
 	return ""
 }

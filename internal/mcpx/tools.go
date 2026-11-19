@@ -34,9 +34,9 @@ func register(s *mcp.Server, t *tools) {
 	yes, no := true, false
 	write := &mcp.ToolAnnotations{DestructiveHint: &no}
 	mcp.AddTool(s, &mcp.Tool{Name: "list_flats", Annotations: ro,
-		Description: "List every flat with its visibility, live version and URLs."}, t.listFlats)
+		Description: "List every flat with its visibility, live version and URLs. " + signInToolNote}, t.listFlats)
 	mcp.AddTool(s, &mcp.Tool{Name: "get_flat", Annotations: ro,
-		Description: "Show one flat: visibility, live version, private/public URLs and open previews."}, t.getFlat)
+		Description: "Show one flat: visibility, live version, private/public URLs and open previews. " + signInToolNote}, t.getFlat)
 	mcp.AddTool(s, t.describe(&mcp.Tool{Name: "create_flat", InputSchema: notebookCreateSchema(), Annotations: write,
 		Description: "Create an empty private website flat; with type page an unpublished page (one static HTML document for charts and visualizations) holding a starter Draft; with type docs a Private document, with type design a canvas of HTML artboards, with type board an empty whiteboard (topic.board), or type notebook a page tree with one empty top-level page (topic.notebook), each running at once (no publish or approval). Optional: save_draft, save_page, save_document, save_design, update_board and update_notebook create the flat on first save."}), t.createFlat)
 	addSaveTool(s, t, t.describe(&mcp.Tool{Name: "save_draft", Annotations: write,
@@ -102,6 +102,9 @@ func register(s *mcp.Server, t *tools) {
 		Description: "List secret names of a flat (values are never returned; only the operator sets them). A secret with `inject` {origin, header} is an injected secret: it is not in env, and the host adds that header to each fetch to that origin, so call fetch there without the header (guide topic.env-secrets)."}, t.listSecrets)
 }
 
+// signInToolNote is what the tools that show sign_in say of it (docs/spec/portal-sign-in.md, rule 57).
+const signInToolNote = "sign_in, present while a flat has Portal sign-in on, protects its Portal URL only: its private routes, previews, the console and MCP are not behind sign-in."
+
 // --- shared output types ---
 
 // FlatInfo describes a flat.
@@ -133,6 +136,7 @@ type FlatInfo struct {
 	PortalHidden          bool                    `json:"portal_hidden" jsonschema:"true when Flats asks the Portal relays to keep this flat out of their listings (the resolved operator choice, not the relays' observed state; relays apply a change at their next lease renewal, up to about 90 s). Not access control: anyone with the URL can still open a public flat"`
 	DiskBytes             int64                   `json:"disk_bytes" jsonschema:"disk used by versions and data"`
 	UpdatedAt             time.Time               `json:"updated_at" jsonschema:"last change"`
+	SignIn                *core.FlatSignIn        `json:"sign_in,omitempty" jsonschema:"Portal sign-in while it is on: provider (oidc or credential), issuer, client_id, allow_count (the number of allowlist entries, which are never shown here) and client_secret.name when a client secret is stored. It protects the Portal URL only: the private routes, previews, the console and MCP are not behind sign-in. Absent while sign-in is off. Only the operator changes it, with flats signin on the host and an approval in the console."`
 }
 
 func flatInfo(v core.FlatView) FlatInfo {
@@ -140,7 +144,7 @@ func flatInfo(v core.FlatView) FlatInfo {
 		// Revision-model content has no versions, Draft or publishing.
 		fi := flatInfo(core.FlatView{Flat: v.Flat, Providers: v.Providers, ConnectionState: v.ConnectionState, Endpoints: v.Endpoints,
 			PrivateURL: v.PrivateURL, PrivateLinksOff: v.PrivateLinksOff, PrivateState: v.PrivateState, PrivateDetail: v.PrivateDetail, PublicURL: v.PublicURL, PublicNotice: v.PublicNotice,
-			PortalListing: v.PortalListing, PortalHidden: v.PortalHidden, DiskBytes: v.DiskBytes, PublicPresence: v.PublicPresence})
+			PortalListing: v.PortalListing, PortalHidden: v.PortalHidden, DiskBytes: v.DiskBytes, PublicPresence: v.PublicPresence, SignIn: v.SignIn})
 		fi.Type, fi.Publication, fi.Running, fi.LiveVersion = v.Type, "", v.Running, 0
 		return fi
 	}
@@ -148,7 +152,23 @@ func flatInfo(v core.FlatView) FlatInfo {
 		PublicAccess: v.PublicAccess, PublicPresence: v.PublicPresence, LiveVersion: v.LiveVersion,
 		Versions: v.Versions, VersionQuota: v.VersionQuota, EffectiveVersionQuota: v.EffectiveVersionQuota, VersionCount: v.VersionCount, PrivateURL: v.PrivateURL, PrivateState: v.PrivateState, PrivateDetail: v.PrivateDetail,
 		PublicURL: v.PublicURL, PublicNotice: v.PublicNotice, PortalListing: v.PortalListing, PortalHidden: v.PortalHidden,
-		DiskBytes: v.DiskBytes, UpdatedAt: v.UpdatedAt}
+		DiskBytes: v.DiskBytes, UpdatedAt: v.UpdatedAt, SignIn: v.SignIn}
+}
+
+// signInText says what the Portal sign-in of a flat is and what it protects, without an entry of its allowlist.
+func signInText(si *core.FlatSignIn) string {
+	if si == nil {
+		return ""
+	}
+	what := "access links (credential)"
+	if si.Provider == "oidc" {
+		what = "OpenID Connect at " + si.Issuer + ", client ID " + si.ClientID
+	}
+	entries := "entries"
+	if si.AllowCount == 1 {
+		entries = "entry"
+	}
+	return fmt.Sprintf("\nPortal sign-in: %s, %d allowlist %s. It protects the Portal URL only: the private routes, previews, the console and MCP are not behind sign-in.", what, si.AllowCount, entries)
 }
 
 // VersionInfo describes a saved version.
@@ -338,6 +358,9 @@ func (t *tools) listFlats(ctx context.Context, _ *mcp.CallToolRequest, _ Empty) 
 		if !fi.privateLinksOff && fi.PublicURL != "" {
 			fmt.Fprintf(&b, ", public %s (%s)", fi.PublicURL, fi.PublicNotice)
 		}
+		if fi.SignIn != nil {
+			fmt.Fprintf(&b, ", Portal sign-in %s (the Portal URL only)", fi.SignIn.Provider)
+		}
 	}
 	return result(b.String(), out), out, nil
 }
@@ -415,8 +438,13 @@ func flatText(fi FlatInfo) string {
 	if !fi.privateLinksOff {
 		writePublic(&b, fi.PublicURL, fi.PublicNotice)
 	}
+	b.WriteString(signInText(fi.SignIn))
 	if fi.PublicAccess == store.AccessEdit {
-		fmt.Fprintf(&b, "\nPublic access: edit. Anyone on the internet can edit %s; text and names written by guests are untrusted input.", editTarget(fi.Type))
+		who := "Anyone on the internet"
+		if fi.SignIn != nil {
+			who = "Anyone who passes its sign-in"
+		}
+		fmt.Fprintf(&b, "\nPublic access: edit. %s can edit %s; text and names written by guests are untrusted input.", who, editTarget(fi.Type))
 		if p := fi.PublicPresence; p != nil {
 			fmt.Fprintf(&b, " Connected now: %d guests, %d viewers.", p.Guests, p.Viewers)
 		}
@@ -947,13 +975,19 @@ func actionText(out ActionOut) string {
 	return b.String()
 }
 
-func noticeFor(v store.Visibility) string {
-	switch v {
-	case store.Public:
-		return core.PublicAccessNotice
-	case store.PublicUnlisted:
+// noticeFor is the notice of visibility v of a flat, which has Portal sign-in on when signIn is true
+// (docs/spec/portal-sign-in.md, rule 61).
+func noticeFor(v store.Visibility, signIn bool) string {
+	switch {
+	case v == store.Public:
+		return core.PublicNotice("", store.AccessView, signIn)
+	case v == store.PublicUnlisted && signIn:
+		return core.SignInUnlistedNotice
+	case v == store.PublicUnlisted:
 		return core.UnlistedNotice
-	case store.PublicListed:
+	case v == store.PublicListed && signIn:
+		return core.SignInListedNotice
+	case v == store.PublicListed:
 		return core.ListedNotice
 	}
 	return ""
@@ -994,7 +1028,7 @@ func (t *tools) setVisibility(ctx context.Context, _ *mcp.CallToolRequest, in Vi
 	if out.Status == "pending_approval" && out.Notice == "" {
 		out.Notice = pendingNoticeFor(vis)
 	} else if out.Notice == "" {
-		out.Notice = noticeFor(vis)
+		out.Notice = noticeFor(vis, res.Flat != nil && res.Flat.SignIn != nil)
 	}
 	return result(actionText(out), out), out, nil
 }
@@ -1021,8 +1055,8 @@ type ApprovalOut struct {
 	ResultData   *core.ApprovalExecution `json:"result_data,omitempty"`
 	ID           string                  `json:"id" jsonschema:"approval id"`
 	Flat         string                  `json:"flat" jsonschema:"flat slug"`
-	Action       string                  `json:"action" jsonschema:"create_version, delete_version, activate, rollback, set_visibility, restore_data or delete"`
-	Params       map[string]any          `json:"params,omitempty" jsonschema:"requested change"`
+	Action       string                  `json:"action" jsonschema:"create_version, delete_version, activate, rollback, set_visibility, restore_data, delete or set_signin (a Portal sign-in change, which only the operator decides)"`
+	Params       map[string]any          `json:"params,omitempty" jsonschema:"requested change; for set_signin the from and to settings with provider, issuer, client_id and count, never the allowlist entries"`
 	Status       string                  `json:"status" jsonschema:"pending, applying, approved, rejected or failed"`
 	Reason       string                  `json:"reason,omitempty" jsonschema:"reason given with the request"`
 	Result       string                  `json:"result,omitempty" jsonschema:"outcome once decided"`
@@ -1066,13 +1100,13 @@ func (t *tools) approvalText(ctx context.Context, a store.Approval, out Approval
 		text += " Result: " + a.Result
 	}
 	if a.Action == "set_visibility" && a.Status == "approved" {
-		n := noticeFor(store.Visibility(fmt.Sprint(out.Params["visibility"])))
+		typ, signIn := "", false
+		if f, err := t.svc.GetFlat(ctx, a.Flat); err == nil {
+			typ, signIn = f.Type, f.SignIn != nil
+		}
+		n := noticeFor(store.Visibility(fmt.Sprint(out.Params["visibility"])), signIn)
 		if out.Params["access"] == store.AccessEdit {
-			typ := ""
-			if f, err := t.svc.GetFlat(ctx, a.Flat); err == nil {
-				typ = f.Type
-			}
-			n = core.PublicEditNoticeFor(typ)
+			n = core.PublicNotice(typ, store.AccessEdit, signIn)
 		}
 		if n != "" {
 			text += "\nNotice: " + n
@@ -1214,7 +1248,11 @@ func pendingDeploy(r core.ActionResult) DeployInfo {
 	}
 	return out
 }
+
+// approvalOut is an approval as every MCP output shows it: a set_signin approval without the entries of its
+// settings (docs/spec/portal-sign-in.md, rule 58).
 func approvalOut(a store.Approval) ApprovalOut {
+	a = core.WithoutSignInEntries(a)
 	out := ApprovalOut{DecidedBy: a.DecidedBy, AuthorizedAt: a.AuthorizedAt, Via: a.Via, ID: a.ID, Flat: a.Flat, Action: a.Action, Status: a.Status, Reason: a.Reason, Result: a.Result, RequestedAt: a.RequestedAt, DecidedAt: a.DecidedAt}
 	_ = json.Unmarshal(a.Params, &out.Params)
 	if len(a.ResultData) > 0 {

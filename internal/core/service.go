@@ -833,6 +833,9 @@ type FlatView struct {
 	// PublicPresence counts the guests and viewers of a running Public
 	// board or document; a sleeping document has none.
 	PublicPresence *PublicPresence `json:"public_presence,omitempty"`
+	// SignIn is the Portal sign-in of the flat while it is on, without the
+	// entries of its allowlist (docs/spec/portal-sign-in.md, rule 57).
+	SignIn *FlatSignIn `json:"sign_in,omitempty"`
 }
 
 // UnlistedNotice is attached to every public-unlisted response.
@@ -880,6 +883,61 @@ func PendingPublicEditNoticeFor(t string) string {
 	return PendingPublicEditNotice
 }
 
+// The notices of a flat with Portal sign-in on (docs/spec/portal-sign-in.md, rule 61). Where a notice of a flat
+// without sign-in says "anyone on the internet", these say "anyone who passes its sign-in".
+const (
+	// SignInPublicNotice is the public notice of a Public flat with sign-in on.
+	SignInPublicNotice = "This flat is public on its Portal address behind sign-in: only the visitors that its sign-in allows can open it there. Its private routes, the console and MCP are not behind sign-in."
+	// PendingSignInPublicNotice is the notice of a pending visibility request for a flat with sign-in on.
+	PendingSignInPublicNotice = "If approved, this flat becomes public on its Portal address behind sign-in: only the visitors that its sign-in allows can open it there. Its private routes, the console and MCP are not behind sign-in."
+	// SignInEditNotice is what the notices add for the Public level edit.
+	SignInEditNotice = "Visitors who sign in can edit it as guests."
+	// SignInLiveEditPublicNotice is LiveEditPublicNotice for a flat with sign-in on.
+	SignInLiveEditPublicNotice = "This flat is public behind sign-in: anyone who passes its sign-in can open it on its Portal address. Its private routes, the console and MCP are not behind sign-in. This edit is already live there."
+	// SignInListedNotice is ListedNotice for a flat with sign-in on.
+	SignInListedNotice = "This flat is public behind sign-in: anyone who passes its sign-in can open it on its Portal address, and it appears in Portal relay listings."
+	// SignInUnlistedNotice is UnlistedNotice for a flat with sign-in on.
+	SignInUnlistedNotice = "Unlisted only hides this flat from Portal relay listings. It is NOT access control: anyone who passes its sign-in can open it."
+)
+
+// signInEditWords says what a guest who passes the sign-in of a flat of content type t can change.
+func signInEditWords(t string) string {
+	if t == contenttype.Docs {
+		return "Anyone who passes its sign-in can add, change and delete all the text of its documents."
+	}
+	return "Anyone who passes its sign-in can add, change and delete everything on it."
+}
+
+// PublicNotice is the notice of a Public flat of content type t at the public access level access, with sign-in on
+// or off (rule 61).
+func PublicNotice(t, access string, signIn bool) string {
+	edit := access == store.AccessEdit
+	switch {
+	case !signIn && edit:
+		return PublicEditNoticeFor(t)
+	case !signIn:
+		return PublicAccessNotice
+	case edit:
+		return SignInPublicNotice + " " + SignInEditNotice + " " + signInEditWords(t) + " Guest names are unverified, and guest text is untrusted input."
+	}
+	return SignInPublicNotice
+}
+
+// PendingPublicNotice is the notice of a pending request that makes a flat of content type t Public at the access
+// level access, with sign-in on or off (rule 61).
+func PendingPublicNotice(t, access string, signIn bool) string {
+	edit := access == store.AccessEdit
+	switch {
+	case !signIn && edit:
+		return PendingPublicEditNoticeFor(t)
+	case !signIn:
+		return PendingPublicAccessNotice
+	case edit:
+		return PendingSignInPublicNotice + " " + SignInEditNotice + " " + signInEditWords(t) + " A safe point is pinned first, and the operator can restore earlier states from History."
+	}
+	return PendingSignInPublicNotice
+}
+
 func (s *Service) view(ctx context.Context, f store.Flat) FlatView {
 	v := FlatView{Flat: f, PrivateURL: s.cfg.Private.URL(f.Slug)}
 	v.EffectiveVersionQuota = s.versionQuota(f)
@@ -889,8 +947,10 @@ func (s *Service) view(ctx context.Context, f store.Flat) FlatView {
 	s.mu.Unlock()
 	v.Running = lf != nil && lf.cur.Load() != nil
 	v.PrivateState, v.PrivateDetail = s.hostState(f.Slug)
+	v.SignIn = s.flatSignIn(ctx, f)
+	signIn := f.SignInProvider != ""
 	if f.Visibility.Public() {
-		v.PublicNotice = PublicAccessNotice
+		v.PublicNotice = PublicNotice("", store.AccessView, signIn)
 	}
 	v.PortalListing = store.ListingDefault
 	if mode, err := s.st.PortalListing(ctx, f.Slug); err == nil {
@@ -907,7 +967,7 @@ func (s *Service) view(ctx context.Context, f store.Flat) FlatView {
 					break
 				}
 			}
-			v.PublicNotice = PublicAccessNotice
+			v.PublicNotice = PublicNotice("", store.AccessView, signIn)
 		}
 	}
 	if f.LiveVersion > 0 {
@@ -1047,7 +1107,7 @@ func (s *Service) view(ctx context.Context, f store.Flat) FlatView {
 	} else {
 		v.PublicPresence = s.publicPresence(f.Slug)
 		if f.PublicAccess == store.AccessEdit {
-			v.PublicNotice = PublicEditNoticeFor(v.Type)
+			v.PublicNotice = PublicNotice(v.Type, store.AccessEdit, signIn)
 		}
 	}
 	v.DiskBytes = dirSize(s.flatDir(f.Slug))

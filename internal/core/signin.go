@@ -278,6 +278,71 @@ func SignInSummaryOf(in store.SignIn) SignInSummary {
 	return SignInSummary{Provider: in.Provider, Issuer: in.Issuer, ClientID: in.ClientID, Count: len(in.Allow)}
 }
 
+// signInParamsView is the frozen state of a set_signin approval without the entries of its settings (rule 58).
+type signInParamsView struct {
+	FlatID       string        `json:"flat_id"`
+	Seq          int64         `json:"seq"`
+	From         SignInSummary `json:"from"`
+	To           SignInSummary `json:"to"`
+	PublicGrants []string      `json:"public_grants"`
+}
+
+// WithoutSignInEntries returns a with the params of a set_signin approval in the counted form of rule 58: each setting
+// with its provider, issuer, client ID and number of entries. MCP and the routes of /api show an approval so; only
+// the console shows the entries. Params that cannot be read become {}, never the stored text. Another approval is
+// returned as it is.
+func WithoutSignInEntries(a store.Approval) store.Approval {
+	if a.Action != actionSetSignIn {
+		return a
+	}
+	var p signInParams
+	if err := json.Unmarshal(a.Params, &p); err != nil {
+		a.Params = json.RawMessage(`{}`)
+		return a
+	}
+	grants := p.PublicGrants
+	if grants == nil {
+		grants = []string{}
+	}
+	a.Params, _ = json.Marshal(signInParamsView{FlatID: p.FlatID, Seq: p.Seq, From: SignInSummaryOf(p.From), To: SignInSummaryOf(p.To), PublicGrants: grants})
+	return a
+}
+
+// FlatSignIn is the sign-in of a flat in the flat view while it is on (rule 57): the setting without the entries of
+// its allowlist, and the name of a stored client secret. It protects the Portal URL of the flat only.
+type FlatSignIn struct {
+	Provider     string            `json:"provider"`
+	Issuer       string            `json:"issuer"`
+	ClientID     string            `json:"client_id"`
+	AllowCount   int               `json:"allow_count"`
+	ClientSecret *FlatSignInSecret `json:"client_secret,omitempty"`
+}
+
+// FlatSignInSecret names the stored client secret of a sign-in, never its value.
+type FlatSignInSecret struct {
+	Name string `json:"name"`
+}
+
+// flatSignIn is the member sign_in of the view of f, nil while sign-in is off. A setting that cannot be read keeps its
+// provider, so that the view still says that sign-in is on.
+func (s *Service) flatSignIn(ctx context.Context, f store.Flat) *FlatSignIn {
+	if f.SignInProvider == "" {
+		return nil
+	}
+	st, err := s.st.GetSignIn(ctx, f.Slug)
+	switch {
+	case err != nil:
+		return &FlatSignIn{Provider: f.SignInProvider}
+	case !st.SignIn.On():
+		return nil
+	}
+	out := &FlatSignIn{Provider: st.SignIn.Provider, Issuer: st.SignIn.Issuer, ClientID: st.SignIn.ClientID, AllowCount: len(st.SignIn.Allow)}
+	if st.Secret != nil {
+		out.ClientSecret = &FlatSignInSecret{Name: store.SignInSecretName}
+	}
+	return out
+}
+
 // RequestSignIn requests a sign-in setting for a flat (rules 13 to 16). A request for the stored setting is done and
 // makes no approval. Every other one makes a pending set_signin approval and changes nothing. MCP cannot request a
 // change; the transports decide which other caller may.

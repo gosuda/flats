@@ -148,6 +148,10 @@ func (s *Server) Handler() http.Handler {
 		h("DELETE /flats/{slug}/secrets/{name}", s.deleteSecret)
 		h("GET /flats/{slug}/stats", s.stats)
 		h("GET /flats/{slug}/snapshots", s.snapshots)
+		h("GET /flats/{slug}/signin", s.getSignIn)
+		h("POST /flats/{slug}/signin", s.requestSignIn)
+		h("POST /flats/{slug}/signin/links", s.issueSignInLink)
+		h("POST /flats/{slug}/signin/revoke", s.revokeSignIn)
 		h("GET /approvals/{id}", s.getApproval)
 		h("GET /approvals", s.listApprovals)
 		if console {
@@ -190,6 +194,8 @@ func (s *Server) Handler() http.Handler {
 			h("POST /flats/{slug}/board/import", s.importBoard)
 			h("GET /flats/{slug}/notebook", s.getNotebook)
 			h("POST /flats/{slug}/notebook", s.updateNotebook)
+			h("PUT /flats/{slug}/signin/secret", s.putSignInSecret)
+			h("DELETE /flats/{slug}/signin/secret", s.deleteSignInSecret)
 		}
 	}
 	return mux
@@ -938,20 +944,31 @@ func (s *Server) snapshots(w http.ResponseWriter, r *http.Request, _ core.Via) {
 	writeJSON(w, 200, map[string]any{"snapshots": snaps, "note": "taken automatically before each deploy of a flat with a database; rollback with restore_data puts back the one taken before the current version"})
 }
 
-func (s *Server) getApproval(w http.ResponseWriter, r *http.Request, _ core.Via) {
+// getApproval and listApprovals show a set_signin approval to a caller of /api without the entries of its settings
+// (docs/spec/portal-sign-in.md, rule 58). The console keeps them: its approval page shows the added and the removed
+// entries (rule 64).
+func (s *Server) getApproval(w http.ResponseWriter, r *http.Request, via core.Via) {
 	a, err := s.Svc.GetApproval(r.Context(), r.PathValue("id"))
 	if err != nil {
 		fail(w, err)
 		return
 	}
+	if via != core.ViaConsole {
+		a = core.WithoutSignInEntries(a)
+	}
 	writeJSON(w, 200, a)
 }
 
-func (s *Server) listApprovals(w http.ResponseWriter, r *http.Request, _ core.Via) {
+func (s *Server) listApprovals(w http.ResponseWriter, r *http.Request, via core.Via) {
 	as, err := s.Svc.ListApprovals(r.Context(), r.URL.Query().Get("status"))
 	if err != nil {
 		fail(w, err)
 		return
+	}
+	if via != core.ViaConsole {
+		for i := range as {
+			as[i] = core.WithoutSignInEntries(as[i])
+		}
 	}
 	writeJSON(w, 200, map[string]any{"approvals": as})
 }

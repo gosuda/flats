@@ -602,7 +602,9 @@ func responseWithNotice(resp response, notice string) response {
 // action prints a result that may be waiting for approval (exit 3).
 func (a *app) action(resp response, res actionResult, requested string) error {
 	pending := res.Status == "pending_approval"
-	if pending && publicVisibility(requested) {
+	// A pending notice of the host says what approval would do, also for a flat with sign-in on
+	// (docs/spec/portal-sign-in.md, rule 61); an older host may send none or the notice of a flat that is Public now.
+	if pending && publicVisibility(requested) && !strings.HasPrefix(res.Notice, "If approved") {
 		res.Notice = pendingPublicNotice
 		resp = responseWithNotice(resp, res.Notice)
 	}
