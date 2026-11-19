@@ -433,6 +433,36 @@ closes what it opened, without creating a file, and only then leaves the
 gate. A refusal of such a database comes from the load, and checking the
 sheet does not read it.
 
+Without a `-wal`, `Open` itself checks the import cursor and refuses a
+store behind it. At a host start core then cannot build the flat, and the
+failed build records the `restore` event, as for a board or a notebook
+that does not open (`Service.restore`). When core opens an unloaded sheet
+again for a request (`sheetInstance.openLocked`), that refusal is the
+request's `unavailable` error, with the reason, and records no event.
+
+With a `-wal`, a refusal by the load reaches the flat's events through a
+new field,
+`Options.OnLoadError func(error)`. The load calls it once, from its own
+goroutine, when it ends with an error that is not a stop: a store behind
+the import cursor, a failed preflight or a damaged file. It calls it after
+it has closed every connection it opened. The function must not block.
+Core passes one that records the error on the flat, in a goroutine of its
+own, as an `error` event of kind `restore` with the text `could not load
+the sheet: ` and the error, the event a board or a notebook that does not
+open gets. The instance stays, holds no connection, and refuses every read
+and write with the load's error until it stops. A connection that the
+refusal closes is closed without a checkpoint, whatever the size of the
+log: the refusal turns off the checkpoint on close with `keepLogOnClose`
+before it closes. `closeDB` turns off the checkpoint for a long log and
+also when there is no `-wal`, and it lets a short log be checkpointed;
+the refusal does not. So `sheet.db`, and a `-wal` that was
+there, keep their bytes. When `keepLogOnClose` fails, because the driver
+no longer has the fields it needs, the refusal still closes the
+connection, so that the instance holds no handle. SQLite may then
+checkpoint a short log into `sheet.db`: the rows stay the same, but the
+bytes do not. The instance writes a `sheet close` warning with that error
+to the host log.
+
 The instance's storage counts as released once every handle of
 `sheet.db` it opened is closed, its own connections' and such an
 opener's. Until then a rename or a delete of the flat waits for it, for
@@ -600,7 +630,7 @@ writer stores only such values. These checks are defence in depth for a
 Flats (section 2); the host's `flats.db` has no such checks (section
 16.1). A load reads a field only when its length
 is within the most the writer stores there: 32 for the store id, 10 for a date, the tab order of 50
-tabs, 400 for a tab name, the axes of 100,000 rows or 702 columns in runs
+tabs, 124 for a tab name, the axes of 100,000 rows or 702 columns in runs
 of one id with ids and stamps near their limits, 8 bytes for each chunk,
 512 for a format, 90 for its nine stamps, 131,068 for a text, 73,728
 (`MaxStoredBytes`) for a stored formula, 32,768 for an unreadable one, and
@@ -851,7 +881,7 @@ Browser operations:
 | `format` | tab, rows, cols, `set` | Sets the named format properties. |
 | `width` | tab, cols, `width` | |
 | `copy` | from, to, `mode`, `cut` | Copy inside the sheet. `mode` is `all` or `values`. The server reads the source cells when it applies the operation. A target larger than the source repeats it, and every target cell is written from its source cell, with a formula moved from there. A source tab that is gone leaves the whole target as it was, and a copy that applies to no cell adds no row or column and is ignored as gone. |
-| `fill` | tab, source rows and cols, target rows and cols | Repeats the source over the target. |
+| `fill` | tab, source rows and cols, target rows and cols, `mode` | `mode` is `copy`, `auto` or `series` (section 8.5). The fill handle sends `auto`, Ctrl+D and Ctrl+R send `copy`, and the button after a drag sends the mode it names. |
 | `insert_rows`, `insert_cols` | tab, `beside`, `side`, `count` | `beside` is a row or column id. If it is gone, the insert goes where it was, found through the structural log. If the log does not reach back, the operation is ignored. |
 | `append_rows`, `append_cols` | tab, `count` | Adds at the end. |
 | `delete_rows`, `delete_cols` | tab, ids | Deletes the ids that are still live. |
@@ -1062,9 +1092,9 @@ stay where they are (rule 33). The sort is stable. Its comparisons count on
 the action's budget (section 10.4). A sort that meets the deadline is
 refused and has reordered nothing.
 
-`CompareSort` orders numbers and dates first, then text by case-folded code
-points, then `FALSE`, `TRUE`, then errors. Blank cells come last in both
-directions.
+`CompareSort` orders numbers and dates first, then text in the text order
+of section 9.3, then `FALSE`, `TRUE`, then errors. Blank cells come last in
+both directions.
 
 A formula in a moved row keeps its stored form, which is the shift of rule
 15. The writer checks each such formula. A relative part that would leave
@@ -1243,6 +1273,67 @@ A paste of values writes what each source formula gives at that point of
 the action: the engine recalculates what the earlier operations of the
 action wrote before it reads the source, as a sort does.
 
+A `fill` has a `mode`: `copy`, `auto` or `series`. `copy` repeats the
+source over the target, as a `copy` with `mode: "all"` does. `auto` is the
+fill of rule 21a, and `series` is the same except that one plain number
+adds 1 for each cell. The server reads the source when it applies the
+operation and fills each line on its own: each column for a target above
+or below the source, each row for a target beside it. For a line it calls
+`formula.FillSeries` with the contents of the source cells in order, the
+number of target cells, whether the target lies before the source, and
+whether the mode is `series`. When `FillSeries` returns no series, the line
+is a copy: each target cell is written from its source cell, with a
+formula moved from there. Otherwise each target cell gets its content from
+the series. In both cases each target cell gets the format of its source
+cell, in the same repeating order as a copy. A line without a series is a
+copy of that line's own source cells, which repeat in order along the
+line, each formula moved from its source cell. A fill is checked and
+counted as a copy over the same target, and the writer builds its series
+under the same deadline: `FillSeries` is linear in the source and the
+target, and the writer charges each target cell as a copy does, and the
+bytes of each text it writes. A series text over 32,767 characters refuses the fill with
+`text_length`, as any write over that limit is refused. A fill in `auto`
+or `series` must have its target on one side of its source: below or above
+it in the same columns, or right or left of it in the same rows. Any other
+target refuses the operation as `invalid`. A `copy` fill keeps the rule of
+a `copy`.
+
+`FillSeries` gives a series only for the sources of rule 21a, and returns
+no series for any other source. Its cases:
+
+- Numbers. One plain number makes no series without `step`, and with
+  `step` adds 1 per cell, or takes 1 per cell for a target before the
+  source. Two or more numbers are fitted by least squares through the
+  values at positions 1 to n, and the series is the line at positions n+1,
+  n+2 and so on, or at 0, -1 and so on for a target before the source. The
+  values are not rounded.
+- Dates and times. Two or more contents of one kind among date, time and
+  date with time are fitted in the same way. A date result is rounded half
+  away from zero to a whole day, a date with time is not rounded, and a
+  time result is taken modulo one day, so that it lies in [0, 1). One date
+  or date with time adds one day per cell, and one time adds one hour per
+  cell, modulo one day. A line whose dates or dates with time would come
+  before day 0 or after 9999-12-31 (rule 12) has no series.
+- Names. The contents are texts that are all weekday names or all month
+  names, matched without regard to capitals in their full and three-letter
+  English forms, with Saturday and Sunday among the weekdays. One name
+  steps by one. Two or more names step by the distance from one to the
+  next in the cycle, and they make a series only when that distance is the
+  same each time. The result has the form of the last source cell, full or
+  three-letter, and its capitals: all capitals when every letter of it is
+  a capital, an initial capital when only the first letter is, and small
+  letters otherwise.
+- Texts that end in a number. The final run of ASCII digits is the
+  number, and the text before it is the stem. All source cells must have
+  the same stem, compared exactly, and a number of at most 15 digits. One
+  text steps by one. Two or more are fitted by least squares as numbers
+  are, and each result is rounded half away from zero to a whole number. A
+  number below 0 is written without its sign. A number is written with at
+  least the digits of the last source cell, with zeros in front.
+- No series. A blank cell, a boolean, a formula, an unreadable formula,
+  contents of different kinds, names that do not keep one step, texts with
+  different stems, any other text, and a fitted value that is not finite.
+
 ## 9. Formula engine
 
 ### 9.1 Interface
@@ -1292,7 +1383,9 @@ func ParseTyped(text string) (Content, *NumberFormat)            // rule 5
 func Show(v Value, kind ContentKind, nf NumberFormat) string     // rule 6
 func EditText(c Content, at Pos) string                          // rule 18
 func CompareSort(a, b Value) int                                 // rule 22
-func AppendCSVField(dst []byte, shown string) []byte             // rule 60
+func CompareText(a, b string) int                                // rule 22
+func AppendCSVField(dst []byte, v Value, kind ContentKind, nf NumberFormat) []byte // rule 60
+func FillSeries(src []Content, n int, back, step bool) ([]Content, bool) // rule 21a
 func ParseRange(a1 string) (Range, error)
 func Functions() []FunctionInfo // name, group, argument names
 ```
@@ -1337,7 +1430,7 @@ stored form can then be longer than `MaxStoredBytes`. A scratch file of
 undo history is read with `ParseRetained`, which bounds the room of a
 form instead. The room of a form is its length once each reference has
 become the longest slot a transform can make of it:
-`{'name'!R[-n]C[-n]:R[-n]C[-n]}`, 450 bytes with a tab name of 100 code
+`{'name'!R[-n]C[-n]:R[-n]C[-n]}`, 174 bytes with a tab name of 31 code
 points of four bytes each in apostrophes, or longer by as much as a
 longer name typed in the formula. A transform keeps the text around the
 references and their number, and writes tab names only by a rename or a
@@ -1404,12 +1497,35 @@ An empty argument is a blank value.
 | Boolean in arithmetic | `TRUE` is 1 and `FALSE` is 0. |
 | Blank | 0 in arithmetic, empty text in `&`, equal to 0, `""` and `FALSE` in comparisons. A formula that returns a blank cell it read, such as `=A1` for a blank `A1`, has a blank value and shows nothing (rule 11). Excel shows 0. |
 | Comparison of two numbers | Both are rounded to 15 significant digits first, so `=0.1+0.2=0.3` is `TRUE`. |
-| Comparison of text | Text comparison ignores capitals by simple case folding, one code point at a time (Unicode CaseFolding statuses C and S), as `fold_table.go` holds it. That file is generated from `unicode.SimpleFold` of the Go toolchain the repository builds with, and a test fails when the two differ for any code point, so the folding is that of the toolchain's Unicode version. The reference table holds only cases that are the same in both the checker's Python and the Go toolchain (Unicode 13.0.0 and 17.0.0 when the table was written; the three pairs Unicode 15.1 added to simple folding have rows). |
+| Comparison of text | `=` and `<>` compare the case-folded texts. `<`, `<=`, `>`, `>=`, text criteria with those signs, the sorted approximate match and `CompareSort` use `CompareText`, the text order of rule 22, given below this table. Case folding is simple case folding, one code point at a time (Unicode CaseFolding statuses C and S), as `fold_table.go` holds it. That file is generated from `unicode.SimpleFold` of the Go toolchain the repository builds with, and a test fails when the two differ for any code point, so the folding is that of the toolchain's Unicode version. The reference table holds only cases that are the same in both the checker's Python and the Go toolchain (Unicode 13.0.0 and 17.0.0 when the table was written; the three pairs Unicode 15.1 added to simple folding have rows). |
 | Comparison across kinds | Numbers before text before booleans. `=` across kinds is `FALSE`. |
 | A range where one value is needed | `#VALUE!`. |
 | An operand that is an error | That error. With several, the leftmost in evaluation order. |
 | A result that is not finite | `#NUM!`. |
 | A text value above 32,767 code points, intermediate or final | The function or operator that would build it stops and gives `#VALUE!`. |
+
+`CompareText(a, b)` compares two texts in three passes over their case-folded
+code points, and stops at the first pass that tells them apart:
+
+1. Skip every apostrophe (U+0027) and hyphen-minus (U+002D). Compare the
+   remaining code points one at a time by rank: the digits `0` to `9` get
+   ranks 0 to 9, then the space and the other ASCII punctuation in the order
+   ``(space) ! " # $ % & ( ) * , . / : ; ? @ [ \ ] ^ _ ` { | } ~ + < = >``,
+   then the letters `a` to `z`. Every other code point ranks after these, by
+   its value. A text that ends first is the smaller.
+2. The text with fewer apostrophes and hyphens is the smaller.
+3. Compare the case-folded code points by value.
+
+A counted form of `CompareText` also returns the bytes it went through, and
+the sort (`CompareSortCounted`) and the evaluator's `compareText` charge
+them to the budget as they charge `foldOrder` now. Pass 2 goes through
+both texts, so a pair that ties after pass 1 costs the length of both.
+
+The passes read the texts in place and allocate nothing. Two texts that are
+equal after case folding tie, and every other pair has one order, so a sort
+by `CompareText` is a total order and `=` agrees with it. The reference
+table gets rows for punctuation, hyphens, apostrophes and Hangul in `<` and
+in criteria (section 9.6), and the sort tests have the same cases.
 
 Functions read ranges in place through `Grid` and never copy a range.
 `CONCAT`, `TEXTJOIN` and `REPT` check the length limit while they build
@@ -1466,20 +1582,20 @@ row of this table has rows in the reference table of section 9.6.
 
 | Area | S1 behavior |
 |---|---|
-| Dates | Day 2 is 1900-01-01. There is no 1900-02-29, so serials before 1900-03-01 match Google Sheets and differ from Excel by one. `DATE` adds 1900 to a year under 1900. A date before day 0 is `#NUM!`. |
+| Dates | Day 2 is 1900-01-01. There is no 1900-02-29, so serials before 1900-03-01 match Google Sheets and differ from Excel by one. `DATE` adds 1900 to a year under 1900. A date before day 0 is `#NUM!`. The last date is 9999-12-31, day 2,958,465: `DATE`, `EDATE` and `EOMONTH` give `#NUM!` for a later result, and every function of the date and time group gives `#NUM!` for a date or time argument before day 0 or of day 2,958,466 or later, `DAYS` included. Arithmetic on a date is no date function, so `=DATE(9999,12,31)+1` is 2958466. |
 | Text length and positions | `LEN`, `LEFT`, `RIGHT`, `MID`, `FIND`, `SEARCH`, `REPLACE` count code points. Excel counts UTF-16 units. |
 | `CEILING`, `FLOOR` | Significance is optional and defaults to 1. Both follow the common programs for every sign: `CEILING(-2.5,-2)` is -4 and `FLOOR(-2.5,-2)` is -2, `CEILING(-2.5,2)` is -2 and `FLOOR(-2.5,2)` is -4. A positive number with a negative significance is `#NUM!`. `CEILING` with a significance of 0 is 0, and `FLOOR` with a significance of 0 is `#DIV/0!`. |
 | `ROUND`, `ROUNDUP`, `ROUNDDOWN`, `TRUNC` | Work on the number rounded to 15 significant digits, half away from zero. Digits default to 0. |
 | `MOD`, `QUOTIENT`, `INT` | `MOD` takes the sign of the divisor. `QUOTIENT` truncates. `INT` rounds down. |
 | `LOG` | Base defaults to 10. |
 | Totals and statistics | Text and booleans in a range are passed over. A direct argument that is a boolean or numeric text counts. `RANK` is the equal rank with an optional order. |
-| Conditional totals | Criteria read `=`, `<>`, `<`, `<=`, `>`, `>=`, and the wildcards `*`, `?` and `~`, without regard to capitals. `"100"` matches the number 100 and the text `100`. `AVERAGEIF` with no match is `#DIV/0!`. `MAXIFS` and `MINIFS` with no match are 0. |
+| Conditional totals | Criteria read `=`, `<>`, `<`, `<=`, `>`, `>=`, and the wildcards `*`, `?` and `~`, without regard to capitals. Text after `<`, `<=`, `>` or `>=` is compared by `CompareText`. `"100"` matches the number 100 and the text `100`. `AVERAGEIF` with no match is `#DIV/0!`. `MAXIFS` and `MINIFS` with no match are 0. |
 | `SUMPRODUCT` | Text and booleans count as 0. Ranges of different sizes are `#VALUE!`. |
 | `CONCATENATE` | A range argument is `#VALUE!`. `CONCAT` and `TEXTJOIN` accept ranges. |
 | `TEXT` | Accepts `0`, `0.00` with 0 to 10 decimals, `#,##0` forms, `0%` forms, a currency prefix of 1 to 3 letters or currency signs, and the date and time patterns of rule 6. Any other pattern is `#VALUE!`. |
 | `VALUE` | Reads text as rule 5 reads typed entry and returns the number. |
 | `INDEX` | Returns one value. A row or column of 0 is `#VALUE!`. The reference form is not supported. |
-| `MATCH`, `VLOOKUP`, `HLOOKUP` | Default to the sorted approximate match, done as a binary search. Exact match accepts wildcards for text. Results on unsorted data with approximate match are deterministic and are not part of the contract. |
+| `MATCH`, `VLOOKUP`, `HLOOKUP` | Default to the sorted approximate match, done as a binary search that orders text by `CompareText`. Exact match accepts wildcards for text. Results on unsorted data with approximate match are deterministic and are not part of the contract. |
 | `XLOOKUP` | Four arguments at most. Exact match only. A return range wider than one row or column is `#VALUE!`. |
 | `ROW`, `COLUMN` | Without an argument they give the formula's own cell. With a range they give its first row or column. |
 | `WEEKDAY` | Types 1, 2 and 3. Other types are `#NUM!`. |
@@ -1493,7 +1609,23 @@ row of this table has rows in the reference table of section 9.6.
 operations, for `import csv` and for `VALUE`. It accepts exactly the forms
 the rule lists, including a number that ends in an exponent such as
 `1.5E+20`. Month names are the three-letter English forms without regard
-to capitals.
+to capitals. For entry, which is the browser `set` and `write` (typed
+text and a paste of typed strings) and the agent `import csv`, a
+number form stays text when its value before any `%` is whole and its
+mantissa has more than 15 digits, counted without leading zeros and
+without zeros at the end after the decimal point. The sign, commas and a
+currency sign do not change this. So `1234567890123456`,
+`1234567890123456.0`, `1.234567890123456E15` and `1234567890123456%` are
+text, while `1.5E+20`, `123456789012345` and `12345678901234567.5` are
+numbers.
+`VALUE`, the conversion of text in arithmetic (section 9.3) and criteria
+read the same text as a number. The agent `write cells` takes JSON values
+and is not entry, so a JSON number of 16 digits stays a number. Such a
+number content, and one that a paste of values writes, shows its plain
+digits as its edit text (`EditText`). A formula cell's edit text is its
+formula, so it is not in this case. That edit text is the one case that
+entry does not read back as the same content: committing it as typed
+makes the cell text (rule 5).
 
 `Show` implements rule 6. It rounds the number to 15 significant digits,
 then to the format's decimals, half away from zero. General shows up to 15
@@ -1506,17 +1638,36 @@ that does not fit by `####`, and a CSV export always uses the full text.
 A formula cell without a number format whose `DateResult` is true is shown
 with the `yyyy-mm-dd` format (rule 11).
 
-`AppendCSVField` implements rule 60 on the shown text alone:
+`AppendCSVField` implements rule 60 on the cell's value, its content kind
+and its number format. It never reads the shown text:
 
-1. Let `t` be the field without its leading U+0020 spaces. If `t` starts
-   with `=`, `+`, `@`, a tab, a carriage return or a line feed, put an
-   apostrophe before the whole field.
-2. If `t` starts with `-`, put the apostrophe unless the whole field is a
-   minus sign, at most one of `$`, `€`, `£`, `¥` and `₩`, digits with
-   optional commas between groups of three, optional decimals after a
-   period, and then either an exponent such as `E+20` or a `%`, or neither.
-   This is the number form of rule 5, so `-1.5E+20` gets no apostrophe.
-3. If the field now holds a comma, a semicolon, a tab, a quotation mark, a
+1. A blank value is an empty field. A boolean is `TRUE` or `FALSE`, and an
+   error is its text.
+2. A number that `Show` would draw with a date, time or date and time
+   pattern, which includes a formula whose `DateResult` is true and a date
+   or time content under General, is written in ISO 8601 form:
+   `yyyy-mm-dd` for a date, `hh:mm:ss` for a time and `yyyy-mm-dd
+   hh:mm:ss` for a date with time. The value is first rounded to the
+   millisecond, an S1 choice of rule 60 that drops a part of a
+   millisecond, and a carry goes on into the seconds, minutes, hours and
+   days. The seconds get a fraction of three digits when that rounded
+   value is not a whole second, which is when its milliseconds are not 0.
+   A time content is always below one day (rule 4). It stays a time, and so
+   does a value below one day under a time format: a carry that reaches a
+   whole day writes `00:00:00`, midnight, the time of day that `Show` draws
+   in the cell's own time pattern. A date whose value has a fraction of a day, and a value of a
+   whole day or more under a time format, are written as a date with
+   time.
+3. Any other number is the shortest decimal that reads back as the same
+   double-precision number, with at most 17 significant digits. It is
+   plain when it needs at most 17 digits before the decimal point and at
+   most 9 zeros after it, and otherwise has an exponent of the form
+   `1.2345678901234567E+19` or `1E-11`.
+4. Text is the text. Let `t` be the text without its leading U+0020 spaces.
+   If `t` starts with `=`, `+`, `-`, `@`, a tab, a carriage return, a line
+   feed, U+FF1D, U+FF0B, U+FF0D or U+FF20, put an apostrophe before the
+   whole field.
+5. If the field now holds a comma, a semicolon, a tab, a quotation mark, a
    carriage return or a line feed, wrap it in quotation marks and double
    each quotation mark inside.
 
@@ -1620,6 +1771,18 @@ where it applies.
 The three readers of the Formulas criterion use one projection each: the
 browser's cell text must equal `shown`, `get_sheet` must return `value`
 (and `shown` when asked), and the CSV export of the cell must equal `csv`.
+
+This change of the settled decisions rewrites part of the table. Every row
+whose `csv` field differs from what rule 60 now writes gets the new field,
+and the `README.md` beside the table records the reason. Such rows include
+percents, currency amounts, dates, General exponents, and numbers that
+rule 60 now writes with more than 15 significant digits, such as `=1/3`. Rows whose `value` changes, for the text order, the last date and
+typed numbers of more than 15 digits, are changed the same way. New rows
+cover `CompareText` in `<`, `<=`, `>`, `>=` and criteria (punctuation,
+hyphens, apostrophes, Hangul and Latin), `DATE`, `EDATE`, `EOMONTH`,
+`DAYS` and `YEAR` at the last date and after it, and the typed forms of
+rule 5 with more than 15 digits. `check_reference.py` follows the same
+rules, so it still checks every row on its own.
 
 `TestReferenceTable` in the formula package checks `value`, `shown` and
 `csv` for every line. `TestReferenceCoverage` enforces the minimum cases.
@@ -2808,7 +2971,7 @@ copies 400,000 records, estimated at 10 to 20 ms.
 |---|---|---|
 | Browser `watch` | One tab at the current sequence. Its kept frames are shared only as section 12.2 allows | Until its last frame is in the send queue |
 | `get_sheet` with a range | The requested range, trimmed to its used part | 60 seconds after the last page was taken |
-| `get_sheet` with `format: "csv"` | Same, with shown text | Same |
+| `get_sheet` with `format: "csv"` | Same, with each cell's value, kind and number format for its field (section 9.5) | Same |
 | Browser CSV download | The used range of one tab | The response |
 | History and `get_revision` | From the cached revision workbook of section 10.5, calculated with the revision's closing date | Same rules as the live readers. A History tab is written to its response frame by frame, for as long as the response takes |
 
@@ -4257,7 +4420,14 @@ cells by ids at each move, and sends both with the sequence of the screen
 the target was chosen on. A delta that deletes a row or column of the
 source or takes its tab, including one the settle applies, ends the drag
 with a notice, even when an undo brings the source back, so no other cell
-becomes the source. While editing, Enter commits and moves
+becomes the source. A fill drag sends `mode: "auto"`. When its ack shows
+that it applied, a button by the filled cells offers "Copy cells" and
+"Fill series". Each sends one more `fill` with the same source and target
+ids, `mode: "copy"` or `mode: "series"`, and the sequence of its own
+screen, so it is an action of its own for undo. The button closes on the
+next edit, selection change or scroll, and on Escape, and it can be
+reached from the keyboard. Ctrl+D and Ctrl+R send `mode: "copy"` and show
+no button. While editing, Enter commits and moves
 down, Tab commits and moves right, each with Shift for the opposite
 direction, and Escape cancels (rule 21). An editor that closes forgets the
 `rebase` exchange it asked for (section 8.4), whether held deltas wait or
@@ -4418,10 +4588,28 @@ then shows the live state as it is. Text copied from a revision is pasted
 as typed text.
 
 Find runs in the client over the shown text of the open tab, so it works
-the same on a Public route (rule 20a). The Public client is the same code
+the same on a Public route (rule 20a). Its matches are in reading order.
+The active cell is the cell that the formula bar names, which is the
+cell a click or the keys put the selection's cursor on. Find keeps an
+anchor: the active cell when the field opens, set again whenever the person
+moves the selection, and not when Find moves it. Opening the field selects
+nothing. Each change of its text selects the first match at or after the
+anchor, else the first match of the tab, and leaves the selection when
+nothing matches. Next goes to the first match after the active cell and
+Previous to the last match before it, wrapping round the ends. Find
+matches text by `toLowerCase` on both sides, which differs from the simple
+case folding of section 9.3: `İ` lowers to two code points, and the two
+forms of sigma stay apart. A final capital sigma lowers to `ς`, so `ΟΔΟΣ`
+does not find `οδοσ`, and `ς` and `σ` do not find each other, while
+`="ΟΔΟΣ"="οδοσ"` and `="ς"="σ"` are `TRUE`.
+
+The Public client is the same code
 with editing, presence, undo and History
 modules disabled by the `welcome` access value. The server enforces the
 boundary (section 17).
+
+The export button and its notice name a CSV file of the tab (rule 60).
+They no longer say that the file holds shown values.
 
 ## 20. Changes elsewhere in Flats
 
@@ -4637,13 +4825,18 @@ browser suite.
 | Id | Cells |
 |---|---|
 | E-01 to E-42 | Each first character of `=`, `+`, `-`, `@`, tab, carriage return and line feed, with 0, 1 and 3 leading spaces, as typed text and as text a formula calculates. |
-| E-43 to E-58 | A negative number in General, Number with and without the thousands separator, Percent, Currency with `$` and Text, typed and calculated. None gets an apostrophe. |
-| E-59 to E-64 | Negative currency with the signs `€`, `£`, `¥`, `₩` (no apostrophe) and with the letter symbols `CHF` and `kr` (apostrophe, the field arrives as text). |
-| E-65 to E-68 | A negative number under a date and a time format, and one that General shows as `-1.5E+20` (no apostrophe). Text `-5` typed with an apostrophe and built by `="-"&"5"` (no apostrophe, both read as numbers). |
+| E-43 to E-58 | A negative number in General, Number with and without the thousands separator, Percent, Currency with `$` and Text, typed and calculated. Each is written as a plain number, such as `-1234.5`, with no apostrophe. |
+| E-59 to E-64 | Negative currency with the signs `€`, `£`, `¥`, `₩` and with the letter symbols `CHF` and `kr`. Each is written as a plain number, with no apostrophe. |
+| E-65 to E-68 | A negative number under a date and a time format, which `Show` draws in General and the export writes as a number, and `-1.5E20`, written as `-1.5E+20`, all with no apostrophe. Text `-5` typed with an apostrophe and built by `="-"&"5"`, which get the apostrophe and arrive as text. |
 | E-69 to E-76 | A comma, a semicolon, a tab, a quotation mark, a line break and CR LF inside text, text that holds a semicolon followed by `=`, and a comma after a dangerous first character. |
 | E-77 to E-84 | Booleans, each error, Korean text, an emoji, text typed as `'007`, text that starts with an apostrophe, a blank cell between filled ones, a blank row inside the used range. |
 | E-85 | A number in a 40 px column that shows `####` on screen. |
 | E-86 | The byte order mark: the browser download and the CLI output start with `EF BB BF`, and `get_sheet` with `format: "csv"` does not. `expected.csv` holds the bytes after the mark. |
+| E-87 to E-110 | Each of the full-width `＝`, `＋`, `－` and `＠`, with 0, 1 and 3 leading spaces, as typed text and as text a formula calculates. Each gets the apostrophe. |
+| E-111 to E-120 | A date under each of the three date formats, a time under each of the three time formats, a date with time, `=TIME(14,30,0)+0.25/86400` under `hh:mm:ss` written as `14:30:00.250`, a date that `DATE` calculates in a cell with no number format, and a time that a formula calculates under a time format. Each is written in ISO 8601 form. |
+| E-121 to E-126 | `=1/3`, written as `0.3333333333333333`; `=0.1+0.2`, written as `0.30000000000000004`; `=VALUE("1234567890123456")`, written as `1234567890123456`; `=10^-10` and `=10^-11`, written as `0.0000000001` and `1E-11`; a positive percent and a positive currency amount, written as `0.125` and `1234.5`. |
+| E-128 to E-130 | `=12345678901234567890`, written as `1.2345678901234567E+19`; `=DATE(2026,3,15)+0.75` under a date format, written as `2026-03-15 18:00:00`; `=1.5` under a time format, written as `1899-12-31 12:00:00`. |
+| E-127 | Text `1234567890123456` that typed entry kept as text, written without an apostrophe. |
 
 `TestExportBytes` compares the engine's output with `expected.csv`. The
 browser suite downloads the tab, the CLI test writes it, and
@@ -4670,6 +4863,23 @@ and at it:
 | L-15, L-16 | A recalculation over the time limit, with the limit lowered by a test option. An edit over the disk quota, and any edit while over quota. |
 | L-17 | Not a refusal: the range chain `A2=SUM(A1:A1)` to `A100000=SUM(A99999:A99999)`. One edit of `A1` updates all 99,999 formulas in under 1 second, and the budget counter shows work linear in the chain. With the time limit lowered, the same edit is refused during dependency work. |
 | L-18 | Not a refusal: eight layers of 1,600 formulas, each reading the layer before with `COUNTIF` and giving empty text before a set date and 32,767 characters from that date on (12,800 formulas, 17,920,000 static reads). Move the calculation date past it, then restart the host, then read a revision closed after it. | Each of the three recalculations completes in at most two passes, and the budget counter shows at most twice the reads of one ordinary pass. The state is in limited mode and the same cells show `#LIMIT!` each time. |
+| L-19 | A tab name of 32 code points, and `History`, `HISTORY` and `history`, by add, rename and agent call, each refused as `invalid`. Not a refusal: a tab name of 31 code points. |
+
+**Fill, order and entry cases.** Go tests in the formula and sheet
+packages, and the browser suite for the ones marked B:
+
+| Id | Case | Expected |
+|---|---|---|
+| F-01 | `FillSeries` for each case of rule 21a, down and up: one date, one date with time, one time from `22:00`, full and short weekday and month names in all capitals, an initial capital, small letters and `mONDAY`, `Monday, Wednesday`, `Jan, Apr, Jul`, `Item1`, `Item09`, `Item1` dragged up past 0, `1, 2`, `100, 95`, `1, 2, 4`, `2026-01-01, 2026-01-02, 2026-01-04`, two dates with time, `22:00, 23:00`, `00:30, 01:00` dragged up, `Item1, Item3`, `Item1, Item2, Item4`. | The values of rule 21a, exactly: `Friday, Sunday`; `Oct, Jan`; `mONDAY` gives `tuesday`; `1, 2, 4` gives 16/3 and 41/6 as doubles; the three dates give whole days; `00:00` after `23:00`; `00:00, 23:30` up; `Item5, Item7`. |
+| F-02 | `FillSeries` with no series: one plain number in `auto`, `TRUE`, a formula, a blank among numbers, a number and a text, text with no final number, `Mon, Tue, Thu`, a weekday and a month name, `Item1, Task2`, a final number of 16 digits, a date series that passes 9999-12-31. | No series, so the line is a copy. One plain number in `series` adds 1 per cell, and takes 1 per cell up. |
+| F-05 | A fill in `auto` whose target is both below and beside the source, and one whose series makes a text of 32,768 characters. | Refused as `invalid`, and refused with `text_length`. The same target in `copy` applies as a copy does. |
+| F-03 (B) | A drag down over three columns of `1, 2`, `Mon` and `=A1`, then "Copy cells", then undo twice. | `3, 4`, `Tue, Wed` and moved formulas; then copies; then the series; then the cells as before. Ctrl+D over the same cells copies. |
+| F-04 | A fill whose target is larger than the limit of an action, and one whose source row is deleted before it applies. | Refused whole as a copy is; ignored as gone. |
+| O-01 | `CompareText` and `CompareSort` on the ASCII order, `coop` and `co-op`, `ab` and `a-c`, `ab` and `a'b`, `a` and `A`, Hangul and Latin, a text that ends first. | The order of rule 22, a tie only for `a` and `A`, and the same result in both directions with the sign changed. |
+| O-02 | The same pairs through `<`, `=`, `COUNTIF(range,"<b")`, `MATCH(x,range,1)` on a column sorted by the sort, and a sort of 100,000 texts within the deadline of section 8.3. | `<` and criteria agree with the sort, `=` is `TRUE` only apart from capitals, and `MATCH` finds each key. |
+| T-01 | Typed entry of `1234567890123456`, `-1,234,567,890,123,456`, `1234567890123456.0`, `1.234567890123456E15`, `1234567890123456%`, `$1234567890123456`, `0001234567890123`, `123456789012345`, `1.5E+20` and `12345678901234567.5`, by typing, paste and `import csv`. | Text for the first six. A number for the last four. `VALUE` of each text is a number. |
+| T-02 | `DATE(10000,1,1)`, `DATE(9999,12,32)`, `EDATE(DATE(9999,12,31),1)`, `EOMONTH(DATE(9999,12,1),1)`, `YEAR`, `WEEKDAY`, `HOUR` and `DAYS(2958466,1)` of 2958466, and `YEAR(-1)` and `DAYS(1,-1)`. `=DATE(9999,12,31)+1`. | `#NUM!` for each, except that `DATE(9999,12,31)` is 2958465 and `=DATE(9999,12,31)+1` is the number 2958466. |
+| T-03 (B) | Cells `B2` and `D2` hold `xy`, and `B5` holds `x`. The active cell is `C2`. Open Find, then type `x`, then Next, then Previous, then click `A4` and Next, then add `y` to the text, then add `z`. Find of `a*` over cells holding `a*` and `ab`. Find of `ΟΔΟΣ` over a cell holding `οδοσ`. | Opening selects nothing; typing selects `D2`; Next selects `B5`; Previous selects `D2`; after the click Next selects `B5`; `xy` selects `B2`, the first match of the tab, since none follows the anchor `A4`; `xyz` leaves `B2` selected and the field shows "No matches". Only the cell with `a*` matches. `ΟΔΟΣ` finds nothing. |
 
 ### 22.3 Crash, lifecycle and security tests
 
@@ -4679,8 +4889,22 @@ restart they compare content, calculated values, receipts, a single
 revision per entry, holds and sweep roots, and check that undo history is
 empty and says so. Fault injection covers a failed
 commit (memory is reverted and matches the database), a `sheet.db` behind
-the import cursor, a missing blob during rollback and interrupted rename
-and deletion journals.
+the import cursor, with and without a `-wal` and with an open edit group in
+it, a missing blob during rollback and interrupted rename and deletion
+journals. For a store behind the cursor without a `-wal`, the test checks
+the `restore` event at a host start and the `unavailable` refusal when an
+unloaded sheet opens again. For a store behind the cursor, with a `-wal`
+shorter than the long-log bound of `closeDB` and with one longer, the
+test checks that
+`sheet.db` and its `-wal` keep their bytes through the refusal and the
+stop of the instance, that every read and write is refused, and that the
+flat has one `restore` event. A run with a test hook that makes
+`keepLogOnClose` fail checks that the rows stay the same, that the
+instance holds no handle, and that the host log has the `sheet close`
+warning. A backup test copies a running host while a session holds
+an open edit group of people's actions, and checks that the restored sheet
+holds every acknowledged action and that the group later closes as one
+revision.
 
 Raw HTTP and WebSocket tests forge access, identity and epoch headers, send
 wrong origins, and send `action`, `presence`, `rebase` and History requests
@@ -4712,17 +4936,29 @@ digest, cache state, network conditions and raw samples as JSON.
 | Remote display | `remote.mjs`. Five sessions, two edits per second each for 60 seconds, server receive to remote paint, with clock calibration and its uncertainty. |
 | Concurrent editing | `convergence.mjs`. The same load plus an insert every 5 seconds and a sort every 10 seconds. After the drain every screen equals a fresh server capture and the reference model replayed in receive order. |
 | Structure cases | Section 22.2, S-01 to S-48, and the contract cases C-01 to C-14 for the rules outside structure. |
+| Value and editing cases | Section 22.2, the fill, order and entry cases F-01 to F-05, O-01, O-02 and T-01 to T-03, and the tab name case L-19. |
 | Formulas | `TestReferenceTable`, then `scripts/sheet-e2e/reference.mjs` loads every file through `update_sheet` and compares the grid's shown text, `get_sheet` values and the CSV field. |
 | Calculation date | `TestCalculationDate` with an injected clock. On the offsite budget with one `TODAY` formula an open connection shows the new value within 60 seconds. On the reference sheet the pass starts within 60 seconds and one delta brings the new values together. A paged read begun before returns the old date on every page. A revision closed before shows the old value, also after a rollback to it on a later day and after a restart (C-02). |
-| Limits | L-01 to L-18, with the stated outcome of each: a refusal, `#VALUE!` or `#LIMIT!`. `scripts/sheet-perf/isolation.mjs` requests another flat once per 100 ms while the `limits` fixture is refused a write, recalculated by an edit, loaded after a restart, rolled back, moved to a new date, viewed as a revision and downloaded as CSV. Every answer arrives within 1 second and every read of the sheet is whole or refused. |
+| Limits | L-01 to L-19, with the stated outcome of each: a refusal, `#VALUE!` or `#LIMIT!`. `scripts/sheet-perf/isolation.mjs` requests another flat once per 100 ms while the `limits` fixture is refused a write, recalculated by an edit, loaded after a restart, rolled back, moved to a new date, viewed as a revision and downloaded as CSV. Every answer arrives within 1 second and every read of the sheet is whole or refused. |
 | Durability | Crash tests of section 22.3 with a kill right after the ack. |
-| Export | E-01 to E-86 and the manual open protocol. |
+| Export | E-01 to E-130 and the manual open protocol. |
 | Accessibility | `scripts/sheet-e2e/a11y.md`, a manual VoiceOver protocol on Safari and Chrome with the steps of the criterion, plus node tests of labels and roles. |
 | Reconnection | `scripts/sheet-e2e/reconnect.mjs` cuts before and after commit, delta and ack. One effect per action. |
 | Recovery | `TestRecoverEveryTab` views and restores each tab of a retained revision. `TestRollbackAtFullQuota`. |
 | Refusal | The Public tests of section 22.3 with C-01, and the quota cases L-16 and C-03 with a second connection. |
 | Agent | `scripts/sheet-agent-eval`. A real agent with `topic.sheet` and the tools builds the offsite budget, a person inserts a row and adds a column, the agent's next write is refused by rule 36, the resent write applies, and the person's row and column are unchanged. Run in both Autopilot modes. |
 | Dependencies | Start one binary with the server runtime disabled and no network. Open, edit and export a sheet. |
+
+**Checks by hand in Excel.** Before release a person runs these in a
+current Excel for Windows and records each result beside the case it
+checks: the cut of rule 15, with a `SUM` elsewhere over the cut cells;
+the typed entry of `3/15`, `Mar 15` and `JAN 1` in a cell with the
+General format (rule 5); each fill case of F-01 and F-02 that rule 21a marks as an S1 choice; and
+the pairs of O-01 that differ by apostrophes or hold characters outside
+ASCII, sorted ascending. A result that differs from S1 goes to the
+requester: a fill result with open question 3, a text order result with
+open question 4, and a result for typed entry or the cut with open
+question 6 of the product spec. It does not change a rule by itself.
 
 ### 22.5 Repository gates
 
@@ -4844,7 +5080,8 @@ read: those values, and a text other than `"all"` for `Ids`, a run that
 has not two numbers or names no id, `{new: k}` with k below 1 or in an
 operation that adds no rows or columns, a color, an alignment or a field
 of a number format outside rule 6, a width, a count or a frozen count
-outside its bounds, a `mode` other than `all` and `values`, and `values`
+outside its bounds, a `mode` of a `copy` other than `all` and `values`, a
+`mode` of a `fill` other than `copy`, `auto` and `series`, and `values`
 of another size than its rows and columns.
 
 ```text
@@ -4941,7 +5178,8 @@ TabInfo    = {id, name, rows: integer, cols: integer, frozen_rows, frozen_cols}
 Op         = one of the operations of section 7.1, with the fields named there;
              rows, cols and ids are "all" or one list of ids, runs
              [first, count] and {new: integer}, as that table says;
-             optional are at (set), cut (copy), desc (sort), name and
+             optional are at (set), cut (copy), desc (sort), mode (fill,
+             copy when absent), name and
              before: integer | null (add_tab and move_tab, null or
              absent for the end); set is a Format
 Format     = {bold?, italic?, underline?, strikethrough?, wrap?: bool | null,
@@ -5407,7 +5645,7 @@ Engine:
     checksum does not fit, and also when its bytes are intact and it
     counts what cannot be there: more cells, rows, ids or characters than
     the bytes that follow can hold, or than a sheet can have (an axis of
-    100,000 ids, a row of 702 cells, a tab name of 100 code points, the
+    100,000 ids, a row of 702 cells, a tab name of 31 code points, the
     cells one action can change). Ids are written as runs of two values
     for any number of them, so the file and each segment of the edit log
     are also damaged when their runs stand for more ids than were written

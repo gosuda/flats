@@ -111,9 +111,11 @@ A typical flow:
 2. **Tabs.** A sheet holds 1 to 50 tabs in a fixed order.
    - Each tab has an id unique within the sheet, a name, a position, a grid
      and its settings (rule 8).
-   - A name has 1 to 100 characters, is unique in the sheet apart from
+   - A name has 1 to 31 characters, is unique in the sheet apart from
      capitals, and contains none of `[ ] : * ? / \` or a control character.
-     It does not start or end with a space or an apostrophe.
+     It does not start or end with a space or an apostrophe. It is not
+     `History`, apart from capitals. Excel has the same length limit and
+     reserves that name, so a later workbook export can keep every name.
    - A new sheet has one empty tab named `Sheet1`.
    - A sheet always keeps at least one tab. Deleting the last one is refused.
    - Deleting a tab deletes its cells. The browser asks for confirmation
@@ -150,6 +152,20 @@ A typical flow:
      the percent format on a cell without a number format. A leading `$`,
      `€`, `£`, `¥` or `₩` sets the currency format with that symbol in the
      same way.
+   - A number that is whole as typed, before any `%`, and that is typed
+     with more than 15 digits stays text, so that no digit is lost. Leading
+     zeros, and zeros at the end after the decimal point, do not count. So
+     `1234567890123456`, `1234567890123456.0`, `1.234567890123456E15` and
+     `1234567890123456%` are text, while `1.5E+20` and
+     `12345678901234567.5` are numbers. This holds with a sign, commas or a
+     currency sign too. Excel keeps 15 digits and changes every later digit
+     to zero. The rule is for entry only. `VALUE`, criteria and arithmetic
+     still read such text as a number (rule 11), and an agent's
+     `write cells` keeps a JSON number a number. A number of more than 15
+     digits that an agent's JSON value or a paste of values put in a cell
+     shows its digits in the formula bar. Committing those digits as typed
+     makes the cell text. A formula cell shows its formula there, so this
+     does not apply to it.
    - A date is read as `2026-03-15`, `3/15/2026` (month first) or
      `Mar 15, 2026`. A time is read as `14:30`, `14:30:05` or `2:30 PM`. A
      date and a time together are a date with time. A recognized date or
@@ -159,6 +175,21 @@ A typical flow:
    - Anything else is text.
    - S1 reads numbers and dates in this one way for every person. Reading
      them by locale is [not in S1](#not-in-s1).
+   - These typed forms differ from Excel, as far as Microsoft's pages
+     show:
+     - A fraction such as `1/2` and a date without a year, such as
+       `JAN1`, `JAN 1`, `Mar 15` or `3/15`, stay text, so that a value
+       never depends on the current date. Excel makes `1/2` a date
+       ([Display numbers as fractions](https://support.microsoft.com/en-us/excel/display-numbers-as-fractions))
+       and `JAN1` a date, and it "may still" treat `JAN 1` as one
+       ([Set automatic data conversions](https://support.microsoft.com/en-us/excel/set-automatic-data-conversions)).
+       The pages do not say what Excel does with `3/15` and `Mar 15`. The
+       check by hand in Excel before release finds out
+       ([Open question 6](#open-questions)).
+     - A number typed into a cell with the percent format keeps its typed
+       value, so `10` shows as `1000.00%`. Excel stores 0.1.
+     - A number with an exponent sets no format, so `123E5` shows as
+       `12300000`. Excel sets a scientific format and shows `1.23E+07`.
 6. **Cell format.** A cell, blank or not, can carry:
    - bold, italic, underline and strikethrough, each on or off;
    - a text color and a fill color, each either none or one of the palette
@@ -183,9 +214,13 @@ A typical flow:
      | Date and time | a date form and a time form | `1903-05-18 12:00` |
      | Text | none | `1234.5`, left-aligned |
 
-   - General shows up to 15 significant digits and switches to scientific
-     notation for numbers that would need more than 15 digits before the
-     decimal point or more than 9 zeros after it.
+   - General shows up to 15 significant digits. It switches to scientific
+     notation with up to 6 significant digits, as in `1.23457E+15`, for
+     numbers that would need more than 15 digits before the decimal point
+     or more than 9 zeros after it. Excel's General switches
+     at 12 digits before the decimal point and rounds decimals to the
+     width of the column, so `123456789012` shows in full in S1 and as
+     `1.23457E+11` in Excel.
    - A format changes what a cell shows, never what it holds. A number
      format on text has no effect. A number that does not fit its column
      shows as `####`, never as a shorter number.
@@ -304,9 +339,18 @@ A typical flow:
     - Text is converted to a number, and a number to text, where an operator
       needs it: `="3"+1` is 4 and `=1&"a"` is `1a`. Text that is no number
       gives `#VALUE!`. A blank cell counts as 0 in arithmetic and as empty
-      text in `&`. Comparisons of text ignore capitals.
+      text in `&`.
+    - Comparisons of text ignore capitals. `<`, `<=`, `>` and `>=` order
+      two texts as a sort does (rule 22), so `"ab"<"a-b"` and `"ab"<"a'b"`
+      are `TRUE`. `=` and `<>` hold only for texts that are equal apart
+      from capitals, so `"ab"="a-b"` is `FALSE`.
+    - Addition and subtraction give the double-precision result, so
+      `=1.333+1.225-1.333-1.225` shows `-2.22045E-16`. Excel shows 0,
+      because it changes a sum very near zero to 0.
     - A reference to a range where one value is needed is `#VALUE!`. There
-      are no array results in S1: a formula never fills other cells.
+      are no array results in S1: a formula never fills other cells. Excel
+      takes the cell of the range in the formula's own row or column
+      instead, and Excel 365 spills the range into the cells below.
 12. **Functions.** S1 has exactly these functions.
 
     | Group | Functions |
@@ -323,14 +367,33 @@ A typical flow:
       name has in the common spreadsheet programs, for the cases S1
       supports. The technical design fixes a reference table of inputs and
       expected results for every function; that table is the contract.
+    - Where Excel and Google Sheets behave differently, S1 follows Google
+      Sheets, as the requester decided on 2026-11-19. Six decisions of the
+      requester come first and follow Excel or the earlier design: the
+      text order (rule 22), the fill handle (rule 21a), typed numbers of
+      more than 15 digits (rule 5), tab names (rule 2), and CSV values and
+      dates and the full-width guard (rule 60). Where this page says
+      that S1 differs from Excel without naming Google Sheets, it states
+      what S1 does: the requester chose to keep that behavior and to state
+      the difference. Those sentences were not checked against Google
+      Sheets.
     - Functions that total or count a range pass over text and blank cells
       as those programs do, and criteria such as `">100"`, `"<>done"` and
-      `"a*"` are read as they read them.
+      `"a*"` are read as they read them. Text criteria with `<`, `<=`, `>`
+      or `>=`, such as `"<b"`, use the text order of rule 22.
     - `SUMPRODUCT` multiplies ranges of the same size cell by cell. No other
       operator or function works through a range cell by cell.
     - `XLOOKUP` supports exact match and its if-not-found argument.
       `VLOOKUP`, `HLOOKUP` and `MATCH` support exact match and the sorted
-      approximate match.
+      approximate match, in which text is sorted in the order of rule 22.
+    - The last date is 9999-12-31. A date function whose result would come
+      after it, or that reads a date or time after it, gives `#NUM!`, as
+      Excel's [`DATE`](https://support.microsoft.com/en-us/excel/functions/date-function)
+      does for a year of 10000 or more and
+      [`DAYS`](https://support.microsoft.com/en-us/excel/functions/days-function)
+      for a date outside the valid range. So does a date before day 0. Arithmetic on a date is no date function:
+      `=DATE(9999,12,31)+1` is the number 2958466, and a date format shows
+      it in General.
     - `TEXT` takes the patterns that the number formats of rule 6 can
       express.
     - `TODAY` gives the calculation date of the state it is calculated in
@@ -402,7 +465,14 @@ A typical flow:
     what it reads: pasted into another tab, a reference written without a
     tab name gains the name of the tab the formula was cut from. Formulas
     elsewhere that read the cut cells keep their addresses and read whatever
-    those addresses hold after the paste.
+    those addresses hold after the paste. So a `SUM` over cut cells keeps
+    reading their old addresses, which are blank after the cut unless the
+    paste covers them. Excel may change such formulas to follow the cut
+    cells. Microsoft's
+    [Paste options](https://support.microsoft.com/en-us/office/paste-options-8ea795b0-87cd-46af-9b59-ed4d8b1669ad)
+    page says both that references are adjusted when formulas are cut and
+    pasted and that they are not changed, so a check by hand in Excel before
+    release settles what Excel does.
 
 ## Viewing
 
@@ -426,9 +496,27 @@ A typical flow:
     the formula bar, edits one cell at a time and switches tabs; the
     remaining editing of rule 21 may need a wider screen.
 20a. **Find.** Ctrl or Cmd+F opens a find field for the open tab. It matches
-    text in what cells show, capitals ignored, counts the matches, and moves
-    the selection to the next or previous one. It works the same on a Public
-    route. Replacing is [not in S1](#not-in-s1).
+    text in what cells show, capitals ignored, and counts the matches.
+    Capitals are ignored by the browser's lower-case mapping, which differs
+    from text comparison (rule 11) for a few letters: `İ`, and the two
+    forms of sigma. So `ΟΔΟΣ` does not find `οδοσ`, and `ς` and `σ` do not
+    find each other, while `="ς"="σ"` is `TRUE`. The matches are in reading
+    order, row by row and left to right in a row.
+    - The active cell is the cell that the formula bar names. The anchor is
+      the active cell when the field opens. The anchor follows the moves of
+      the selection that the person makes, and not the moves that Find
+      makes.
+    - Opening the field does not move the selection. Each change of its
+      text selects the first match at or after the anchor, or, when no
+      match is at or after the anchor, the first match of the tab. With no
+      match the selection stays where it is and the field shows "No
+      matches".
+    - Next moves the selection to the first match after the active cell,
+      and Previous to the last match before it. After the last match Next
+      goes to the first one, and before the first match Previous goes to
+      the last one. `*`, `?` and `~` are plain characters, while Excel reads them as
+    wildcards. Find works the same on a Public route. Replacing is
+    [not in S1](#not-in-s1).
 20b. **Screen readers.** The grid is exposed as a grid, although only the
     cells in view are drawn.
     - It states the tab's row and column counts, and each cell its row
@@ -459,29 +547,108 @@ A typical flow:
     | Enter a formula | After `=`, clicking a cell or dragging a range inserts its reference at the caret. Typing a function name offers the matching functions with their arguments. |
     | Clear | Delete or Backspace clears the content of the selection and keeps its formats. |
     | Copy, cut, paste | To and from the system clipboard as tab-separated text, so a range moves to and from other spreadsheet programs with its shown values. A paste inside the same sheet also carries formulas (rule 15) and formats. Paste values only is a separate command. |
-    | Fill | Dragging the handle at the selection's corner, or Ctrl+D and Ctrl+R, copies the first cells over the rest, shifting formulas by rule 15. |
+    | Fill | Dragging the handle at the selection's corner fills the cells it passes by rule 21a. Ctrl+D and Ctrl+R copy the first row or column of the selection over the rest, shifting formulas by rule 15. |
     | Format | A toolbar sets the formats of rule 6 on the selection, with Ctrl or Cmd+B, I and U for the marks. |
     | Resize a column | Drag the edge of its letter; a double click fits it to its content. |
     | Insert and delete rows and columns | From the menu of a row number or column letter: insert above, below, left or right, as many as are selected, and delete the selected ones. |
     | Sort | Sort the selected rows, or all rows under the frozen rows, by one column, ascending or descending (rule 22). |
     | Freeze | Freeze rows down to, or columns up to, the selection, or unfreeze. |
     | Tabs | Add, rename, reorder by dragging, and delete with the confirmation of rule 2. |
-    | Export | Download the open tab as a CSV file of its shown values. |
+    | Export | Download the open tab as a CSV file (rule 60). |
 
     - Composition input (IME) works in a cell and in the formula bar: text
       under composition is never committed or cancelled by the keys that
       belong to the composition.
     - Every action has a keyboard path, and focus returns to the grid after
       a menu or a dialog closes.
+21a. **Fill handle.** A drag of the fill handle fills the cells it passes,
+    one line at a time: each column of the selection for a drag down or up,
+    and each row for a drag right or left. The source of a line is its
+    cells in the selection. Where Microsoft documents what Excel does, the
+    fill does the same
+    ([Microsoft, Enter a series of numbers, dates, or other items](https://support.microsoft.com/en-us/excel/enter-a-series-of-numbers-dates-or-other-items),
+    [Project values in a series](https://support.microsoft.com/en-us/excel/project-values-in-a-series)):
+    - One date continues day by day.
+    - One English weekday or month name in full, such as `Monday` or
+      `January`, continues with the next name. Two names set a step:
+      `Monday` and `Wednesday` give `Friday` and then `Sunday`.
+    - One text that ends in a number continues the number, as in `Item1`,
+      `Item2`, `Item3`.
+    - One plain number is copied.
+    - Two or more numbers continue the linear best-fit trend of their
+      values: the least-squares line through the values at positions 1 to
+      n. So `1, 2` gives `3, 4, 5`, `100, 95` gives `90, 85`, and `1, 2, 4`
+      gives 16/3 and 41/6, which General shows as `5.33333333333333` and
+      `6.83333333333333`.
+    - A drag up or left continues the trend backward, so `1, 2` dragged up
+      over two cells gives `0` and then `-1`.
+
+    For other cases S1 makes the choices below. They wait for the requester
+    ([Open question 3](#open-questions)).
+    - Short weekday and month names, such as `Mon` and `Jan`, continue
+      like full ones, and weekday names include Saturday and Sunday. Three
+      or more names continue only when every step between them is the
+      same. The result has the form, full or short, of the last source
+      cell, and its capitals: all capitals when every letter of that cell
+      is a capital, an initial capital when only its first letter is, and
+      small letters otherwise. So `MONDAY` gives `TUESDAY`.
+    - One time continues hour by hour. A trend of two or more times is not
+      rounded. A series of times stays inside one day: a value of a whole
+      day or more, or below 0, goes round by whole days. So `23:00` is followed by `00:00`, and `00:30` and `01:00`
+      dragged up give `00:00` and then `23:30`.
+    - One date with time continues day by day.
+    - The values of a trend of numbers are not rounded. Two or more dates
+      continue their trend in whole days, rounded half away from zero. Two
+      or more dates with time continue their trend without rounding.
+    - A number at the end of a text keeps at least its number of digits, so
+      `Item09` gives `Item10`. Two or more texts with the same text before
+      a final number continue the trend of those numbers, rounded half away
+      from zero to whole numbers, so `Item1, Item2, Item4` gives `Item5`
+      and `Item7`. A number that would go below 0 is written without its
+      sign, so `Item1` dragged up gives `Item0` and then `Item1`. A final
+      number of more than 15 digits is not continued.
+    - A drag up or left continues a date, a time, a name or a text
+      backward. A line whose series would pass the first or the last date
+      (rule 12) is copied instead.
+    - Any other source is repeated in order, as a copy does: one cell of
+      another kind, a formula, which shifts by rule 15, names that do not
+      keep one step, and a line whose source mixes kinds or holds a blank
+      cell, a boolean or a formula.
+    - Formats are repeated from the source in order, as a copy does.
+    - After a drag, a button by the filled cells switches between the
+      series and a copy of the source. For one plain number the series
+      adds 1 for each cell, or takes 1 away for a drag up or left.
+
+    A fill is one action. It has the limits of a copy and is undone as one
+    action (rule 23). A fill whose series would make a text longer than
+    32,767 characters is refused with that limit (rule 9).
 22. **Sort.** A sort reorders whole rows of the tab: the rows of the
     selection, or every row under the frozen rows when one cell is selected.
     Each sorted row moves with its identity, so every cell of the row, in
     every column, moves with it. Sorting only some columns of a row is
     [not in S1](#not-in-s1).
-    - Order ascending: numbers and dates from the smallest, then text from
-      A with capitals ignored, then `FALSE`, then `TRUE`, then errors.
+    - Order ascending: numbers and dates from the smallest, then text in
+      the text order below, then `FALSE`, then `TRUE`, then errors.
       Descending reverses that. Blank cells come last either way. A formula
       counts as its value. Rows that tie keep their order.
+    - Text order ignores capitals and follows the order that Microsoft
+      documents for the sort of Excel. Digits come first, then the space
+      and the other ASCII punctuation in the order
+      ``(space) ! " # $ % & ( ) * , . / : ; ? @ [ \ ] ^ _ ` { | } ~ + < = >``,
+      then the letters A to Z. Every other character comes after these, in
+      code-point order, so Hangul sorts in dictionary order. This first
+      comparison reads the texts without their apostrophes and hyphens.
+    - Of two texts that differ only by a hyphen, the one with the hyphen
+      comes last, as in Excel. For other texts that the first comparison
+      leaves equal, S1 puts the text with fewer apostrophes and hyphens
+      first, and then follows code-point order apart from capitals. These
+      are S1 choices, because Microsoft documents no order for apostrophes
+      and Excel's order outside ASCII depends on its region. They wait for
+      the requester ([Open question 4](#open-questions)). Every two texts
+      that differ apart from capitals therefore have one order.
+    - The same order decides `<`, `<=`, `>` and `>=` between texts (rule
+      11), text criteria (rule 12) and the sorted approximate match of
+      lookups.
     - Formulas inside the moved rows shift by rule 15. Formulas in other
       rows keep their addresses and read whatever the sort put there.
     - Frozen rows never move.
@@ -663,7 +830,7 @@ ordinary disconnections. These rules match the board's and the notebook's.
       written back unchanged (rule 43). Asked for, the read also returns what each
       cell shows under its number format, and the formats and column widths
       of the range, grouped into ranges that share a format.
-    - `format: "csv"` returns the range as CSV text of the shown values.
+    - `format: "csv"` returns the range as CSV text by rule 60.
     - One read returns at most 10,000 cells and 4 MiB; a larger range is
       read in pages, and a page that would pass the byte limit ends early
       and says where the next one starts. Every page of one read comes from the same state, even when
@@ -805,7 +972,38 @@ unchanged.
     and runs no content script or HTML. Cell text that looks like a web
     address is shown as text; S1 has no links in cells.
 60. **Exports are plain data.** A CSV export, in the browser and through
-    `get_sheet`, writes one field per cell: what the cell shows.
+    `get_sheet`, writes one field per cell: the cell's value, not the text
+    its number format shows.
+    - The export writes a number in full precision, whatever its number
+      format: the shortest decimal that reads back as the same
+      double-precision number, with at most 17 significant digits. So it
+      writes `0.125` for a cell that shows `12.50%`, `-1234.5` for one that
+      shows `-$1,234.50`, and `0.30000000000000004` for `=0.1+0.2`. It writes
+      the number plain when it needs at most 17 digits before the decimal
+      point and at most 9 zeros after it, and with an exponent otherwise, as
+      `1.2345678901234567E+19` and `1E-11`.
+    - It writes a value that the cell shows as a date, a time or a date with
+      time in ISO 8601 form, whatever its date format: `2026-03-15`,
+      `14:30:00` and `2026-03-15 14:30:00`. The value is rounded to the
+      millisecond, and the seconds get a fraction of three digits when
+      that rounded value is not a whole second, as in `14:30:00.250`. A
+      part of a millisecond is dropped. This is an S1 choice that waits for
+      the requester ([Open question 5](#open-questions)), because the
+      earlier decision sets a precision only for numbers. A time content is
+      always below one day (rule 4). It stays a time, and so does a value
+      below one day under a time format: when its rounding reaches a whole
+      day it is written as `00:00:00`, which is midnight, the time of day
+      the cell shows. A date with a fraction of a day, and a value of a
+      whole day or more under a time format, are written as a date with
+      time. Spreadsheet programs read
+      these forms in every region, but they read a field such as
+      `3/4/2026` by the date order of their own region.
+    - It writes text as it is, a boolean as `TRUE` or `FALSE`, an error as
+      its text, such as `#N/A`, and a blank value as an empty field.
+    - A CSV file keeps no formats and no kinds. An amount, a percent and a
+      date arrive as plain values, and the opening program shows them in
+      its own formats. A text that reads as a number, such as `007` or a
+      number of 16 digits, arrives as a number in most programs.
     - Fields follow RFC 4180: a field that holds a comma, a quotation mark
       or a line break is quoted, and a quotation mark inside it is doubled.
       Lines end with a carriage return and a line feed. The export covers
@@ -815,18 +1013,19 @@ unchanged.
       reads it as UTF-8; `get_sheet` returns the text without the mark.
     - Fields are separated by commas. A field that holds a comma, a
       semicolon, a tab, a quotation mark or a line break is quoted.
-    - The apostrophe check is made on the field as it will be written,
-      whatever the cell holds. A field whose first character, after any
-      leading spaces, is `=`, `+`, `@`, a tab, a carriage return or a line
-      feed is written with a leading apostrophe.
-    - A field that starts with `-` is written with a leading apostrophe
-      unless the whole field reads as a number by rule 5: a minus sign, then
-      at most one of the currency signs `$`, `€`, `£`, `¥` and `₩`, then
-      digits with optional commas and decimals, then an optional exponent
-      or an optional `%`. Only the space character counts as a leading
-      space. A
-      negative amount under a currency symbol made of letters, such as
-      `-CHF5`, therefore gets the apostrophe and arrives as text.
+    - A text field whose first character, after any leading spaces, is
+      `=`, `+`, `-`, `@`, a tab, a carriage return, a line feed, or the
+      full-width form of one of the first four (`＝`, `＋`, `－`, `＠`,
+      U+FF1D, U+FF0B, U+FF0D and U+FF20), is written with a leading
+      apostrophe, so that a program that opens the file does not read it
+      as a formula
+      ([OWASP, CSV injection](https://owasp.org/www-community/attacks/CSV_Injection)).
+      This holds for typed text and for the text result of a formula. Only
+      the space character counts as a leading space. A number, a date, a
+      boolean or an error never gets the apostrophe, so a negative number
+      arrives as a number and a text that starts with `-` arrives as text.
+    - The apostrophe does not protect a file that Excel saves again,
+      because Excel can drop it then, as OWASP notes.
     - Supported ways of opening the file are those that read it as
       comma-delimited UTF-8 and leave text as text: LibreOffice Calc and
       Apple Numbers opening the file, import into Google Sheets, and
@@ -867,11 +1066,12 @@ reference data generator and the measurement scripts.
 | Remote display | p95 of 200 ms or less from the server receiving an edit to it showing on another editor's screen, while 5 people each edit a cell twice per second. |
 | Concurrent editing | Under that load, with one of them inserting a row every 5 seconds and another sorting the rows every 10 seconds, every edit the concurrency rules say must apply stays in the cell it was made in, with the same result on every screen. |
 | Structure cases | A fixed list of cases, set by the technical design, each gives the result this page states: a formula committed while a row is inserted above what it reads (rule 14); references after insert, delete and sort, with `$` and other tabs; undo of an insert after someone else typed in the new row, and undo of a sort after someone else sorted (rule 23); a stale agent call that names a renamed, deleted or replaced tab (rule 36); tab recovery in each case of rule 52, with a formula that names its own tab recovered under another name; a rollback after formulas were edited (rule 50); a stale agent write across a rollback that only reorders rows (rule 36); a formula committed just before such a rollback, and a formula still being typed when it arrives (rules 14 and 35). |
+| Value and editing cases | A fixed list of cases, set by the technical design, each gives the result this page states: the fill handle (rule 21a), the text order (rule 22), typed numbers of more than 15 digits (rule 5), the last date (rule 12), Find (rule 20a) and tab names (rule 2). |
 | Formulas | Every row of the function reference table (rule 12) gives its expected result, in the browser, through `get_sheet` and in a CSV export. |
 | Calculation date | With the host's date moved forward: on a small sheet (the offsite budget of the typical flow with one `TODAY` formula) an open screen shows the new value within a minute; on the reference sheet the recalculation starts within a minute and the new values appear together when it has ended; a read begun before the change returns the old date on every page; and a revision closed before it still shows the old value. |
 | Limits | Each limit of rule 9 has its stated outcome. A write over a stored limit (tabs, rows, columns, filled cells, formulas, characters of a cell or a formula, nesting, cells read by one formula and by all formulas, typed text, bytes of a call) is refused whole with the limit's name. A text value inside a calculation that would pass 32,767 characters gives `#VALUE!` and the write is accepted. A state whose formulas calculate more text than it may hold is accepted and calculated in limited mode, with `#LIMIT!` exactly where rule 9 puts it, the same on every screen and through `get_sheet`; this is checked for a write that causes it and for a sheet that passes the limit only from a new calculation date on, and every result shows again after an edit brings the total back under the limit. While the host refuses a write, runs the longest recalculation the limits allow, with or without an edit starting it, or produces the largest CSV download, it answers other flats' requests within 1 second, and no reader of the sheet gets partly calculated values. |
 | Durability | An edit shown as Saved is present, with the values that follow from it, after the host process is killed and restarted. |
-| Export | A fixed list of cells, set by the technical design, covers every case of rule 60: each dangerous first character with and without leading spaces, text typed and text calculated by a formula, negative numbers in every number format, with a currency sign and with a currency symbol made of letters, text that holds a semicolon followed by `=`, quotes, commas and line breaks. It exports to the exact expected CSV bytes, and that file, opened in each supported way of rule 60, shows no calculated field. |
+| Export | A fixed list of cells, set by the technical design, covers every case of rule 60: each dangerous first character, the full-width ones included, with and without leading spaces, in text typed and text calculated by a formula; negative numbers under every number format, a currency symbol made of letters included, which export as plain numbers; numbers that need an exponent or 17 significant digits; dates, times and dates with time under every date and time format, with and without a fraction of a second, which export in ISO 8601 form; text that holds a semicolon followed by `=`, quotes, commas and line breaks. It exports to the exact expected CSV bytes, and that file, opened in each supported way of rule 60, shows no calculated field. |
 | Accessibility | With VoiceOver on Safari and on Chrome, a person moves through the large tab, hears each cell's address and content, edits a formula, switches tabs and hears a refused edit and the save status (rule 20b). |
 | Reconnection | After disconnecting and reconnecting, each unconfirmed edit applies exactly once. |
 | Recovery | Every tab of a retained revision can be viewed and restored. Rollback succeeds with the disk quota full. |
@@ -895,8 +1095,7 @@ merging of text inside one cell.
 
 A sheet leaves S1 only as CSV, one tab at a time, so formulas, formats and
 the other tabs do not travel with the file. Workbook files (`.xlsx`) are the
-first candidate for the release after S1
-([Open question 2](#open-questions)).
+phase after S1 ([Open question 2](#open-questions)).
 
 Also outside S1, as for every type: accounts and per-person permissions,
 model calls inside the sheet, plugins and arbitrary HTML, replication across
@@ -940,6 +1139,34 @@ Not done yet:
 1. **Limit numbers.** The limits in rule 9 and the read and write sizes in
    rules 42 and 43 are planned values, fixed after measurement with the
    reference sheet.
-2. **Workbook files.** Whether importing and exporting `.xlsx` files belongs
-   in the release after S1 or later, and which parts of a workbook an import
-   keeps.
+2. **Workbook files.** Importing and exporting `.xlsx` files is the phase
+   after S1, as the requester decided on 2026-11-19. Which parts of a
+   workbook an import keeps is decided in the design of that phase.
+3. **Fill choices.** The S1 choices of rule 21a wait for the requester:
+   short names, weekend days, three or more names, the form and capitals
+   of names, the hour step of a time and a series of times inside one day,
+   the day step of a date with time, whole days in a trend of dates, whole
+   numbers and dropped signs in the trend of a text, a final number of more
+   than 15 digits, and the step of 1 for one number in the series. A check
+   by hand in Excel before release (technical design section 22.4) gives
+   the requester Excel's result for each.
+4. **Text order.** The S1 choices of rule 22 wait for the requester: the
+   order of texts that differ by apostrophes, and the code-point order of
+   characters outside ASCII. Microsoft documents neither, and Excel's
+   order outside ASCII depends on its region. The check by hand in Excel
+   gives the requester Excel's order for the cases of section 22.2.
+5. **Times in CSV.** The S1 choice of rule 60 waits for the requester: a
+   time is written to the millisecond, and a part of a millisecond is
+   dropped. The requester's decision of 2026-11-19 names "CSV with stored
+   values and ISO dates", and the earlier rule sets full precision only for
+   numbers.
+6. **Checks by hand in Excel.** The check by hand of technical design
+   section 22.4 covers typed dates without a year (rule 5) and the cut
+   (rule 15), as well as the cases of open questions 3 and 4. A result that
+   differs from what this page says goes to the requester, who decides
+   whether S1 changes or this page states the difference.
+
+The "earlier design" and the "earlier decision" or "earlier rule" in this
+page are the S1 design of pull requests #236, #242 and #243 and the
+requester's decisions recorded there. Those pull requests are not merged,
+so the sentences that rely on them say what was taken from them.
