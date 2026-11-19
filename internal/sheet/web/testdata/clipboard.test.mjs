@@ -6,7 +6,7 @@ import { decodeTSV, encodeTSV, measureTSV, targets } from '../clipboard.js';
 import { ACTION_MAX } from '../protocol.js';
 import { dragTarget, keyFill } from '../fill.js';
 import { fire } from './dom.mjs';
-import { FakeServer, key, notices, settle, shownAt, startApp, type } from './server.mjs';
+import { FakeServer, find, key, notices, settle, shownAt, startApp, type } from './server.mjs';
 
 const sheet = () => new FakeServer({ tabs: [
   { id: 1, name: 'Budget', rows: 6, cols: 4, cells: { '0,0': 'Item', '0,1': 'Amount', '1,0': 'Venue', '1,1': { kind: 'n', value: 1200, shown: '$1,200.00', edit: '1200' }, '2,0': 'Food', '2,1': '=B2*2' } },
@@ -275,7 +275,8 @@ test('the fill handle names the source and the cells the drag adds', async () =>
   assert.deepEqual(t.grid.overlays.fill, { r1: 3, r2: 5, c1: 1, c2: 1 }, 'the target is previewed');
   assert.equal(t.server.socket.frames('action').length, 0);
   t.grid.h.up(ev);
-  assert.deepEqual(lastOps(t.server), [{ op: 'fill', tab: 1, source: { rows: [[m.rowAt(2), 1]], cols: [[m.colAt(1), 1]] }, target: { rows: [[m.rowAt(3), 3]], cols: [[m.colAt(1), 1]] } }]);
+  // A drag fills by rule 21a: mode auto.
+  assert.deepEqual(lastOps(t.server), [{ op: 'fill', tab: 1, source: { rows: [[m.rowAt(2), 1]], cols: [[m.colAt(1), 1]] }, target: { rows: [[m.rowAt(3), 3]], cols: [[m.colAt(1), 1]] }, mode: 'auto' }]);
   assert.deepEqual(t.sel.box(), { r1: 2, c1: 1, r2: 5, c2: 1 }, 'the filled range is selected');
   assert.equal(t.grid.overlays.fill, null);
 });
@@ -295,6 +296,10 @@ test('Ctrl+D and Ctrl+R fill the selection from its first row or column', async 
   t.sel.range(1, 0, 1, 3);
   key(t, 'r', { metaKey: true });
   assert.deepEqual(lastOps(t.server)[0], { op: 'fill', tab: 1, source: { rows: [[m.rowAt(1), 1]], cols: [[m.colAt(0), 1]] }, target: { rows: [[m.rowAt(1), 1]], cols: [[m.colAt(1), 3]] } });
+  // Ctrl+D and Ctrl+R copy: their fill names no mode, which is a copy,
+  // and leaves no button to change it.
+  for (const a of t.server.socket.frames('action')) assert.equal(Object.hasOwn(a.ops[0], 'mode'), false);
+  assert.equal(t.doc.querySelector('.fillopts').hidden, true);
 });
 
 // built counts the array entries added while fn runs, and ends fn once
@@ -544,7 +549,13 @@ test('a whole tab of ordinary size is copied as before, as cells and as the whol
   fire(t.doc, 'paste', clip(all.data['text/plain']));
   assert.equal(lastOps(t.server)[0].op, 'copy');
   t.app.downloadCSV();
-  assert.match(notices(t).at(-1)[1], /^Downloading “Budget\.csv”/);
+  // The file holds each cell's value by rule 60, not what the cell shows,
+  // so the notice and the button name a CSV file of the tab.
+  const said = notices(t).at(-1)[1];
+  assert.equal(said, 'Downloading “Budget.csv”: a CSV file of this tab, one field per cell, up to the last filled cell.');
+  assert.doesNotMatch(said, /shown/);
+  const btn = find(t.app.top, 'Download this tab as CSV');
+  assert.equal(btn.getAttribute('title'), 'Download this tab as a CSV file');
 });
 
 test('a paste of a cut that cannot be sent leaves the cut to be pasted again', async () => {

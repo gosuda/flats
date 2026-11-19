@@ -209,7 +209,9 @@ export const ops = {
   format: (tab, rows, cols, set) => ({ op: 'format', tab, rows, cols, set }),
   width: (tab, cols, width) => ({ op: 'width', tab, cols, width }),
   copy: (from, to, mode, cut) => ({ op: 'copy', from, to, mode, cut }),
-  fill: (tab, source, target) => ({ op: 'fill', tab, source, target }),
+  // A fill's mode is copy, auto or series. One without a mode is a copy,
+  // in the shape Ctrl+D and Ctrl+R have always sent.
+  fill: (tab, source, target, mode) => (mode == null ? { op: 'fill', tab, source, target } : { op: 'fill', tab, source, target, mode }),
   insertRows: (tab, beside, side, count) => ({ op: 'insert_rows', tab, beside, side, count }),
   insertCols: (tab, beside, side, count) => ({ op: 'insert_cols', tab, beside, side, count }),
   appendRows: (tab, count) => ({ op: 'append_rows', tab, count }),
