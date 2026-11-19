@@ -3,6 +3,9 @@ package portal_test
 import (
 	"bufio"
 	"context"
+	"crypto/aes"
+	"crypto/cipher"
+	"crypto/rand"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -125,6 +128,7 @@ type host struct {
 	svc   *core.Service
 	mgr   *provider.Manager
 	loop  *local.Net
+	pn    *portal.Net
 	px    *portal.TestExposures
 	notes *notes
 	logs  *logLines // the log of the service and of the Portal Net
@@ -157,7 +161,7 @@ func startHost(t *testing.T, dir string) *host {
 	if err != nil {
 		t.Fatal(err)
 	}
-	h := &host{dir: dir, st: st, svc: svc, mgr: mgr, loop: loop, px: px, notes: &notes{}, logs: logs}
+	h := &host{dir: dir, st: st, svc: svc, mgr: mgr, loop: loop, pn: pn, px: px, notes: &notes{}, logs: logs}
 	svc.SetNotifier(h.notes)
 	var once sync.Once
 	h.stop = func() { once.Do(func() { svc.Close(); mgr.Close(); pn.Close(); loop.Close(); st.Close() }) }
@@ -342,6 +346,24 @@ func tokenSecret(t *testing.T, path string) (address, secret string) {
 // link of an identity whose token secret changed never does.
 func gateOfFile(t *testing.T, path, host, subject, credential string) bool {
 	t.Helper()
+	return passesGateOfFile(t, path, host, subject, func(r *http.Request) { r.Header.Set("X-Portal-Access-Credential", credential) })
+}
+
+// sessionOfFile reports whether a credential gate built from the identity file at path lets in a request on host with
+// the cookies of a session: a session of an identity whose token secret changed never passes.
+func sessionOfFile(t *testing.T, path, host, subject string, cookies map[string]*http.Cookie) bool {
+	t.Helper()
+	return passesGateOfFile(t, path, host, subject, func(r *http.Request) {
+		for _, c := range cookies {
+			r.AddCookie(&http.Cookie{Name: c.Name, Value: c.Value})
+		}
+	})
+}
+
+// passesGateOfFile reports whether a credential gate of subject built from the identity file at path lets in a GET on
+// host that with prepares.
+func passesGateOfFile(t *testing.T, path, host, subject string, with func(*http.Request)) bool {
+	t.Helper()
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -355,7 +377,7 @@ func gateOfFile(t *testing.T, path, host, subject, credential string) bool {
 		t.Fatal(err)
 	}
 	req, _ := http.NewRequest(http.MethodGet, "https://"+host+"/", nil)
-	req.Header.Set("X-Portal-Access-Credential", credential)
+	with(req)
 	rec := &recorder{header: http.Header{}, code: http.StatusOK}
 	g.ServeHTTP(rec, req)
 	return rec.code == http.StatusOK
@@ -457,6 +479,8 @@ func TestSignInOnThePortalRoute(t *testing.T) {
 	// Rule 39: a visitor who leaves the allowlist loses access at the next request, also on an open connection.
 	approveSignIn(t, h, "app", credential("visitor-9Kz"))
 	waitClosed(t, sock)
+	// The session of the removed entry opens no static file and no page (rule 47).
+	wantSignInPage(t, guest, "/style.css")
 	wantSignInPage(t, guest, "/")
 	l2 := issue(t, h, "app", "visitor-9Kz")
 	other := portal.NewTestVisitor(exp.Addr(), appHost)
@@ -692,13 +716,105 @@ func TestSignInOIDCVisitorHeaders(t *testing.T) {
 	}
 }
 
+// closedIssuer is an https issuer on a loopback port that nothing listens on. The background check of rule 37 of a
+// gate of it fails at once, and no request leaves the loopback host.
+func closedIssuer(t *testing.T) string {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+	return "https://" + addr
+}
+
+// setApprovalTarget changes the frozen target of the pending approval id in flats.db, as a hand would: the seam of a
+// setting that the host refuses at a request and the SDK accepts, such as an issuer on a loopback http server.
+func setApprovalTarget(t *testing.T, dir, id string, to store.SignIn) {
+	t.Helper()
+	db, err := sql.Open("sqlite", filepath.Join(dir, "flats.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	var raw string
+	if err := db.QueryRow(`SELECT params FROM approvals WHERE id=?`, id).Scan(&raw); err != nil {
+		t.Fatal(err)
+	}
+	var params map[string]any
+	if err := json.Unmarshal([]byte(raw), &params); err != nil {
+		t.Fatal(err)
+	}
+	params["to"] = to
+	b, _ := json.Marshal(params)
+	if _, err := db.Exec(`UPDATE approvals SET params=? WHERE id=?`, string(b), id); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// endpointOf is the endpoint of provider id in the flat view of slug.
+func endpointOf(t *testing.T, h *host, slug string, id core.ProviderID) *core.ExposureEndpoint {
+	t.Helper()
+	fv, err := h.svc.GetFlat(context.Background(), slug)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, ep := range fv.Endpoints {
+		if ep.Provider == id {
+			return &fv.Endpoints[i]
+		}
+	}
+	return nil
+}
+
+// waitPortalDetail waits until the Portal status of app has a detail with part, as the background check of rule 37
+// writes it.
+func waitPortalDetail(t *testing.T, h *host, part string) {
+	t.Helper()
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(20 * time.Millisecond) {
+		for _, hi := range h.pn.Status().Hosts {
+			if hi.Host == "app" && strings.Contains(hi.Detail, part) {
+				return
+			}
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the Portal status has no detail with %q: %+v", part, h.pn.Status().Hosts)
+		}
+	}
+}
+
+// noStatusText fails when a status of the host holds text (rule 30): the Portal backend, the provider manager and the
+// Local network, which `flats status` and the status route show, and the flat view of app with its endpoints.
+func noStatusText(t *testing.T, h *host, text string) {
+	t.Helper()
+	fv, err := h.svc.GetFlat(context.Background(), "app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for what, v := range map[string]any{"the Portal status": h.pn.Status(), "the status of the providers": h.mgr.HostStatus(), "the Local status": h.loop.Status(), "the flat view": fv} {
+		raw, err := json.Marshal(v)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(raw), text) {
+			t.Errorf("%s holds the client secret: %s", what, raw)
+		}
+	}
+}
+
 func TestSignInGateFailureOnTheHost(t *testing.T) {
 	ctx := context.Background()
 	h := startHost(t, t.TempDir())
+	// No issuer of this test is outside the loopback host: two issuers under paths of one closed loopback port, on
+	// which the check of rule 37 of a gate fails at once.
+	closed := closedIssuer(t)
+	issuerA, issuerB := closed+"/realm-a", closed+"/realm-b"
+	const value = "cs-distinctive-1"
 	deployServer(t, h, "app")
-	approveSignIn(t, h, "app", core.SignInRequest{Provider: "oidc", Issuer: "https://idp-a.example", ClientID: "c", Allow: []string{"ann@example.com"}})
+	approveSignIn(t, h, "app", core.SignInRequest{Provider: "oidc", Issuer: issuerA, ClientID: "c", Allow: []string{"ann@example.com"}})
 	// Rule 27: a client secret bound to another issuer builds no gate.
-	if _, err := h.svc.SetSignInSecret(ctx, "app", "cs-distinctive-1", "https://idp-b.example", "c", core.ViaCLI); err != nil {
+	if _, err := h.svc.SetSignInSecret(ctx, "app", value, issuerB, "c", core.ViaCLI); err != nil {
 		t.Fatal(err)
 	}
 	// Rule 35: a visibility approval that needs the Portal route fails with the reason.
@@ -716,49 +832,40 @@ func TestSignInGateFailureOnTheHost(t *testing.T) {
 	if h.px.Count() != 0 {
 		t.Fatal("a gate that failed opened a Portal route")
 	}
-	if text := fmt.Sprint(err, a.Result, h.logs.all()); strings.Contains(text, "cs-distinctive-1") {
+	if text := fmt.Sprint(err, a.Result, h.logs.all()); strings.Contains(text, value) {
 		t.Fatal("a message holds the client secret")
 	}
+	noStatusText(t, h, value)
 
 	// The binding of the setting builds the gate, and a set for another issuer stops the route at once (rule 29).
-	if _, err := h.svc.SetSignInSecret(ctx, "app", "cs-distinctive-1", "https://idp-a.example", "c", core.ViaCLI); err != nil {
+	if _, err := h.svc.SetSignInSecret(ctx, "app", value, issuerA, "c", core.ViaCLI); err != nil {
 		t.Fatal(err)
 	}
 	publicOnPortal(t, h, "app")
 	exp := h.px.Of(t, "app")
 	exp.SetRelays(portal.ReadyRelay("relay.test", appHost))
 	wantSignInPage(t, portal.NewTestVisitor(exp.Addr(), appHost), "/")
-	res, err := h.svc.SetSignInSecret(ctx, "app", "cs-distinctive-2", "https://idp-b.example", "c", core.ViaCLI)
+	// Rule 30: no status holds the value of the gate in service, also once the check of rule 37 reported its failure.
+	waitPortalDetail(t, h, "sign-in provider check failed: ")
+	noStatusText(t, h, value)
+	res, err := h.svc.SetSignInSecret(ctx, "app", "cs-distinctive-2", issuerB, "c", core.ViaCLI)
 	if err != nil || !strings.Contains(res.Message, "the Portal route of app is stopped") {
 		t.Fatalf("set = %+v, %v", res, err)
 	}
 	if exp.Closes() != 1 {
 		t.Fatal("the served route did not stop and unregister")
 	}
-	fv, err := h.svc.GetFlat(ctx, "app")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var portalEP, localEP *core.ExposureEndpoint
-	for i, ep := range fv.Endpoints {
-		switch ep.Provider {
-		case core.ProviderPortal:
-			portalEP = &fv.Endpoints[i]
-		case core.ProviderLocal:
-			localEP = &fv.Endpoints[i]
-		}
-	}
-	if portalEP == nil || portalEP.State != "error" || !strings.HasPrefix(portalEP.Detail, "sign-in gate: ") {
-		t.Fatalf("Portal endpoint = %+v", portalEP)
+	if ep := endpointOf(t, h, "app", core.ProviderPortal); ep == nil || ep.State != "error" || !strings.HasPrefix(ep.Detail, "sign-in gate: ") {
+		t.Fatalf("Portal endpoint = %+v", ep)
 	}
 	// The other routes of the flat stay.
-	if localEP == nil || localEP.State != "ready" {
-		t.Fatalf("Local endpoint = %+v", localEP)
+	if ep := endpointOf(t, h, "app", core.ProviderLocal); ep == nil || ep.State != "ready" {
+		t.Fatalf("Local endpoint = %+v", ep)
 	}
 	wantPage(t, privateVisitor(t, h, "app"), "/", "v1 /")
 
 	// The next build after the cause is removed opens the route again (rule 35).
-	if _, err := h.svc.SetSignInSecret(ctx, "app", "cs-distinctive-1", "https://idp-a.example", "c", core.ViaCLI); err != nil {
+	if _, err := h.svc.SetSignInSecret(ctx, "app", value, issuerA, "c", core.ViaCLI); err != nil {
 		t.Fatal(err)
 	}
 	if h.px.Count() != 2 {
@@ -767,19 +874,303 @@ func TestSignInGateFailureOnTheHost(t *testing.T) {
 	exp = h.px.Of(t, "app")
 	exp.SetRelays(portal.ReadyRelay("relay.test", appHost))
 	wantSignInPage(t, portal.NewTestVisitor(exp.Addr(), appHost), "/")
+	noStatusText(t, h, value)
+}
 
-	// Rule 21: when step 4 of an applied change fails, the approval is approved, the setting is stored, and the
-	// result says that the Portal route stopped and why. Here the stored client secret belongs to the old issuer.
-	r, err = h.svc.RequestSignIn(ctx, "app", core.SignInRequest{Provider: "oidc", Issuer: "https://idp-c.example", ClientID: "c", Allow: []string{"ann@example.com"}}, core.ViaCLI)
-	a = decide(t, h, r, err)
+// Rules 21 and 27: an approved change of the issuer stores the setting, and the client secret of the old issuer never
+// reaches the new one. Step 4 stops the Portal route, the result and the endpoint say why with the detail of rule 27
+// in full, and the fake provider at the new address gets no token request that holds the value.
+func TestSignInIssuerChangeSendsTheOldSecretNowhere(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	h := startHost(t, dir)
+	closed := closedIssuer(t)
+	issuerA := closed + "/realm-a"
+	idp := portal.NewTestIdP(t, "c")
+	const value = "cs-distinctive-3"
+	deployServer(t, h, "app")
+	approveSignIn(t, h, "app", core.SignInRequest{Provider: "oidc", Issuer: issuerA, ClientID: "c", Allow: []string{"ann@example.com"}})
+	if _, err := h.svc.SetSignInSecret(ctx, "app", value, issuerA, "c", core.ViaCLI); err != nil {
+		t.Fatal(err)
+	}
+	publicOnPortal(t, h, "app")
+	exp := h.px.Of(t, "app")
+	exp.SetRelays(portal.ReadyRelay("relay.test", appHost))
+	wantSignInPage(t, portal.NewTestVisitor(exp.Addr(), appHost), "/")
+
+	// The approval froze an https issuer, which a hand changes in flats.db to the fake provider on loopback http: the
+	// SDK accepts it, and rule 2 refuses it at a request.
+	r, err := h.svc.RequestSignIn(ctx, "app", core.SignInRequest{Provider: "oidc", Issuer: closed + "/realm-c", ClientID: "c", Allow: []string{"ann@example.com"}}, core.ViaCLI)
+	if err != nil || r.Approval == nil {
+		t.Fatalf("request = %+v, %v", r, err)
+	}
+	setApprovalTarget(t, dir, r.Approval.ID, store.SignIn{Provider: "oidc", Issuer: idp.URL, ClientID: "c", Allow: []string{"ann@example.com"}})
+	a := decide(t, h, r, err)
+	// Rule 27: the new issuer gets no token request that holds the value. Whatever serves the Portal address after the
+	// change gets a sign-in of an allowed visitor, which would send the token request with the client secret of its
+	// gate; when nothing serves it, no gate can send one.
+	if latest := h.px.Of(t, "app"); latest.Closes() == 0 {
+		v := portal.NewTestVisitor(latest.Addr(), appHost)
+		latest.SetRelays(portal.ReadyRelay("relay.test", appHost))
+		v.OIDCLogin(t, idp, "ann-1", "ann@example.com")
+	}
+	if got := idp.Secrets(); slices.Contains(got, value) {
+		t.Fatalf("the new issuer got a token request with the client secret of the old one: %q", got)
+	}
+	// Rule 21: the approval is approved, the setting is stored, and the result says that the Portal route stopped and
+	// why.
 	if a.Status != "approved" || !strings.Contains(a.Result, "; the setting is stored, and the Portal route of app is stopped: sign-in gate: ") {
 		t.Fatalf("approval = %s %q", a.Status, a.Result)
 	}
 	if exp.Closes() != 1 {
 		t.Fatal("step 4 did not stop the route")
 	}
-	if v, _ := h.svc.GetSignIn(ctx, "app"); v.Issuer != "https://idp-c.example" {
+	if v, _ := h.svc.GetSignIn(ctx, "app"); v.Issuer != idp.URL {
 		t.Fatalf("the setting = %+v", v)
+	}
+	// The endpoint shows the detail of rule 27 in full: the binding, the setting, and the command that sets the client
+	// secret again for the issuer of the setting.
+	want := "sign-in gate: the stored sign-in client secret belongs to another issuer or client ID: it is bound to issuer " + issuerA +
+		" and client ID c, and the sign-in has issuer " + idp.URL + " and client ID c. Set it again for the issuer of the setting with `flats signin secret set app --issuer " +
+		idp.URL + " --client-id c`"
+	if ep := endpointOf(t, h, "app", core.ProviderPortal); ep == nil || ep.State != "error" || ep.Detail != want {
+		t.Fatalf("Portal endpoint = %+v, want the detail %q", ep, want)
+	}
+	if !strings.HasSuffix(a.Result, want) {
+		t.Fatalf("the result = %q, want the detail %q", a.Result, want)
+	}
+	if text := h.logs.all(); strings.Contains(text, value) {
+		t.Fatalf("the host log holds the client secret:\n%s", text)
+	}
+	noStatusText(t, h, value)
+}
+
+// sealWithAnotherKey stores a client secret of app bound to issuer and client ID c, sealed by a key that is not the key
+// of the host, as a row of another host or of a lost key holds it.
+func sealWithAnotherKey(t *testing.T, h *host, issuer string) {
+	t.Helper()
+	key, err := core.NewSecretKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g, err := cipher.NewGCM(block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce := make([]byte, g.NonceSize())
+	if _, err := rand.Read(nonce); err != nil {
+		t.Fatal(err)
+	}
+	sec := store.SealedSecret{Nonce: nonce, Ciphertext: g.Seal(nil, nonce, []byte("cs-other-key-3Rf"), []byte(store.SignInSecretName)), KeyID: core.KeyID(key), UpdatedAt: time.Now()}
+	if _, err := h.st.PutSignInSecret(context.Background(), "app", sec, store.SignInBinding{Issuer: issuer, ClientID: "c"}, store.Audit{Via: store.AuditViaCLI}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A client secret that the key of the host does not open, a real row sealed by another key, builds no gate (rule 35):
+// a new entry opens no Portal route, a served entry stops at its next build, the endpoint and one line of the host log
+// say why, the other routes stay, and the next build after the operator sets the secret again opens the route.
+func TestSignInSecretSealedByAnotherKey(t *testing.T) {
+	ctx := context.Background()
+	h := startHost(t, t.TempDir())
+	issuer := closedIssuer(t)
+	deployServer(t, h, "app")
+	approveSignIn(t, h, "app", core.SignInRequest{Provider: "oidc", Issuer: issuer, ClientID: "c", Allow: []string{"ann@example.com"}})
+	sealWithAnotherKey(t, h, issuer)
+	const why = "sign-in gate: open the sign-in client secret of app: cipher: message authentication failed (the value carries the key ID "
+	gateLines := func() int {
+		t.Helper()
+		return strings.Count(h.logs.all(), "portal: app: sign-in gate: open the sign-in client secret of app")
+	}
+
+	// A new entry: a visibility approval that needs the Portal route fails with the reason, and no route opens.
+	if err := h.svc.SetProviderPermission(ctx, "app", store.ProviderPortal, true, core.ViaConsole); err != nil {
+		t.Fatal(err)
+	}
+	r, err := h.svc.SetVisibility(ctx, "app", store.Public, core.ViaConsole, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	a, err := h.svc.Decide(ctx, r.Approval.ID, true)
+	if (err == nil && a.Status != "failed") || !strings.Contains(fmt.Sprint(err, a.Result), why) {
+		t.Fatalf("visibility approval = %s %q, %v", a.Status, a.Result, err)
+	}
+	if h.px.Count() != 0 {
+		t.Fatal("a gate whose client secret does not open opened a Portal route")
+	}
+	// The flat stays Private, so its view has no Portal endpoint; the Portal backend shows the slug.
+	if hi := slices.IndexFunc(h.pn.Status().Hosts, func(hi core.HostInfo) bool {
+		return hi.Host == "app" && hi.State == "error" && strings.HasPrefix(hi.Detail, why)
+	}); hi < 0 {
+		t.Fatalf("the Portal status = %+v", h.pn.Status().Hosts)
+	}
+	if n := gateLines(); n != 1 {
+		t.Fatalf("%d log lines with the reason, want 1:\n%s", n, h.logs.all())
+	}
+
+	// The secret of the host key opens the route; a served entry whose next build meets a row of another key stops.
+	if _, err := h.svc.SetSignInSecret(ctx, "app", "cs-host-key-8Nw", issuer, "c", core.ViaCLI); err != nil {
+		t.Fatal(err)
+	}
+	publicOnPortal(t, h, "app")
+	exp := h.px.Of(t, "app")
+	exp.SetRelays(portal.ReadyRelay("relay.test", appHost))
+	wantSignInPage(t, portal.NewTestVisitor(exp.Addr(), appHost), "/")
+	sealWithAnotherKey(t, h, issuer)
+	r, err = h.svc.RequestSignIn(ctx, "app", core.SignInRequest{Provider: "oidc", Issuer: issuer, ClientID: "c", Allow: []string{"ann@example.com", "bob@example.com"}}, core.ViaCLI)
+	a = decide(t, h, r, err)
+	if a.Status != "approved" || !strings.Contains(a.Result, "; the setting is stored, and the Portal route of app is stopped: "+why) {
+		t.Fatalf("approval = %s %q", a.Status, a.Result)
+	}
+	if exp.Closes() != 1 {
+		t.Fatal("the served route did not stop and unregister")
+	}
+	if ep := endpointOf(t, h, "app", core.ProviderPortal); ep == nil || ep.State != "error" || !strings.HasPrefix(ep.Detail, why) {
+		t.Fatalf("Portal endpoint = %+v", ep)
+	}
+	if n := gateLines(); n != 2 {
+		t.Fatalf("%d log lines with the reason, want 2:\n%s", n, h.logs.all())
+	}
+	if ep := endpointOf(t, h, "app", core.ProviderLocal); ep == nil || ep.State != "ready" {
+		t.Fatalf("Local endpoint = %+v", ep)
+	}
+	wantPage(t, privateVisitor(t, h, "app"), "/", "v1 /")
+
+	// The next build after the operator sets the secret again opens the route.
+	if _, err := h.svc.SetSignInSecret(ctx, "app", "cs-host-key-8Nw", issuer, "c", core.ViaCLI); err != nil {
+		t.Fatal(err)
+	}
+	if h.px.Count() != 2 {
+		t.Fatalf("exposures = %d, want a new one", h.px.Count())
+	}
+	exp = h.px.Of(t, "app")
+	exp.SetRelays(portal.ReadyRelay("relay.test", appHost))
+	wantSignInPage(t, portal.NewTestVisitor(exp.Addr(), appHost), "/")
+	if text := h.logs.all(); strings.Contains(text, "cs-host-key-8Nw") || strings.Contains(text, "cs-other-key-3Rf") {
+		t.Fatalf("the host log holds a client secret:\n%s", text)
+	}
+}
+
+// While a set_signin approval waits, the Portal route keeps the gate of the stored setting (rule 16): a request to
+// turn sign-in off and one that removes the signed-in visitor change nothing on it, also across an open of the route
+// in the meantime, here a redeploy, which carries the stored setting (rule 38).
+func TestSignInPendingApprovalKeepsTheGate(t *testing.T) {
+	ctx := context.Background()
+	h := startHost(t, t.TempDir())
+	deployServer(t, h, "app")
+	publicOnPortal(t, h, "app")
+	approveSignIn(t, h, "app", credential("guest-7Qx"))
+	exp := h.px.Of(t, "app")
+	exp.SetRelays(portal.ReadyRelay("relay.test", appHost))
+	anon := portal.NewTestVisitor(exp.Addr(), appHost)
+	guest := portal.NewTestVisitor(exp.Addr(), appHost)
+	if code := guest.Redeem(t, portal.CredentialOf(t, issue(t, h, "app", "guest-7Qx").URL)); code != http.StatusOK {
+		t.Fatalf("redeem = %d", code)
+	}
+	var waiting []string
+	for _, req := range []core.SignInRequest{{}, credential("visitor-9Kz")} {
+		r, err := h.svc.RequestSignIn(ctx, "app", req, core.ViaCLI)
+		if err != nil || r.Approval == nil || r.Approval.Status != "pending" {
+			t.Fatalf("request %+v = %+v, %v", req, r, err)
+		}
+		waiting = append(waiting, r.Approval.ID)
+	}
+	for version, step := range []string{"the requests", "a redeploy"} {
+		if step == "a redeploy" {
+			deployServer(t, h, "app")
+		}
+		wantSignInPage(t, anon, "/")
+		wantSignInPage(t, anon, "/style.css")
+		wantPage(t, guest, "/", fmt.Sprintf("v%d /", version+1))
+	}
+	if v, err := h.svc.GetSignIn(ctx, "app"); err != nil || v.Seq != 1 || !slices.Equal(v.Allow, []string{"guest-7Qx"}) {
+		t.Fatalf("the stored setting = %+v, %v", v, err)
+	}
+	if exp.Closes() != 0 || h.px.Count() != 1 {
+		t.Fatalf("a pending approval changed the Portal route: %d closes, %d exposures", exp.Closes(), h.px.Count())
+	}
+	for _, id := range waiting {
+		if a, err := h.svc.GetApproval(ctx, id); err != nil || a.Status != "pending" {
+			t.Fatalf("approval %s = %+v, %v", id, a, err)
+		}
+	}
+	// The decision of the operator applies the change to off, and the gate goes.
+	if a, err := h.svc.Decide(ctx, waiting[0], true); err != nil || a.Status != "approved" {
+		t.Fatalf("decide = %+v, %v", a, err)
+	}
+	wantPage(t, anon, "/", "v2 /")
+}
+
+// Rule 36 through the host, on Unix as a user that is not the superuser: when the identity file of a served Portal
+// route has no token secret and its folder cannot be written, the gate of a sign-in change is not built. The route
+// stops and unregisters, the endpoint has the state error with the detail, the host log has one line, the Local route
+// stays, and the next build after the folder can be written opens the route.
+func TestSignInTokenSecretCannotBeWrittenOnTheHost(t *testing.T) {
+	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
+		t.Skip("needs a folder that the test cannot write: Unix, not as the superuser")
+	}
+	ctx := context.Background()
+	dir := t.TempDir()
+	h := startHost(t, dir)
+	deployServer(t, h, "app")
+	publicOnPortal(t, h, "app")
+	exp := h.px.Of(t, "app")
+	exp.SetRelays(portal.ReadyRelay("relay.test", appHost))
+	wantPage(t, portal.NewTestVisitor(exp.Addr(), appHost), "/", "v1 /")
+	// The identity file as an older SDK wrote it: without a token secret.
+	portalDir := filepath.Join(dir, "portal")
+	path := filepath.Join(portalDir, "app.json")
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		t.Fatal(err)
+	}
+	delete(m, "token_secret")
+	raw, _ = json.Marshal(m)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(portalDir, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Chmod(portalDir, 0o700) })
+
+	r, err := h.svc.RequestSignIn(ctx, "app", credential("guest-7Qx"), core.ViaCLI)
+	a := decide(t, h, r, err)
+	const why = "sign-in gate: the identity file "
+	if a.Status != "approved" || !strings.Contains(a.Result, "; the setting is stored, and the Portal route of app is stopped: "+why+path+" has no token secret") {
+		t.Fatalf("approval = %s %q", a.Status, a.Result)
+	}
+	if exp.Closes() != 1 {
+		t.Fatal("the served route did not stop and unregister")
+	}
+	if ep := endpointOf(t, h, "app", core.ProviderPortal); ep == nil || ep.State != "error" || !strings.HasPrefix(ep.Detail, why+path) {
+		t.Fatalf("Portal endpoint = %+v", ep)
+	}
+	if n := strings.Count(h.logs.all(), "portal: app: "+why+path); n != 1 {
+		t.Fatalf("%d log lines with the reason, want 1:\n%s", n, h.logs.all())
+	}
+	if ep := endpointOf(t, h, "app", core.ProviderLocal); ep == nil || ep.State != "ready" {
+		t.Fatalf("Local endpoint = %+v", ep)
+	}
+	wantPage(t, privateVisitor(t, h, "app"), "/", "v1 /")
+
+	if err := os.Chmod(portalDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	approveSignIn(t, h, "app", credential("guest-7Qx", "visitor-9Kz"))
+	if h.px.Count() != 2 {
+		t.Fatalf("exposures = %d, want a new one", h.px.Count())
+	}
+	if _, secret := tokenSecret(t, path); secret == "" {
+		t.Fatal("the next build did not write the token secret")
 	}
 }
 
@@ -800,9 +1191,19 @@ func TestSignInRenameAndDeletion(t *testing.T) {
 	appFile := filepath.Join(dir, "portal", "app.json")
 	_, before := tokenSecret(t, appFile)
 
+	// A gate of the identity file lets the session in before the rename, so the refusal after it is the new token
+	// secret.
+	if !sessionOfFile(t, appFile, appHost, "guest-7Qx", v1.Cookies) {
+		t.Fatal("the session of the visitor does not open a gate of the identity before the rename")
+	}
+
 	// Rule 41: a rename gives the old identity a new token secret, with its row in the rename.
 	if _, err := h.svc.RenameSlug(ctx, "app", "new", core.ViaCLI); err != nil {
 		t.Fatal(err)
+	}
+	// So a session of the old identity is refused, as its links are.
+	if sessionOfFile(t, appFile, appHost, "guest-7Qx", v1.Cookies) {
+		t.Fatal("a session of the old host name still opens a gate of the old identity")
 	}
 	if _, after := tokenSecret(t, appFile); after == before || after == "" {
 		t.Fatal("the rename kept the token secret of the old identity")

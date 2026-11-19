@@ -411,27 +411,94 @@ func TestSignInTokenSecretCannotBeWritten(t *testing.T) {
 	if runtime.GOOS == "windows" || os.Geteuid() == 0 {
 		t.Skip("needs a folder that the test cannot write: Unix, not as the superuser")
 	}
-	dir := t.TempDir()
-	writeIdentityWithoutSecret(t, dir, "app")
-	n, ff := newTestNet(t, Config{Dir: dir, Discovery: true})
-	if err := os.Chmod(dir, 0o500); err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { os.Chmod(dir, 0o700) })
-	var flat flatRecorder
-	_, err := n.ServeSignIn(t.Context(), "app", flat.handler("flat"), false, credentialGate(1, "guest"))
-	if ge := (*core.SignInGateError)(nil); !errors.As(err, &ge) || !strings.Contains(err.Error(), filepath.Join(dir, "app.json")) {
-		t.Fatalf("ServeSignIn = %v, want a gate error that names the identity file", err)
-	}
-	if ff.count() != 0 {
-		t.Fatal("a gate without a kept token secret opened a route")
-	}
-	if err := os.Chmod(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := n.ServeSignIn(t.Context(), "app", flat.handler("flat"), false, credentialGate(1, "guest")); err != nil || ff.count() != 1 {
-		t.Fatalf("the next build = %v", err)
-	}
+	// Each case of rule 35 for this cause: the detail and one line of the host log name the identity file.
+	const why = "sign-in gate: the identity file "
+	t.Run("new entry", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "app.json")
+		writeIdentityWithoutSecret(t, dir, "app")
+		var logs logLines
+		n, ff := newTestNet(t, Config{Dir: dir, Discovery: true, Logf: logs.logf})
+		if err := os.Chmod(dir, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Chmod(dir, 0o700) })
+		var flat flatRecorder
+		_, err := n.ServeSignIn(t.Context(), "app", flat.handler("flat"), false, credentialGate(1, "guest"))
+		if ge := (*core.SignInGateError)(nil); !errors.As(err, &ge) || !strings.Contains(err.Error(), path) {
+			t.Fatalf("ServeSignIn = %v, want a gate error that names the identity file", err)
+		}
+		if ff.count() != 0 {
+			t.Fatal("a gate without a kept token secret opened a route")
+		}
+		wantGateError(t, n, why[len("sign-in gate: "):]+path)
+		if lines := logs.with("sign-in gate"); len(lines) != 1 || !strings.Contains(lines[0], "app: "+why+path) {
+			t.Fatalf("log = %q, want one line with the slug and the reason", lines)
+		}
+		if err := os.Chmod(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := n.ServeSignIn(t.Context(), "app", flat.handler("flat"), false, credentialGate(1, "guest")); err != nil || ff.count() != 1 {
+			t.Fatalf("the next build = %v", err)
+		}
+	})
+	t.Run("served entry", func(t *testing.T) {
+		dir := t.TempDir()
+		path := filepath.Join(dir, "app.json")
+		writeIdentityWithoutSecret(t, dir, "app")
+		var logs logLines
+		n, ff := newTestNet(t, Config{Dir: dir, Discovery: true, Logf: logs.logf})
+		// Another route of the backend, which stays.
+		if _, err := n.Serve(t.Context(), "other", hello("other page"), false); err != nil {
+			t.Fatal(err)
+		}
+		otherExp := ff.last(t)
+		otherExp.set(ReadyRelay("relay.test", "other-0xabc.relay.test"))
+		otherVisitor := NewTestVisitor(otherExp.Addr().String(), "other-0xabc.relay.test")
+		wantFlat(t, otherVisitor, "/", "other page")
+		// The route of app with sign-in off has no gate yet, so its token secret is not checked.
+		var flat flatRecorder
+		v, f := serveGated(t, n, ff, flat.handler("flat"), &core.PortalSignIn{Seq: 0})
+		wantFlat(t, v, "/", "flat /")
+		if _, secret := storedTokenSecret(t, path); secret != "" {
+			t.Fatal("the test needs an identity file without a token secret")
+		}
+		if err := os.Chmod(dir, 0o500); err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(func() { os.Chmod(dir, 0o700) })
+		before := flat.count()
+		_, err := n.ServeSignIn(t.Context(), "app", flat.handler("flat"), false, credentialGate(1, "guest"))
+		if ge := (*core.SignInGateError)(nil); !errors.As(err, &ge) || ge.StopErr != nil || !strings.Contains(err.Error(), path) {
+			t.Fatalf("ServeSignIn = %v, want a gate error that names the identity file", err)
+		}
+		// The served route stopped and unregistered, and never served the flat without the gate.
+		if f.closeCount() != 1 || n.entry("app") != nil {
+			t.Fatalf("the served route did not stop: %d closes", f.closeCount())
+		}
+		if flat.count() != before {
+			t.Fatal("a request reached the flat after the gate failed")
+		}
+		wantGateError(t, n, why[len("sign-in gate: "):]+path)
+		if lines := logs.with("sign-in gate"); len(lines) != 1 || !strings.Contains(lines[0], "app: "+why+path) {
+			t.Fatalf("log = %q, want one line with the slug and the reason", lines)
+		}
+		// The other route stays.
+		if otherExp.closeCount() != 0 || n.entry("other") == nil {
+			t.Fatal("the failure stopped another route")
+		}
+		wantFlat(t, otherVisitor, "/", "other page")
+		// The next build after the folder can be written opens the route again.
+		if err := os.Chmod(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := n.ServeSignIn(t.Context(), "app", flat.handler("flat"), false, credentialGate(1, "guest")); err != nil || ff.count() != 3 {
+			t.Fatalf("the next build = %v, %d exposures", err, ff.count())
+		}
+		if _, secret := storedTokenSecret(t, path); secret == "" {
+			t.Fatal("the next build did not write the token secret")
+		}
+	})
 }
 
 func TestSignInProviderCheck(t *testing.T) {

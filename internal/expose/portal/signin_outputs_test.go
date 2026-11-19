@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -190,7 +191,7 @@ func TestSignInRefusedEntryInNoOutput(t *testing.T) {
 
 // B7 of the completion criteria at full stack: a host that stopped after step 2 of rule 20 (the setting, the sequence,
 // the audit row and the receipt committed, the approval still applying) gets, at the next start, a gate from the
-// stored setting, and the approval ends as approved with one change and one audit row, without a webhook event.
+// stored setting, and the approval ends as approved with one change and one audit row.
 func TestSignInStopAfterTheCommitAtFullStack(t *testing.T) {
 	ctx := context.Background()
 	dir := t.TempDir()
@@ -247,9 +248,10 @@ func TestSignInStopAfterTheCommitAtFullStack(t *testing.T) {
 	if rows := auditRows(t, dir, store.AuditSignInSet); len(rows) != 1 {
 		t.Fatalf("signin.set rows = %+v", rows)
 	}
-	if ps := h.notes.signIn(); len(ps) != 0 {
-		t.Fatalf("the start sent %+v", ps)
-	}
+	// No webhook event: the resume runs inside core.New, and a host attaches its sender only after New returns, so no
+	// notifier of this test could see an event of the resume. The subtest resumeApplying of
+	// TestSignInStopAfterTheCommit (internal/core/signin_test.go) is the evidence: it sets the notifier before it calls
+	// resumeApplying and finds no signin.changed.
 	// The gate of the stored setting: a visitor without a session goes to the sign-in page, and a link of the stored
 	// allowlist opens the flat.
 	exp := h.px.Of(t, "app")
@@ -263,7 +265,8 @@ func TestSignInStopAfterTheCommitAtFullStack(t *testing.T) {
 }
 
 // B8 of the completion criteria: an asset of a document flat passes the same gate and the same check as a page
-// (rule 47).
+// (rule 47). The docs worker sees a signed-in visitor as Public (rule 11), and a visitor whose entry left the
+// allowlist opens the asset neither with the session nor with a credential.
 func TestSignInDocumentAssetBehindTheGate(t *testing.T) {
 	ctx := context.Background()
 	h := startHost(t, t.TempDir())
@@ -276,7 +279,7 @@ func TestSignInDocumentAssetBehindTheGate(t *testing.T) {
 	if f, err := h.svc.GetFlat(ctx, "notes"); err != nil || f.LiveVersion == 0 {
 		t.Fatalf("the document = %+v, %v", f, err)
 	}
-	approveSignIn(t, h, "notes", credential("reader-5Tn"))
+	approveSignIn(t, h, "notes", credential("reader-5Tn", "other-2Wm"))
 	publicOnPortal(t, h, "notes")
 	exp := h.px.Of(t, "notes")
 	exp.SetRelays(portal.ReadyRelay("relay.test", notesHost))
@@ -285,10 +288,36 @@ func TestSignInDocumentAssetBehindTheGate(t *testing.T) {
 	wantSignInPage(t, anon, "/images/a.txt")
 	// A visitor of the stored allowlist gets it from the docs handler.
 	reader := portal.NewTestVisitor(exp.Addr(), notesHost)
-	if code := reader.Redeem(t, portal.CredentialOf(t, issue(t, h, "notes", "reader-5Tn").URL)); code != http.StatusOK {
+	link := issue(t, h, "notes", "reader-5Tn")
+	if code := reader.Redeem(t, portal.CredentialOf(t, link.URL)); code != http.StatusOK {
 		t.Fatalf("redeem = %d", code)
 	}
 	wantPage(t, reader, "/images/a.txt", "asset-body-3Kv")
+	// Rule 11: the docs worker sees the signed-in visitor as Public, with the headers of rule 45, and no client copy.
+	code, body := reader.Get(t, "/headers", http.Header{"X-Flats-Access": {"private"}, "x-flats-visitor-subject": {"admin"}})
+	var seen map[string]string
+	if code != http.StatusOK || json.Unmarshal([]byte(body), &seen) != nil {
+		t.Fatalf("the headers of the docs worker = %d %s", code, body)
+	}
+	if want := map[string]string{"X-Flats-Access": "public", "X-Flats-Visitor-Provider": "credential", "X-Flats-Visitor-Subject": "reader-5Tn"}; !maps.Equal(seen, want) {
+		t.Fatalf("the docs worker saw %v, want %v", seen, want)
+	}
+
+	// The reader leaves the allowlist: neither the session nor a credential of the reader opens the asset. Each check
+	// reports on its own.
+	approveSignIn(t, h, "notes", credential("other-2Wm"))
+	if code, body := reader.Get(t, "/images/a.txt", nil); code != http.StatusSeeOther || strings.Contains(body, "asset-body-3Kv") {
+		t.Errorf("the session of a removed entry = %d %q, want the sign-in page", code, body)
+	}
+	if code, body := portal.NewTestVisitor(exp.Addr(), notesHost).Get(t, "/images/a.txt", http.Header{"X-Portal-Access-Credential": {portal.CredentialOf(t, link.URL)}}); code != http.StatusSeeOther || strings.Contains(body, "asset-body-3Kv") {
+		t.Errorf("a credential of a removed subject = %d %q, want the sign-in page", code, body)
+	}
+	// A visitor who stays on the list still gets it.
+	other := portal.NewTestVisitor(exp.Addr(), notesHost)
+	if code := other.Redeem(t, portal.CredentialOf(t, issue(t, h, "notes", "other-2Wm").URL)); code != http.StatusOK {
+		t.Fatalf("redeem = %d", code)
+	}
+	wantPage(t, other, "/images/a.txt", "asset-body-3Kv")
 }
 
 // The provider manager stops the Portal route that FailPortalGate names as servePortal stops one whose gate cannot be

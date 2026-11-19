@@ -82,6 +82,13 @@ func TestSignInThroughMCP(t *testing.T) {
 	if _, err := e.svc.SetSignInSecret(ctx, "census", mcpSecret, "https://idp.example.com", "flats-app", core.ViaCLI); err != nil {
 		t.Fatal(err)
 	}
+	// Rule 30: list_secrets lists a plain secret of the flat and not the client secret.
+	if err := e.svc.SetSecret(ctx, "census", "PLAIN", "plain-value", core.ViaCLI); err != nil {
+		t.Fatal(err)
+	}
+	if text, raw := mcpCall(t, e.local, "list_secrets", map[string]any{"slug": "census"}); !strings.Contains(text+raw, "PLAIN") || strings.Contains(text+raw, store.SignInSecretName) {
+		t.Errorf("list_secrets = %s %s, want PLAIN and not the client secret", text, raw)
+	}
 	r, err := e.svc.RequestSignIn(ctx, "census", core.SignInRequest{Provider: "oidc", Issuer: "https://idp.example.com", ClientID: "flats-app",
 		Allow: []string{mcpEntry, "sub:" + mcpSub, mcpDomain}}, core.ViaCLI)
 	if err != nil || r.Approval == nil {
@@ -127,7 +134,44 @@ func TestSignInThroughMCP(t *testing.T) {
 	if text, _ := mcpCall(t, e.local, "get_logs", map[string]any{"slug": "census", "limit": 1000}); !strings.Contains(text, "sign-in set to oidc with issuer https://idp.example.com and 3 entries") {
 		t.Errorf("get_logs: %s", text)
 	}
-	mcpCall(t, e.local, "list_secrets", map[string]any{"slug": "census"})
+	if text, raw := mcpCall(t, e.local, "list_secrets", map[string]any{"slug": "census"}); !strings.Contains(text+raw, "PLAIN") || strings.Contains(text+raw, store.SignInSecretName) {
+		t.Errorf("list_secrets after the approval = %s %s", text, raw)
+	}
+}
+
+// Rule 61: the line of get_flat for the Public level edit says who can edit, and with sign-in on it is whoever passes
+// the sign-in.
+func TestSignInEditLevelInGetFlat(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	var fi FlatInfo
+	if text, failed := call(t, e.local, "create_flat", map[string]any{"slug": "plan", "type": "board"}, &fi); failed {
+		t.Fatal(text)
+	}
+	if code, out := e.operatorCall(t, "POST", "/flats/plan/providers", `{"provider":"portal","permitted":true}`); code != 200 {
+		t.Fatalf("grant: %d %v", code, out)
+	}
+	var vis ActionOut
+	if text, failed := call(t, e.local, "set_visibility", map[string]any{"slug": "plan", "visibility": "public"}, &vis); failed || vis.ApprovalID == "" {
+		t.Fatalf("set_visibility: %s", text)
+	}
+	e.approve(t, vis.ApprovalID)
+	// The level edit as an applied approval leaves it; applying edit needs the board server, which this host has not.
+	if err := e.st.SetPublicAccess(ctx, "plan", store.AccessView, store.AccessEdit, store.Event{Flat: "plan", Level: "info", Kind: "visibility", Message: "public access edit"}); err != nil {
+		t.Fatal(err)
+	}
+	if text, _ := mcpCall(t, e.local, "get_flat", map[string]any{"slug": "plan"}); !strings.Contains(text, "\nPublic access: edit. Anyone on the internet can edit ") {
+		t.Fatalf("get_flat without sign-in: %s", text)
+	}
+	r, err := e.svc.RequestSignIn(ctx, "plan", core.SignInRequest{Provider: "credential", Allow: []string{"guest-mcp"}}, core.ViaCLI)
+	if err != nil || r.Approval == nil {
+		t.Fatalf("RequestSignIn: %+v %v", r, err)
+	}
+	e.approve(t, r.Approval.ID)
+	text, _ := mcpCall(t, e.local, "get_flat", map[string]any{"slug": "plan"})
+	if !strings.Contains(text, "\nPublic access: edit. Anyone who passes its sign-in can edit ") || strings.Contains(text, "Anyone on the internet") {
+		t.Errorf("get_flat with sign-in: %s", text)
+	}
 }
 
 // The notices of rule 61 that MCP shows for the visibility of a flat with sign-in on.

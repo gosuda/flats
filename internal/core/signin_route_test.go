@@ -571,3 +571,38 @@ func TestSignInRevokeWithoutAnIdentity(t *testing.T) {
 		t.Fatalf("MCP = %v", err)
 	}
 }
+
+// A revocation whose write of the new token secret fails ends nothing and writes no signin.revoke row, because the row
+// follows the write of the file (rule 67); the next revocation that writes it writes the row.
+func TestSignInRevokeWithAFailedWrite(t *testing.T) {
+	ctx := t.Context()
+	s, dir := newTestService(t)
+	network := newSignInRouteNet()
+	s.cfg.Lifecycle = network
+	network.file = true
+	if _, err := s.CreateFlat(ctx, "app", "", ViaCLI); err != nil {
+		t.Fatal(err)
+	}
+	var events recorder
+	s.SetNotifier(&events)
+	network.renewErr = errors.New("permission denied")
+	_, err := s.RevokeSignIn(ctx, "app", ViaCLI)
+	if err == nil || !strings.Contains(err.Error(), "did not end") || !strings.Contains(err.Error(), filepath.Join("portal", "app.json")) {
+		t.Fatalf("revoke = %v", err)
+	}
+	if rows := signInRows(t, s, dir, store.AuditSignInRevoke); len(rows) != 0 {
+		t.Fatalf("a failed write wrote rows: %+v", rows)
+	}
+	for _, p := range events.take() {
+		if p.Type == eventSignInChange {
+			t.Fatalf("a failed revocation sent %s", short(p))
+		}
+	}
+	network.renewErr = nil
+	if r, err := s.RevokeSignIn(ctx, "app", ViaCLI); err != nil || r.Status != "done" {
+		t.Fatalf("revoke = %+v, %v", r, err)
+	}
+	if rows := signInRows(t, s, dir, store.AuditSignInRevoke); len(rows) != 1 || rows[0].Via != "cli" || string(rows[0].Data) != "{}" {
+		t.Fatalf("rows = %+v", rows)
+	}
+}

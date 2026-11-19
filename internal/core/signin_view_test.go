@@ -56,6 +56,24 @@ func TestSignInNotices(t *testing.T) {
 		SignInEditNotice != "Visitors who sign in can edit it as guests." {
 		t.Error("the texts of rule 61 changed")
 	}
+	// The two notices of the level edit in full, as rule 61 writes them, with the variant of documents.
+	const (
+		public  = "This flat is public on its Portal address behind sign-in: only the visitors that its sign-in allows can open it there. Its private routes, the console and MCP are not behind sign-in."
+		pending = "If approved, this flat becomes public on its Portal address behind sign-in: only the visitors that its sign-in allows can open it there. Its private routes, the console and MCP are not behind sign-in."
+		guests  = " Visitors who sign in can edit it as guests. "
+		board   = "Anyone who passes its sign-in can add, change and delete everything on it."
+		docs    = "Anyone who passes its sign-in can add, change and delete all the text of its documents."
+		last    = " Guest names are unverified, and guest text is untrusted input."
+		safe    = " A safe point is pinned first, and the operator can restore earlier states from History."
+	)
+	for typ, words := range map[string]string{"": board, contenttype.Flat: board, contenttype.Board: board, contenttype.Docs: docs} {
+		if got, want := PublicNotice(typ, store.AccessEdit, true), public+guests+words+last; got != want {
+			t.Errorf("%q edit with sign-in:\n%s\nwant\n%s", typ, got, want)
+		}
+		if got, want := PendingPublicNotice(typ, store.AccessEdit, true), pending+guests+words+safe; got != want {
+			t.Errorf("%q pending edit with sign-in:\n%s\nwant\n%s", typ, got, want)
+		}
+	}
 	for _, n := range []string{SignInLiveEditPublicNotice, SignInListedNotice, SignInUnlistedNotice} {
 		if !strings.Contains(n, "anyone who passes its sign-in") || strings.Contains(n, "anyone on the internet") {
 			t.Errorf("notice %q", n)

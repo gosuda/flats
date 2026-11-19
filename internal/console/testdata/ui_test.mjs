@@ -3574,6 +3574,29 @@ const minutesEdit = { ...minutes, public_access: 'edit', public_presence: { gues
     assert.ok(byId(main, 'signin').textContent.includes('Cannot load the sign-in') && byId(main, 'signin').textContent.includes('the sign-in of open cannot be read'));
     stop(); stops.pop();
 
+    // Rule 63: a stored client secret shows on a row that is off and on a
+    // credential row, with its binding and the text of rule 29.
+    const WAITS = 'Only an OpenID Connect sign-in with this issuer and client ID uses it.';
+    const stored = { name: 'oidc-client-secret', issuer: 'https://login.example.com/tenant-a', client_id: 'flats-app', updated_at: '2026-10-03T00:00:00Z' };
+    for (const [slug, view] of [
+      ['open', { provider: '', issuer: '', client_id: '', allow: [], client_secret: stored, hosts: [], callback_urls: [], seq: 0 }],
+      ['gated', { provider: 'credential', issuer: '', client_id: '', allow: ['alice'], client_secret: stored, hosts: ['gated.portal.example'], callback_urls: [], seq: 4 }],
+    ]) {
+      routes[`GET /console/api/flats/${slug}/signin`] = view;
+      main = new Element('main');
+      stop = flat.mountSettings(main, [slug], ctx);
+      stops.push(stop);
+      await tick();
+      const waitRow = byId(main, 'signin');
+      for (const text of ['Client secret', 'Stored for issuer https://login.example.com/tenant-a and client ID flats-app', WAITS]) {
+        assert.ok(waitRow.textContent.includes(text), `the ${slug} row lacks ${text}: ${waitRow.textContent}`);
+      }
+      assert.ok(!waitRow.textContent.includes('Callback URLs'), `the ${slug} row has callback URLs: ${waitRow.textContent}`);
+      stop(); stops.pop();
+    }
+    // An oidc row has no such text: its gate uses the secret, or rule 27 says why not.
+    assert.ok(!idpRow.textContent.includes(WAITS), idpRow.textContent);
+
     // Rule 64: the three titles, in the approval list too.
     const on = { provider: 'credential', allow: ['alice'] };
     const off = { provider: '', allow: [] };

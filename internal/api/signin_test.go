@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +16,7 @@ import (
 	"github.com/gosuda/flats/internal/api"
 	"github.com/gosuda/flats/internal/core"
 	"github.com/gosuda/flats/internal/expose/local"
+	"github.com/gosuda/flats/internal/store"
 )
 
 // The routes of docs/spec/portal-sign-in.md (rules 13 to 16, 25, 49, 54, 56 to 58 and 60) for each caller: the
@@ -206,6 +209,21 @@ func TestSignInRoutesByCaller(t *testing.T) {
 		t.Fatalf("set the client secret = %d %s", code, out)
 	}
 	noEntry(t, "the answer of a set", out)
+	// Rule 30: the list of secrets, which `flats secret ls` and the console show, lists a plain secret of the flat and
+	// not the client secret, for each caller.
+	if err := svc.SetSecret(ctx, "app", "PLAIN", "plain-value", core.ViaCLI); err != nil {
+		t.Fatal(err)
+	}
+	for name, tc := range map[string]struct {
+		url string
+		hdr map[string]string
+	}{"cli": {srv.URL + "/api/flats/app/secrets", cli}, "loopback": {srv.URL + "/api/flats/app/secrets", nil}, "console": {srv.URL + "/console/api/flats/app/secrets", console}} {
+		code, out := call(t, "GET", tc.url, "", tc.hdr)
+		if code != 200 || !strings.Contains(out, `"name": "PLAIN"`) || strings.Contains(out, "oidc-client-secret") {
+			t.Errorf("%s GET secrets = %d %s, want PLAIN and not the client secret", name, code, out)
+		}
+		noEntry(t, name+" GET secrets", out)
+	}
 
 	// Rules 13 to 16: a loopback caller with or without the CLI header and the console request a change. The answer of
 	// /api holds the counted settings; the console keeps the entries.
@@ -229,19 +247,28 @@ func TestSignInRoutesByCaller(t *testing.T) {
 	if code, out = call(t, "POST", consoleBase, oidcBody, console); code != 202 || !strings.Contains(out, id) || !strings.Contains(out, apiEntry) {
 		t.Fatalf("an equal request of the console = %d %s", code, out)
 	}
-	// Rule 14: each refusal is 400, names the member, and never repeats an issuer.
-	for body, says := range map[string]string{
-		`{"provider":"oidc","issuer":"https://user:pw-distinct@idp.example.com","client_id":"c","allow":["a@b.example"]}`:  "user information",
-		`{"provider":"oidc","issuer":"https://idp.example.com/?q=query-distinct","client_id":"c","allow":["a@b.example"]}`: "query",
-		`{"provider":"credential","allow":["x"],"extra":1}`:                                                                `extra\" is not a member`,
-		`{"provider":"credential","allow":[]}`:                                                                             "member allow",
-		`{"provider":"credential","allow":["x"],"issuer":"https://idp.example.com"}`:                                       "member issuer",
-		`not json`: "JSON object",
-		``:         "JSON object",
+	// Rule 14: each refusal is 400, names the member, and never repeats an issuer; a value that breaks rules 2 to 4
+	// also names the rule.
+	for body, says := range map[string][]string{
+		`{"provider":"oidc","issuer":"https://user:pw-distinct@idp.example.com","client_id":"c","allow":["a@b.example"]}`:  {"member issuer", "user information", "(rule 2)"},
+		`{"provider":"oidc","issuer":"https://idp.example.com/?q=query-distinct","client_id":"c","allow":["a@b.example"]}`: {"member issuer", "query", "(rule 2)"},
+		`{"provider":"oidc","issuer":"https://idp.example.com","client_id":"flats app","allow":["a@b.example"]}`:           {"member client_id", "(rule 2)"},
+		`{"provider":"credential","allow":["x"],"extra":1}`:                                                                {`extra\" is not a member`},
+		`{"provider":"credential","allow":[]}`:                                                                             {"member allow", "(rules 3 and 4)"},
+		`{"provider":"credential","allow":["José"]}`:                                                                       {"member allow", "(rule 4)"},
+		`{"provider":"credential","allow":["x"],"issuer":"https://idp.example.com"}`:                                       {"member issuer"},
+		`not json`: {"JSON object"},
+		``:         {"JSON object"},
 	} {
 		code, out := call(t, "POST", base, body, cli)
-		if code != 400 || !strings.Contains(out, says) || strings.Contains(out, "pw-distinct") || strings.Contains(out, "query-distinct") {
+		if code != 400 || strings.Contains(out, "pw-distinct") || strings.Contains(out, "query-distinct") {
 			t.Errorf("request %s = %d %s, want 400 with %q", body, code, out, says)
+			continue
+		}
+		for _, s := range says {
+			if !strings.Contains(out, s) {
+				t.Errorf("request %s = %d %s, want 400 with %q", body, code, out, s)
+			}
 		}
 	}
 	if pendingCount(t, svc) != 1 {
@@ -388,6 +415,51 @@ func TestSignInRoutesByCaller(t *testing.T) {
 		t.Fatalf("logs = %d %s", code, out)
 	} else {
 		noEntry(t, "the logs", out)
+	}
+}
+
+// The signin.revoke row of a revocation and of a rename has the via of its caller: cli for a loopback caller with the
+// CLI header, api for one without it, and console (rule 67).
+func TestSignInRevokeRowsByCaller(t *testing.T) {
+	dir := t.TempDir()
+	srv, svc := setupWith(t, dir, func(c *core.Config) { c.Public = &signInPublic{c.Public.(*local.Public)} })
+	ctx := context.Background()
+	if _, err := svc.CreateFlat(ctx, "app", "", core.ViaAPI); err != nil {
+		t.Fatal(err)
+	}
+	cli := map[string]string{"X-Flats-Client": "cli"}
+	console := consoleHdr(t, srv)
+	for _, tc := range []struct {
+		method, url, body string
+		hdr               map[string]string
+		code              int
+	}{
+		{"POST", srv.URL + "/api/flats/app/signin/revoke", "", cli, 200},
+		{"POST", srv.URL + "/api/flats/app/signin/revoke", "", nil, 200},
+		{"POST", srv.URL + "/console/api/flats/app/signin/revoke", "", console, 200},
+		{"POST", srv.URL + "/api/flats/app/rename", `{"slug":"moved"}`, nil, 200},
+		{"POST", srv.URL + "/console/api/flats/moved/rename", `{"slug":"last"}`, console, 200},
+	} {
+		if code, out := call(t, tc.method, tc.url, tc.body, tc.hdr); code != tc.code {
+			t.Fatalf("%s %s = %d %s", tc.method, tc.url, code, out)
+		}
+	}
+	rd, err := store.OpenAuditReader(filepath.Join(dir, "f.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rd.Close()
+	rows, err := rd.List(ctx, store.AuditQuery{Kind: store.AuditSignInRevoke}, 0, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got []string
+	for _, r := range rows {
+		got = append(got, r.Flat+" "+r.Via+" "+string(r.Data))
+	}
+	want := []string{"app cli {}", "app api {}", "app console {}", `app api {"cause":"rename"}`, `moved console {"cause":"rename"}`}
+	if !slices.Equal(got, want) {
+		t.Fatalf("signin.revoke rows:\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
 	}
 }
 

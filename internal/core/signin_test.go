@@ -184,40 +184,42 @@ func TestSignInRequestRefusals(t *testing.T) {
 	for i := range many {
 		many[i] = fmt.Sprintf("guest %d", i)
 	}
+	// rule is the rule that the message names for a value that breaks rules 2 to 4 or the limit of rule 14; a member
+	// that the provider does not take, or a provider that is none, names the member only.
 	for name, tc := range map[string]struct {
-		req         SignInRequest
-		says, hides string
+		req               SignInRequest
+		says, hides, rule string
 	}{
-		"an http issuer":             {oidc("http://idp.example.com"), "must be an https URL", ""},
-		"http on a loopback host":    {oidc("http://127.0.0.1:8080"), "also on a loopback host", ""},
-		"an issuer without a host":   {oidc("https:///realm"), "with a host name", ""},
-		"user information":           {oidc("https://user:pass-secret@idp.example.com"), "without user information", "pass-secret"},
-		"a query":                    {oidc("https://idp.example.com/?q=query-secret"), "without a query", "query-secret"},
-		"a fragment":                 {oidc("https://idp.example.com/#frag-secret"), "or a fragment", "frag-secret"},
-		"a space in the issuer":      {oidc("https://idp.example.com/a b-secret"), "member issuer has a character", "b-secret"},
-		"a long issuer":              {oidc("https://idp.example.com/" + strings.Repeat("p", maxSignInIssuer)), "more than 2048 bytes", ""},
-		"no issuer":                  {oidc(" "), "member issuer is missing", ""},
-		"no client ID":               {withID(""), "member client_id is missing", ""},
-		"a long client ID":           {withID(strings.Repeat("c", 257)), "more than 256 bytes", ""},
-		"a client ID with a space":   {withID("flats app"), "visible ASCII", ""},
-		"a client ID not ASCII":      {withID("flats-äpp"), "visible ASCII", ""},
-		"an empty list":              {withAllow("credential"), "at least one entry", ""},
-		"an empty oidc list":         {withAllow("oidc"), "at least one entry", ""},
-		"101 entries":                {withAllow("credential", many...), "at most 100", ""},
-		"a long subject":             {withAllow("credential", strings.Repeat("s", 257)), "member allow", ""},
-		"a long sub: entry":          {withAllow("oidc", "sub:"+strings.Repeat("s", 257)), "member allow", ""},
-		"a long email":               {withAllow("oidc", strings.Repeat("e", 250)+"@example.com"), "member allow", ""},
-		"a subject not ASCII":        {withAllow("credential", "José"), "not visible ASCII or a space", ""},
-		"a sub: entry not ASCII":     {withAllow("oidc", "sub:José"), "not visible ASCII or a space", ""},
-		"a control character":        {withAllow("credential", "a\x01b"), "member allow", ""},
-		"a bare token":               {withAllow("oidc", "bob"), "must be an email, an @example.com domain, or a sub:<subject> entry", ""},
-		"an email not ASCII":         {withAllow("oidc", "ä@example.com"), "must be ASCII", ""},
-		"an issuer for credential":   {SignInRequest{Provider: "credential", Issuer: "https://idp.example.com", Allow: []string{"x"}}, "not taken by the provider credential", ""},
-		"a client ID for credential": {SignInRequest{Provider: "credential", ClientID: "c", Allow: []string{"x"}}, "not taken by the provider credential", ""},
-		"a list for off":             {SignInRequest{Allow: []string{"x"}}, "member allow is not taken", ""},
-		"an issuer for off":          {SignInRequest{Issuer: "https://idp.example.com"}, "member issuer is not taken", ""},
-		"another provider":           {SignInRequest{Provider: "saml", Allow: []string{"x"}}, "must be oidc, credential", ""},
-		"a long reason":              {SignInRequest{Provider: "credential", Allow: []string{"x"}, Reason: strings.Repeat("r", 1025)}, "at most 1024", ""},
+		"an http issuer":             {oidc("http://idp.example.com"), "must be an https URL", "", "(rule 2)"},
+		"http on a loopback host":    {oidc("http://127.0.0.1:8080"), "also on a loopback host", "", "(rule 2)"},
+		"an issuer without a host":   {oidc("https:///realm"), "with a host name", "", "(rule 2)"},
+		"user information":           {oidc("https://user:pass-secret@idp.example.com"), "without user information", "pass-secret", "(rule 2)"},
+		"a query":                    {oidc("https://idp.example.com/?q=query-secret"), "without a query", "query-secret", "(rule 2)"},
+		"a fragment":                 {oidc("https://idp.example.com/#frag-secret"), "or a fragment", "frag-secret", "(rule 2)"},
+		"a space in the issuer":      {oidc("https://idp.example.com/a b-secret"), "member issuer has a character", "b-secret", "(rule 2)"},
+		"a long issuer":              {oidc("https://idp.example.com/" + strings.Repeat("p", maxSignInIssuer)), "more than 2048 bytes", "", "(rule 2)"},
+		"no issuer":                  {oidc(" "), "member issuer is missing", "", "(rule 2)"},
+		"no client ID":               {withID(""), "member client_id is missing", "", "(rule 2)"},
+		"a long client ID":           {withID(strings.Repeat("c", 257)), "more than 256 bytes", "", "(rule 2)"},
+		"a client ID with a space":   {withID("flats app"), "visible ASCII", "", "(rule 2)"},
+		"a client ID not ASCII":      {withID("flats-äpp"), "visible ASCII", "", "(rule 2)"},
+		"an empty list":              {withAllow("credential"), "at least one entry", "", "(rules 3 and 4)"},
+		"an empty oidc list":         {withAllow("oidc"), "at least one entry", "", "(rules 3 and 4)"},
+		"101 entries":                {withAllow("credential", many...), "at most 100", "", "(rule 4)"},
+		"a long subject":             {withAllow("credential", strings.Repeat("s", 257)), "member allow", "", "(rules 2 to 4)"},
+		"a long sub: entry":          {withAllow("oidc", "sub:"+strings.Repeat("s", 257)), "member allow", "", "(rules 2 to 4)"},
+		"a long email":               {withAllow("oidc", strings.Repeat("e", 250)+"@example.com"), "member allow", "", "(rules 2 to 4)"},
+		"a subject not ASCII":        {withAllow("credential", "José"), "not visible ASCII or a space", "", "(rule 4)"},
+		"a sub: entry not ASCII":     {withAllow("oidc", "sub:José"), "not visible ASCII or a space", "", "(rule 4)"},
+		"a control character":        {withAllow("credential", "a\x01b"), "member allow", "", "(rules 2 to 4)"},
+		"a bare token":               {withAllow("oidc", "bob"), "must be an email, an @example.com domain, or a sub:<subject> entry", "", "(rules 2 to 4)"},
+		"an email not ASCII":         {withAllow("oidc", "ä@example.com"), "must be ASCII", "", "(rules 2 to 4)"},
+		"an issuer for credential":   {SignInRequest{Provider: "credential", Issuer: "https://idp.example.com", Allow: []string{"x"}}, "not taken by the provider credential", "", ""},
+		"a client ID for credential": {SignInRequest{Provider: "credential", ClientID: "c", Allow: []string{"x"}}, "not taken by the provider credential", "", ""},
+		"a list for off":             {SignInRequest{Allow: []string{"x"}}, "member allow is not taken", "", ""},
+		"an issuer for off":          {SignInRequest{Issuer: "https://idp.example.com"}, "member issuer is not taken", "", ""},
+		"another provider":           {SignInRequest{Provider: "saml", Allow: []string{"x"}}, "must be oidc, credential", "", ""},
+		"a long reason":              {SignInRequest{Provider: "credential", Allow: []string{"x"}, Reason: strings.Repeat("r", 1025)}, "at most 1024", "", "(rule 14)"},
 	} {
 		r, err := s.RequestSignIn(ctx, "app", tc.req, ViaCLI)
 		if !errors.Is(err, ErrInvalid) || ErrorCategory(err) != "invalid" || !strings.Contains(err.Error(), tc.says) {
@@ -226,6 +228,9 @@ func TestSignInRequestRefusals(t *testing.T) {
 		}
 		if tc.hides != "" && strings.Contains(err.Error(), tc.hides) {
 			t.Errorf("%s: the message repeats %q: %v", name, tc.hides, err)
+		}
+		if !strings.Contains(err.Error(), tc.rule) {
+			t.Errorf("%s: the message does not name the rule %s: %v", name, tc.rule, err)
 		}
 	}
 	if _, err := s.RequestSignIn(ctx, "app", guestRequest, ViaMCP); !errors.Is(err, ErrForbidden) {

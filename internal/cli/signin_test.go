@@ -240,6 +240,15 @@ func TestSignInAgainstAHost(t *testing.T) {
 		!strings.Contains(r.stdout, "for issuer https://idp.example.com and client ID flats-app") {
 		t.Fatalf("secret set: %+v", r)
 	}
+	// Rule 30: `flats secret ls` lists a plain secret of the flat and not the client secret.
+	if r := run(t, srv.URL, "plain-value-4Ty\n", "secret", "set", "app", "PLAIN"); r.code != ExitOK {
+		t.Fatalf("secret set PLAIN: %+v", r)
+	}
+	for _, args := range [][]string{{"secret", "ls", "app"}, {"--json", "secret", "ls", "app"}} {
+		if r := run(t, srv.URL, "", args...); r.code != ExitOK || !strings.Contains(r.stdout, "PLAIN") || strings.Contains(r.stdout+r.stderr, "oidc-client-secret") || strings.Contains(r.stdout, value) {
+			t.Errorf("%v: %+v, want PLAIN and not the client secret", args, r)
+		}
+	}
 	r = run(t, srv.URL, "", "signin", "show", "app")
 	for _, want := range []string{"Sign-in of app: OpenID Connect", "issuer: https://idp.example.com\n", "client ID: flats-app", "allowlist (2):\n    ann@example.com\n    sub:Zed\n",
 		"client secret: oidc-client-secret, set ", "for issuer https://idp.example.com and client ID flats-app", "Portal host names: none", "callback URLs: none until",
