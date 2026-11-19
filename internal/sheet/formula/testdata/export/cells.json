@@ -132,8 +132,10 @@
   ["E-126", 0.125, 1234.5],
   ["E-127", "1234567890123456"],
   ["E-128", "=12345678901234567890"],
-  ["E-129", "=DATE(2026,3,15)+0.75"],
-  ["E-130", "=1.5"]
+  ["E-129", "=LOG10(1000)"],
+  ["E-130", "=DATE(2026,3,15)+0.75"],
+  ["E-131", "=1.5"],
+  ["E-132", "=-0"]
  ],
  "formats": [
   {"range": "B45", "format": {"number": {"kind": "general"}}},
@@ -170,8 +172,8 @@
   {"range": "B122", "format": {"number": {"kind": "time", "pattern": "hh:mm"}}},
   {"range": "B128", "format": {"number": {"kind": "percent", "decimals": 1}}},
   {"range": "C128", "format": {"number": {"kind": "currency", "symbol": "$", "decimals": 2}}},
-  {"range": "B131", "format": {"number": {"kind": "date", "pattern": "yyyy-mm-dd"}}},
-  {"range": "B132", "format": {"number": {"kind": "time", "pattern": "hh:mm"}}}
+  {"range": "B132", "format": {"number": {"kind": "date", "pattern": "yyyy-mm-dd"}}},
+  {"range": "B133", "format": {"number": {"kind": "time", "pattern": "hh:mm"}}}
  ],
  "widths": [{"cols": "D:D", "width": 40}]
 }
