@@ -28,7 +28,8 @@ import (
 // and 42). The gate itself is the Portal provider's; internal/expose/portal tests it with this service.
 
 // signInRouteNet is lifecycleRouteNet with the sign-in part of the Portal route. It records the opens and the stops of
-// rule 35, and lets a test fail the write of a new token secret and the read of the routes.
+// rule 35, and lets a test fail the write of a new token secret and the read of the routes, and run a function at
+// each of those two calls.
 type signInRouteNet struct {
 	*lifecycleRouteNet
 	mu        sync.Mutex
@@ -38,9 +39,14 @@ type signInRouteNet struct {
 	statusErr error // ExposureStatus fails
 	renewed   []string
 	failed    []string // the reasons of FailPortalGate
+	onStatus  func()   // runs at each ExposureStatus
+	onRenew   func()   // runs after each write of a new token secret
 }
 
 func (n *signInRouteNet) ExposureStatus(ctx context.Context, host string) (ExposureResult, error) {
+	if n.onStatus != nil {
+		n.onStatus()
+	}
 	if n.statusErr != nil {
 		return ExposureResult{}, n.statusErr
 	}
@@ -75,6 +81,9 @@ func (n *signInRouteNet) RenewPortalIdentity(_ context.Context, slug string) (st
 		return path, false, n.renewErr
 	}
 	n.renewed = append(n.renewed, slug)
+	if n.onRenew != nil {
+		n.onRenew()
+	}
 	return path, n.file, nil
 }
 
@@ -519,6 +528,134 @@ func TestSignInReopenThatCannotRead(t *testing.T) {
 	if len(network.failed) != 2 {
 		t.Fatalf("FailPortalGate = %q", network.failed)
 	}
+}
+
+// A flat that cannot be read while its Portal route is served stops that route as rule 35 does, at the rebuild of rule
+// 28 and at the open of the public routes after a sign-in change or a revocation (rules 20 and 54): no gate of an
+// earlier setting, client secret or token secret stays in front.
+func TestSignInFlatThatCannotBeRead(t *testing.T) {
+	for name, call := range map[string]func(context.Context, *Service) error{
+		"the rebuild of rule 28": func(ctx context.Context, s *Service) error { return s.signInSecretChanged(ctx, "app") },
+		"the open of the public routes": func(ctx context.Context, s *Service) error {
+			return s.reopenPublic(ctx, "app", false)
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			s, dir := newTestService(t)
+			network := newSignInRouteNet()
+			s.cfg.Lifecycle = network
+			publicLifecycleFlat(t, s, "app", store.ProviderPortal)
+			approveSignIn(t, s, "app", oidcRequest)
+			if !network.serves("app", ProviderPortal) {
+				t.Fatal("app has no Portal route")
+			}
+			// The fake net still serves the routes of the flat whose row is gone.
+			if _, err := rawDB(t, dir).Exec(`DELETE FROM flats WHERE slug='app'`); err != nil {
+				t.Fatal(err)
+			}
+			err := call(t.Context(), s)
+			stop := `sign-in gate: the routes of app cannot be read to build its gate again: flat "app": ` + store.ErrNotFound.Error()
+			if ge := (*SignInGateError)(nil); !errors.As(err, &ge) || ge.StopErr != nil || !strings.HasPrefix(err.Error(), stop) {
+				t.Fatalf("%s = %v, want the stop of the Portal route", name, err)
+			}
+			if len(network.failed) != 1 || network.serves("app", ProviderPortal) || !network.serves("app", ProviderLocal) {
+				t.Fatalf("FailPortalGate = %q: the Portal route stayed, or another route stopped", network.failed)
+			}
+			if text := routesText("app", err, false); !strings.HasPrefix(text, "the Portal route of app is stopped: "+stop) {
+				t.Fatalf("the message says %q", text)
+			}
+		})
+	}
+}
+
+// A client that drops its request after the commit leaves the Portal route in service with a gate of the stored
+// setting: the steps after a set and a removal of the client secret (rule 28), a revocation (rule 54) and an approved
+// change (rule 20) do not depend on the request. The fake net cancels the request at its first call after the commit.
+func TestSignInRequestCancelledAfterTheCommit(t *testing.T) {
+	ctx := t.Context()
+	s, dir := newTestService(t)
+	network := newSignInRouteNet()
+	network.file = true
+	s.cfg.Lifecycle = network
+	publicLifecycleFlat(t, s, "app", store.ProviderPortal)
+	approveSignIn(t, s, "app", oidcRequest)
+	// request returns a request context that the next call of hook cancels, and a check that the call came.
+	request := func(hook *func()) (context.Context, func()) {
+		req, cancel := context.WithCancel(ctx)
+		*hook = func() { *hook = nil; cancel() }
+		return req, func() {
+			t.Helper()
+			if req.Err() == nil {
+				t.Fatal("the test did not cancel the request after the commit")
+			}
+		}
+	}
+	// served checks that nothing stopped the Portal route of app, and that its last open carries the gate of the
+	// stored setting, with secret as its client secret.
+	served := func(what, secret string) {
+		t.Helper()
+		st, err := s.st.GetSignIn(ctx, "app")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(network.failed) != 0 || !network.serves("app", ProviderPortal) {
+			t.Fatalf("%s stopped the Portal route: %q", what, network.failed)
+		}
+		network.mu.Lock()
+		last := network.reqs[len(network.reqs)-1]
+		network.mu.Unlock()
+		if si := last.SignIn; last.Visibility != "public" || si == nil || si.Err != nil || si.Seq != st.Seq ||
+			si.Gate.Provider != st.SignIn.Provider || si.Gate.ClientSecret != secret {
+			t.Fatalf("%s: the last open carries %v, want the gate of sequence %d", what, last.SignIn, st.Seq)
+		}
+	}
+
+	req, cancelled := request(&network.onStatus)
+	r, err := s.SetSignInSecret(req, "app", signInValue, "https://idp.example.com", "flats-app", ViaCLI)
+	cancelled()
+	if err != nil || r.Message != "sign-in client secret set via cli for issuer https://idp.example.com and client ID flats-app" {
+		t.Fatalf("set = %+v, %v", r, err)
+	}
+	served("the set", signInValue)
+	req, cancelled = request(&network.onStatus)
+	r, err = s.DeleteSignInSecret(req, "app", ViaCLI)
+	cancelled()
+	if err != nil || r.Message != "sign-in client secret removed via cli" {
+		t.Fatalf("removal = %+v, %v", r, err)
+	}
+	served("the removal", "")
+
+	// The write of the new token secret is the commit of a revocation; its audit row is written after it.
+	req, cancelled = request(&network.onRenew)
+	r, err = s.RevokeSignIn(req, "app", ViaCLI)
+	cancelled()
+	if err != nil || r.Message != "every sign-in session and access link of app ended via cli" {
+		t.Fatalf("revoke = %+v, %v", r, err)
+	}
+	if rows := signInRows(t, s, dir, store.AuditSignInRevoke); len(rows) != 1 {
+		t.Fatalf("signin.revoke rows = %+v", rows)
+	}
+	served("the revocation", "")
+
+	// The final write of the approval uses the request, so the approval stays applying, and the next start ends it
+	// from the stored setting (rule 21).
+	a := requestSignIn(t, s, "app", guestRequest)
+	req, cancelled = request(&network.onStatus)
+	_, err = s.Decide(req, a.ID, true)
+	cancelled()
+	if got, _ := s.GetApproval(ctx, a.ID); !errors.Is(err, context.Canceled) || got.Status != "applying" {
+		t.Fatalf("decide = %v, then %+v", err, got)
+	}
+	served("the approved change", "")
+	const result = "sign-in set to credential with 2 entries"
+	if evs, _ := s.st.ListEvents(ctx, "app", "signin", 0, 100); len(evs) == 0 || evs[len(evs)-1].Message != result {
+		t.Fatalf("signin events = %+v", evs)
+	}
+	s.resumeApplying(ctx)
+	if got, _ := s.GetApproval(ctx, a.ID); got.Status != "approved" || got.Result != result {
+		t.Fatalf("after the next start: %+v", got)
+	}
+	served("the resume", "")
 }
 
 // A deletion that an agent approved writes its signin.revoke row with the via autopilot and the text of the agent as

@@ -286,6 +286,7 @@ func TestSignInGateBuildFailure(t *testing.T) {
 			v, f := serveGated(t, n, ff, flat.handler("flat"), credentialGate(1, "guest"))
 			signInWith(t, n, v, "guest")
 			wantFlat(t, v, "/", "flat /")
+			e := n.entry("app")
 			before := flat.count()
 			if _, err := n.ServeSignIn(t.Context(), "app", flat.handler("other"), false, tc.si); err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("ServeSignIn = %v, want %q", err, tc.want)
@@ -294,8 +295,8 @@ func TestSignInGateBuildFailure(t *testing.T) {
 			if f.closeCount() != 1 || n.entry("app") != nil {
 				t.Fatalf("the served route did not stop: %d closes", f.closeCount())
 			}
-			if flat.count() != before {
-				t.Fatal("a request reached the flat after the gate failed")
+			if code := drained(e, v); code != http.StatusServiceUnavailable || flat.count() != before {
+				t.Fatalf("a request after the failure = %d, %d flat calls, want 503 and none", code, flat.count()-before)
 			}
 			wantGateError(t, n, tc.want)
 			if lines := logs.with("sign-in gate"); len(lines) != 1 {
@@ -303,6 +304,18 @@ func TestSignInGateBuildFailure(t *testing.T) {
 			}
 		})
 	}
+}
+
+// drained serves a request with the cookies of v through the front of e, as the drain of a stopped route serves a
+// request that was open, and returns its status.
+func drained(e *entry, v *TestVisitor) int {
+	req := httptest.NewRequest(http.MethodGet, "https://"+testHost+"/", nil)
+	for _, c := range v.Cookies {
+		req.AddCookie(&http.Cookie{Name: c.Name, Value: c.Value})
+	}
+	rec := httptest.NewRecorder()
+	e.serveFront(rec, req)
+	return rec.Code
 }
 
 // wantGateError checks the Portal endpoint of app: state error and the detail of rule 35.
@@ -467,6 +480,7 @@ func TestSignInTokenSecretCannotBeWritten(t *testing.T) {
 			t.Fatal(err)
 		}
 		t.Cleanup(func() { os.Chmod(dir, 0o700) })
+		e := n.entry("app")
 		before := flat.count()
 		_, err := n.ServeSignIn(t.Context(), "app", flat.handler("flat"), false, credentialGate(1, "guest"))
 		if ge := (*core.SignInGateError)(nil); !errors.As(err, &ge) || ge.StopErr != nil || !strings.Contains(err.Error(), path) {
@@ -476,8 +490,8 @@ func TestSignInTokenSecretCannotBeWritten(t *testing.T) {
 		if f.closeCount() != 1 || n.entry("app") != nil {
 			t.Fatalf("the served route did not stop: %d closes", f.closeCount())
 		}
-		if flat.count() != before {
-			t.Fatal("a request reached the flat after the gate failed")
+		if code := drained(e, v); code != http.StatusServiceUnavailable || flat.count() != before {
+			t.Fatalf("a request after the failure = %d, %d flat calls, want 503 and none", code, flat.count()-before)
 		}
 		wantGateError(t, n, why[len("sign-in gate: "):]+path)
 		if lines := logs.with("sign-in gate"); len(lines) != 1 || !strings.Contains(lines[0], "app: "+why+path) {
@@ -808,14 +822,8 @@ func TestSignInGateFailureWithAnUnconfirmedStop(t *testing.T) {
 		t.Fatal("the entry of an unconfirmed stop is gone")
 	}
 	// A request with the session of the earlier gate, as one that the drain of the route still serves.
-	req := httptest.NewRequest(http.MethodGet, "https://"+testHost+"/", nil)
-	for _, c := range v.Cookies {
-		req.AddCookie(&http.Cookie{Name: c.Name, Value: c.Value})
-	}
-	rec := httptest.NewRecorder()
-	e.serveFront(rec, req)
-	if rec.Code != http.StatusServiceUnavailable || flat.count() != before {
-		t.Fatalf("a request after the failure = %d, %d flat calls, want 503 and none", rec.Code, flat.count()-before)
+	if code := drained(e, v); code != http.StatusServiceUnavailable || flat.count() != before {
+		t.Fatalf("a request after the failure = %d, %d flat calls, want 503 and none", code, flat.count()-before)
 	}
 }
 

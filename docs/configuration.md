@@ -1204,7 +1204,9 @@ flats secret reset [--yes] [--config PATH | --data DIR]
   the values, it lists the flat secrets and operator keys it will delete,
   asks you to type `reset` (or takes `--yes`), deletes them and leaves an
   event on each flat. The next start creates a new key: run `backup-key`
-  after it, set the secrets again with `flats secret set` and redeploy, and
+  after it, set the secrets again with `flats secret set` and redeploy, set
+  the client secret of Portal sign-in again with `flats signin secret set`
+  (the list names its issuer and client ID), and
   register the operator keys again with `flats key set`. With
   `host.secret_key_path` the next start creates no key: put a key at that path
   before it, and run `backup-key` after it.

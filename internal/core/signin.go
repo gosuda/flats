@@ -506,7 +506,9 @@ func (s *Service) applySignInApproval(ctx context.Context, a store.Approval) (Ac
 		return ActionResult{}, signInConflict(a.Flat, err)
 	}
 	lifecyclePhase(ctx, "after_signin_commit", a.Flat, a.ID)
-	// Steps 3 to 5.
+	// Steps 3 to 5. The setting is stored, so they do not depend on the request of the decision: a client that drops
+	// it must not leave the Portal route stopped.
+	ctx = context.WithoutCancel(ctx)
 	msg := s.finishSignIn(ctx, a.Flat, &from, p.To, p.Seq+1)
 	s.notifySignIn(ctx, a, st.FlatID, from, p.To)
 	return ActionResult{Status: "done", Message: msg}, nil
@@ -757,7 +759,6 @@ func (s *Service) SetSignInSecret(ctx context.Context, slugName, value, issuer, 
 		return ActionResult{}, err
 	}
 	msg := fmt.Sprintf("sign-in client secret set via %s for issuer %s and client ID %s", via, iss, cid)
-	s.Event(ctx, slugName, "info", "secret", msg, nil)
 	return ActionResult{Status: "done", Message: s.afterSignInSecret(ctx, slugName, msg)}, nil
 }
 
@@ -782,12 +783,15 @@ func (s *Service) DeleteSignInSecret(ctx context.Context, slugName string, via V
 		return ActionResult{}, err
 	}
 	msg := fmt.Sprintf("sign-in client secret removed via %s", via)
-	s.Event(ctx, slugName, "info", "secret", msg, nil)
 	return ActionResult{Status: "done", Message: s.afterSignInSecret(ctx, slugName, msg)}, nil
 }
 
-// afterSignInSecret runs the rebuild of rule 28 and adds its failure to msg.
+// afterSignInSecret writes the flat event msg of a client secret change that the store committed, runs the rebuild of
+// rule 28 and adds its failure to msg. Neither depends on the request: a client that drops it after the commit must
+// not leave the Portal route stopped.
 func (s *Service) afterSignInSecret(ctx context.Context, slugName, msg string) string {
+	ctx = context.WithoutCancel(ctx)
+	s.Event(ctx, slugName, "info", "secret", msg, nil)
 	if err := s.signInSecretChanged(ctx, slugName); err != nil {
 		text := routesText(slugName, err, false)
 		s.Event(ctx, slugName, "error", "signin", text, nil)

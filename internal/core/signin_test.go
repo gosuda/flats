@@ -634,8 +634,8 @@ func TestSignInStopAfterTheCommit(t *testing.T) {
 			t.Fatal(err)
 		}
 		defer s.Close()
-		rec := &recorder{}
-		s.SetNotifier(rec)
+		// New resumes the approval before a notifier can be attached, so this subtest cannot see a webhook event; the
+		// subtest resumeApplying shows that the resume sends none.
 		got, _ := s.GetApproval(ctx, a.ID)
 		if got.Status != "approved" || got.Result != "sign-in set to credential with 2 entries" || execution(t, got).Status != "approved" {
 			t.Fatalf("after the restart: %+v", got)
@@ -649,9 +649,6 @@ func TestSignInStopAfterTheCommit(t *testing.T) {
 		evs, _ := s.st.ListEvents(ctx, "app", "signin", 0, 10)
 		if len(evs) != 1 || evs[0].Message != got.Result {
 			t.Errorf("signin events = %+v", evs)
-		}
-		if ps := rec.take(); len(ps) != 0 {
-			t.Errorf("the restart sent %q", shorts(ps))
 		}
 	})
 	t.Run("resumeApplying", func(t *testing.T) {

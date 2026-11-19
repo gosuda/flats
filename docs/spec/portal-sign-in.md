@@ -297,7 +297,10 @@ console issues the access links.
     host holds the sender ([event webhook](event-webhook.md), rules 1 and 17). When the stored setting cannot be read
     at that start, the approval stays `applying`, and the next start resumes it. When the frozen parameters cannot be
     read, the result and the flat event say that the setting before the change is unknown, never that it was off.
-    When the host stops before step 2 ends, nothing is stored, and the approval applies again from step 1.
+    When the host stops before step 2 ends, nothing is stored, and the approval applies again from step 1. Steps 3 to
+    5 do not depend on the request of the decision: when the client drops it after step 2, the host still does them,
+    so the Portal route stays in service with the gate of the stored setting. The last write of the approval uses that
+    request, so the approval then stays `applying` until the next start, which ends it as above.
 22. The result of an applied approval says `done` and names the provider, the issuer and the number of entries. It never
     holds an entry of the allowlist, so that the flat event has none either.
 23. Each approval that freezes the visibility of a flat (`set_visibility`, `activate`, `rollback` and `create_version`)
@@ -329,7 +332,10 @@ console issues the access links.
 28. A set or a removal needs no approval. It applies at once. When sign-in is `oidc` and the flat has a Portal route,
     the Portal provider builds the gate again with the new value (rule 33). When that fails, rule 35 stops the route.
     When the host cannot read the flat or its routes to build the gate again, it stops the Portal route as rule 35
-    does, so no gate keeps the earlier value, and the message says that the route is stopped and why.
+    does, so no gate keeps the earlier value, and the message says that the route is stopped and why. The flat event
+    and the build after the store commit do not depend on the request: when the client drops it, for example when the
+    operator interrupts `flats signin secret set`, the host still builds the gate, and the Portal route stays in
+    service.
 29. A set is allowed while sign-in is off or `credential`, and for another issuer than the stored one. The value then
     waits for an `oidc` setting with its binding. Only an `oidc` gate reads it. A set while sign-in is `oidc` with
     another issuer or client ID stops the Portal route at once (rule 27), until the setting or the binding agrees.
@@ -495,7 +501,9 @@ console issues the access links.
     can call, and the console has the button End all sessions and links on the Sign-in row. It needs no approval,
     because it narrows access. The host gives the identity of the flat a new token secret with the write of rule 36,
     ends the open connections of the public routes of the flat (as rule 20, step 3), and builds the gate again (rule
-    38). Every session and every access link of the flat then ends, and the host names stay. A revocation of a flat
+    38). Every session and every access link of the flat then ends, and the host names stay. The steps after the write
+    of the token secret do not depend on the request: when the client drops it, the host still writes the row of rule
+    67, ends the connections and builds the gate again, and the Portal route stays in service. A revocation of a flat
     without a Portal identity file returns `done` with the message `no Portal identity`. When the public routes do not
     open again, the message says `its public routes did not open again` and their state: the Portal route is stopped
     because its gate cannot be built (rule 35), or the host cannot read the flat or its routes, and then it stops the
@@ -796,7 +804,10 @@ step after the commit. No test needs the network.
   `flats signin secret set` refuse; `rotate-key` keeps its use and binding and opens it; `restore-key` counts it;
   `reset` names and removes it; a set while sign-in is `oidc` rebuilds the gate; a removal while the routes of the flat
   cannot be read stops the Portal route, and so does a revocation of rule 54, whose message names the state of the
-  routes; a set or a removal sends no webhook event.
+  routes; a rebuild of rule 28 and an open of the public routes while the flat cannot be read stop the Portal route;
+  a set, a removal, a revocation and an approved change whose request is cancelled after the commit leave the Portal
+  route in service with a gate of the stored setting, and their messages name no stop; a set or a removal sends no
+  webhook event.
 - Access links: the route of rule 49 gives 403 to a loopback caller with and without the CLI header and to a remote
   caller, MCP has no tool for it, and the console issues the link; each refusal of rule 50 and each 400 of the body of
   rule 49; the link has the form of `CredentialRedeemURL` for the canonical host name; the default and the limits of the

@@ -360,6 +360,9 @@ func (s *Service) RevokeSignIn(ctx context.Context, slugName string, via Via) (A
 	if !renewed {
 		return ActionResult{Status: "done", Message: "no Portal identity"}, nil
 	}
+	// The new token secret is written, so the steps after it do not depend on the request: a client that drops it must
+	// not leave the Portal route stopped.
+	ctx = context.WithoutCancel(ctx)
 	// The row follows the write of the file (rule 67); a failure does not undo the new token secret.
 	auditErr := s.st.AppendSignInRevoke(ctx, slugName, "", s.audit(ctx, via))
 	s.revokeRoute("public:" + slugName)
