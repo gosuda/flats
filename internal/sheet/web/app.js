@@ -259,6 +259,7 @@ export class App {
     this.fbar = h('div', { class: 'fbar' }, this.nameBox, h('div', { class: 'fx', 'aria-hidden': 'true', text: 'fx' }), this.bar);
     this.find = new Find({
       model: () => this.cur,
+      selection: () => this.sel,
       // The find field keeps focus while the person steps through matches.
       settle: () => this.#settle(false),
       go: (r, c) => {

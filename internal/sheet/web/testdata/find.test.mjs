@@ -54,6 +54,72 @@ test('Ctrl or Cmd+F opens the field, counts the matches and moves the selection 
   assert.equal(t.doc.activeElement, t.grid.input);
 });
 
+// T-03 (TECH 22.2): B2 and D2 hold xy, B5 holds x, and the active cell
+// is C2. Find starts from its anchor, steps from the active cell, and
+// keeps its anchor where the person last put the selection.
+const anchored = () => new FakeServer({ tabs: [{ id: 1, name: 'T', rows: 10, cols: 6, cells: { '1,1': 'xy', '1,3': 'xy', '4,1': 'x', '7,0': 'a*', '7,1': 'ab', '8,0': 'οδοσ' } }] });
+const click = (t, r, c) => { const ev = { preventDefault() {}, clientX: 0, clientY: 0, button: 0 }; t.grid.h.down({ zone: 'cell', r, c }, ev); t.grid.h.up(ev); };
+const at = (t) => { const a = t.sel.active(); return `${String.fromCharCode(65 + a.c)}${a.r + 1}`; };
+
+test('T-03: Find starts at its anchor, steps from the active cell and keeps the anchor the person set', async () => {
+  const t = await startApp({ server: anchored() });
+  const f = t.app.find;
+  t.sel.set(1, 2);
+  t.app.changed();
+  fire(t.grid.input, 'keydown', { key: 'f', ctrlKey: true });
+  assert.equal(at(t), 'C2', 'opening selects nothing');
+  search(t, 'x');
+  assert.equal(at(t), 'D2', 'typing selects the first match at or after the anchor');
+  assert.equal(f.count.textContent, '2 of 3');
+  find(f.el, 'Next match (Enter)').click();
+  assert.equal(at(t), 'B5');
+  find(f.el, 'Previous match (Shift+Enter)').click();
+  assert.equal(at(t), 'D2');
+  click(t, 3, 0);
+  assert.equal(at(t), 'A4');
+  find(f.el, 'Next match (Enter)').click();
+  assert.equal(at(t), 'B5', 'Next goes from the active cell the click set');
+  search(t, 'xy');
+  assert.equal(at(t), 'B2', 'no match follows the anchor A4, so the first match of the tab is selected');
+  search(t, 'xyz');
+  assert.equal(at(t), 'B2', 'with no match the selection stays');
+  assert.equal(f.count.textContent, 'No matches');
+  // *, ? and ~ are plain characters, and capitals are ignored by toLowerCase.
+  assert.deepEqual(findMatches(t.model, 'a*'), [{ r: 7, c: 0 }]);
+  search(t, 'a*');
+  assert.equal(at(t), 'A8');
+  assert.equal(f.count.textContent, '1 of 1');
+  assert.deepEqual(findMatches(t.model, 'ΟΔΟΣ'), []);
+  search(t, 'ΟΔΟΣ');
+  assert.equal(f.count.textContent, 'No matches');
+  assert.equal(at(t), 'A8');
+});
+
+test('Find opened again with text in its field selects nothing and steps from the active cell', async () => {
+  const t = await startApp({ server: anchored() });
+  const f = t.app.find;
+  t.sel.set(1, 2);
+  fire(t.grid.input, 'keydown', { key: 'f', ctrlKey: true });
+  search(t, 'x');
+  assert.equal(at(t), 'D2');
+  fire(f.input, 'keydown', { key: 'Escape' });
+  assert.equal(f.open, false);
+  click(t, 0, 0);
+  fire(t.grid.input, 'keydown', { key: 'f', ctrlKey: true });
+  assert.equal(f.input.value, 'x');
+  assert.equal(at(t), 'A1', 'opening again selects nothing');
+  assert.equal(f.count.textContent, '3 matches');
+  assert.ok(t.grid.overlays.hits?.size === 3, 'the matches are marked');
+  fire(f.input, 'keydown', { key: 'Enter' });
+  assert.equal(at(t), 'B2', 'Next goes to the first match after the active cell');
+  assert.equal(f.count.textContent, '1 of 3');
+  fire(f.input, 'keydown', { key: 'Enter', shiftKey: true });
+  assert.equal(at(t), 'B5', 'Previous before the first match goes to the last one');
+  // The anchor is A1, where the field opened: Find's own moves leave it.
+  search(t, 'xy');
+  assert.equal(at(t), 'B2');
+});
+
 test('the matches follow the tab while it changes', async () => {
   const t = await startApp({ server: sheet() });
   t.app.find.show();
