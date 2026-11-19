@@ -148,7 +148,9 @@ func openRefused(t *testing.T, e *env, cause string) *loadRefused {
 
 // wantRefusals checks that every read and write of the refused sheet is
 // refused with the load's refusal. The ones that wait for the load carry
-// its error; the writer refuses its work with the same code and reason.
+// its error; the writer refuses its work, a person's action among it, with
+// the same code and reason, and a receipt read is refused as unavailable
+// with reason storage (technical design, section 5).
 func (r *loadRefused) wantRefusals(t *testing.T) {
 	t.Helper()
 	ctx := context.Background()
@@ -162,26 +164,34 @@ func (r *loadRefused) wantRefusals(t *testing.T) {
 	}
 	write := update(`{"state":"s_000000000000.1","ops":[{"op":"write","tab":"Sheet1","at":"A1","rows":[["late"]]}]}`)
 	stored := update(`{"state":"s_000000000000.1","op_id":"late","ops":[{"op":"write","tab":"Sheet1","at":"A1","rows":[["late"]]}]}`)
+	var action []personOp
+	if err := strictJSON([]byte(`[{"op":"set","tab":1,"row":1,"col":1,"text":"late","at":[0,0]}]`), &action); err != nil {
+		t.Fatal(err)
+	}
+	late := &session{id: "late"}
 	for _, c := range []struct {
-		name  string
-		cause bool
-		call  func() error
+		name   string
+		reason string
+		cause  bool
+		call   func() error
 	}{
-		{"a read", true, func() error { _, err := in.Read(ctx, ReadQuery{Tab: "Sheet1", Range: "A1"}); return err }},
-		{"a write", true, func() error { _, err := in.Update(ctx, write, 0); return err }},
-		{"a stored call", true, func() error { _, err := in.Update(ctx, stored, 0); return err }},
-		{"the outbox", true, func() error { _, err := in.Outbox(ctx, 0, 10); return err }},
-		{"the references", true, func() error { _, err := in.References(ctx); return err }},
-		{"a snapshot", true, func() error { _, err := in.SnapshotData(ctx, contentHash(nil)); return err }},
-		{"the check", true, func() error { return in.AwaitChecked(ctx) }},
-		{"a rollback", true, func() error { return in.Rollback(ctx, nil, "Ann", "") }},
-		{"an acknowledgement", false, func() error { return in.Acknowledge(ctx, 1, 0) }},
-		{"a barrier", false, func() error { return in.Barrier(ctx) }},
-		{"a person's session", false, func() error { _, _, err := in.newSession(ctx, "editor:ann", "Ann", false); return err }},
+		{"a read", "load", true, func() error { _, err := in.Read(ctx, ReadQuery{Tab: "Sheet1", Range: "A1"}); return err }},
+		{"a write", "load", true, func() error { _, err := in.Update(ctx, write, 0); return err }},
+		{"a stored call", "load", true, func() error { _, err := in.Update(ctx, stored, 0); return err }},
+		{"the outbox", "load", true, func() error { _, err := in.Outbox(ctx, 0, 10); return err }},
+		{"the references", "load", true, func() error { _, err := in.References(ctx); return err }},
+		{"a snapshot", "load", true, func() error { _, err := in.SnapshotData(ctx, contentHash(nil)); return err }},
+		{"the check", "load", true, func() error { return in.AwaitChecked(ctx) }},
+		{"a rollback", "load", true, func() error { return in.Rollback(ctx, nil, "Ann", "") }},
+		{"an acknowledgement", "load", false, func() error { return in.Acknowledge(ctx, 1, 0) }},
+		{"a barrier", "load", false, func() error { return in.Barrier(ctx) }},
+		{"a person's session", "load", false, func() error { _, _, err := in.newSession(ctx, "editor:ann", "Ann", false); return err }},
+		{"a person's action", "load", false, func() error { _, err := in.submit(ctx, late, 1, 0, action, nil); return err }},
+		{"a receipt read", "storage", false, func() error { _, err := in.committedAck(ctx, late, 1, nil); return err }},
 	} {
 		err := c.call()
-		if p := refusal(err); p.Code != "unavailable" || p.Reason != "load" || c.cause && !errors.Is(err, r.err) {
-			t.Errorf("%s answered %v, want the load's refusal", c.name, err)
+		if p := refusal(err); p.Code != "unavailable" || p.Reason != c.reason || c.cause && !errors.Is(err, r.err) {
+			t.Errorf("%s answered %v, want the load's refusal with reason %s", c.name, err, c.reason)
 		}
 	}
 }
@@ -341,5 +351,141 @@ func TestLoadRefusalOfADamagedFileKeepsTheLog(t *testing.T) {
 	if n := r.calls.Load(); n != 1 {
 		t.Fatalf("OnLoadError was called %d times", n)
 	}
+	noPrivateCopies(t)
+}
+
+// connectionFiles are the files that a load that reaches the instance's own
+// connection may leave in the sheet's directory: sheet.db, and the -wal and
+// -shm files SQLite builds beside it for a connection to a WAL database.
+var connectionFiles = []string{dbName, dbName + "-wal", dbName + "-shm"}
+
+// onlyConnectionFiles fails the test when dir holds a file other than
+// connectionFiles, or when sheet.db, or a -wal file that before holds,
+// does not have the bytes it has in before (dirFiles).
+func onlyConnectionFiles(t *testing.T, dir string, before map[string][sha256.Size]byte, what string) {
+	t.Helper()
+	after := dirFiles(t, dir)
+	for name := range after {
+		if !slices.Contains(connectionFiles, name) {
+			t.Fatalf("%s left %s", what, name)
+		}
+	}
+	for _, name := range []string{dbName, dbName + "-wal"} {
+		if sum, ok := before[name]; ok && after[name] != sum {
+			t.Fatalf("%s changed %s", what, name)
+		}
+	}
+}
+
+// A load that reaches the instance's own connection, one that succeeds and
+// one that the cursor check refuses, leaves no file in the sheet's
+// directory other than sheet.db and the -wal and -shm files of that
+// connection, for a store without a -wal file and one with the -wal file a
+// crash left. sheet.db, and a -wal file that was there, keep their bytes
+// until the instance's first commit, and through a refusal and the stop
+// after it (technical design, sections 5 and 22.3).
+func TestLoadRefusalLeavesOnlyTheFilesOfTheConnection(t *testing.T) {
+	ownTempDir(t)
+	// stopped is a stopped sheet, which leaves no -wal file, and the cursor
+	// of a flats.db past the end of its outbox.
+	stopped := func(t *testing.T) (*env, string, int64) {
+		t.Helper()
+		e := start(t)
+		e.mustAgent(`{"ops":[{"op":"write","tab":"Sheet1","at":"A1","rows":[["kept"]]}]}`)
+		var last int64
+		if err := e.in.rdb.QueryRow(`SELECT seq FROM sqlite_sequence WHERE name='outbox'`).Scan(&last); err != nil {
+			t.Fatal(err)
+		}
+		store := e.in.StoreID()
+		e.in.Stop()
+		if _, err := os.Stat(filepath.Join(e.dir, dbName+"-wal")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("a stopped sheet leaves its log: %v", err)
+		}
+		return e, store, last + 5
+	}
+	t.Run("without a -wal file, loaded", func(t *testing.T) {
+		e, _, _ := stopped(t)
+		before := dirFiles(t, e.dir)
+		e.open()
+		onlyConnectionFiles(t, e.dir, before, "the load")
+		e.in.Stop()
+		onlyConnectionFiles(t, e.dir, before, "the stop")
+	})
+	t.Run("without a -wal file, behind the cursor", func(t *testing.T) {
+		e, store, seq := stopped(t)
+		e.opts.ImportStore, e.opts.ImportSeq = store, seq
+		before := dirFiles(t, e.dir)
+		if _, _, err := Open(e.dir, e.b, e.opts); err == nil || !strings.Contains(err.Error(), "behind flats.db") {
+			t.Fatalf("a sheet.db behind the import cursor opened: %v", err)
+		}
+		onlyConnectionFiles(t, e.dir, before, "the refused open")
+	})
+	t.Run("with a -wal file, loaded", func(t *testing.T) {
+		e, _ := loggedSheet(t, "logged", copyChunk)
+		before := dirFiles(t, e.dir)
+		e.open()
+		onlyConnectionFiles(t, e.dir, before, "the load")
+		e.in.Stop()
+		onlyConnectionFiles(t, e.dir, nil, "the stop")
+	})
+	t.Run("with a -wal file, behind the cursor", func(t *testing.T) {
+		e := behindLog(t, copyChunk)
+		before := dirFiles(t, e.dir)
+		r := openRefused(t, e, "behind flats.db")
+		onlyConnectionFiles(t, e.dir, before, "the refusal")
+		r.in.Stop()
+		onlyConnectionFiles(t, e.dir, before, "the stop of the refused sheet")
+	})
+	noPrivateCopies(t)
+}
+
+// A refusal by the probe, here of a newer schema, adds no file to the
+// sheet's directory and changes none: for a store without a -wal file,
+// whose open and check refuse it, and one whose -wal file a crash left with
+// the newer version in it, whose load refuses it (technical design,
+// sections 5 and 22.3). TestDevelopmentBuildDatabaseIsRefused checks the
+// same of a sheet from an unreleased build.
+func TestLoadRefusalByTheProbeLeavesTheDirectory(t *testing.T) {
+	ownTempDir(t)
+	const newer = `PRAGMA user_version = 2`
+	t.Run("without a -wal file", func(t *testing.T) {
+		e := start(t)
+		e.mustAgent(`{"ops":[{"op":"write","tab":"Sheet1","at":"A1","rows":[["kept"]]}]}`)
+		e.in.Stop()
+		db := rawDB(t, filepath.Join(e.dir, dbName))
+		execAll(t, db, newer)
+		if err := db.Close(); err != nil {
+			t.Fatal(err)
+		}
+		before := dirFiles(t, e.dir)
+		if _, ok := before[dbName+"-wal"]; ok || len(before) != 1 {
+			t.Fatalf("the directory holds %d files", len(before))
+		}
+		if _, _, err := Open(e.dir, e.b, e.opts); err == nil || !strings.Contains(err.Error(), "newer") {
+			t.Fatalf("a newer schema opened: %v", err)
+		}
+		sameFiles(t, e.dir, before, "the refused open")
+		if err := CheckDB(e.dir); err == nil || !strings.Contains(err.Error(), "newer") {
+			t.Fatalf("the check of a newer schema: %v", err)
+		}
+		sameFiles(t, e.dir, before, "the check")
+	})
+	t.Run("with a -wal file", func(t *testing.T) {
+		e, _ := loggedSheet(t, "logged", copyChunk, func(e *env) {
+			if _, err := e.in.db.Exec(newer); err != nil {
+				t.Fatal(err)
+			}
+		})
+		before := dirFiles(t, e.dir)
+		if _, ok := before[dbName+"-wal"]; !ok || len(before) != 2 {
+			t.Fatalf("the directory holds %d files", len(before))
+		}
+		r := openRefused(t, e, "newer")
+		sameFiles(t, e.dir, before, "the refusal")
+		r.noHandle(t, e.dir)
+		r.wantRefusals(t)
+		r.in.Stop()
+		sameFiles(t, e.dir, before, "the stop of the refused sheet")
+	})
 	noPrivateCopies(t)
 }
