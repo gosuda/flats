@@ -358,7 +358,9 @@ func (n *Net) serve(ctx context.Context, slug string, h http.Handler, hidden boo
 			return "", n.gateFailed(slug, err, n.finishStop(slug, e))
 		}
 		if built {
-			n.clearGateErr(slug)
+			n.mu.Lock()
+			delete(n.gateErrs, slug)
+			n.mu.Unlock()
 			n.startCheck(e)
 		}
 		if err := n.setHidden(e, hidden); err != nil {
@@ -440,13 +442,6 @@ func (n *Net) serve(ctx context.Context, slug string, h http.Handler, hidden boo
 	n.mu.Unlock()
 	n.startCheck(e)
 	return n.URL(slug), nil
-}
-
-// clearGateErr forgets the gate failure of slug once a gate is in place.
-func (n *Net) clearGateErr(slug string) {
-	n.mu.Lock()
-	delete(n.gateErrs, slug)
-	n.mu.Unlock()
 }
 
 // publicHandler strips identity headers a visitor could forge; the public

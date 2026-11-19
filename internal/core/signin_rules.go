@@ -9,9 +9,7 @@ import (
 // sdkConfig is the gate configuration of in without its client secret, identity and hosts, for the checks of the SDK.
 // The issuer and the client ID go into it for every provider, so that the SDK refuses them next to credential.
 func sdkConfig(in store.SignIn) appauth.Config {
-	cfg := appauth.Config{Provider: in.Provider}
-	cfg.OIDCIssuerURL = in.Issuer
-	cfg.OIDCClientID = in.ClientID
+	cfg := appauth.Config{Provider: in.Provider, OIDCIssuerURL: in.Issuer, OIDCClientID: in.ClientID}
 	if in.Provider == store.SignInOIDC {
 		cfg.EmailList = in.Allow
 	} else {

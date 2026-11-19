@@ -177,10 +177,9 @@ export function signInRow(flat, view) {
 function facts(flat, view) {
   const rows = [];
   if (view.provider === 'oidc') rows.push(['Issuer', h('code', { text: view.issuer })], ['Client ID', h('code', { text: view.client_id })]);
-  if (signInOn(view)) {
-    const list = view.allow || [];
-    rows.push(['Allowlist', h('div', null, h('span', { text: entries(list.length) }), entryList(list))]);
-  }
+  // A Go slice can arrive as null, so a missing list reads as empty (console-ui playbook).
+  const list = view.allow || [];
+  if (signInOn(view)) rows.push(['Allowlist', h('div', null, h('span', { text: entries(list.length) }), entryList(list))]);
   if (view.provider === 'oidc' || view.client_secret) rows.push(['Client secret', secretFact(flat, view)]);
   if (view.provider === 'oidc') rows.push(['Callback URLs', callbacks(view.callback_urls || [])]);
   return h('dl', { class: 'facts signin-facts' }, rows.map(([k, v]) => [h('dt', { text: k }), h('dd', null, v)]));

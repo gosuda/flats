@@ -98,7 +98,7 @@ func addFetchBindings(ctx context.Context, x executor) error {
 // PutSecretChecked stores an encrypted secret by rules 2, 7, 8 and 9 of the spec, and writes its secret.set audit
 // event, in one write transaction. It returns the binding of the stored row. A refusal is an *InjectRefusal, and it
 // changes nothing. The client secret of sign-in is not an ordinary secret: a set of its name gets ErrSignInSecretRow
-// (docs/spec/portal-sign-in.md, rule 30).
+// (docs/spec/portal-sign-in.md, rule 6).
 func (s *Store) PutSecretChecked(ctx context.Context, flat string, sec SealedSecret, put SecretPut, a Audit) (Binding, error) {
 	var result Binding
 	_, err := s.immediate(ctx, func(x executor) (bool, error) {

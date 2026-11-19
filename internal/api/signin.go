@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"net/http"
 	"time"
 
@@ -45,11 +44,9 @@ func (s *Server) requestSignIn(w http.ResponseWriter, r *http.Request, via core.
 		return
 	}
 	var body json.RawMessage
-	if r.Body != nil {
-		if err := json.NewDecoder(io.LimitReader(r.Body, 1<<20)).Decode(&body); err != nil && !errors.Is(err, io.EOF) {
-			writeErr(w, http.StatusBadRequest, fmt.Errorf("%w: the body must be a JSON object with the member provider", core.ErrInvalid))
-			return
-		}
+	if err := decode(r, &body); err != nil {
+		writeErr(w, http.StatusBadRequest, fmt.Errorf("%w: the body must be a JSON object with the member provider", core.ErrInvalid))
+		return
 	}
 	req, err := core.DecodeSignInRequest(body)
 	if err != nil {

@@ -1376,8 +1376,6 @@ func (s *Service) ensureLifecycle(ctx context.Context, f store.Flat, ln Lifecycl
 		if signIn = s.portalSignIn(ctx, f.Slug); signIn.On() {
 			permitted = withoutSignInExcluded(permitted)
 		}
-	}
-	if f.Visibility.Public() {
 		res, err := ln.ServeExposure(ctx, ExposureRequest{Slug: f.Slug, Host: f.Slug, Visibility: "private", Audience: AudienceCurrent, Handler: s.siteHandler(f.Slug, false), Permitted: privateProviders(permitted)})
 		if privateRegistrationOpened(res, f.Slug, AudienceCurrent) {
 			lf.privateServed = true

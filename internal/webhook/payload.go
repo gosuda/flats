@@ -124,8 +124,7 @@ func (c Change) MarshalJSON() ([]byte, error) {
 		return json.Marshal(struct {
 			ExpiresAt string `json:"expires_at"`
 		}{c.ExpiresAt})
-	}
-	if c.SignInFrom != nil || c.SignInTo != nil {
+	case c.SignInFrom != nil || c.SignInTo != nil:
 		return json.Marshal(struct {
 			From *SignIn `json:"from,omitempty"`
 			To   *SignIn `json:"to,omitempty"`

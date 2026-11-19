@@ -33,10 +33,7 @@ import (
 // checkTimeout bounds the background check of an oidc provider (rule 37). Tests shorten it.
 var checkTimeout = 15 * time.Second
 
-var (
-	_ core.SignInPublicNet    = (*Net)(nil)
-	_ core.LifecycleSignInNet = (*Net)(nil)
-)
+var _ core.SignInPublicNet = (*Net)(nil)
 
 // gateState is what the front of an entry was built from. The slug lock guards it.
 type gateState struct {
