@@ -268,6 +268,111 @@ func TestLoadRefusalKeepsTheLog(t *testing.T) {
 	}
 }
 
+// groupsIn returns the edit groups of sheet.db in dir, each its label and
+// dirty mark, read from a copy of sheet.db alone, or of sheet.db with the
+// commits of its -wal file. A sheet.db that the log still holds the
+// tables of has none.
+func groupsIn(t *testing.T, dir string, withLog bool) []string {
+	t.Helper()
+	copied := t.TempDir()
+	copyFile(t, filepath.Join(dir, dbName), filepath.Join(copied, dbName))
+	if withLog {
+		copyFile(t, filepath.Join(dir, dbName+"-wal"), filepath.Join(copied, dbName+"-wal"))
+	}
+	db := rawDB(t, filepath.Join(copied, dbName))
+	defer db.Close()
+	var tables int
+	if err := db.QueryRow(`SELECT count(*) FROM sqlite_schema WHERE type='table' AND name='groups'`).Scan(&tables); err != nil {
+		t.Fatal(err)
+	}
+	if tables == 0 {
+		return nil
+	}
+	rows, err := db.Query(`SELECT label, dirty FROM groups ORDER BY label`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var label string
+		var dirty int64
+		if err := rows.Scan(&label, &dirty); err != nil {
+			t.Fatal(err)
+		}
+		out = append(out, fmt.Sprintf("%s dirty=%d", label, dirty))
+	}
+	if err := rows.Err(); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+// A sheet.db behind the import cursor whose -wal file holds a person's
+// open edit group, an action no revision has yet, is refused as one
+// without it is: sheet.db and its -wal keep their bytes through the
+// refusal and the stop, and the group with them (technical design,
+// section 22.3). Opened again without the cursor, the sheet holds the
+// person's edit, and the group closes as one revision that names them.
+func TestLoadRefusalKeepsAnOpenEditGroup(t *testing.T) {
+	ownTempDir(t)
+	for _, tc := range logLengths {
+		t.Run(tc.name, func(t *testing.T) {
+			var store string
+			var last int64
+			e, _ := loggedSheet(t, "logged", tc.min, func(e *env) {
+				if ack := e.person("Ann").set("B2", "typed by Ann"); status(ack) != "applied" {
+					t.Fatalf("Ann's edit: %s", status(ack))
+				}
+				store = e.in.StoreID()
+				if err := e.in.rdb.QueryRow(`SELECT seq FROM sqlite_sequence WHERE name='outbox'`).Scan(&last); err != nil {
+					t.Fatal(err)
+				}
+			})
+			e.opts.ImportStore, e.opts.ImportSeq = store, last+5
+			if size, _ := logState(t, e.dir); size > walTruncateBytes != tc.long {
+				t.Fatalf("the log holds %d bytes", size)
+			}
+			open := []string{"Ann dirty=1"}
+			if got := groupsIn(t, e.dir, false); len(got) != 0 {
+				t.Fatalf("sheet.db alone holds the groups %q: the group is not only in the log", got)
+			}
+			if got := groupsIn(t, e.dir, true); !slices.Equal(got, open) {
+				t.Fatalf("the log holds the groups %q, want %q", got, open)
+			}
+			before := storeBytes(t, e.dir)
+			r := openRefused(t, e, "behind flats.db")
+			if after := storeBytes(t, e.dir); !maps.Equal(after, before) {
+				t.Fatal("the refusal changed sheet.db or its log")
+			}
+			r.wantRefusals(t)
+			r.in.Stop()
+			if after := storeBytes(t, e.dir); !maps.Equal(after, before) {
+				t.Fatal("the stop of the refused sheet changed sheet.db or its log")
+			}
+			if got := groupsIn(t, e.dir, true); !slices.Equal(got, open) {
+				t.Fatalf("after the refusal and the stop the log holds the groups %q, want %q", got, open)
+			}
+
+			// The host's flats.db is put right: the sheet loads with Ann's
+			// edit, and her group closes as one revision.
+			e.opts.ImportStore, e.opts.ImportSeq, e.opts.OnLoadError, e.opts.Log = "", 0, nil, nil
+			e.open()
+			t.Cleanup(e.in.Stop)
+			e.want("B2", "typed by Ann")
+			revisions := e.b.importAll(t)
+			e.clock.Add(groupIdle + time.Second)
+			e.tick()
+			if n := e.b.importAll(t); n != revisions+1 {
+				t.Fatalf("the group closed as %d revisions", n-revisions)
+			}
+			if got := e.b.entry(revisions + 1); got.Kind != "person" || !slices.Equal(got.Authors, []string{"Ann"}) {
+				t.Fatalf("the group closed as the revision %+v", got)
+			}
+		})
+	}
+}
+
 // When keepLogOnClose fails, as it does once the driver no longer has the
 // fields it needs, the refusal still closes its connections, so the
 // instance holds no handle. SQLite may then checkpoint the log into
