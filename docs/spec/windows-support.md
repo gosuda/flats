@@ -95,10 +95,11 @@ WSL is not part of this spec. `install.sh` inside WSL is the Linux path.
     exFAT, cannot be private: `flats serve` runs there and logs that.
     A Portal identity file (`portal/<slug>.json`) is the exception: the Portal SDK
     gives it a protected access list of its own, for the user, the system and the
-    Administrators group, and it can make the user its owner. On a volume without
-    access lists, and for an identity path that is a link or not a regular file,
-    the SDK refuses the file, so a flat there gets no Portal URL and its Portal
-    status shows the error.
+    Administrators group, and it can make the user its owner. A file whose list is
+    already protected and gives access to those accounts only keeps its list. On a
+    volume without access lists, and for an identity path that is a link or not a
+    regular file, the SDK refuses the file, so a flat there gets no Portal URL and
+    its Portal status shows the error.
 
 ### Names
 
