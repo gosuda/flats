@@ -129,9 +129,10 @@ func TestLongTypedNumbersStayText(t *testing.T) {
 
 // readBack is what typed entry gives for the edit text of c: c itself,
 // except for a whole number of more than 15 significant digits, whose edit
-// text is its plain digits, which entry keeps as text (technical design,
-// section 9.5). A whole number of at most 15 significant digits is edited
-// with an exponent once it needs more than 15 digits before the point.
+// text, its plain digits or from 10^21 on an exponent of all its digits,
+// entry keeps as text (technical design, section 9.5). A whole number of
+// at most 15 significant digits is edited with an exponent once it needs
+// more than 15 digits before the point.
 func readBack(c Content, edit string) Content {
 	if c.Kind != ContentNumber || c.Num != math.Trunc(c.Num) || math.Abs(c.Num) < 1e15 {
 		return c

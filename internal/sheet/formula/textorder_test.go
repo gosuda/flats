@@ -1,6 +1,7 @@
 package formula
 
 import (
+	"cmp"
 	"fmt"
 	"math/rand"
 	"slices"
@@ -58,7 +59,7 @@ func TestCompareText(t *testing.T) {
 	ascending = append(ascending, "\x01", "\t", "\x7f", "ß", "é", "Ω", "가", "나", "힣", "😀")
 	for i, a := range ascending {
 		for j, b := range ascending {
-			if got, want := CompareText(a, b), cmpInt(i, j); got != want {
+			if got, want := CompareText(a, b), cmp.Compare(i, j); got != want {
 				t.Errorf("CompareText(%q, %q) = %d, want %d", a, b, got, want)
 			}
 		}
@@ -82,16 +83,6 @@ func TestCompareText(t *testing.T) {
 			t.Errorf("%q and %q do not tie", tie[0], tie[1])
 		}
 	}
-}
-
-func cmpInt(i, j int) int {
-	switch {
-	case i < j:
-		return -1
-	case i > j:
-		return 1
-	}
-	return 0
 }
 
 // The order is total: two texts tie exactly when they are equal after case

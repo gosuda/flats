@@ -87,17 +87,15 @@ func compareTextCounted(a, b string) (order, walked int) {
 				skippedB++
 			}
 		}
-		switch {
-		case ra == rb && ra == skippedRank:
-			// Both have ended, so the skipped code points are counted.
-		case ra == rb:
-			continue
-		case ra < rb:
-			return -1, i + j
-		default:
+		if ra != rb {
+			if ra < rb {
+				return -1, i + j
+			}
 			return 1, i + j
 		}
-		break
+		if ra == skippedRank {
+			break // both have ended, so the skipped code points are counted
+		}
 	}
 	switch {
 	case skippedA < skippedB:

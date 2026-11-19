@@ -79,11 +79,6 @@ func TestLimitTabNames(t *testing.T) {
 	if got := e.tabNames(); !slices.Equal(got, []string{strings.Repeat("😀", 31), long, "History 2026"}) {
 		t.Fatalf("tabs = %v", got)
 	}
-	for _, name := range e.tabNames() {
-		if n := utf8.RuneCountInString(name); n > 31 {
-			t.Errorf("tab name %q has %d code points", name, n)
-		}
-	}
 }
 
 func TestLimitRowsAndColumns(t *testing.T) {

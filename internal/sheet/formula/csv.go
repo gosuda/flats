@@ -15,9 +15,9 @@ import (
 // name. A number that Show draws as a date, a time or a date with time is
 // written in ISO 8601 form, rounded to the millisecond, and any other
 // number with up to 15 significant digits, rounded as Show rounds it. Text
-// is written as it is, with a leading
-// apostrophe where a program could read it as a formula. A field that
-// needs them is put in quotation marks. Nothing but dst is allocated.
+// is written as it is, with a leading apostrophe where a program could read
+// it as a formula. A field that needs them is put in quotation marks.
+// Nothing but dst is allocated.
 func AppendCSVField(dst []byte, v Value, kind ContentKind, nf NumberFormat) []byte {
 	switch v.kind {
 	case KindText:

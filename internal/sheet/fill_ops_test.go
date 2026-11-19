@@ -13,16 +13,7 @@ import (
 // range target, with mode when it is not empty.
 func (e *env) fillRange(source, target, mode string) string {
 	e.t.Helper()
-	ids := func(rng string) string {
-		r, err := formula.ParseRange(rng)
-		if err != nil {
-			e.t.Fatalf("range %q: %v", rng, err)
-		}
-		rows := e.rowsOf("Sheet1", int(r.First.Row)+1, int(r.Last.Row-r.First.Row)+1)
-		cols := e.colsOf("Sheet1", int(r.First.Col)+1, int(r.Last.Col-r.First.Col)+1)
-		return jsonf(`{"rows":%s,"cols":%s}`, rows, cols)
-	}
-	op := jsonf(`{"op":"fill","tab":%d,"source":%s,"target":%s`, e.tabID("Sheet1"), ids(source), ids(target))
+	op := jsonf(`{"op":"fill","tab":%d,"source":{%s},"target":{%s}`, e.tabID("Sheet1"), rangeMembers(e, source), rangeMembers(e, target))
 	if mode != "" {
 		op += jsonf(`,"mode":%q`, mode)
 	}
