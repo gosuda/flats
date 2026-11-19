@@ -698,17 +698,14 @@ func (s *browserTest) find(t *testing.T) {
 		t.Fatalf("the case needs a match of 0.00 before A3 and two at or after it; the tab has %v", matches)
 	}
 	count := func(i int) string { return fmt.Sprintf("%d of %d", i+1, len(matches)) }
-	search := func(text string) {
+	search := func(from string) {
 		a.key("f", modCtrl)
 		a.wait("the find field", `document.activeElement === document.querySelector('.find input')`)
+		a.waitText("the selection after the field opens", `T.active()`, from)
 		a.eval(`document.querySelector('.find input').select()`, nil)
-		a.typeText(text)
+		a.typeText("0.00")
 	}
-	a.key("f", modCtrl)
-	a.wait("the find field", `document.activeElement === document.querySelector('.find input')`)
-	a.waitText("the selection after the field opens", `T.active()`, "A3")
-	a.eval(`document.querySelector('.find input').select()`, nil)
-	a.typeText("0.00")
+	search("A3")
 	a.waitText("the match count", `document.querySelector('.find-count').textContent`, count(first))
 	a.waitText("the first match at or after A3", `T.active()`, matches[first].addr)
 	a.key("Enter", 0)
@@ -720,7 +717,7 @@ func (s *browserTest) find(t *testing.T) {
 	// A person's move takes the anchor along: from A1 the same text selects
 	// the first match of the tab.
 	s.pick(a, "A1")
-	search("0.00")
+	search("A1")
 	a.waitText("the match count from A1", `document.querySelector('.find-count').textContent`, count(0))
 	a.waitText("the first match of the tab", `T.active()`, matches[0].addr)
 	a.key("Escape", 0)
