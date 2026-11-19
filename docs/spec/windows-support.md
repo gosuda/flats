@@ -172,8 +172,9 @@ browser on Windows. The technical design holds the measurements. The status is
   to 29 ms. Each call from the worker to the host takes 3 to 18 ms at p50 on Windows,
   and a wake makes several.
 - No provider other than Local and Portal has run on Windows, so rule 23 is a
-  build-time statement for the others. Portal ran once through a public relay:
-  a registration, a public HTTPS request and a stop. NetBird and Tailscale need an
+  build-time statement for the others. Portal ran once through a public relay in
+  the test of the provider package (`TestE2E`), not on an installed host: a
+  registration, a public HTTPS request and a stop. NetBird and Tailscale need an
   account to measure.
 - The outcomes of rule 18 for a Portal identity file on a volume without access
   lists, for a link and for a file of another owner come from the code of the

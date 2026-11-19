@@ -27,11 +27,11 @@ func identityFileACL(t *testing.T, path string) {
 	}
 }
 
-// identityACLProblem returns what is wrong with sd as the access list of an identity file of user, or "": the list must
-// be protected and hold one allow entry with full access for each of SYSTEM, the Administrators group and user, none of
-// them inherited, and no other entry. The SDK leaves out the user entry when user is SYSTEM or the Administrators group.
-// The entries are compared as SIDs, not as SDDL text: the system writes an account that has an alias by that alias, such
-// as LA for the built-in Administrator.
+// identityACLProblem returns what is wrong with sd as the access list of an identity file of user, or "": the list
+// must be protected and hold one allow entry with full access for each of SYSTEM, the Administrators group and user,
+// none of them inherited, and no other entry. The SDK leaves out the user entry when user is SYSTEM or the
+// Administrators group. The entries are compared as SIDs, not as SDDL text: the system writes an account that has an
+// alias by that alias, such as LA for the built-in Administrator.
 func identityACLProblem(sd *windows.SECURITY_DESCRIPTOR, user *windows.SID) string {
 	control, _, err := sd.Control()
 	if err != nil {
@@ -67,8 +67,9 @@ func identityACLProblem(sd *windows.SECURITY_DESCRIPTOR, user *windows.SID) stri
 	return ""
 }
 
-// The check of the list accepts the list of the SDK for each kind of user, also an account that the system writes by an
-// alias, and refuses a list that lacks an entry, has another account or a deny entry, inherits, or gives less access.
+// The check of the list accepts the list of the SDK for each kind of user, also an account that the system writes by
+// an alias, and refuses a list that lacks an entry, has another account or a deny entry, inherits, or gives less
+// access. The cases do not depend on the user of the test process.
 func TestIdentityACLCheck(t *testing.T) {
 	sid := func(s string) *windows.SID {
 		t.Helper()
@@ -78,11 +79,8 @@ func TestIdentityACLCheck(t *testing.T) {
 		}
 		return v
 	}
-	user, err := windows.GetCurrentProcessToken().GetTokenUser()
-	if err != nil {
-		t.Fatal(err)
-	}
-	me := user.User.Sid.String()
+	const me = "S-1-5-21-1000-2000-3000-1001" // an ordinary account of some domain
+	user := sid(me)
 	admin := sid("LA") // the built-in Administrator of this machine
 	cases := []struct {
 		name string
@@ -90,18 +88,19 @@ func TestIdentityACLCheck(t *testing.T) {
 		user *windows.SID
 		ok   bool
 	}{
-		{"the SDK list for the user", "D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;" + me + ")", user.User.Sid, true},
-		{"another order", "D:P(A;;FA;;;" + me + ")(A;;FA;;;SY)(A;;FA;;;BA)", user.User.Sid, true},
+		{"the SDK list for the user", "D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;" + me + ")", user, true},
+		{"another order", "D:P(A;;FA;;;" + me + ")(A;;FA;;;SY)(A;;FA;;;BA)", user, true},
 		{"the built-in Administrator", "D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;" + admin.String() + ")", admin, true},
 		{"the user SYSTEM", "D:P(A;;FA;;;SY)(A;;FA;;;BA)", sid("S-1-5-18"), true},
-		{"no user entry", "D:P(A;;FA;;;SY)(A;;FA;;;BA)", user.User.Sid, false},
-		{"another account", "D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;WD)", user.User.Sid, false},
-		{"one more account", "D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;" + me + ")(A;;FA;;;WD)", user.User.Sid, false},
-		{"a deny entry", "D:P(A;;FA;;;SY)(A;;FA;;;BA)(D;;FA;;;" + me + ")", user.User.Sid, false},
-		{"one account twice", "D:P(A;;FA;;;SY)(A;;FA;;;SY)(A;;FA;;;" + me + ")", user.User.Sid, false},
-		{"less access", "D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FR;;;" + me + ")", user.User.Sid, false},
-		{"an inherited entry", "D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;ID;FA;;;" + me + ")", user.User.Sid, false},
-		{"not protected", "D:(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;" + me + ")", user.User.Sid, false},
+		{"the user Administrators", "D:P(A;;FA;;;SY)(A;;FA;;;BA)", sid("S-1-5-32-544"), true},
+		{"no user entry", "D:P(A;;FA;;;SY)(A;;FA;;;BA)", user, false},
+		{"another account", "D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;WD)", user, false},
+		{"one more account", "D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;" + me + ")(A;;FA;;;WD)", user, false},
+		{"a deny entry", "D:P(A;;FA;;;SY)(A;;FA;;;BA)(D;;FA;;;" + me + ")", user, false},
+		{"one account twice", "D:P(A;;FA;;;SY)(A;;FA;;;SY)(A;;FA;;;" + me + ")", user, false},
+		{"less access", "D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;;FR;;;" + me + ")", user, false},
+		{"an inherited entry", "D:P(A;;FA;;;SY)(A;;FA;;;BA)(A;ID;FA;;;" + me + ")", user, false},
+		{"not protected", "D:(A;;FA;;;SY)(A;;FA;;;BA)(A;;FA;;;" + me + ")", user, false},
 	}
 	for _, c := range cases {
 		sd, err := windows.SecurityDescriptorFromString(c.sddl)
