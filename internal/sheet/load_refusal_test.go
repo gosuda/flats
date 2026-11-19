@@ -302,8 +302,9 @@ func TestLoadRefusalOfADamagedFileKeepsTheLog(t *testing.T) {
 	ownTempDir(t)
 	e, _ := loggedSheet(t, "logged", copyChunk, func(e *env) {
 		// The preflight reads no tab name; the load reads it only when it
-		// is no longer than the writer stores one.
-		if _, err := e.in.db.Exec(`UPDATE tabs SET name=?`, strings.Repeat("a", 200)); err != nil {
+		// is no longer than the writer stores one, and a name of one code
+		// point more than a tab name has is damage.
+		if _, err := e.in.db.Exec(`UPDATE tabs SET name=?`, strings.Repeat("a", maxTabName+1)); err != nil {
 			t.Fatal(err)
 		}
 	})
