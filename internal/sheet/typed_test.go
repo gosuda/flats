@@ -2,6 +2,7 @@ package sheet
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -76,6 +77,67 @@ func TestTypedEntry(t *testing.T) {
 	out = e.read(ReadQuery{Tab: "Sheet1", Range: "G2:G2"})
 	if got, ok := firstCell(out).(map[string]any); !ok || got["date"] != "2026-03-15" {
 		t.Errorf("an imported date reads back as %v", firstCell(out))
+	}
+}
+
+// TestLongTypedNumbersStayText covers T-01: a whole number typed with more
+// than 15 digits stays text by typing, by a paste and by import csv, while
+// the other number forms stay numbers. VALUE reads each text as a number,
+// and an agent's JSON number stays a number.
+func TestLongTypedNumbersStayText(t *testing.T) {
+	e := start(t)
+	alice := e.person("Alice")
+	tab := e.tabID("Sheet1")
+	cases := []struct{ typed, shown string }{
+		{"1234567890123456", ""},
+		{"-1,234,567,890,123,456", ""},
+		{"1234567890123456.0", ""},
+		{"1.234567890123456E15", ""},
+		{"1234567890123456%", ""},
+		{"$1234567890123456", ""},
+		{"0001234567890123", "1234567890123"},
+		{"123456789012345", "123456789012345"},
+		{"1.5E+20", "1.5E+20"},
+		{"12345678901234567.5", "1.23457E+16"},
+	}
+	var pasted, fields []string
+	for i, c := range cases {
+		row := i + 1
+		if ack := alice.set(fmt.Sprintf("A%d", row), c.typed); status(ack) != "applied" {
+			t.Fatalf("typing %q: %s", c.typed, status(ack))
+		}
+		data, _ := json.Marshal(c.typed)
+		pasted = append(pasted, "["+string(data)+"]")
+		fields = append(fields, `"`+c.typed+`"`)
+		e.mustAgent(fmt.Sprintf(`{"ops":[{"op":"write","tab":"Sheet1","at":"D%d","rows":[["=VALUE(A%d)"]]}]}`, row, row))
+	}
+	if ack := alice.do(jsonf(`{"op":"write","tab":%d,"rows":%s,"cols":%s,"values":[%s]}`, tab, e.rowsOf("Sheet1", 1, len(cases)), e.colsOf("Sheet1", 2, 1), strings.Join(pasted, ","))); status(ack) != "applied" {
+		t.Fatalf("the paste: %s", status(ack))
+	}
+	csv, _ := json.Marshal(strings.Join(fields, "\r\n") + "\r\n")
+	e.mustAgent(`{"ops":[{"op":"import_csv","tab":"Sheet1","at":"C1","csv":` + string(csv) + `}]}`)
+	for i, c := range cases {
+		for _, col := range []string{"A", "B", "C"} {
+			addr := fmt.Sprintf("%s%d", col, i+1)
+			if c.shown == "" {
+				// Text shows as typed, and the formula bar needs no apostrophe.
+				if e.shown(addr) != c.typed || e.text(addr) != c.typed {
+					t.Errorf("%s from %q shows %q and holds %q, want the text", addr, c.typed, e.shown(addr), e.text(addr))
+				}
+				continue
+			}
+			e.want(addr, c.shown)
+		}
+		if got := e.shown(fmt.Sprintf("D%d", i+1)); strings.HasPrefix(got, "#") || got == "" {
+			t.Errorf("VALUE of %q shows %q", c.typed, got)
+		}
+	}
+	e.want("D1", "1.23457E+15")
+	// An agent's JSON number is no entry and stays a number.
+	e.mustAgent(`{"ops":[{"op":"write","tab":"Sheet1","at":"E1","rows":[[1234567890123456]]}]}`)
+	e.want("E1", "1.23457E+15")
+	if got := firstCell(e.read(ReadQuery{Tab: "Sheet1", Range: "E1:E1"})); got != float64(1234567890123456) {
+		t.Errorf("an agent's number reads back as %v", got)
 	}
 }
 

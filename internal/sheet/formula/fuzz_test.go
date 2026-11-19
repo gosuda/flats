@@ -451,6 +451,7 @@ func FuzzParseTyped(f *testing.F) {
 	for _, seed := range []string{
 		"", "=", "=1+1", "'007", "TRUE", "1,200.50", "1.5E+20", "50%", "$5", "-€1,000.5", "2026-03-15", "3/15/2026",
 		"Mar 15, 2026", "14:30", "14:30:05", "2:30 PM", "2026-03-15 14:30", "Rent", " 12", "1e400", "''", "-",
+		"1234567890123456", "12345678901234567.5", "1.234567890123456E15",
 	} {
 		f.Add(seed)
 	}
@@ -472,10 +473,14 @@ func FuzzParseTyped(f *testing.F) {
 		shown := Show(content.Value(), content.Kind, format)
 		AppendCSVField(nil, shown)
 		edit := EditText(content, Pos{})
-		if back, _ := ParseTyped(edit); back != content {
+		if back, _ := ParseTyped(edit); back != readBack(content, edit) {
 			t.Fatalf("ParseTyped(%q) = %+v is shown as %q, which reads back as %+v", text, content, edit, back)
 		}
-		if _, ok := textToNumber(text); ok != (content.Kind >= ContentNumber && content.Kind <= ContentDateTime && content.Kind != ContentText && content.Kind != ContentBool) {
+		// A number form that entry keeps as text is still a number to an
+		// operator.
+		_, isValue := readValue(text)
+		kept := content.Kind == ContentText && content.Text == text && isValue
+		if _, ok := textToNumber(text); ok != (kept || content.Kind >= ContentNumber && content.Kind <= ContentDateTime && content.Kind != ContentText && content.Kind != ContentBool) {
 			t.Fatalf("textToNumber(%q) = %v for the content %+v", text, ok, content)
 		}
 	})

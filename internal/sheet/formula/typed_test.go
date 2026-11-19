@@ -3,6 +3,7 @@ package formula
 import (
 	"math"
 	"math/rand"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -66,6 +67,84 @@ func TestParseTyped(t *testing.T) {
 	}
 }
 
+// A number form that is whole as typed, before any %, and that has more
+// than 15 digits as typed stays text on entry, so that no digit is lost
+// (rule 5, T-01). Leading zeros and zeros at the end after the decimal
+// point do not count, and the sign, commas and a currency sign change
+// nothing. VALUE, arithmetic and criteria still read such text as a number.
+func TestLongTypedNumbersStayText(t *testing.T) {
+	texts := []string{
+		"1234567890123456", "-1,234,567,890,123,456", "1234567890123456.0", "1.234567890123456E15", "1234567890123456%",
+		"$1234567890123456", "-$1234567890123456", "1,234,567,890,123,456.00", "1000000000000000", "100000000000000000000",
+		"0.1234567890123456E16", "1234567890123450E-1", "12345678901234567890" + strings.Repeat("0", 280), strings.Repeat("9", 300),
+	}
+	for _, typed := range texts {
+		got, sets := ParseTyped(typed)
+		if got != (Content{Kind: ContentText, Text: typed}) || sets != nil {
+			t.Errorf("ParseTyped(%.40q) = %+v, %v, want the text", typed, got, sets)
+		}
+		if edit := EditText(got, Pos{}); edit != typed {
+			t.Errorf("the text %.40q is edited as %.40q", typed, edit)
+		}
+		if _, ok := textToNumber(typed); !ok {
+			t.Errorf("%.40q is no number where a number is needed", typed)
+		}
+	}
+	for typed, want := range map[string]float64{
+		"0001234567890123":     1234567890123,
+		"123456789012345":      123456789012345,
+		"-123,456,789,012,345": -123456789012345,
+		"1.5E+20":              1.5e20,
+		"1E+20":                1e20,
+		"12345678901234567.5":  12345678901234567.5,
+		"1234567890123456E-1":  123456789012345.6,
+		"1234567890123456.5%":  12345678901234.565,
+		"1.0E+15":              1e15,
+		"0.000000000000000":    0,
+		"0000000000000000000":  0,
+		"999999999999999.000":  999999999999999,
+	} {
+		if got, _ := ParseTyped(typed); got.Kind != ContentNumber || got.Num != want {
+			t.Errorf("ParseTyped(%q) = %+v, want the number %v", typed, got, want)
+		}
+	}
+	sheet := &testSheet{tabs: []*testTab{newTab(t, "Sheet1", map[string]*testCell{
+		"A1": textCell("1234567890123456"), "A2": numberCell(1234567890123456),
+	})}}
+	for formula, want := range map[string]Value{
+		`=VALUE("1234567890123456")`:          NumberValue(1234567890123456),
+		`=VALUE("-1,234,567,890,123,456")`:    NumberValue(-1234567890123456),
+		`=VALUE("1234567890123456%")`:         NumberValue(12345678901234.56),
+		`=VALUE("$1234567890123456")`:         NumberValue(1234567890123456),
+		`=A1+0`:                               NumberValue(1234567890123456),
+		`=COUNTIF(A1:A2,"1234567890123456")`:  NumberValue(2),
+		`=COUNTIF(A1:A2,">1234567890123400")`: NumberValue(1),
+		`=SUMIF(A1:A2,"=1234567890123456")`:   NumberValue(1234567890123456),
+	} {
+		if got := evalOn(t, sheet, formula); got != want {
+			t.Errorf("%s = %v, want %v", formula, got, want)
+		}
+	}
+}
+
+// readBack is what typed entry gives for the edit text of c: c itself,
+// except for a whole number of more than 15 digits as edited, which entry
+// keeps as the text of its digits (technical design, section 9.5).
+func readBack(c Content, edit string) Content {
+	if c.Kind != ContentNumber || c.Num != math.Trunc(c.Num) || math.Abs(c.Num) < 1e15 {
+		return c
+	}
+	if math.Abs(c.Num) >= 1e21 {
+		// Written with an exponent, as the shortest digits of the number.
+		mant := strconv.FormatFloat(math.Abs(c.Num), 'e', -1, 64)
+		mant, _, _ = strings.Cut(mant, "e")
+		if len(strings.Replace(mant, ".", "", 1)) <= 15 {
+			return c
+		}
+	}
+	return Content{Kind: ContentText, Text: edit}
+}
+
 // TestEditText checks rule 18: the formula bar shows content as it would
 // be typed, so that typing it again gives the same content.
 func TestEditText(t *testing.T) {
@@ -87,6 +166,8 @@ func TestEditText(t *testing.T) {
 		"'TRUE":               {Kind: ContentText, Text: "TRUE"},
 		"'2026-03-15":         {Kind: ContentText, Text: "2026-03-15"},
 		"'50%":                {Kind: ContentText, Text: "50%"},
+		"1234567890123456":    {Kind: ContentText, Text: "1234567890123456"},
+		"'123456789012345":    {Kind: ContentText, Text: "123456789012345"},
 		"'":                   {Kind: ContentText},
 		"=":                   {Kind: ContentText, Text: "="},
 		"TRUE":                {Kind: ContentBool, Num: 1},
@@ -112,7 +193,7 @@ func TestEditText(t *testing.T) {
 		if c.Kind <= ContentDateTime && c.Kind >= ContentDate && back.Kind == ContentNumber {
 			back.Kind = c.Kind // such content has no typed form of its own kind
 		}
-		if back != c {
+		if back != readBack(c, got) {
 			t.Errorf("EditText(%+v) = %q, which reads back as %+v", c, got, back)
 		}
 	}
@@ -136,11 +217,13 @@ func TestEditText(t *testing.T) {
 		if x == 0 {
 			c.Num = 0
 		}
-		if back, _ := ParseTyped(EditText(c, Pos{})); back != c {
-			t.Fatalf("the number %v is shown as %q and reads back as %+v", x, EditText(c, Pos{}), back)
+		edit := EditText(c, Pos{})
+		if back, _ := ParseTyped(edit); back != readBack(c, edit) {
+			t.Fatalf("the number %v is shown as %q and reads back as %+v", x, edit, back)
 		}
 	}
-	texts := []string{"1", "-1", "1e5", "1,000", "$5", "5%", "3/15/2026", "Mar 15, 2026", "2:30 PM", "true", "=1", "'", "''", "x", " 1", "1 ", "-", "2026-03-15 14:30"}
+	texts := []string{"1", "-1", "1e5", "1,000", "$5", "5%", "3/15/2026", "Mar 15, 2026", "2:30 PM", "true", "=1", "'", "''", "x", " 1", "1 ", "-", "2026-03-15 14:30",
+		"1234567890123456", "1234567890123456%", "$1234567890123456", "1.234567890123456E15", "123456789012345", "12345678901234567.5"}
 	for _, s := range texts {
 		c := Content{Kind: ContentText, Text: s}
 		if back, _ := ParseTyped(EditText(c, Pos{})); back != c {
