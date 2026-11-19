@@ -678,6 +678,15 @@ td > .badge:first-child { margin-left: 0; }
 .setting-sharing { display: grid; gap: 6px; justify-items: end; min-width: 0; }
 .setting-sharing p { margin: 0; text-align: right; }
 .setting-pending { background: var(--warn-bg); padding-left: 12px; padding-right: 12px; }
+/* The Sign-in row (portal-sign-in.md rule 63) and its link dialog. */
+.setting-signin { align-items: flex-start; }
+.setting-signin .setting-sharing { justify-items: stretch; flex: 0 1 560px; }
+.setting-signin .setting-sharing p { text-align: left; }
+.setting-signin .setting-control { justify-content: flex-start; flex-wrap: wrap; }
+.signin-facts { font-size: 13px; }
+.signin-entries { margin: 4px 0 0; }
+.signin-link .snippet { white-space: pre-wrap; overflow-wrap: anywhere; }
+.vis-signin { white-space: nowrap; }
 input, select, textarea { caret-color: var(--focus); }
 input::placeholder { color: var(--muted); opacity: 1; }
 ::selection { background: var(--focus); color: var(--bg); }

@@ -3315,4 +3315,414 @@ const minutesEdit = { ...minutes, public_access: 'edit', public_presence: { gues
   }
 }
 
+// --- Portal sign-in (docs/spec/portal-sign-in.md, rules 49 to 64) ---
+{
+  const SIGN_IN_PUBLIC = 'This flat is public on its Portal address behind sign-in: only the visitors that its sign-in allows can open it there. Its private routes, the console and MCP are not behind sign-in.';
+  const PENDING_SIGN_IN = 'If approved, this flat becomes public on its Portal address behind sign-in: only the visitors that its sign-in allows can open it there. Its private routes, the console and MCP are not behind sign-in.';
+  const SIGN_IN_EDIT = 'Visitors who sign in can edit it as guests.';
+  const SCOPE = 'Sign-in protects the Portal address of this flat only. Its private routes, previews, the console and MCP are not behind sign-in.';
+  const CHANGE = 'Change it with flats signin set on the host. Each change waits for your approval here.';
+  const LINK = 'https://gated.portal.example/_portal/auth/redeem#cred-ui-distinct-91';
+  const dom = await import('./dom.js');
+  const signin = await import('./signin.js');
+  const openDialogs = () => all(document.body, (e) => e.tagName === 'DIALOG' && e.open);
+  const facts = (root) => {
+    const kids = all(root, (e) => e.tagName === 'DL')[0].childNodes;
+    const out = {};
+    for (let i = 0; i < kids.length; i += 2) out[kids[i].textContent] = kids[i + 1];
+    return out;
+  };
+  const savedRoutes = { ...routes };
+  const savedGet = document.getElementById;
+  const savedNavigator = Object.getOwnPropertyDescriptor(globalThis, 'navigator');
+  const toasts = new Element('div');
+  document.getElementById = (id) => (id === 'toasts' ? toasts : savedGet?.(id));
+  const copied = [];
+  Object.defineProperty(globalThis, 'navigator', { configurable: true, value: { clipboard: { writeText: async (text) => copied.push(text) } } });
+  // Every place that could keep a link: storage, the history and the console.
+  const kept = [];
+  const storage = () => ({ setItem: (k, v) => kept.push(`${k}=${v}`), getItem: () => null, removeItem() {}, clear() {} });
+  for (const name of ['localStorage', 'sessionStorage']) Object.defineProperty(globalThis, name, { configurable: true, writable: true, value: storage() });
+  const savedHistory = globalThis.history;
+  globalThis.history = { pushState: (...a) => kept.push(JSON.stringify(a)), replaceState: (...a) => kept.push(JSON.stringify(a)) };
+  const LOGS = ['log', 'info', 'warn', 'error', 'debug'];
+  const savedLog = Object.fromEntries(LOGS.map((k) => [k, console[k]]));
+  for (const k of LOGS) console[k] = (...a) => kept.push(a.map(String).join(' '));
+  const stops = [];
+  try {
+    const credential = { provider: 'credential', issuer: '', client_id: '', allow_count: 2 };
+    const gated = { ...blog, slug: 'gated', name: 'Gated', providers: ['portal'], public_url: 'https://gated.portal.example', public_notice: SIGN_IN_PUBLIC, sign_in: credential };
+    const open = { ...blog, slug: 'open', name: 'Open' };
+    const shut = { ...blog, slug: 'shut', name: 'Shut', visibility: 'private', public_url: undefined, public_notice: undefined, sign_in: credential };
+    const gboard = { ...notes, type: 'board', slug: 'gboard', name: 'GBoard', visibility: 'public', public_access: 'view', providers: ['portal'], live_version: 0,
+      private_url: 'https://gboard.tail.ts.net', public_url: 'https://gboard.portal.example', public_notice: SIGN_IN_PUBLIC, sign_in: { ...credential, allow_count: 1 } };
+
+    // Rule 62: the badges of the flat list and the level on the page of the flat.
+    routes['GET /console/api/flats'] = { flats: [gated, open, shut, gboard] };
+    routes['GET /console/api/approvals?status=pending'] = { approvals: [] };
+    let main = new Element('main');
+    let stop = list.mount(main, [], ctx);
+    stops.push(stop);
+    await tick();
+    const badges = (row) => all(row, (e) => (e.getAttribute('class') || '').split(' ').includes('vis')).map((e) => e.textContent);
+    assert.deepEqual(all(main, (e) => e.tagName === 'LI' && e.className === 'flat').map(badges), [
+      ['Public · Sign-in', 'Public · Sign-in'], ['Public', 'Public'], ['Private', 'Private'], ['Public, view only · Sign-in', 'Public, view only · Sign-in']]);
+    stop(); stops.pop();
+    assert.deepEqual([gated, open, shut, gboard].map(dom.accessLabelOf), ['Public · Sign-in', 'Public', 'Private', 'Public, view only · Sign-in']);
+    assert.equal(dom.flatBadge({ ...gboard, public_access: 'edit' }).textContent, 'Public, anyone can edit · Sign-in');
+
+    // Rule 63: the Sign-in row, below Sharing, for credential, with a request
+    // that waits for approval. An entry that looks like HTML stays text.
+    // Every provider is on for the host, except the reverse proxies, which
+    // would change the server-only text of later links.
+    const ALL = ['local', 'tailscale', 'netbird', 'proxy', 'tailscale-funnel', 'portal', 'zrok', 'cloudflare-quick', 'netbird-expose', 'proxy-public'];
+    routes['GET /console/api/providers'] = { providers: ALL.map((id) => provider(id, 'public', !id.startsWith('proxy'))) };
+    routes['GET /console/api/flats/gated'] = gated;
+    routes['GET /console/api/flats/gated/signin'] = { provider: 'credential', issuer: '', client_id: '', allow: ['<b>bob</b>', 'alice'], client_secret: null,
+      hosts: ['gated.portal.example'], callback_urls: [], seq: 4 };
+    const waiting = { id: 'apr-si-wait', action: 'set_signin', flat: 'gated', status: 'pending', via: 'cli', requested_at: '2026-10-03T00:00:00Z',
+      params: { flat_id: 'f-1', seq: 4, from: { provider: 'credential', allow: ['<b>bob</b>', 'alice'] }, to: { provider: 'credential', allow: ['alice', 'carol'] }, public_grants: ['portal'] } };
+    routes['GET /console/api/approvals?status=pending'] = { approvals: [waiting, { ...waiting, id: 'apr-si-other', flat: 'open' }] };
+    main = new Element('main');
+    stop = flat.mountSettings(main, ['gated'], ctx);
+    stops.push(stop);
+    await tick();
+    const general = all(main, (e) => e.getAttribute('aria-labelledby') === 'general-title')[0].childNodes;
+    const sharingAt = general.findIndex((k) => k.textContent.startsWith('Sharing'));
+    const signInAt = general.findIndex((k) => k.getAttribute('id') === 'signin');
+    assert.ok(sharingAt > 0 && signInAt > sharingAt, 'the Sign-in row is below Sharing');
+    assert.ok(general[sharingAt].textContent.includes('Public · Sign-in'), general[sharingAt].textContent);
+    const row = general[signInAt];
+    for (const text of ['Sign-in', 'Access links', '2 entries', '<b>bob</b>', 'alice', SCOPE, CHANGE]) assert.ok(row.textContent.includes(text), `the row lacks ${text}: ${row.textContent}`);
+    assert.equal(all(row, (e) => e.tagName === 'B').length, 0, 'an entry is text, never HTML');
+    assert.ok(!row.textContent.includes('Callback URLs') && !row.textContent.includes('Client secret'), 'credential has no callback URL or client secret');
+    assert.ok(row.textContent.includes('Waiting for approval') && row.textContent.includes('Change the sign-in of gated'));
+    assert.deepEqual(all(row, (e) => e.tagName === 'A' && e.textContent === 'View request').map((a) => a.getAttribute('href')), ['/approvals/apr-si-wait']);
+
+    // Rule 64, last sentence: the other public networks are off with the reason of rule 8; Portal and the private ones stay.
+    for (const id of ['tailscale-funnel', 'zrok', 'cloudflare-quick', 'netbird-expose', 'proxy-public']) {
+      const box = byId(main, 'net-' + id);
+      assert.equal(box.getAttribute('disabled'), '', id + ' is disabled');
+      assert.equal(box.getAttribute('aria-describedby'), 'net-signin-reason');
+      assert.ok(box.parentNode.textContent.includes('Off while Portal sign-in is on'), box.parentNode.textContent);
+    }
+    for (const id of ['portal', 'tailscale', 'netbird']) assert.equal(byId(main, 'net-' + id).getAttribute('disabled'), null, id + ' stays');
+    const reason = byId(main, 'net-signin-reason').textContent;
+    assert.ok(reason.includes('Visitors on Tailscale Funnel, zrok, Cloudflare Quick Tunnel, NetBird Expose and Reverse proxy (public) do not sign in') &&
+      reason.includes('flats signin off gated') && reason.includes('an approval in the console'), reason);
+    assert.ok(byId(main, 'net-portal').parentNode.textContent.includes('Visitors that its sign-in allows'));
+    assert.ok(byId(main, 'portal-listing').parentNode.textContent.includes('anyone who passes its sign-in can still open it'));
+
+    // Rules 49 to 52: the form sends a subject of the allowlist and an RFC 3339
+    // expiry (7 days unless changed); the link shows once, with a copy button
+    // and the text of rule 51, and closing the dialog drops it.
+    routes['POST /console/api/flats/gated/signin/links'] = { __status: 201, url: LINK, subject: 'alice', host: 'gated.portal.example', expires_at: '2026-12-01T10:00:00Z' };
+    const linkCalls = () => calls.filter((c) => c.key === 'POST /console/api/flats/gated/signin/links');
+    const formOf = (dlg) => all(dlg, (e) => e.tagName === 'FORM')[0];
+    const selects = (dlg) => all(dlg, (e) => e.tagName === 'SELECT');
+    const amountOf = (dlg) => all(dlg, (e) => e.tagName === 'INPUT' && e.getAttribute('type') === 'number')[0];
+    byText(row, 'Issue a link…')[0].dispatch('click');
+    await tick();
+    let dlg = openDialogs().pop();
+    assert.ok(dlg.textContent.includes('Issue an access link for gated'));
+    assert.deepEqual(all(selects(dlg)[0], (e) => e.tagName === 'OPTION').map((o) => o.textContent), ['<b>bob</b>', 'alice'], 'the subjects of the allowlist');
+    assert.equal(amountOf(dlg).value, '7');
+    assert.equal(selects(dlg)[1].value, 'days');
+    selects(dlg)[0].value = 'alice';
+    let before = Date.now();
+    formOf(dlg).dispatch('submit');
+    await tick();
+    let sent = JSON.parse(linkCalls().at(-1).body);
+    assert.deepEqual(Object.keys(sent).sort(), ['expires', 'subject']);
+    assert.equal(sent.subject, 'alice');
+    assert.match(sent.expires, /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\dZ$/);
+    assert.ok(Math.abs(Date.parse(sent.expires) - before - 7 * 86400e3) < 60e3, 'the default expiry is 7 days: ' + sent.expires);
+    assert.ok(dlg.textContent.includes(LINK));
+    assert.ok(dlg.textContent.includes(`Anyone who has this link can open gated as alice until ${dom.dateTime('2026-12-01T10:00:00Z')}. It is not shown again.`), dlg.textContent);
+    assert.equal(all(dlg, (e) => e.tagName === 'A').length, 0, 'the link is text, not a link that the browser opens or keeps');
+    const linkText = all(dlg, (e) => e.tagName === 'CODE' && e.textContent === LINK)[0];
+    all(dlg, (e) => e.tagName === 'BUTTON' && e.getAttribute('aria-label') === 'Copy the access link')[0].dispatch('click');
+    await tick();
+    assert.deepEqual(copied, [LINK]);
+    byText(dlg, 'Close')[0].dispatch('click');
+    await tick();
+    assert.equal(dlg.open, false);
+    assert.equal(dlg.parentNode, null, 'the dialog is gone');
+    assert.equal(dlg.textContent, '', 'the closed dialog holds nothing');
+    assert.equal(linkText.textContent, '', 'the text of the link is dropped');
+    assert.equal(all(document.body, (e) => e.textContent.includes(LINK)).length, 0);
+    assert.ok(!main.textContent.includes(LINK) && !toasts.textContent.includes(LINK));
+    // Another subject and unit.
+    byText(row, 'Issue a link…')[0].dispatch('click');
+    await tick();
+    dlg = openDialogs().pop();
+    selects(dlg)[0].value = '<b>bob</b>';
+    amountOf(dlg).value = '3';
+    selects(dlg)[1].value = 'hours';
+    before = Date.now();
+    formOf(dlg).dispatch('submit');
+    await tick();
+    sent = JSON.parse(linkCalls().at(-1).body);
+    assert.equal(sent.subject, '<b>bob</b>');
+    assert.ok(Math.abs(Date.parse(sent.expires) - before - 3 * 3600e3) < 60e3, sent.expires);
+    byText(dlg, 'Close')[0].dispatch('click');
+    await tick();
+    // A value that is not a whole number sends nothing; the errors of the
+    // host show in the dialog, which keeps the form for another try.
+    byText(row, 'Issue a link…')[0].dispatch('click');
+    await tick();
+    dlg = openDialogs().pop();
+    const sentBefore = linkCalls().length;
+    amountOf(dlg).value = '0';
+    formOf(dlg).dispatch('submit');
+    await tick();
+    assert.equal(linkCalls().length, sentBefore);
+    assert.ok(dlg.textContent.includes('Use a whole number of 1 or more.'));
+    amountOf(dlg).value = '7';
+    for (const [status, error] of [[409, 'flat gated has no Portal route: it must be Public on Portal with a ready relay'], [400, 'member expires must be from 1 minute to 90 days from now (rule 50)']]) {
+      routes['POST /console/api/flats/gated/signin/links'] = { __status: status, error };
+      formOf(dlg).dispatch('submit');
+      await tick();
+      assert.ok(dlg.textContent.includes('The link was not issued') && dlg.textContent.includes(error), dlg.textContent);
+      assert.equal(selects(dlg).length, 2, 'the form stays');
+    }
+    assert.equal(linkCalls().length, sentBefore + 2);
+    byText(dlg, 'Cancel')[0].dispatch('click');
+    await tick();
+    assert.equal(dlg.parentNode, null);
+    assert.deepEqual(kept.filter((k) => k.includes('cred-ui-distinct-91')), [], 'no storage, history or console holds the link');
+
+    // Rule 54: End all sessions and links says what ends, asks first, and shows the result.
+    routes['POST /console/api/flats/gated/signin/revoke'] = { status: 'done', message: 'every sign-in session and access link of gated ended via console' };
+    const revokes = () => calls.filter((c) => c.key === 'POST /console/api/flats/gated/signin/revoke').length;
+    byText(row, 'End all sessions and links')[0].dispatch('click');
+    await tick();
+    let confirm = openDialogs().pop();
+    assert.ok(confirm.textContent.includes('End all sessions and links of gated?'));
+    assert.ok(confirm.textContent.includes('is signed out') && confirm.textContent.includes('every access link of gated stops working') &&
+      confirm.textContent.includes('The Portal address stays the same.'), confirm.textContent);
+    confirm.close('cancel');
+    await tick();
+    assert.equal(revokes(), 0, 'a cancel ends nothing');
+    byText(row, 'End all sessions and links')[0].dispatch('click');
+    await tick();
+    openDialogs().pop().close('ok');
+    await tick();
+    assert.equal(revokes(), 1);
+    assert.ok(toasts.textContent.includes('Every sign-in session and access link of gated ended via console.'), toasts.textContent);
+    stop(); stops.pop();
+
+    // An oidc row: the host of the issuer, the client ID, the binding of the
+    // client secret with the text of rule 27, the callback URLs, and no form.
+    const idp = { ...blog, slug: 'idp', name: 'Idp', providers: ['portal'],
+      sign_in: { provider: 'oidc', issuer: 'https://login.example.com/tenant-a', client_id: 'flats-app', allow_count: 2, client_secret: { name: 'oidc-client-secret' } } };
+    routes['GET /console/api/flats/idp'] = idp;
+    routes['GET /console/api/flats/idp/signin'] = { provider: 'oidc', issuer: 'https://login.example.com/tenant-a', client_id: 'flats-app', allow: ['@example.com', 'sub:Abc'],
+      client_secret: { name: 'oidc-client-secret', issuer: 'https://login.example.com/old', client_id: 'flats-app', updated_at: '2026-10-03T00:00:00Z', value: 'CLIENT_SECRET_MUST_NEVER_RENDER' },
+      hosts: ['idp.portal.example'], callback_urls: ['https://idp.portal.example/_portal/auth/callback'], seq: 1 };
+    routes['GET /console/api/approvals?status=pending'] = { approvals: [] };
+    main = new Element('main');
+    stop = flat.mountSettings(main, ['idp'], ctx);
+    stops.push(stop);
+    await tick();
+    const idpRow = byId(main, 'signin');
+    for (const text of ['OpenID Connect · login.example.com', 'https://login.example.com/tenant-a', 'flats-app', '2 entries', '@example.com', 'sub:Abc',
+      'Stored for issuer https://login.example.com/old and client ID flats-app', 'https://idp.portal.example/_portal/auth/callback', 'Register each at the provider.',
+      'flats signin secret set idp --issuer https://login.example.com/tenant-a --client-id flats-app', SCOPE, CHANGE]) {
+      assert.ok(idpRow.textContent.includes(text), `the oidc row lacks ${text}: ${idpRow.textContent}`);
+    }
+    assert.ok(!main.textContent.includes('CLIENT_SECRET_MUST_NEVER_RENDER'), 'no console text holds the client secret');
+    assert.equal(byText(idpRow, 'Issue a link…').length, 0, 'only credential issues links');
+    assert.equal(byText(idpRow, 'End all sessions and links').length, 1);
+    assert.ok(!idpRow.textContent.includes('Waiting for approval'));
+    stop(); stops.pop();
+
+    // While sign-in is off the row reads Off, with the same texts and the
+    // button, and the other public networks stay allowed.
+    routes['GET /console/api/flats/open'] = open;
+    routes['GET /console/api/flats/open/signin'] = { provider: '', issuer: '', client_id: '', allow: [], client_secret: null, hosts: [], callback_urls: [], seq: 0 };
+    main = new Element('main');
+    stop = flat.mountSettings(main, ['open'], ctx);
+    stops.push(stop);
+    await tick();
+    const offRow = byId(main, 'signin');
+    assert.equal(all(offRow, (e) => e.tagName === 'SPAN' && e.textContent === 'Off').length, 1, offRow.textContent);
+    assert.ok(offRow.textContent.includes(SCOPE) && offRow.textContent.includes(CHANGE));
+    assert.equal(byText(offRow, 'End all sessions and links').length, 1);
+    assert.equal(byText(offRow, 'Issue a link…').length, 0);
+    assert.ok(!offRow.textContent.includes('Allowlist'));
+    assert.equal(byId(main, 'net-tailscale-funnel').getAttribute('disabled'), null);
+    assert.equal(byId(main, 'net-signin-reason'), undefined);
+    assert.ok(!main.textContent.includes('Sign-in ·') && !main.textContent.includes('· Sign-in'));
+    stop(); stops.pop();
+    routes['GET /console/api/flats/open/signin'] = { __status: 500, error: 'the sign-in of open cannot be read' };
+    main = new Element('main');
+    stop = flat.mountSettings(main, ['open'], ctx);
+    stops.push(stop);
+    await tick();
+    assert.ok(byId(main, 'signin').textContent.includes('Cannot load the sign-in') && byId(main, 'signin').textContent.includes('the sign-in of open cannot be read'));
+    stop(); stops.pop();
+
+    // Rule 64: the three titles, in the approval list too.
+    const on = { provider: 'credential', allow: ['alice'] };
+    const off = { provider: '', allow: [] };
+    const title = (from, to) => approvalsPage.describeApproval({ action: 'set_signin', flat: 'gated', params: { from, to } });
+    assert.equal(title(off, on), 'Turn on sign-in for gated');
+    assert.equal(title(on, { provider: 'credential', allow: ['alice', 'bob'] }), 'Change the sign-in of gated');
+    assert.equal(title(on, off), 'Turn off sign-in for gated: anyone can open its Portal address');
+    assert.equal(approvalsPage.describeApproval({ action: 'set_signin', flat: 'gated', params: JSON.stringify({ from: on, to: off }) }), 'Turn off sign-in for gated: anyone can open its Portal address');
+    routes['GET /console/api/approvals'] = { approvals: [{ id: 'apr-si-on', action: 'set_signin', flat: 'gated', via: 'cli', status: 'pending', requested_at: '2026-10-03T00:00:00Z', params: { from: off, to: on } }] };
+    main = new Element('main');
+    approvalsPage.mountList(main, [], ctx);
+    await tick();
+    assert.equal(all(main, (e) => e.tagName === 'A' && e.getAttribute('href') === '/approvals/apr-si-on')[0].textContent, 'Turn on sign-in for gated');
+
+    // The approval page: the setting when requested and the requested one,
+    // the added and removed entries, the warning of a change that widens
+    // access, and the text of rule 27 for a client secret of another issuer.
+    const fromOIDC = { provider: 'oidc', issuer: 'https://login.example.com/tenant-a', client_id: 'flats-app', allow: ['@example.com', 'sub:Abc'] };
+    const toOIDC = { ...fromOIDC, issuer: 'https://login.example.com/tenant-b', allow: ['<i>eve</i>@example.org', '@example.com'] };
+    const signInApproval = (id, from, to, seq = 1) => {
+      routes['GET /console/api/approvals/' + id] = { id, flat: 'idp', action: 'set_signin', status: 'pending', via: 'cli', requested_at: '2026-10-03T00:00:00Z',
+        params: { flat_id: 'f-2', seq, from, to, public_grants: ['portal'] } };
+    };
+    const approvalPage = async (id) => {
+      const page = new Element('main');
+      approvalsPage.mount(page, [id], ctx);
+      await tick();
+      return page;
+    };
+    signInApproval('apr-si-change', fromOIDC, toOIDC);
+    main = await approvalPage('apr-si-change');
+    let f = facts(main);
+    assert.equal(f.Request.textContent, 'Change the sign-in of idp');
+    assert.ok(f['Sign-in when requested'].textContent.includes('OpenID Connect · login.example.com') && f['Sign-in when requested'].textContent.includes('tenant-a') &&
+      f['Sign-in when requested'].textContent.includes('2 entries'), f['Sign-in when requested'].textContent);
+    assert.ok(f['Requested sign-in'].textContent.includes('https://login.example.com/tenant-b'));
+    const items = (el) => all(el, (e) => e.tagName === 'LI').map((e) => e.textContent);
+    assert.deepEqual(items(f['Added entries']), ['<i>eve</i>@example.org']);
+    assert.deepEqual(items(f['Removed entries']), ['sub:Abc']);
+    assert.equal(all(main, (e) => e.tagName === 'I').length, 0, 'an entry is text, never HTML');
+    for (const text of ['This change widens who can open the Portal address of idp.', 'The issuer changes from https://login.example.com/tenant-a to https://login.example.com/tenant-b.',
+      '1 entry is added to the allowlist.', 'The stored client secret belongs to issuer https://login.example.com/old and client ID flats-app',
+      'the Portal route of idp stops until the operator sets the client secret for issuer https://login.example.com/tenant-b']) {
+      assert.ok(main.textContent.includes(text), `the approval page lacks ${text}: ${main.textContent}`);
+    }
+    assert.ok(!main.textContent.includes('CLIENT_SECRET_MUST_NEVER_RENDER'));
+    byText(main, 'Approve…')[0].dispatch('click');
+    await tick();
+    confirm = openDialogs().pop();
+    assert.ok(confirm.textContent.includes('Approve: Change the sign-in of idp?') && confirm.textContent.includes('This change widens who can open the Portal address of idp.'), confirm.textContent);
+    assert.ok(byText(confirm, 'Approve')[0].className.includes('btn-danger'), 'a widening change confirms as dangerous');
+    routes['POST /console/api/approvals/apr-si-change/approve'] = { id: 'apr-si-change', status: 'approved', result: 'sign-in set to oidc with issuer https://login.example.com/tenant-b and 2 entries' };
+    confirm.close('ok');
+    await tick();
+    assert.ok(calls.some((c) => c.key === 'POST /console/api/approvals/apr-si-change/approve'));
+    // Turning sign-in on narrows access: every entry is added, nothing warns.
+    signInApproval('apr-si-narrow', off, on);
+    main = await approvalPage('apr-si-narrow');
+    f = facts(main);
+    assert.equal(f.Request.textContent, 'Turn on sign-in for idp');
+    assert.equal(f['Sign-in when requested'].textContent, 'Off');
+    assert.deepEqual(items(f['Added entries']), ['alice']);
+    assert.equal(f['Removed entries'].textContent, 'none');
+    assert.ok(!main.textContent.includes('widens') && !main.textContent.includes('client secret'), main.textContent);
+    byText(main, 'Approve…')[0].dispatch('click');
+    await tick();
+    confirm = openDialogs().pop();
+    assert.ok(byText(confirm, 'Approve')[0].className.includes('btn-primary'));
+    confirm.close('cancel');
+    await tick();
+    // Off widens; so do a change of the client ID or of the provider; removing an entry does not.
+    signInApproval('apr-si-off', fromOIDC, off);
+    main = await approvalPage('apr-si-off');
+    assert.ok(main.textContent.includes('Turn off sign-in for idp: anyone can open its Portal address'));
+    assert.ok(main.textContent.includes('Sign-in goes off: anyone can open its Portal address while the flat is Public.'));
+    assert.deepEqual(signin.widening({ from: fromOIDC, to: { ...fromOIDC, client_id: 'other-app' } }), ['The client ID changes from flats-app to other-app.']);
+    assert.deepEqual(signin.widening({ from: on, to: fromOIDC }), ['The provider changes from Access links to OpenID Connect.', '2 entries are added to the allowlist.']);
+    assert.deepEqual(signin.widening({ from: { ...on, allow: ['alice', 'bob'] }, to: on }), []);
+    assert.deepEqual(signin.widening({ from: { provider: 'credential', count: 2 }, to: { provider: 'credential', count: 1 } }), ['The console cannot compare the entries of this request.']);
+    assert.equal(signin.secretMismatch('idp', toOIDC, { issuer: toOIDC.issuer, client_id: 'flats-app' }, true), '', 'a client secret of the same binding is no problem');
+    // A request whose sign-in changed since cannot be approved (rule 18).
+    signInApproval('apr-si-stale', fromOIDC, toOIDC, 0);
+    main = await approvalPage('apr-si-stale');
+    assert.ok(main.textContent.includes("This request can't be approved.") && main.textContent.includes('The sign-in changed after it was requested'), main.textContent);
+    assert.equal(byText(main, 'Approve…').length, 0);
+    assert.equal(byText(main, 'Dismiss…').length, 1);
+
+    // Rule 61 in the console copies: the notice before going Public, the
+    // Share dialog, a visibility approval, guest editing and the open links.
+    // The host's public_notice wins over the copy.
+    assert.equal(dom.publicNoticeOf(gated), SIGN_IN_PUBLIC);
+    assert.equal(dom.publicNoticeOf({ ...gated, public_notice: undefined }), SIGN_IN_PUBLIC);
+    assert.equal(dom.publicNoticeOf({ ...gated, public_notice: 'the notice of the host' }), 'the notice of the host');
+    const shutPortal = { ...shut, providers: ['portal'] };
+    let pendingChange = versionActions.setVisibility(shutPortal, 'public');
+    await tick();
+    confirm = openDialogs().pop();
+    assert.ok(confirm.textContent.includes(PENDING_SIGN_IN), confirm.textContent);
+    assert.ok(!confirm.textContent.includes('anyone on the internet'));
+    confirm.close('cancel');
+    assert.equal(await pendingChange, null);
+    pendingChange = versionActions.setVisibility({ ...shut, providers: ['tailscale-funnel'] }, 'public');
+    await tick();
+    confirm = openDialogs().pop();
+    assert.ok(confirm.textContent.includes('Allow Portal first') && confirm.textContent.includes('Public through Portal alone'), confirm.textContent);
+    confirm.close('ok');
+    assert.equal(await pendingChange, null);
+    shareDialog(gated);
+    let share = openDialogs().pop();
+    for (const text of [SIGN_IN_PUBLIC, 'Visitors who pass its sign-in', 'Only the visitors that its sign-in allows, on its Portal address', 'Its Portal link opens only for the visitors that its sign-in allows.']) {
+      assert.ok(share.textContent.includes(text), `the share dialog lacks ${text}: ${share.textContent}`);
+    }
+    assert.ok(!share.textContent.includes('Anyone on the internet') && !share.textContent.includes('can be opened by anyone'), share.textContent);
+    share.close();
+    shareDialog(gboard);
+    share = openDialogs().pop();
+    assert.ok(share.textContent.includes('Visitors who pass its sign-in can watch live.') && share.textContent.includes('Visitors who pass its sign-in can edit and delete.'), share.textContent);
+    share.close();
+    routes['GET /console/api/flats/shut'] = shutPortal;
+    routes['GET /console/api/approvals/apr-si-vis'] = { id: 'apr-si-vis', flat: 'shut', action: 'set_visibility', status: 'pending', via: 'mcp', requested_at: '2026-10-03T00:00:00Z',
+      params: { visibility: 'public', from: 'private' } };
+    main = await approvalPage('apr-si-vis');
+    assert.ok(main.textContent.includes(PENDING_SIGN_IN), main.textContent);
+    assert.equal(facts(main)['Requested visibility'].textContent, 'Public · Sign-in');
+    routes['GET /console/api/flats/gboard'] = gboard;
+    routes['GET /console/api/flats/gboard/public-edit'] = { problems: [], disk_quota: 1024, revision_quota: 100, pin_quota: 20, pins: 0, safe_point: null, listed: false };
+    pendingChange = versionActions.allowGuestEditing(gboard);
+    await tick();
+    confirm = openDialogs().pop();
+    assert.ok(confirm.textContent.includes('Let anyone who passes its sign-in edit GBoard?') && confirm.textContent.includes(SIGN_IN_EDIT), confirm.textContent);
+    assert.ok(!confirm.textContent.includes('anyone on the internet') && !confirm.textContent.includes('Anyone who opens the link'), confirm.textContent);
+    confirm.close('cancel');
+    assert.equal(await pendingChange, null);
+    routes['GET /console/api/approvals/apr-si-edit'] = { id: 'apr-si-edit', flat: 'gboard', action: 'set_visibility', status: 'pending', via: 'mcp', requested_at: '2026-10-03T00:00:00Z',
+      params: { visibility: 'public', access: 'edit', from: 'public', from_access: 'view' } };
+    main = await approvalPage('apr-si-edit');
+    assert.ok(main.textContent.includes('If you approve, anyone who passes its sign-in can add, change and delete everything on this board.') && main.textContent.includes(SIGN_IN_EDIT), main.textContent);
+    assert.ok(!main.textContent.includes('anyone on the internet'));
+    byText(main, 'Approve…')[0].dispatch('click');
+    await tick();
+    confirm = openDialogs().pop();
+    assert.ok(confirm.textContent.includes('Anyone who passes its sign-in will be able to add, change and delete everything on this board.'), confirm.textContent);
+    confirm.close('cancel');
+    await tick();
+    const gatedOpen = { ...gated, live_version: 1, endpoints: [ep('portal', 'https://gated.portal.example/')] };
+    assert.ok(glyphOf(ui.openPrimary(gatedOpen)).getAttribute('aria-label').includes('only the visitors that its sign-in allows can open the flat'));
+    assert.ok(!glyphOf(ui.openPrimary(gatedOpen)).getAttribute('aria-label').includes('anyone with the URL'));
+    assert.deepEqual(kept.filter((k) => k.includes('cred-ui-distinct-91')), []);
+  } finally {
+    for (const s of stops) s();
+    for (const dlg of all(document.body, (e) => e.tagName === 'DIALOG')) dlg.close('cancel');
+    for (const k of LOGS) console[k] = savedLog[k];
+    for (const name of ['localStorage', 'sessionStorage']) delete globalThis[name];
+    globalThis.history = savedHistory;
+    for (const key of Object.keys(routes)) delete routes[key];
+    Object.assign(routes, savedRoutes);
+    document.getElementById = savedGet;
+    if (savedNavigator) Object.defineProperty(globalThis, 'navigator', savedNavigator);
+    else delete globalThis.navigator;
+  }
+}
+
 console.log('ok');

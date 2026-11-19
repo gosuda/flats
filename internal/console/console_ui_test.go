@@ -13,6 +13,8 @@ import (
 // TestConsoleUI renders the list and flat pages under Node with a fake DOM
 // (testdata/ui_test.mjs): list rows omit repeated public notices, deployment
 // results retain their disclosures, and live versions can apply environment settings, and ordinary values stay separate from secrets.
+// Its Portal sign-in part covers the badges, the Sign-in row, the access link shown once, the revoke button, the
+// set_signin approvals and the Networks switches (docs/spec/portal-sign-in.md, rules 49 to 64).
 func TestConsoleUI(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {

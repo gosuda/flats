@@ -7,7 +7,7 @@
 // Analytics and Database are their own modules under the same tabs.
 'use strict';
 
-import { h, icon, timeEl, dateTime, bytes, plural, shortHash, visibilityOf, accessOf, publicEditOf, editWords, ACCESS, visibilityBadge, publicURL, publicNoticeOf, proxyRoute, proxyDetail } from './dom.js';
+import { h, icon, timeEl, dateTime, bytes, plural, shortHash, visibilityOf, accessOf, accessLabelOf, publicEditOf, editWords, flatBadge, signInOf, publicURL, publicNoticeOf, proxyRoute, proxyDetail } from './dom.js';
 import { api } from './api.js';
 import { confirmDialog, errorPanel, loading, toast, extLink, busy, fill, setHostProviders, addressText, privateURL } from './ui.js';
 import { publishVersion, saveVersion, nextVersion, previewVersion, deleteVersion, deleteFlat, setProvider, redeployLive, stopGuestEditing, PROVIDERS } from './actions.js';
@@ -15,6 +15,7 @@ import { siteHeader } from './site.js';
 import { hasServer, isLive, typeOf, typeNoun } from './list.js';
 import { shareDialog } from './share.js';
 import { describeApproval } from './approval.js';
+import { signInRow } from './signin.js';
 
 const LOG_POLL_MS = 5000;
 const LOG_KEEP = 500;
@@ -194,7 +195,8 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
         row('URL', 'Web address', h('div', { class: 'setting-control' }, extLink(flat.public_url || privateURL(flat)), change)), rename,
         row('Custom domain', 'Custom domains are not supported on this host yet.', h('span', { class: 'muted small', text: 'Unavailable' })),
         row('Sharing', publicEditOf(flat) ? `Who can open ${publicEditOf(flat).this}` : 'Who can view your site', sharingControl(manage)),
-        publicEditOf(flat) ? guestEditSlot() : null),
+        publicEditOf(flat) ? guestEditSlot() : null,
+        signInSlot()),
       netSlot,
       isDocs() ? null : section('Version history', 'version-history', versionQuotaBlock()),
       isDocs() ? h('section', { class: 'settings-section', id: 'revisions', 'aria-labelledby': 'revisions-title' }, h('h2', { id: 'revisions-title', text: 'Revision history' }), revisionQuotaBlock(flat.slug, typeNoun(flat))) : null,
@@ -208,13 +210,13 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
   // live counts and Stop guest editing (rule 33).
   function sharingControl(manage) {
     const key = accessOf(flat);
-    if (key !== 'edit') return h('div', { class: 'setting-control' }, h('span', { class: 'muted', text: ACCESS[key].label }), manage);
+    if (key !== 'edit') return h('div', { class: 'setting-control' }, h('span', { class: 'muted', text: accessLabelOf(flat) }), manage);
     const stop = h('button', { class: 'btn btn-small btn-danger', type: 'button', text: 'Stop guest editing' });
     stop.addEventListener('click', () => busy(stop, async () => { if (await stopGuestEditing(flat)) await refresh(); }));
     const p = flat.public_presence;
     const words = editWords(flat);
     return h('div', { class: 'setting-sharing' },
-      h('div', { class: 'setting-control' }, visibilityBadge(flat.visibility, flat.public_access), manage, stop),
+      h('div', { class: 'setting-control' }, flatBadge(flat), manage, stop),
       h('p', { class: 'muted small' }, p ? `Right now: ${plural(p.guests, 'guest')} editing, ${plural(p.viewers, 'viewer')} ${words.watching}. ` : '',
         words.cannot));
   }
@@ -242,14 +244,31 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
             h('p', { class: 'muted small', text: !pinned ? 'Retention can delete it like any unpinned revision.'
               : edit ? "Restore it from History. It can't be unpinned until guest editing stops." : 'It is now an ordinary pinned revision; you can unpin it in History.' }))));
       }
-      const waiting = ((pend && pend.approvals) || []).filter((a) => a.status === 'pending' && a.action === 'set_visibility' && a.flat === slug);
-      for (const a of waiting) {
-        rows.push(h('div', { class: 'setting-row setting-pending' },
-          h('div', null, h('span', { class: 'setting-title', text: 'Waiting for approval' }), h('div', { class: 'muted small', text: 'Nothing changes until you approve' })),
-          h('div', { class: 'setting-control' }, h('span', { text: describeApproval(a) }),
-            h('a', { class: 'btn btn-small', href: `/approvals/${encodeURIComponent(a.id)}`, 'data-nav': true, text: 'View request' }))));
-      }
-      fill(slot, rows);
+      fill(slot, rows, waitingRows(pend, 'set_visibility'));
+    })();
+    return slot;
+  }
+
+  // waitingRows are the requests of action for this flat that wait for
+  // approval, each with a link to its page.
+  function waitingRows(pend, action) {
+    return ((pend && pend.approvals) || []).filter((a) => a.status === 'pending' && a.action === action && a.flat === slug).map((a) =>
+      h('div', { class: 'setting-row setting-pending' },
+        h('div', null, h('span', { class: 'setting-title', text: 'Waiting for approval' }), h('div', { class: 'muted small', text: 'Nothing changes until you approve' })),
+        h('div', { class: 'setting-control' }, h('span', { text: describeApproval(a) }),
+          h('a', { class: 'btn btn-small', href: `/approvals/${encodeURIComponent(a.id)}`, 'data-nav': true, text: 'View request' }))));
+  }
+
+  // signInSlot is the Sign-in row (docs/spec/portal-sign-in.md, rule 63) and
+  // a sign-in change that waits for approval, read separately from the flat.
+  function signInSlot() {
+    const slot = h('div', { id: 'signin' }, loading());
+    (async () => {
+      const [view, pend] = await Promise.all([
+        api.signIn(slug).catch((err) => err),
+        api.approvals('pending').catch(() => null),
+      ]);
+      if (ctx.alive()) fill(slot, signInRow(flat, view), waitingRows(pend, 'set_signin'));
     })();
     return slot;
   }
@@ -314,12 +333,27 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
             h('label', { for: 'net-local' }, 'Local', h('span', { class: 'muted small', text: 'This device, always on' }))),
           PROVIDERS.filter((p) => p.scope === 'private').map(networkRow))),
       h('div', { class: 'networks-group' }, h('h4', { text: 'Public' }),
+        signInOf(flat) ? signInNetworks() : null,
         h('ul', { class: 'networks' }, PROVIDERS.filter((p) => p.scope === 'public').map(networkRow))),
       (flat.providers || []).includes('portal') ? listingField() : null));
   }
 
+  // While sign-in is on the flat is Public through Portal alone, so the
+  // other public networks cannot be allowed (docs/spec/portal-sign-in.md,
+  // rules 8 and 64). signInNetworks says why; networkSignIn reports a row
+  // that it disables.
+  const SIGN_IN_REASON = 'net-signin-reason';
+  const networkSignIn = (p) => !!signInOf(flat) && p.scope === 'public' && p.id !== 'portal';
+  function signInNetworks() {
+    const others = PROVIDERS.filter(networkSignIn).map((p) => p.label);
+    return h('p', { class: 'muted small', id: SIGN_IN_REASON },
+      `While Portal sign-in is on, ${slug} can be Public through Portal alone. Visitors on ${others.slice(0, -1).join(', ')} and ${others.at(-1)} do not sign in, so they cannot be allowed. Sign-in goes off only with `,
+      h('code', { text: `flats signin off ${slug}` }), ' and an approval in the console.');
+  }
+
   // Whether the Portal route appears in relay listings. Hiding is not access
-  // control: anyone with the URL can still open the flat.
+  // control: anyone with the URL, or who passes its sign-in, can still open
+  // the flat.
   function listingField() {
     const id = 'portal-listing';
     const mode = flat.portal_listing || 'default';
@@ -351,16 +385,18 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
     return h('div', { class: 'networks-group field' },
       h('label', { for: id, text: 'Portal relay listing' }), select,
       h('span', { class: 'muted small', id: id + '-help' },
-        `${state} Hiding keeps the public URL out of the relay’s list of sites; anyone with the URL can still open it. The host setting is in `,
+        `${state} Hiding keeps the public URL out of the relay’s list of sites; ${signInOf(flat) ? 'anyone who passes its sign-in' : 'anyone with the URL'} can still open it. The host setting is in `,
         h('a', { href: '/settings/networks', 'data-nav': true, text: 'Settings' }), '.'));
   }
 
   function networkRow(p) {
     const id = 'net-' + p.id;
     const allowed = (flat.providers || []).includes(p.id);
-    // A provider that is off for the host can only be unchecked here.
+    // A provider that is off for the host, or that sign-in excludes, can only
+    // be unchecked here.
     const off = hostProviders !== null && !hostProviders[p.id];
-    const box = h('input', { type: 'checkbox', id, checked: allowed, disabled: off && !allowed });
+    const gated = networkSignIn(p);
+    const box = h('input', { type: 'checkbox', id, checked: allowed, disabled: (off || gated) && !allowed, 'aria-describedby': gated ? SIGN_IN_REASON : undefined });
     box.addEventListener('change', async () => {
       box.disabled = true;
       const ok = await setProvider(flat, p.id, box.checked);
@@ -370,7 +406,8 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
       if (!(await refresh()) && !ok) box.checked = allowed;
     });
     const label = h('label', { for: id }, p.label,
-      h('span', { class: 'muted small', text: off ? 'Off in Settings' : p.hint }));
+      h('span', { class: 'muted small', text: gated ? 'Off while Portal sign-in is on' : off ? 'Off in Settings'
+        : p.id === 'portal' && signInOf(flat) ? 'Visitors that its sign-in allows, through Portal relays' : p.hint }));
     // A reverse proxy row shows its address: Flats cannot see whether the
     // proxy reaches it, and says so next to it (rule 6).
     const route = allowed && (p.id === 'proxy' || p.id === 'proxy-public') ? proxyRoute(flat, p.id) : null;
