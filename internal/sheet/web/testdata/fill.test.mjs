@@ -111,10 +111,15 @@ test('the button closes on the next edit, selection change or scroll, and on Esc
   assert.equal(shown(t), true);
 });
 
-test('the button waits for the ack, and shows only for a fill that applied with nothing done since', async () => {
+test('the button waits for the ack, and shows only for a fill that applied to a cell with nothing done since', async () => {
   for (const [how, result, moved, want] of [
-    ['applied', { status: 'applied' }, false, true],
-    ['applied after the selection moved', { status: 'applied' }, true, false],
+    ['applied', { status: 'applied', applied: 4 }, false, true],
+    ['applied to some of its cells', { status: 'applied', applied: 1, ignored: 3 }, false, true],
+    ['applied after the selection moved', { status: 'applied', applied: 4 }, true, false],
+    // Another person deleted the source rows first: the host leaves out a
+    // count of 0.
+    ['applied to no cell', { status: 'applied', ignored: 4 }, false, false],
+    ['applied to 0 cells', { status: 'applied', applied: 0, ignored: 4 }, false, false],
     ['refused', { status: 'refused', reason: 'cell_limit' }, false, false],
     ['ignored', { status: 'ignored', reason: 'gone' }, false, false],
   ]) {

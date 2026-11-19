@@ -739,8 +739,9 @@ export class App {
     // did, every cut cell is where it was, and a paste can move it again.
     if (a.meta.cut && results.every((res) => !res.applied)) this.clipboard.unmoved(a.meta.cut);
     if (m.undo) this.#undoResult(a.ops[0].op === 'redo', m.undo);
-    // A fill drag that applied leaves its button (rule 21a).
-    if (a.meta.fillDrag) this.fillChoice.acked(a.n, results[0]?.status === 'applied');
+    // A fill drag that applied to a cell leaves its button (rule 21a). One
+    // whose cells were all deleted first applied to none.
+    if (a.meta.fillDrag) this.fillChoice.acked(a.n, results[0]?.status === 'applied' && results[0].applied > 0);
     this.changed();
   }
 
