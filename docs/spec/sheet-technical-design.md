@@ -415,18 +415,39 @@ this release, while their stored commands and browser receipts hash
 requests in other forms, so the mark tells them apart. A restored backup
 keeps the mark, or its absence. The refusal is `unavailable` with reason
 `load`, and its detail names the difference; the host gives it to every
-call to that sheet, which does not start. Neither opening nor checking
-writes to the sheet's directory. Reading a `-wal` file that a crash left
-builds its `-shm` index, so the log is copied to a private temporary
+call to that sheet, which does not start.
+
+Opening and checking a sheet write no content in its directory:
+`sheet.db`, and a `-wal` that was there, keep their bytes until the
+instance's first commit. The files they can add depend on the connection.
+The probe (`inspectDB`, `probe`) reads `sheet.db` as immutable when it has
+no `-wal`, and reads a private copy of the `-wal` when it has one, so a
+check that the probe makes, and a refusal by it (`checkSchema`: a newer
+schema, tables without a version, a sheet from an unreleased build, the
+mark), add no file to the sheet's directory. The instance's own
+connection (`openInspected`) opens `sheet.db` read-write. Like every
+SQLite connection to a WAL database, it builds a `-shm` index beside the
+database it opens, and a `-wal` where there was none (the comment of
+`inspectDB` in `db.go` says this for a read-only connection, and it holds
+for a read-write one too). So a load that reaches that connection, one
+that succeeds or one that the cursor check or a later check refuses, adds
+at most a `-shm` and a `-wal` beside `sheet.db`, and no other file. PR
+#248's text said that opening and checking write nothing in the
+directory; that was true of the probe, and of `sheet.db` and its content.
+
+Reading a `-wal` file that a crash left builds its `-shm` index, so the
+check of that log reads a copy: the log is copied to a private temporary
 directory, beside a link to `sheet.db`, or a copy of it where the file
-system has no links, and read there. The writer bounds that log only by
-the disk quota, which counts it (section 16.5). A reader that holds it,
-such as the snapshot of a backup, keeps every commit made meanwhile in
-it, and a rollback rewrites the whole sheet in one commit. So opening a
-sheet whose `sheet.db` has a `-wal` file does not read either file. The
-load does, at the gate (section 10.5): it copies the log at a check point
-every MiB, and SQLite then recovers it, for the probe and for the
-instance's connection, by reading it once each. SQLite cannot interrupt a
+system has no links, and the probe reads it there. The writer bounds that
+log only by the disk quota, which counts it (section 16.5). A reader that
+holds it, such as the snapshot of a backup, keeps every commit made
+meanwhile in it, and a rollback rewrites the whole sheet in one commit.
+So opening a sheet whose `sheet.db` has a `-wal` file does not read either
+file. The load does, at the gate (section 10.5): it copies the log at a
+check point every MiB, and SQLite recovers the log twice, once from the
+private copy for the probe, and once from the real `-wal` for the
+instance's own connection. That connection (`openInspected`) opens
+`sheet.db` itself, read-write, after the probe. SQLite cannot interrupt a
 recovery, so a stop does not wait for one. The load ends and hands its
 slot at the gate to the opener, which keeps it until SQLite returns,
 closes what it opened, without creating a file, and only then leaves the
@@ -450,7 +471,14 @@ Core passes one that records the error on the flat, in a goroutine of its
 own, as an `error` event of kind `restore` with the text `could not load
 the sheet: ` and the error, the event a board or a notebook that does not
 open gets. The instance stays, holds no connection, and refuses every read
-and write with the load's error until it stops. A connection that the
+and write until it stops. Reads and the outbox are refused with the load's
+error. Calls that the writer answers itself are refused as `unavailable`
+with reason `load`, and receipt reads as `unavailable` with reason
+`storage`. Both are faults of section 18.3: marked `retry: true`, as every
+`unavailable` is, and not cleared by sending again while the sheet stays
+refused. The cursor check of a store with a `-wal` runs on the instance's
+own connection, so by then SQLite has built that connection's `-shm`
+index beside `sheet.db` (stated above), and the refusal leaves it. A connection that the
 refusal closes is closed without a checkpoint, whatever the size of the
 log: the refusal turns off the checkpoint on close with `keepLogOnClose`
 before it closes. `closeDB` turns off the checkpoint for a long log and
@@ -881,7 +909,7 @@ Browser operations:
 | `format` | tab, rows, cols, `set` | Sets the named format properties. |
 | `width` | tab, cols, `width` | |
 | `copy` | from, to, `mode`, `cut` | Copy inside the sheet. `mode` is `all` or `values`. The server reads the source cells when it applies the operation. A target larger than the source repeats it, and every target cell is written from its source cell, with a formula moved from there. A source tab that is gone leaves the whole target as it was, and a copy that applies to no cell adds no row or column and is ignored as gone. |
-| `fill` | tab, source rows and cols, target rows and cols, `mode` | `mode` is `copy`, `auto` or `series` (section 8.5). The fill handle sends `auto`, Ctrl+D and Ctrl+R send `copy`, and the button after a drag sends the mode it names. |
+| `fill` | tab, source rows and cols, target rows and cols, `mode` | `mode` is `copy`, `auto` or `series` (section 8.5). The fill handle sends `auto`, Ctrl+D and Ctrl+R send `fill` without `mode`, which means `copy`, and the button after a drag sends the mode it names. |
 | `insert_rows`, `insert_cols` | tab, `beside`, `side`, `count` | `beside` is a row or column id. If it is gone, the insert goes where it was, found through the structural log. If the log does not reach back, the operation is ignored. |
 | `append_rows`, `append_cols` | tab, `count` | Adds at the end. |
 | `delete_rows`, `delete_cols` | tab, ids | Deletes the ids that are still live. |
@@ -1319,10 +1347,13 @@ no series for any other source. Its cases:
   English forms, with Saturday and Sunday among the weekdays. One name
   steps by one. Two or more names step by the distance from one to the
   next in the cycle, and they make a series only when that distance is the
-  same each time. The result has the form of the last source cell, full or
-  three-letter, and its capitals: all capitals when every letter of it is
-  a capital, an initial capital when only the first letter is, and small
-  letters otherwise.
+  same each time, a distance of none included, which repeats the name.
+  The result has the form, full or three-letter, of the last source cell
+  whose name has one form. `May` has both, so a source of only `May`
+  takes the three-letter form. The result has the capitals of the last
+  source cell: all capitals when every letter of it is a capital, an
+  initial capital when only the first letter is, and small letters
+  otherwise.
 - Texts that end in a number. The final run of ASCII digits is the
   number, and the text before it is the stem. All source cells must have
   the same stem, compared exactly, and a number of at most 15 digits. One
@@ -1438,8 +1469,8 @@ cut, so it never gives a form more room. A formula of 8,192 characters
 has at most 4,096 references, since each takes two characters at least,
 and its other text and the tab names written in it take at most four
 bytes for each character. Its room, and that of every form made of it,
-is therefore at most `MaxRetainedBytes`, 4 × 8,192 + 4,096 × 450 bytes:
-1,875,968. `ParseRetained` holds a form to the same 8,192 tokens. The
+is therefore at most `MaxRetainedBytes`, 4 × 8,192 + 4,096 × 174 bytes:
+745,472. `ParseRetained` holds a form to the same 8,192 tokens. The
 transforms themselves check no stored length, so a formula an undo entry
 holds keeps its references through renames, and its undo is refused as
 `formula_length` while its text at its cell is too long. A text value
@@ -1620,12 +1651,18 @@ text, while `1.5E+20`, `123456789012345` and `12345678901234567.5` are
 numbers.
 `VALUE`, the conversion of text in arithmetic (section 9.3) and criteria
 read the same text as a number. The agent `write cells` takes JSON values
-and is not entry, so a JSON number of 16 digits stays a number. Such a
-number content, and one that a paste of values writes, shows its plain
-digits as its edit text (`EditText`). A formula cell's edit text is its
-formula, so it is not in this case. That edit text is the one case that
-entry does not read back as the same content: committing it as typed
-makes the cell text (rule 5).
+and is not entry, so a JSON number of 16 digits stays a number.
+`EditText` writes a whole number content with more than 15 significant
+digits as its plain digits below 10^21, and from 10^21 on with an exponent
+of all its significant digits, as PR #248 did, and a whole number with at most 15
+significant digits that needs more than 15 digits before the decimal
+point with an exponent, such as `1.5E+20`, which entry reads back as the
+same number. So the one content whose edit text entry does not read back
+is a whole number with more than 15 significant digits: committing its
+digits as typed makes the cell text (rule 5). It comes from an agent's
+JSON value, a paste of values, or typed text such as
+`12345678901234567.5`, which is not whole as typed. A formula cell's edit
+text is its formula, so it is not in this case.
 
 `Show` implements rule 6. It rounds the number to 15 significant digits,
 then to the format's decimals, half away from zero. General shows up to 15
@@ -1633,7 +1670,8 @@ significant digits and switches to `1.23457E+15` style for a number that
 needs more than 15 digits before the decimal point or more than 9 zeros
 after it. A date or time format on a negative number shows the number in
 General. `Show` does not know column widths. The client replaces a number
-that does not fit by `####`, and a CSV export always uses the full text.
+that does not fit by `####`, and a CSV export writes the value under rule
+60, not the text `Show` draws.
 
 A formula cell without a number format whose `DateResult` is true is shown
 with the `yyyy-mm-dd` format (rule 11).
@@ -1658,11 +1696,12 @@ and its number format. It never reads the shown text:
    in the cell's own time pattern. A date whose value has a fraction of a day, and a value of a
    whole day or more under a time format, are written as a date with
    time.
-3. Any other number is the shortest decimal that reads back as the same
-   double-precision number, with at most 17 significant digits. It is
-   plain when it needs at most 17 digits before the decimal point and at
-   most 9 zeros after it, and otherwise has an exponent of the form
-   `1.2345678901234567E+19` or `1E-11`.
+3. Any other number is rounded to 15 significant digits, as `Show`
+   rounds a number, and written with those digits and no zeros at the end.
+   The digits are counted after the rounding, so `999999999999999.9` is
+   written as `1E+15`. It is plain when it needs at most 15 digits before
+   the decimal point and at most 9 zeros after it, and otherwise has an exponent of the form
+   `1.23456789012346E+15` or `1E-11`. Negative zero is written as `0`.
 4. Text is the text. Let `t` be the text without its leading U+0020 spaces.
    If `t` starts with `=`, `+`, `-`, `@`, a tab, a carriage return, a line
    feed, U+FF1D, U+FF0B, U+FF0D or U+FF20, put an apostrophe before the
@@ -1686,7 +1725,7 @@ The contract of rule 12 is a set of JSON Lines files in
 `lookup.jsonl` and `date.jsonl` for the seven function groups, and
 `operators.jsonl` for the grammar, coercion, error, reference, number
 format and CSV rows of sections 9.2 to 9.5, and `typed.jsonl` for typed
-entry (section 9.5). The table has 2,521 cases. Typed entry into a cell that already has a number format (rule 5) cannot be stated in a typed row and is covered by an engine test of section 22.1. `README.md` in that
+entry (section 9.5). The table has 2,603 cases after this change: the 2,521 of PR #248 and 82 new ones. Typed entry into a cell that already has a number format (rule 5) cannot be stated in a typed row and is covered by an engine test of section 22.1. `README.md` in that
 directory describes the files and lists, under "Chosen behaviors", every
 case where the common programs differ or are silent and the result this
 contract fixes, with its row ids.
@@ -1775,8 +1814,9 @@ browser's cell text must equal `shown`, `get_sheet` must return `value`
 This change of the settled decisions rewrites part of the table. Every row
 whose `csv` field differs from what rule 60 now writes gets the new field,
 and the `README.md` beside the table records the reason. Such rows include
-percents, currency amounts, dates, General exponents, and numbers that
-rule 60 now writes with more than 15 significant digits, such as `=1/3`. Rows whose `value` changes, for the text order, the last date and
+percents, currency amounts, dates and times, General exponents, which
+General writes with 6 significant digits and rule 60 with up to 15, and
+text that starts with `-`. Rows whose `value` changes, for the text order, the last date and
 typed numbers of more than 15 digits, are changed the same way. New rows
 cover `CompareText` in `<`, `<=`, `>`, `>=` and criteria (punctuation,
 hyphens, apostrophes, Hangul and Latin), `DATE`, `EDATE`, `EOMONTH`,
@@ -4426,7 +4466,7 @@ that it applied, a button by the filled cells offers "Copy cells" and
 ids, `mode: "copy"` or `mode: "series"`, and the sequence of its own
 screen, so it is an action of its own for undo. The button closes on the
 next edit, selection change or scroll, and on Escape, and it can be
-reached from the keyboard. Ctrl+D and Ctrl+R send `mode: "copy"` and show
+reached from the keyboard. Ctrl+D and Ctrl+R send `fill` without `mode`, which means `copy`, and show
 no button. While editing, Enter commits and moves
 down, Tab commits and moves right, each with Shift for the opposite
 direction, and Escape cancels (rule 21). An editor that closes forgets the
@@ -4591,8 +4631,10 @@ Find runs in the client over the shown text of the open tab, so it works
 the same on a Public route (rule 20a). Its matches are in reading order.
 The active cell is the cell that the formula bar names, which is the
 cell a click or the keys put the selection's cursor on. Find keeps an
-anchor: the active cell when the field opens, set again whenever the person
-moves the selection, and not when Find moves it. Opening the field selects
+anchor: the active cell when the field opens, set again whenever the
+selection moves for another reason than Find, such as a person's move or
+a reload of the tab that restores the selection, and not when Find moves
+it. Opening the field selects
 nothing. Each change of its text selects the first match at or after the
 anchor, else the first match of the tab, and leaves the selection when
 nothing matches. Next goes to the first match after the active cell and
@@ -4834,9 +4876,9 @@ browser suite.
 | E-86 | The byte order mark: the browser download and the CLI output start with `EF BB BF`, and `get_sheet` with `format: "csv"` does not. `expected.csv` holds the bytes after the mark. |
 | E-87 to E-110 | Each of the full-width `＝`, `＋`, `－` and `＠`, with 0, 1 and 3 leading spaces, as typed text and as text a formula calculates. Each gets the apostrophe. |
 | E-111 to E-120 | A date under each of the three date formats, a time under each of the three time formats, a date with time, `=TIME(14,30,0)+0.25/86400` under `hh:mm:ss` written as `14:30:00.250`, a date that `DATE` calculates in a cell with no number format, and a time that a formula calculates under a time format. Each is written in ISO 8601 form. |
-| E-121 to E-126 | `=1/3`, written as `0.3333333333333333`; `=0.1+0.2`, written as `0.30000000000000004`; `=VALUE("1234567890123456")`, written as `1234567890123456`; `=10^-10` and `=10^-11`, written as `0.0000000001` and `1E-11`; a positive percent and a positive currency amount, written as `0.125` and `1234.5`. |
-| E-128 to E-130 | `=12345678901234567890`, written as `1.2345678901234567E+19`; `=DATE(2026,3,15)+0.75` under a date format, written as `2026-03-15 18:00:00`; `=1.5` under a time format, written as `1899-12-31 12:00:00`. |
+| E-121 to E-126 | E-121 `=1/3`, written as `0.333333333333333`; E-122 `=0.1+0.2`, written as `0.3`; E-123 `=VALUE("1234567890123456")`, written as `1.23456789012346E+15`; E-124 `=10^-10`, written as `0.0000000001`; E-125 `=10^-11`, written as `1E-11`; E-126 a positive percent and a positive currency amount in two cells, written as `0.125` and `1234.5`. |
 | E-127 | Text `1234567890123456` that typed entry kept as text, written without an apostrophe. |
+| E-128 to E-132 | E-128 `=12345678901234567890`, written as `1.23456789012346E+19`; E-129 `=LOG10(1000)`, written as `3`; E-130 `=DATE(2026,3,15)+0.75` under a date format, written as `2026-03-15 18:00:00`; E-131 `=1.5` under a time format, written as `1899-12-31 12:00:00`; E-132 `=-0`, negative zero, written as `0`. |
 
 `TestExportBytes` compares the engine's output with `expected.csv`. The
 browser suite downloads the tab, the CLI test writes it, and
@@ -4863,6 +4905,7 @@ and at it:
 | L-15, L-16 | A recalculation over the time limit, with the limit lowered by a test option. An edit over the disk quota, and any edit while over quota. |
 | L-17 | Not a refusal: the range chain `A2=SUM(A1:A1)` to `A100000=SUM(A99999:A99999)`. One edit of `A1` updates all 99,999 formulas in under 1 second, and the budget counter shows work linear in the chain. With the time limit lowered, the same edit is refused during dependency work. |
 | L-18 | Not a refusal: eight layers of 1,600 formulas, each reading the layer before with `COUNTIF` and giving empty text before a set date and 32,767 characters from that date on (12,800 formulas, 17,920,000 static reads). Move the calculation date past it, then restart the host, then read a revision closed after it. | Each of the three recalculations completes in at most two passes, and the budget counter shows at most twice the reads of one ordinary pass. The state is in limited mode and the same cells show `#LIMIT!` each time. |
+| L-20 | A retained formula form of `MaxRetainedBytes` + 1 bytes, 745,473, in an undo scratch file. Not a refusal: one of 745,472 bytes. The longer one is damaged and its undo is `lost`. |
 | L-19 | A tab name of 32 code points, and `History`, `HISTORY` and `history`, by add, rename and agent call, each refused as `invalid`. Not a refusal: a tab name of 31 code points. |
 
 **Fill, order and entry cases.** Go tests in the formula and sheet
@@ -4870,16 +4913,17 @@ packages, and the browser suite for the ones marked B:
 
 | Id | Case | Expected |
 |---|---|---|
-| F-01 | `FillSeries` for each case of rule 21a, down and up: one date, one date with time, one time from `22:00`, full and short weekday and month names in all capitals, an initial capital, small letters and `mONDAY`, `Monday, Wednesday`, `Jan, Apr, Jul`, `Item1`, `Item09`, `Item1` dragged up past 0, `1, 2`, `100, 95`, `1, 2, 4`, `2026-01-01, 2026-01-02, 2026-01-04`, two dates with time, `22:00, 23:00`, `00:30, 01:00` dragged up, `Item1, Item3`, `Item1, Item2, Item4`. | The values of rule 21a, exactly: `Friday, Sunday`; `Oct, Jan`; `mONDAY` gives `tuesday`; `1, 2, 4` gives 16/3 and 41/6 as doubles; the three dates give whole days; `00:00` after `23:00`; `00:00, 23:30` up; `Item5, Item7`. |
+| F-01 | `FillSeries` for each case of rule 21a, down and up: one date, one date with time, one time from `22:00`, full and short weekday and month names in all capitals, an initial capital, small letters and `mONDAY`, `Monday, Wednesday`, `Jan, Apr, Jul`, `May`, `April, May`, `Mon, Mon`, `Item1`, `Item09`, `Item1` dragged up past 0, `1, 2`, `100, 95`, `1, 2, 4`, `2026-01-01, 2026-01-02, 2026-01-04`, two dates with time, `22:00, 23:00`, `00:30, 01:00` dragged up, `Item1, Item3`, `Item1, Item2, Item4`. | The values of rule 21a, exactly: `Friday, Sunday`; `Oct, Jan`; `mONDAY` gives `tuesday`; `May` gives `Jun`; `April, May` gives `June`; `Mon, Mon` gives `Mon, Mon`; `1, 2, 4` gives 16/3 and 41/6 as doubles; the three dates give whole days; `00:00` after `23:00`; `00:00, 23:30` up; `Item5, Item7`. |
 | F-02 | `FillSeries` with no series: one plain number in `auto`, `TRUE`, a formula, a blank among numbers, a number and a text, text with no final number, `Mon, Tue, Thu`, a weekday and a month name, `Item1, Task2`, a final number of 16 digits, a date series that passes 9999-12-31. | No series, so the line is a copy. One plain number in `series` adds 1 per cell, and takes 1 per cell up. |
 | F-05 | A fill in `auto` whose target is both below and beside the source, and one whose series makes a text of 32,768 characters. | Refused as `invalid`, and refused with `text_length`. The same target in `copy` applies as a copy does. |
-| F-03 (B) | A drag down over three columns of `1, 2`, `Mon` and `=A1`, then "Copy cells", then undo twice. | `3, 4`, `Tue, Wed` and moved formulas; then copies; then the series; then the cells as before. Ctrl+D over the same cells copies. |
+| F-03 (B) | Cells `A1:C2` hold `1, 2` in column A, `Mon, Tue` in column B and `=ROW()*10` twice in column C. A drag of the handle down over two rows, then "Copy cells", then undo twice. | `3, 4`, `Wed, Thu` and `=ROW()*10` moved; then `1, 2`, `Mon, Tue` and the formulas copied; then the series again; then the cells as before. Ctrl+D over `A1:C4` copies row 1 over the rest. |
 | F-04 | A fill whose target is larger than the limit of an action, and one whose source row is deleted before it applies. | Refused whole as a copy is; ignored as gone. |
 | O-01 | `CompareText` and `CompareSort` on the ASCII order, `coop` and `co-op`, `ab` and `a-c`, `ab` and `a'b`, `a` and `A`, Hangul and Latin, a text that ends first. | The order of rule 22, a tie only for `a` and `A`, and the same result in both directions with the sign changed. |
 | O-02 | The same pairs through `<`, `=`, `COUNTIF(range,"<b")`, `MATCH(x,range,1)` on a column sorted by the sort, and a sort of 100,000 texts within the deadline of section 8.3. | `<` and criteria agree with the sort, `=` is `TRUE` only apart from capitals, and `MATCH` finds each key. |
 | T-01 | Typed entry of `1234567890123456`, `-1,234,567,890,123,456`, `1234567890123456.0`, `1.234567890123456E15`, `1234567890123456%`, `$1234567890123456`, `0001234567890123`, `123456789012345`, `1.5E+20` and `12345678901234567.5`, by typing, paste and `import csv`. | Text for the first six. A number for the last four. `VALUE` of each text is a number. |
 | T-02 | `DATE(10000,1,1)`, `DATE(9999,12,32)`, `EDATE(DATE(9999,12,31),1)`, `EOMONTH(DATE(9999,12,1),1)`, `YEAR`, `WEEKDAY`, `HOUR` and `DAYS(2958466,1)` of 2958466, and `YEAR(-1)` and `DAYS(1,-1)`. `=DATE(9999,12,31)+1`. | `#NUM!` for each, except that `DATE(9999,12,31)` is 2958465 and `=DATE(9999,12,31)+1` is the number 2958466. |
-| T-03 (B) | Cells `B2` and `D2` hold `xy`, and `B5` holds `x`. The active cell is `C2`. Open Find, then type `x`, then Next, then Previous, then click `A4` and Next, then add `y` to the text, then add `z`. Find of `a*` over cells holding `a*` and `ab`. Find of `ΟΔΟΣ` over a cell holding `οδοσ`. | Opening selects nothing; typing selects `D2`; Next selects `B5`; Previous selects `D2`; after the click Next selects `B5`; `xy` selects `B2`, the first match of the tab, since none follows the anchor `A4`; `xyz` leaves `B2` selected and the field shows "No matches". Only the cell with `a*` matches. `ΟΔΟΣ` finds nothing. |
+| T-04 | The edit text of a number typed as `1.5E+20`, of one typed as `12345678901234567.5`, and of the JSON number 1234567890123456 written by `write cells`; each committed again as typed. | `1.5E+20`, then a number again; `12345678901234568`, then text; `1234567890123456`, then text. |
+| T-03 (B) | Cells `B2` and `D2` hold `xy`, and `B5` holds `x`. The active cell is `C2`. Open Find, then type `x`, then Next, then Previous, then click `A4` and Next, then add `y` to the text, then add `z`, then clear the text, reload the tab with the selection restored to `D2`, open Find and type `x`. Find of `a*` over cells holding `a*` and `ab`. Find of `ΟΔΟΣ` over a cell holding `οδοσ`. | Opening selects nothing; typing selects `D2`; Next selects `B5`; Previous selects `D2`; after the click Next selects `B5`; `xy` selects `B2`, the first match of the tab, since none follows the anchor `A4`; `xyz` leaves `B2` selected and the field shows "No matches"; after the reload, `x` selects `D2`, the first match at the restored anchor. Only the cell with `a*` matches. `ΟΔΟΣ` finds nothing. |
 
 ### 22.3 Crash, lifecycle and security tests
 
@@ -4897,8 +4941,16 @@ unloaded sheet opens again. For a store behind the cursor, with a `-wal`
 shorter than the long-log bound of `closeDB` and with one longer, the
 test checks that
 `sheet.db` and its `-wal` keep their bytes through the refusal and the
-stop of the instance, that every read and write is refused, and that the
-flat has one `restore` event. A run with a test hook that makes
+stop of the instance, that every read and write is refused, with the load's error for a read,
+`unavailable` with reason `load` for a person's action, which the writer
+answers itself, and `unavailable` with reason `storage` for a receipt
+read, and that the flat has one `restore` event. The file checks, for a
+store without a `-wal` and one with a `-wal`: a refusal by the probe,
+such as a sheet from an unreleased build, leaves the directory with the
+files it held before, byte for byte; a load that reaches the instance's
+own connection, one that succeeds and one that the cursor check refuses,
+leaves no file other than `sheet.db`, a `-wal` and a `-shm`; and in every
+case `sheet.db`, and a `-wal` that was there, keep their bytes. A run with a test hook that makes
 `keepLogOnClose` fail checks that the rows stay the same, that the
 instance holds no handle, and that the host log has the `sheet close`
 warning. A backup test copies a running host while a session holds
@@ -4936,12 +4988,12 @@ digest, cache state, network conditions and raw samples as JSON.
 | Remote display | `remote.mjs`. Five sessions, two edits per second each for 60 seconds, server receive to remote paint, with clock calibration and its uncertainty. |
 | Concurrent editing | `convergence.mjs`. The same load plus an insert every 5 seconds and a sort every 10 seconds. After the drain every screen equals a fresh server capture and the reference model replayed in receive order. |
 | Structure cases | Section 22.2, S-01 to S-48, and the contract cases C-01 to C-14 for the rules outside structure. |
-| Value and editing cases | Section 22.2, the fill, order and entry cases F-01 to F-05, O-01, O-02 and T-01 to T-03, and the tab name case L-19. |
+| Value and editing cases | Section 22.2, the fill, order and entry cases F-01 to F-05, O-01, O-02 and T-01 to T-04, and the tab name case L-19. |
 | Formulas | `TestReferenceTable`, then `scripts/sheet-e2e/reference.mjs` loads every file through `update_sheet` and compares the grid's shown text, `get_sheet` values and the CSV field. |
 | Calculation date | `TestCalculationDate` with an injected clock. On the offsite budget with one `TODAY` formula an open connection shows the new value within 60 seconds. On the reference sheet the pass starts within 60 seconds and one delta brings the new values together. A paged read begun before returns the old date on every page. A revision closed before shows the old value, also after a rollback to it on a later day and after a restart (C-02). |
-| Limits | L-01 to L-19, with the stated outcome of each: a refusal, `#VALUE!` or `#LIMIT!`. `scripts/sheet-perf/isolation.mjs` requests another flat once per 100 ms while the `limits` fixture is refused a write, recalculated by an edit, loaded after a restart, rolled back, moved to a new date, viewed as a revision and downloaded as CSV. Every answer arrives within 1 second and every read of the sheet is whole or refused. |
+| Limits | L-01 to L-20, with the stated outcome of each: a refusal, `#VALUE!` or `#LIMIT!`. `scripts/sheet-perf/isolation.mjs` requests another flat once per 100 ms while the `limits` fixture is refused a write, recalculated by an edit, loaded after a restart, rolled back, moved to a new date, viewed as a revision and downloaded as CSV. Every answer arrives within 1 second and every read of the sheet is whole or refused. |
 | Durability | Crash tests of section 22.3 with a kill right after the ack. |
-| Export | E-01 to E-130 and the manual open protocol. |
+| Export | E-01 to E-132 and the manual open protocol. |
 | Accessibility | `scripts/sheet-e2e/a11y.md`, a manual VoiceOver protocol on Safari and Chrome with the steps of the criterion, plus node tests of labels and roles. |
 | Reconnection | `scripts/sheet-e2e/reconnect.mjs` cuts before and after commit, delta and ack. One effect per action. |
 | Recovery | `TestRecoverEveryTab` views and restores each tab of a retained revision. `TestRollbackAtFullQuota`. |
