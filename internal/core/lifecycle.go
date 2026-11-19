@@ -522,6 +522,11 @@ func (s *Service) RetryProviderRoutes(ctx context.Context, mesh, public Provider
 		if err != nil {
 			continue
 		}
+		// While sign-in is on, a key change opens no public route but Portal (docs/spec/portal-sign-in.md, rule
+		// 10); reapplyExposure checks it again under the lock.
+		if f.SignInProvider != "" {
+			permitted = withoutSignInExcluded(permitted)
+		}
 		p := mesh
 		if !slices.Contains(permitted, mesh) {
 			if !slices.Contains(permitted, public) || !f.Visibility.Public() {
@@ -575,8 +580,13 @@ func (s *Service) reapplyExposure(ctx context.Context, f store.Flat, provider Pr
 		if err != nil {
 			return fmt.Errorf("read current routes: %w", err)
 		}
+		// The Portal route carries the stored setting, and while sign-in is on no other public provider serves the
+		// flat, also when a stored grant permits one (docs/spec/portal-sign-in.md, rules 10 and 38).
+		if req.SignIn = s.portalSignIn(ctx, f.Slug); req.SignIn.On() {
+			permitted = withoutSignInExcluded(permitted)
+		}
 		serving := req.Permitted
-		if publicGrant {
+		if publicGrant && slices.Contains(permitted, provider) {
 			serving = append(serving, provider)
 		}
 		for _, ep := range status.Endpoints {
@@ -1354,6 +1364,14 @@ func (s *Service) ensureLifecycle(ctx context.Context, f store.Flat, ln Lifecycl
 	if !f.Visibility.Public() {
 		permitted = privateProviders(permitted)
 	}
+	// Each open of the Portal route carries the stored setting (docs/spec/portal-sign-in.md, rule 38), and while
+	// sign-in is on no other public provider serves the flat (rule 10).
+	var signIn *PortalSignIn
+	if f.Visibility.Public() {
+		if signIn = s.portalSignIn(ctx, f.Slug); signIn.On() {
+			permitted = withoutSignInExcluded(permitted)
+		}
+	}
 	if f.Visibility.Public() {
 		res, err := ln.ServeExposure(ctx, ExposureRequest{Slug: f.Slug, Host: f.Slug, Visibility: "private", Audience: AudienceCurrent, Handler: s.siteHandler(f.Slug, false), Permitted: privateProviders(permitted)})
 		if privateRegistrationOpened(res, f.Slug, AudienceCurrent) {
@@ -1372,7 +1390,7 @@ func (s *Service) ensureLifecycle(ctx context.Context, f store.Flat, ln Lifecycl
 	res, err := ln.ServeExposure(ctx, ExposureRequest{
 		Slug: f.Slug, Host: f.Slug, Visibility: string(f.Visibility.Canonical()),
 		Audience: AudienceCurrent, Handler: s.siteHandler(f.Slug, f.Visibility.Public()), PrivateHandler: s.siteHandler(f.Slug, false),
-		Permitted: permitted, Hidden: hidden,
+		Permitted: permitted, Hidden: hidden, SignIn: signIn,
 	})
 	if privateRegistrationOpened(res, f.Slug, AudienceCurrent) {
 		lf.privateServed = true

@@ -636,6 +636,65 @@ func TestSignInLinkAndRevokeRows(t *testing.T) {
 	}
 }
 
+// Rules 41, 42 and 67: the signin.revoke row of a new token secret that a rename or a deletion gave is written in the
+// transaction of that change, and a failing write of it leaves the change undone.
+func TestSignInRevokeRowsOfARenameAndADeletion(t *testing.T) {
+	t.Parallel()
+	ctx := context.Background()
+	now := time.Now()
+	t.Run("written", func(t *testing.T) {
+		t.Parallel()
+		s := open(t)
+		flat := makeFlat(t, s, "app")
+		if err := s.RenameFlatRevoked(ctx, "app", "moved", now.Add(time.Hour), now, &Audit{Via: AuditViaCLI, Actor: "op"}); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.DeleteFlatRevoked(ctx, "moved", Audit{}, &Audit{Via: AuditViaConsole}); err != nil {
+			t.Fatal(err)
+		}
+		// Without a new token secret there is no row.
+		makeFlat(t, s, "plain")
+		if err := s.RenameFlatRevoked(ctx, "plain", "plain2", time.Time{}, now, nil); err != nil {
+			t.Fatal(err)
+		}
+		var rows []AuditEvent
+		for _, e := range allAudit(t, s) {
+			if e.Kind == AuditSignInRevoke {
+				e.ID, e.Time = 0, time.Time{}
+				rows = append(rows, e)
+			}
+		}
+		want := []AuditEvent{
+			{Kind: AuditSignInRevoke, Flat: "app", FlatID: flat.ID, Via: AuditViaCLI, Actor: "op", Data: json.RawMessage(`{"cause":"rename"}`)},
+			{Kind: AuditSignInRevoke, Flat: "moved", FlatID: flat.ID, Via: AuditViaConsole, Data: json.RawMessage(`{"cause":"delete"}`)},
+		}
+		if !reflect.DeepEqual(rows, want) {
+			t.Fatalf("rows = %+v, want %+v", rows, want)
+		}
+	})
+	t.Run("a failing write", func(t *testing.T) {
+		t.Parallel()
+		s := open(t)
+		makeFlat(t, s, "app")
+		failAuditWhen(t, s, "NEW.kind='signin.revoke'")
+		if err := s.RenameFlatRevoked(ctx, "app", "moved", now.Add(time.Hour), now, &Audit{Via: AuditViaCLI}); err == nil || !strings.Contains(err.Error(), "audit write failed late") {
+			t.Fatalf("rename = %v", err)
+		}
+		if _, err := s.GetFlat(ctx, "app"); err != nil {
+			t.Fatalf("the rename happened: %v", err)
+		}
+		if _, err := s.RedirectFor(ctx, "app", now); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("the rename left a redirect: %v", err)
+		}
+		if err := s.DeleteFlatRevoked(ctx, "app", Audit{}, &Audit{Via: AuditViaConsole}); err == nil || !strings.Contains(err.Error(), "audit write failed late") {
+			t.Fatalf("delete = %v", err)
+		}
+		if _, err := s.GetFlat(ctx, "app"); err != nil {
+			t.Fatalf("the deletion happened: %v", err)
+		}
+	})
+}
+
 // SignInExcludes names the public providers other than Portal.
 func TestSignInExcludes(t *testing.T) {
 	for p, want := range map[string]bool{

@@ -4,6 +4,7 @@ go 1.27.3
 
 require (
 	filippo.io/age v1.3.2
+	github.com/go-jose/go-jose/v4 v4.1.4
 	github.com/go-openapi/runtime v0.29.0
 	github.com/go-openapi/strfmt v0.24.0
 	github.com/google/jsonschema-go v0.4.3
@@ -59,7 +60,6 @@ require (
 	github.com/getsentry/sentry-go v0.43.0 // indirect
 	github.com/go-chi/chi/v5 v5.4.0 // indirect
 	github.com/go-chi/cors v1.2.1 // indirect
-	github.com/go-jose/go-jose/v4 v4.1.4 // indirect
 	github.com/go-json-experiment/json v0.0.0-20260820222146-c27c302e5fc3 // indirect
 	github.com/go-logr/logr v1.4.4 // indirect
 	github.com/go-logr/stdr v1.2.2 // indirect

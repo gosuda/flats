@@ -25,6 +25,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/gosuda/portal-tunnel/v2/sdk/appauth"
+
 	"github.com/gosuda/flats/internal/board"
 	"github.com/gosuda/flats/internal/bundle"
 	"github.com/gosuda/flats/internal/contenttype"
@@ -644,6 +646,7 @@ func (s *Service) siteHandler(slugName string, public bool) http.Handler {
 // serveSite answers one request of slug's live route.
 func (s *Service) serveSite(lf *liveFlat, slugName string, public bool, epoch *routeEpoch, w http.ResponseWriter, r *http.Request) {
 	access, accessSeq := "", int64(0)
+	var visitor *appauth.Principal
 	if public {
 		var done func()
 		r, done = epoch.request(r)
@@ -656,6 +659,15 @@ func (s *Service) serveSite(lf *liveFlat, slugName string, public bool, epoch *r
 		if err != nil || !f.Visibility.Public() {
 			http.Error(w, "public exposure is not active", http.StatusServiceUnavailable)
 			return
+		}
+		// Rule 44: the setting and its sequence come with the flat, as the visibility does, so a route that opened
+		// without the gate, a gate of an older setting and a connection that one let in reach no flat code.
+		if f.SignInProvider != "" {
+			p, ok := signInPassed(w, r, f)
+			if !ok {
+				return
+			}
+			visitor = &p
 		}
 		access, accessSeq = f.PublicAccess, f.AccessSeq
 		stripIdentity(r)
@@ -679,7 +691,11 @@ func (s *Service) serveSite(lf *liveFlat, slugName string, public bool, epoch *r
 		lf.views.Add(1)
 		lf.recordPath(s.now().UTC().Format("2006-01-02"), r.URL.Path)
 	}
-	d.handler.ServeHTTP(w, withPublicAccess(withRouteHeaders(r, public), d, access, accessSeq))
+	req := withRouteHeaders(r, public)
+	if visitor != nil {
+		setVisitorHeaders(req, *visitor)
+	}
+	d.handler.ServeHTTP(w, withPublicAccess(req, d, access, accessSeq))
 }
 
 // stripIdentity removes Tailscale identity headers a client may have sent.
@@ -735,7 +751,7 @@ func (s *Service) ensureExposure(ctx context.Context, f store.Flat) error {
 	case f.Visibility.Public() && portal && s.cfg.Public == nil:
 		return errPublicDisabled()
 	case wantPublic && !lf.publicServed:
-		if _, err := s.cfg.Public.Serve(ctx, f.Slug, s.siteHandler(f.Slug, true), hidden); err != nil {
+		if _, err := s.servePublicNet(ctx, f.Slug, s.siteHandler(f.Slug, true), hidden, false); err != nil {
 			return fmt.Errorf("public exposure: %w", err)
 		}
 		lf.publicServed = true
@@ -2014,6 +2030,12 @@ func (s *Service) deleteLocked(ctx context.Context, slugName string, via Via, ex
 	if err != nil {
 		return ActionResult{}, err
 	}
+	// The identity gets a new token secret first (docs/spec/portal-sign-in.md, rule 42): a later flat with this slug
+	// keeps its host name, and no session or link of this flat works there. A failed write changes nothing.
+	revoke, err := s.renewForChange(ctx, slugName, via, "deletion")
+	if err != nil {
+		return ActionResult{}, err
+	}
 	type alias struct {
 		old, cur string
 		restore  bool
@@ -2065,7 +2087,7 @@ func (s *Service) deleteLocked(ctx context.Context, slugName string, via Via, ex
 		restoreErr = errors.Join(restoreErr, s.restoreDeletePreviews(restoreCtx, previews))
 		return ActionResult{}, errors.Join(err, restoreErr)
 	}
-	if err := s.st.DeleteFlat(ctx, slugName, store.Audit{Time: s.now(), Approval: exceptApproval}); err != nil {
+	if err := s.st.DeleteFlatRevoked(ctx, slugName, store.Audit{Time: s.now(), Approval: exceptApproval}, revoke); err != nil {
 		journalErr := s.finishStorageOperation(op)
 		restoreCtx := context.WithoutCancel(ctx)
 		restoreErr := s.ensureExposure(restoreCtx, flat)

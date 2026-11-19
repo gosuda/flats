@@ -586,6 +586,18 @@ func (s *Store) AppendSignInRevoke(ctx context.Context, flat string, a Audit) er
 	return s.appendFlatAudit(ctx, flat, AuditSignInRevoke, SignInRevokeData(""), a)
 }
 
+// appendSignInRevoke writes the signin.revoke event of the new token secret that a rename or a deletion of flat gave
+// its Portal identity, inside the transaction of that change and before the flat row changes.
+func appendSignInRevoke(ctx context.Context, x executor, flat, cause string, a Audit) error {
+	uid, err := flatUID(ctx, x, flat)
+	if err != nil {
+		return err
+	}
+	e := a.event(AuditSignInRevoke)
+	e.Flat, e.FlatID, e.Data = flat, uid, SignInRevokeData(cause)
+	return appendAudit(ctx, x, e)
+}
+
 func (s *Store) appendFlatAudit(ctx context.Context, flat, kind string, data json.RawMessage, a Audit) error {
 	_, err := s.immediate(ctx, func(x executor) (bool, error) {
 		uid, err := flatUID(ctx, x, flat)

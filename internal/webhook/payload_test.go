@@ -185,6 +185,18 @@ func TestChangeShapes(t *testing.T) {
 			Change{SignInFrom: &SignIn{Provider: "credential", Count: 2}, SignInTo: &SignIn{}, From: &Access{"a", "b"}, Count: 9},
 			`{"from":{"provider":"credential","count":2},"to":{"provider":"","count":0}}`,
 		},
+		{
+			// Rule 68: issue_signin_link names only the expiry of the link.
+			"access link",
+			Change{ExpiresAt: "2026-11-26T08:00:00Z", SignInTo: &SignIn{Provider: "credential", Count: 1}, Count: 2},
+			`{"expires_at":"2026-11-26T08:00:00Z"}`,
+		},
+		{
+			// Rule 68: revoke_signin changes nothing that the body may name.
+			"revocation",
+			Change{Empty: true, ExpiresAt: "2026-11-26T08:00:00Z", From: &Access{"a", "b"}},
+			`{}`,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

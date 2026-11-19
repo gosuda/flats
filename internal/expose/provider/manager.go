@@ -15,6 +15,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gosuda/flats/internal/core"
 	"github.com/gosuda/flats/internal/expose/cfquick"
@@ -207,6 +208,10 @@ type Options struct {
 	// <dir>/cloudflare-quick). Manager deletes a deleted flat's record there
 	// when no quick tunnel backend is configured.
 	CFQuickStateDir string
+	// PortalStateDir holds the Portal identity files (default <dir>/portal).
+	// Manager gives an identity there a new token secret when no Portal
+	// backend runs (docs/spec/portal-sign-in.md, rules 41 and 42).
+	PortalStateDir string
 	// Configuration is a canonical, non-secret desired backend configuration.
 	// It must exclude credentials and transient connection readiness.
 	Configuration string
@@ -248,6 +253,7 @@ type Manager struct {
 	zrokDir       string
 	cfquickDir    string
 	netbirdDir    string
+	portalDir     string
 	retirementDir string
 	configuration string
 	permission    func(context.Context, string, ID) (bool, error)
@@ -312,8 +318,13 @@ func New(dir string, opts Options) (*Manager, error) {
 	if cfquickDir == "" {
 		cfquickDir = filepath.Join(dir, "cloudflare-quick")
 	}
+	portalDir := opts.PortalStateDir
+	if portalDir == "" {
+		portalDir = filepath.Join(dir, "portal")
+	}
 	return &Manager{
 		dir:            dir,
+		portalDir:      portalDir,
 		zrokDir:        zrokDir,
 		cfquickDir:     cfquickDir,
 		cfquick:        opts.CFQuick,
@@ -975,7 +986,7 @@ func (m *Manager) openPublic(ctx context.Context, req ExposureRequest, id ID) (E
 		if p == nil {
 			return unconfiguredRefusal(Portal, "portal is permitted but not configured", "portal")
 		}
-		url, err := p.Serve(ctx, req.Slug, tagged(Portal, req.Handler), req.Hidden)
+		url, err := m.servePortal(ctx, p, req)
 		if err != nil {
 			return serveFailed(Portal, "portal", err)
 		}
@@ -1020,6 +1031,74 @@ func (m *Manager) openPublic(ctx context.Context, req ExposureRequest, id ID) (E
 		return refused(id, "not a public provider"), fmt.Errorf("%w: %s", ErrProviderNotPermitted, id)
 	}
 }
+
+// servePortal opens the Portal route of req with the sign-in that it carries
+// (docs/spec/portal-sign-in.md, rule 38). A backend that cannot run the gate
+// never serves a flat with sign-in on: its route stops instead (rule 35). A
+// route that a failed gate stopped is forgotten, so its endpoint shows the
+// failure and no later stop waits for it.
+func (m *Manager) servePortal(ctx context.Context, p PortalNet, req ExposureRequest) (string, error) {
+	h := tagged(Portal, req.Handler)
+	var url string
+	var err error
+	switch g, ok := p.(SignInPortalNet); {
+	case ok:
+		url, err = g.ServeSignIn(ctx, req.Slug, h, req.Hidden, req.SignIn)
+	case req.SignIn.On():
+		gerr := &core.SignInGateError{Reason: "this Portal backend cannot run a sign-in gate"}
+		if m.hasRoute(req.Slug, req.Slug, Portal) {
+			gerr.StopErr = p.Stop(req.Slug)
+		}
+		err = gerr
+	default:
+		url, err = p.Serve(ctx, req.Slug, h, req.Hidden)
+	}
+	if gerr := (*core.SignInGateError)(nil); errors.As(err, &gerr) && gerr.StopErr == nil {
+		m.forgetRoutes(req.Slug, req.Slug, Portal)
+	}
+	return url, err
+}
+
+// SignInPortalNet is a Portal backend that runs the sign-in gate
+// (docs/spec/portal-sign-in.md, rules 33 to 40). portal.Net is one.
+type SignInPortalNet interface {
+	PortalNet
+	core.SignInPublicNet
+}
+
+// RenewPortalIdentity gives the Portal identity of slug a new token secret
+// (rules 41, 42 and 54). Without a backend that runs the gate it renews the
+// identity file in the Portal folder, which a backend reads at its next
+// start, so a deletion while Portal is off still ends the links of the flat.
+func (m *Manager) RenewPortalIdentity(ctx context.Context, slug string) (string, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return "", false, err
+	}
+	if g, ok := m.portalNet().(SignInPortalNet); ok {
+		return g.RenewPortalIdentity(ctx, slug)
+	}
+	return portal.RenewTokenSecretFile(m.portalDir, slug)
+}
+
+// IssuePortalCredential makes an access link of the Portal route of slug
+// (rule 51).
+func (m *Manager) IssuePortalCredential(ctx context.Context, slug, subject string, expiresAt time.Time) (core.PortalCredential, error) {
+	if g, ok := m.portalNet().(SignInPortalNet); ok {
+		return g.IssuePortalCredential(ctx, slug, subject, expiresAt)
+	}
+	return core.PortalCredential{}, core.ErrNoPortalRoute
+}
+
+// PortalHosts returns the host names that the Portal route of slug answers
+// (rule 34), nil without a route.
+func (m *Manager) PortalHosts(slug string) []string {
+	if g, ok := m.portalNet().(SignInPortalNet); ok {
+		return g.PortalHosts(slug)
+	}
+	return nil
+}
+
+var _ core.LifecycleSignInNet = (*Manager)(nil)
 
 // tagged marks every request h serves with the provider id it arrived on.
 func tagged(id ID, h http.Handler) http.Handler {
@@ -1903,6 +1982,7 @@ func fromStatus(id ID, st core.NetStatus, host, url string) ExposureEndpoint {
 // types are assigned below; TSNet covers Funnel.
 var (
 	_ PortalNet              = (*portal.Net)(nil)
+	_ SignInPortalNet        = (*portal.Net)(nil)
 	_ ZrokNet                = (*zrok.Net)(nil)
 	_ QuickNet               = (*cfquick.Net)(nil)
 	_ Tailnet                = TSNet{}

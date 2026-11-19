@@ -553,11 +553,23 @@ func (s *Store) Touch(ctx context.Context, slug string, now time.Time) error {
 // as a redirect to the flat until till. Earlier redirects follow the flat;
 // a redirect from the new slug itself is dropped.
 func (s *Store) RenameFlat(ctx context.Context, from, to string, till, now time.Time) error {
+	return s.RenameFlatRevoked(ctx, from, to, till, now, nil)
+}
+
+// RenameFlatRevoked is RenameFlat that also writes, when revoke is not nil, the signin.revoke event of the new token
+// secret that the rename gave the Portal identity of from (docs/spec/portal-sign-in.md, rules 41 and 67), in the
+// transaction of the rename: a failing write of the event leaves the rename undone.
+func (s *Store) RenameFlatRevoked(ctx context.Context, from, to string, till, now time.Time, revoke *Audit) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	if revoke != nil {
+		if err := appendSignInRevoke(ctx, tx, from, SignInRevokeRename, *revoke); err != nil {
+			return err
+		}
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM redirects WHERE old=?`, to); err != nil {
 		return err
 	}
@@ -592,10 +604,22 @@ func (s *Store) RenameFlat(ctx context.Context, from, to string, till, now time.
 // writes a secret.delete audit event in the same transaction (rule 9 of docs/spec/audit-events.md), with the
 // channel flat-delete and the approval of a.Approval, when there is one.
 func (s *Store) DeleteFlat(ctx context.Context, slug string, a Audit) error {
+	return s.DeleteFlatRevoked(ctx, slug, a, nil)
+}
+
+// DeleteFlatRevoked is DeleteFlat that also writes, when revoke is not nil, the signin.revoke event of the new token
+// secret that the deletion gave the Portal identity of the flat (docs/spec/portal-sign-in.md, rules 42 and 67), in the
+// transaction of the deletion.
+func (s *Store) DeleteFlatRevoked(ctx context.Context, slug string, a Audit, revoke *Audit) error {
 	_, err := s.immediate(ctx, func(x executor) (bool, error) {
 		uid, err := flatUID(ctx, x, slug)
 		if err != nil {
 			return false, err
+		}
+		if revoke != nil {
+			if err := appendSignInRevoke(ctx, x, slug, SignInRevokeDelete, *revoke); err != nil {
+				return false, err
+			}
 		}
 		secrets, err := flatSecrets(ctx, x, slug)
 		if err != nil {

@@ -516,24 +516,30 @@ type signInHooks struct {
 // after the commit of step 2, also when resumeApplying finishes an approval at a start. An error says that the Portal
 // route of the flat is stopped, and why; the setting stays stored.
 //
-// The default does nothing yet: the Portal route that builds the gate replaces it.
+// The open of step 4 reads the stored setting again, which is in and seq under the lock of the flat.
 func (s *Service) signInApplied(ctx context.Context, slugName string, in store.SignIn, seq int64) error {
 	if h := s.signInHooks.applied; h != nil {
 		return h(ctx, slugName, in, seq)
 	}
-	return nil
+	// Step 3: a visitor who holds a WebSocket or a long request comes back through the new gate.
+	s.revokeRoute("public:" + slugName)
+	// Step 4: a new public handler binds the new epoch, so the cancelled one answers only the connections that were open.
+	return s.reopenPublic(ctx, slugName, false)
 }
 
 // signInSecretChanged builds the gate of a flat again after a set or a removal of its client secret (rule 28), when
 // its sign-in is oidc and it has a Portal route. It keeps the open connections. It runs under the lock of the flat.
 // An error says that the Portal route is stopped, and why.
-//
-// The default does nothing yet: the Portal route that builds the gate replaces it.
 func (s *Service) signInSecretChanged(ctx context.Context, slugName string) error {
 	if h := s.signInHooks.secretChanged; h != nil {
 		return h(ctx, slugName)
 	}
-	return nil
+	f, err := s.st.GetFlat(ctx, slugName)
+	if err != nil || f.SignInProvider != store.SignInOIDC {
+		return err
+	}
+	// The epoch stays, so the new public handler binds the one that the open connections use.
+	return s.reopenPublic(ctx, slugName, true)
 }
 
 // SignInClientSecret opens the client secret that a gate of the oidc setting in sends to its issuer (rule 27). It
@@ -717,7 +723,11 @@ type SignInView struct {
 	ClientID     string            `json:"client_id"`
 	Allow        []string          `json:"allow"`
 	ClientSecret *SignInSecretView `json:"client_secret"`
-	Seq          int64             `json:"seq"`
+	// Hosts are the host names of the PublicHosts of the Portal route (rule 34), empty without a route, and
+	// CallbackURLs the callback URL of each for oidc, the URLs to register at the provider.
+	Hosts        []string `json:"hosts"`
+	CallbackURLs []string `json:"callback_urls"`
+	Seq          int64    `json:"seq"`
 }
 
 // SignInSecretView says that a client secret is stored, for which issuer and client ID, and since when. It never
@@ -738,6 +748,10 @@ func (s *Service) GetSignIn(ctx context.Context, slugName string) (SignInView, e
 	v := SignInView{Provider: st.SignIn.Provider, Issuer: st.SignIn.Issuer, ClientID: st.SignIn.ClientID, Allow: st.SignIn.Allow, Seq: st.Seq}
 	if st.Secret != nil {
 		v.ClientSecret = &SignInSecretView{Name: store.SignInSecretName, Issuer: st.Secret.Issuer, ClientID: st.Secret.ClientID, UpdatedAt: st.Secret.UpdatedAt}
+	}
+	v.Hosts, v.CallbackURLs = s.SignInHosts(slugName), []string{}
+	if v.Provider == store.SignInOIDC {
+		v.CallbackURLs = SignInCallbackURLs(v.Hosts)
 	}
 	return v, nil
 }
