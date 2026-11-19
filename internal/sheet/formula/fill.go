@@ -28,8 +28,10 @@ func FillSeries(src []Content, n int, back, step bool) ([]Content, bool) {
 		}
 	}
 	switch kind {
-	case ContentNumber, ContentDate, ContentTime, ContentDateTime:
+	case ContentNumber:
 		return fillNumbers(src, n, back, step)
+	case ContentDate, ContentTime, ContentDateTime:
+		return fillDates(src, n, back)
 	case ContentText:
 		if out, ok := fillNames(src, n, back); ok {
 			return out, true
@@ -76,46 +78,90 @@ func position(k, m int, back bool) float64 {
 	return float64(m + 1 + k)
 }
 
-// fillNumbers continues numbers, dates, times and dates with time.
-func fillNumbers(src []Content, n int, back, step bool) ([]Content, bool) {
-	kind, m := src[0].Kind, len(src)
-	if kind == ContentNumber && m == 1 && !step {
-		return nil, false // one plain number is copied
-	}
-	var next func(k int) float64
+// seriesLine returns the value of the k-th target cell for the m values y
+// of the source: one value steps by unit for each cell, and two or more
+// continue their trend.
+func seriesLine(y func(i int) float64, m int, unit float64, back bool) func(k int) float64 {
 	if m == 1 {
-		// One cell steps by 1, a day for a date, and an hour for a time.
-		unit := 1.0
-		if kind == ContentTime {
-			unit = 1.0 / 24
-		}
 		if back {
 			unit = -unit
 		}
-		x := src[0].Num
-		next = func(k int) float64 { return x + float64(k+1)*unit }
-	} else {
-		t := fitTrend(func(i int) float64 { return src[i].Num }, m)
-		next = func(k int) float64 { return t.at(position(k, m, back)) }
+		x := y(0)
+		return func(k int) float64 { return x + float64(k+1)*unit }
 	}
+	t := fitTrend(y, m)
+	return func(k int) float64 { return t.at(position(k, m, back)) }
+}
+
+// fillNumbers continues plain numbers. Their trend is not rounded.
+func fillNumbers(src []Content, n int, back, step bool) ([]Content, bool) {
+	m := len(src)
+	if m == 1 && !step {
+		return nil, false // one plain number is copied
+	}
+	next := seriesLine(func(i int) float64 { return src[i].Num }, m, 1, back)
 	out := make([]Content, n)
 	for k := range out {
 		v := next(k)
-		switch kind {
-		case ContentDate:
-			v = math.Round(v)
-		case ContentTime:
-			if v -= math.Floor(v); v >= 1 {
-				v = 0 // a value just under 0 that the subtraction rounds to a day
-			}
-		}
 		if math.IsInf(v, 0) || math.IsNaN(v) {
 			return nil, false
 		}
-		if (kind == ContentDate || kind == ContentDateTime) && (v < 0 || v >= lastDateDay+1) {
-			return nil, false // a series stays within the dates of rule 12
+		out[k] = Content{Kind: ContentNumber, Num: v}
+	}
+	return out, true
+}
+
+// fillDates continues dates, times and dates with time in the units a cell
+// holds them in (technical design, sections 4.3 and 8.5): whole days for a
+// date, and whole seconds for a time and a date with time. The trend is
+// rounded half away from zero to the unit, one date or date with time steps
+// a day and one time an hour, and a time goes round within one day. Each
+// content is built from its whole counts as typed entry builds it, so a
+// filled time holds the number of the same time typed. A line that comes
+// before 1900-01-01 or after 9999-12-31 has no series.
+func fillDates(src []Content, n int, back bool) ([]Content, bool) {
+	kind := src[0].Kind
+	count := func(i int) float64 { return math.Round(src[i].Num) } // whole days
+	unit := 1.0
+	switch kind {
+	case ContentTime:
+		count = func(i int) float64 { return math.Round(src[i].Num * daySeconds) }
+		unit = 3600
+	case ContentDateTime:
+		count = func(i int) float64 {
+			days := math.Floor(src[i].Num)
+			return days*daySeconds + math.Round((src[i].Num-days)*daySeconds)
 		}
-		out[k] = Content{Kind: kind, Num: v}
+		unit = daySeconds
+	}
+	next := seriesLine(count, len(src), unit, back)
+	out := make([]Content, n)
+	for k := range out {
+		v := math.Round(next(k))
+		if math.IsInf(v, 0) || math.IsNaN(v) {
+			return nil, false
+		}
+		var num float64
+		switch kind {
+		case ContentDate:
+			if v < firstDateDay || v > lastDateDay {
+				return nil, false
+			}
+			num = v
+		case ContentTime:
+			secs := int64(math.Mod(v, daySeconds))
+			if secs < 0 {
+				secs += daySeconds
+			}
+			num = float64(secs) / daySeconds
+		case ContentDateTime:
+			if v < firstDateDay*daySeconds || v >= (lastDateDay+1)*daySeconds {
+				return nil, false
+			}
+			total := int64(v)
+			num = float64(total/daySeconds) + float64(total%daySeconds)/daySeconds
+		}
+		out[k] = Content{Kind: kind, Num: num}
 	}
 	return out, true
 }
@@ -272,22 +318,11 @@ func fillNumbered(src []Content, n int, back bool) ([]Content, bool) {
 		v, _ := strconv.ParseInt(c.Text[start:], 10, 64)
 		values[i] = float64(v)
 	}
-	m := len(values)
-	var next func(k int) float64
-	if m == 1 {
-		dir := 1.0
-		if back {
-			dir = -1
-		}
-		next = func(k int) float64 { return values[0] + float64(k+1)*dir }
-	} else {
-		t := fitTrend(func(i int) float64 { return values[i] }, m)
-		next = func(k int) float64 { return math.Round(t.at(position(k, m, back))) }
-	}
+	next := seriesLine(func(i int) float64 { return values[i] }, len(values), 1, back)
 	out := make([]Content, n)
 	var buf []byte
 	for k := range out {
-		v := math.Abs(next(k)) // a number below 0 is written without its sign
+		v := math.Abs(math.Round(next(k))) // a number below 0 is written without its sign
 		if math.IsInf(v, 0) || math.IsNaN(v) {
 			return nil, false
 		}

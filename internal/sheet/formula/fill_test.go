@@ -17,6 +17,25 @@ func stampC(y, mo, d, h, mi int) Content {
 	return Content{Kind: ContentDateTime, Num: float64(DateOf(y, mo, d)) + float64(h*3600+mi*60)/daySeconds}
 }
 
+// typedC is the content that typed entry gives for s.
+func typedC(s string) Content {
+	c, _ := ParseTyped(s)
+	return c
+}
+
+// isDateKind reports whether a content of kind k is a date, a time or a
+// date with time.
+func isDateKind(k ContentKind) bool {
+	return k == ContentDate || k == ContentTime || k == ContentDateTime
+}
+
+// sameAsTyped reports whether a content of a series is, bit for bit, the
+// content that typed entry gives for the text it shows.
+func sameAsTyped(c Content, text string) bool {
+	typed := typedC(text)
+	return c.Kind == typed.Kind && math.Float64bits(c.Num) == math.Float64bits(typed.Num) && c.Text == typed.Text
+}
+
 func texts(s ...string) []Content {
 	out := make([]Content, len(s))
 	for i, t := range s {
@@ -45,7 +64,9 @@ func shownSeries(cs []Content) string {
 
 // F-01 and F-02: FillSeries gives the series of rule 21a, down and up, and
 // no series for every other source. A series is listed from the cell next
-// to the source outward, and each content has the kind of its source.
+// to the source outward, and each content has the kind of its source. A
+// date, a time and a date with time is the content that typed entry gives
+// for the text it shows, bit for bit.
 func TestFillSeries(t *testing.T) {
 	cases := []struct {
 		name       string
@@ -104,6 +125,26 @@ func TestFillSeries(t *testing.T) {
 		{"two dates with time", []Content{stampC(2026, 3, 15, 6, 0), stampC(2026, 3, 15, 18, 0)}, 2, false, false, "2026-03-16 06:00:00, 2026-03-16 18:00:00", ContentDateTime},
 		{"22:00, 23:00", []Content{clockC(22, 0), clockC(23, 0)}, 2, false, false, "00:00:00, 01:00:00", ContentTime},
 		{"00:30, 01:00 up", []Content{clockC(0, 30), clockC(1, 0)}, 2, true, false, "00:00:00, 23:30:00", ContentTime},
+		{"09:00, 09:20", []Content{clockC(9, 0), clockC(9, 20)}, 2, false, false, "09:40:00, 10:00:00", ContentTime},
+		{"one time from 22:00 past a day", []Content{clockC(22, 0)}, 27, false, false,
+			"23:00:00, 00:00:00, 01:00:00, 02:00:00, 03:00:00, 04:00:00, 05:00:00, 06:00:00, 07:00:00, 08:00:00, 09:00:00, 10:00:00, 11:00:00, " +
+				"12:00:00, 13:00:00, 14:00:00, 15:00:00, 16:00:00, 17:00:00, 18:00:00, 19:00:00, 20:00:00, 21:00:00, 22:00:00, 23:00:00, 00:00:00, 01:00:00", ContentTime},
+		{"00:00 up a whole day", []Content{clockC(0, 0)}, 25, true, false,
+			"23:00:00, 22:00:00, 21:00:00, 20:00:00, 19:00:00, 18:00:00, 17:00:00, 16:00:00, 15:00:00, 14:00:00, 13:00:00, 12:00:00, 11:00:00, " +
+				"10:00:00, 09:00:00, 08:00:00, 07:00:00, 06:00:00, 05:00:00, 04:00:00, 03:00:00, 02:00:00, 01:00:00, 00:00:00, 23:00:00", ContentTime},
+		{"dates with time twenty minutes apart", []Content{typedC("2026-03-15 08:00"), typedC("2026-03-15 08:20")}, 4, false, false,
+			"2026-03-15 08:40:00, 2026-03-15 09:00:00, 2026-03-15 09:20:00, 2026-03-15 09:40:00", ContentDateTime},
+		{"dates with time through 1900-01-25 20:09:37", []Content{typedC("1900-01-25 19:29:37"), typedC("1900-01-25 19:49:37")}, 2, false, false,
+			"1900-01-25 20:09:37, 1900-01-25 20:29:37", ContentDateTime},
+		{"dates with time past midnight", []Content{typedC("2026-03-15 23:20"), typedC("2026-03-15 23:40")}, 2, false, false,
+			"2026-03-16 00:00:00, 2026-03-16 00:20:00", ContentDateTime},
+		// A trend is rounded to the whole second half away from zero before
+		// a time goes round the day: 00:00:00, 00:00:02 and 00:00:01 give 2
+		// and 2.5 seconds after them, and 0 and -0.5 seconds before.
+		{"a trend of half a second", []Content{typedC("00:00:00"), typedC("00:00:02"), typedC("00:00:01")}, 2, false, false, "00:00:02, 00:00:03", ContentTime},
+		{"a trend of half a second up", []Content{typedC("00:00:00"), typedC("00:00:02"), typedC("00:00:01")}, 2, true, false, "00:00:00, 23:59:59", ContentTime},
+		{"1900-01-01 down", []Content{dateC(1900, 1, 1)}, 2, false, false, "1900-01-02, 1900-01-03", ContentDate},
+		{"1900-01-03 up to the first date", []Content{dateC(1900, 1, 3)}, 2, true, false, "1900-01-02, 1900-01-01", ContentDate},
 		{"Item1, Item3", texts("Item1", "Item3"), 2, false, false, "Item5, Item7", ContentText},
 		{"Item1, Item2, Item4", texts("Item1", "Item2", "Item4"), 2, false, false, "Item5, Item7", ContentText},
 		{"one plain number in series", nums(5), 2, false, true, "6, 7", ContentNumber},
@@ -129,7 +170,11 @@ func TestFillSeries(t *testing.T) {
 		{"a date series past 9999-12-31", []Content{dateC(9999, 12, 30)}, 2, false, false, "", 0},
 		{"dates whose trend passes 9999-12-31", []Content{dateC(9999, 12, 1), dateC(9999, 12, 15)}, 2, false, false, "", 0},
 		{"a date with time past 9999-12-31", []Content{stampC(9999, 12, 31, 12, 0)}, 1, false, false, "", 0},
-		{"a date series before day 0", []Content{{Kind: ContentDate, Num: 1}}, 2, true, false, "", 0},
+		{"1900-01-02 up two cells", []Content{dateC(1900, 1, 2)}, 2, true, false, "", 0},
+		{"1900-01-01 up", []Content{dateC(1900, 1, 1)}, 1, true, false, "", 0},
+		{"dates whose trend comes before 1900-01-01", []Content{dateC(1900, 1, 5), dateC(1900, 1, 3)}, 2, false, false, "", 0},
+		{"a date with time before 1900-01-01", []Content{stampC(1900, 1, 1, 12, 0)}, 1, true, false, "", 0},
+		{"dates with time whose trend comes before 1900-01-01", []Content{typedC("1900-01-01 00:20"), typedC("1900-01-01 00:10")}, 2, false, false, "", 0},
 		{"a trend that is not finite", nums(math.MaxFloat64, -math.MaxFloat64), 1, false, false, "", 0},
 		{"Sept", texts("Sept"), 1, false, false, "", 0},
 		{"no source", nil, 2, false, false, "", 0},
@@ -149,9 +194,14 @@ func TestFillSeries(t *testing.T) {
 		if s := shownSeries(got); s != c.want {
 			t.Errorf("%s: %q, want %q", c.name, s, c.want)
 		}
-		for _, g := range got {
+		for i, g := range got {
 			if g.Kind != c.kind {
 				t.Errorf("%s: a content of kind %d, want %d", c.name, g.Kind, c.kind)
+			}
+			// A date or a time is compared by its number, not by the text
+			// that shows it.
+			if text := strings.Split(c.want, ", ")[i]; isDateKind(c.kind) && !sameAsTyped(g, text) {
+				t.Errorf("%s: cell %d holds %v, and a typed %s holds %v", c.name, i, g.Num, text, typedC(text).Num)
 			}
 		}
 	}
@@ -175,6 +225,46 @@ func TestFillSeries(t *testing.T) {
 	}
 	if got, _ := FillSeries(nil, 0, false, true); got != nil {
 		t.Errorf("no target gives %v", got)
+	}
+}
+
+// Every date and time a series writes is stored content of technical
+// design section 4.3: the content that typed entry gives for the text it
+// shows. The sources start at every quarter hour of a day and fill ten
+// cells down and up.
+func TestFillSeriesWritesStoredContent(t *testing.T) {
+	for start := 0; start < daySeconds; start += 900 {
+		clock := func(secs int) string {
+			secs %= daySeconds
+			return fmt.Sprintf("%02d:%02d:%02d", secs/3600, secs/60%60, secs%60)
+		}
+		sources := [][]string{
+			{clock(start)},
+			{clock(start), clock(start + 3600)},
+			{clock(start), clock(start + 1200)},
+			{clock(start), clock(start + 1200), clock(start + 2700)},
+			{"2026-03-15 " + clock(start)},
+			{"2026-03-15 " + clock(start), "2026-03-15 " + clock(start+3600)},
+			{"1900-01-25 " + clock(start), "1900-01-25 " + clock(start+1200)},
+		}
+		for _, texts := range sources {
+			src := make([]Content, len(texts))
+			for i, s := range texts {
+				src[i] = typedC(s)
+			}
+			for _, back := range []bool{false, true} {
+				got, ok := FillSeries(src, 10, back, false)
+				if !ok {
+					t.Errorf("%q back %v: no series", texts, back)
+					continue
+				}
+				for i, c := range got {
+					if shown := Show(c.Value(), c.Kind, NumberFormat{}); !sameAsTyped(c, shown) {
+						t.Errorf("%q back %v: cell %d holds %v, which shows %s, and a typed %s holds %v", texts, back, i, c.Num, shown, shown, typedC(shown).Num)
+					}
+				}
+			}
+		}
 	}
 }
 

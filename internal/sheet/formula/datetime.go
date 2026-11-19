@@ -6,9 +6,10 @@ import "strconv"
 // is 1900-01-01 and there is no 1900-02-29 (spec rule 4).
 
 const (
-	epochDays   = -25569  // 1899-12-30 counted from 1970-01-01
-	lastDateDay = 2958465 // 9999-12-31
-	daySeconds  = 86400
+	epochDays    = -25569  // 1899-12-30 counted from 1970-01-01
+	firstDateDay = 2       // 1900-01-01
+	lastDateDay  = 2958465 // 9999-12-31
+	daySeconds   = 86400
 )
 
 var monthNames = [12]string{"Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"}
