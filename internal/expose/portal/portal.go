@@ -47,7 +47,8 @@ const ConflictHint = "another Portal user owns this name on that relay; rename t
 type Config struct {
 	// ShutdownTimeout bounds HTTP drain, SDK close and listener-pump waits (default 30s).
 	ShutdownTimeout time.Duration
-	// Dir holds one identity file per slug (<Dir>/<slug>.json, mode 0600).
+	// Dir holds one identity file per slug (<Dir>/<slug>.json, mode 0600; on
+	// Windows the Portal SDK gives it an access list of its own).
 	Dir string
 	// Relays lists explicit relays. Empty means the Portal CLI default:
 	// discovery over the bootstrap relays only.

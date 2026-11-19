@@ -119,6 +119,10 @@ with the user and `SYSTEM` alone, and children inherit it. `lockDataDir` calls i
 so it holds before any key or database opens. Outside the profile a directory
 otherwise inherits access for other local users.
 
+A Portal identity file (`portal/<slug>.json`) does not inherit it. The Portal SDK
+gives the file a protected list of its own, with the Administrators group as
+well (rule 18), so a change of the directory list does not reach that file.
+
 A change walks the whole tree and takes access from everything below, so:
 
 - A list that is up to date stays. The check compares the entries as a set, because

@@ -95,11 +95,11 @@ WSL is not part of this spec. `install.sh` inside WSL is the Linux path.
     exFAT, cannot be private: `flats serve` runs there and logs that.
     A Portal identity file (`portal/<slug>.json`) is the exception: the Portal SDK
     gives it a protected access list of its own, for the user, the system and the
-    Administrators group, and it can make the user its owner. A file whose list is
-    already protected and gives access to those accounts only keeps its list. On a
-    volume without access lists, and for an identity path that is a link or not a
-    regular file, the SDK refuses the file, so a flat there gets no Portal URL and
-    its Portal status shows the error.
+    Administrators group, and it can make the user its owner. A file that one of
+    those accounts owns, and whose list is already protected and gives access to
+    those accounts only, keeps its list. On a volume without access lists, and for
+    an identity path that is a link or not a regular file, the SDK refuses the
+    file, so a flat there gets no Portal URL and its Portal status shows the error.
 
 ### Names
 
@@ -171,8 +171,13 @@ browser on Windows. The technical design holds the measurements. The status is
   at p95 in three logged runs, against 50 ms. A tiny JavaScript flat meets it, at 27
   to 29 ms. Each call from the worker to the host takes 3 to 18 ms at p50 on Windows,
   and a wake makes several.
-- No provider other than Local has run on Windows, so rule 23 is a build-time
-  statement for now. NetBird and Tailscale need an account to measure.
+- No provider other than Local and Portal has run on Windows, so rule 23 is a
+  build-time statement for the others. Portal ran once through a public relay:
+  a registration, a public HTTPS request and a stop. NetBird and Tailscale need an
+  account to measure.
+- The outcomes of rule 18 for a Portal identity file on a volume without access
+  lists, for a link and for a file of another owner come from the code of the
+  Portal SDK. No run has shown them.
 - On the machine of the measurements, `TestGuestRoomsLeaveMemberRoomMemory` reaches
   the 10 s limit of one guest call at a first `hello` on a 0.9 MiB document: on
   Windows in each run, and on Linux in 7 of 24 runs at `main` and in 7 of 24 on
