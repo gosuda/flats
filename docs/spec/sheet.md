@@ -161,11 +161,15 @@ A typical flow:
      currency sign too. Excel keeps 15 digits and changes every later digit
      to zero. The rule is for entry only. `VALUE`, criteria and arithmetic
      still read such text as a number (rule 11), and an agent's
-     `write cells` keeps a JSON number a number. A number of more than 15
-     digits that an agent's JSON value or a paste of values put in a cell
-     shows its digits in the formula bar. Committing those digits as typed
-     makes the cell text. A formula cell shows its formula there, so this
-     does not apply to it.
+     `write cells` keeps a JSON number a number. A whole number with more
+     than 15 significant digits shows them in the formula bar, and
+     committing those digits as typed makes the cell text. Such a number
+     comes from an agent's JSON value, a paste of values, or typed text such
+     as `12345678901234567.5`, which is not whole as typed but is stored as
+     a whole number. A whole number with at most 15 significant digits that
+     needs more digits before the decimal point, such as `1.5E+20`, shows
+     in the formula bar with an exponent, so it reads back as a number. A
+     formula cell shows its formula there, so none of this applies to it.
    - A date is read as `2026-03-15`, `3/15/2026` (month first) or
      `Mar 15, 2026`. A time is read as `14:30`, `14:30:05` or `2:30 PM`. A
      date and a time together are a date with time. A recognized date or
@@ -503,9 +507,10 @@ A typical flow:
     find each other, while `="ς"="σ"` is `TRUE`. The matches are in reading
     order, row by row and left to right in a row.
     - The active cell is the cell that the formula bar names. The anchor is
-      the active cell when the field opens. The anchor follows the moves of
-      the selection that the person makes, and not the moves that Find
-      makes.
+      the active cell when the field opens. The anchor follows every move of
+      the selection that Find does not make, such as a person's move or a
+      reload of the tab that restores the selection, and not the moves that
+      Find makes.
     - Opening the field does not move the selection. Each change of its
       text selects the first match at or after the anchor, or, when no
       match is at or after the anchor, the first match of the tab. With no
@@ -591,7 +596,11 @@ A typical flow:
       same. The result has the form, full or short, of the last source
       cell, and its capitals: all capitals when every letter of that cell
       is a capital, an initial capital when only its first letter is, and
-      small letters otherwise. So `MONDAY` gives `TUESDAY`.
+      small letters otherwise. So `MONDAY` gives `TUESDAY`. `May` is both a
+      full and a short name: the form is that of the last source cell whose
+      name has one form, and the short form when no source cell has one, so
+      `May` gives `Jun` and `April, May` gives `June`. Two or more equal
+      names keep a step of none and repeat the name.
     - One time continues hour by hour. A trend of two or more times is not
       rounded. A series of times stays inside one day: a value of a whole
       day or more, or below 0, goes round by whole days. So `23:00` is followed by `00:00`, and `00:30` and `01:00`
@@ -974,14 +983,16 @@ unchanged.
 60. **Exports are plain data.** A CSV export, in the browser and through
     `get_sheet`, writes one field per cell: the cell's value, not the text
     its number format shows.
-    - The export writes a number in full precision, whatever its number
-      format: the shortest decimal that reads back as the same
-      double-precision number, with at most 17 significant digits. So it
-      writes `0.125` for a cell that shows `12.50%`, `-1234.5` for one that
-      shows `-$1,234.50`, and `0.30000000000000004` for `=0.1+0.2`. It writes
-      the number plain when it needs at most 17 digits before the decimal
-      point and at most 9 zeros after it, and with an exponent otherwise, as
-      `1.2345678901234567E+19` and `1E-11`.
+    - The export writes a number with up to 15 significant digits, whatever
+      its number format, as the requester decided on 2026-11-19. This is the
+      precision that comparisons use and that Excel keeps, so a CSV round
+      trip keeps every value the sheet can tell apart, and float noise such
+      as the last bit of `=0.1+0.2` does not show. So it writes `0.125` for a
+      cell that shows `12.50%`, `-1234.5` for one that shows `-$1,234.50`,
+      `0.3` for `=0.1+0.2` and `3` for `=LOG10(1000)`. It writes the number
+      plain when it needs at most 15 digits before the decimal point and at
+      most 9 zeros after it, and with an exponent otherwise, as
+      `1.23456789012346E+15` and `1E-11`. Negative zero is written as `0`.
     - It writes a value that the cell shows as a date, a time or a date with
       time in ISO 8601 form, whatever its date format: `2026-03-15`,
       `14:30:00` and `2026-03-15 14:30:00`. The value is rounded to the
@@ -989,7 +1000,7 @@ unchanged.
       that rounded value is not a whole second, as in `14:30:00.250`. A
       part of a millisecond is dropped. This is an S1 choice that waits for
       the requester ([Open question 5](#open-questions)), because the
-      earlier decision sets a precision only for numbers. A time content is
+      requester's decisions set a precision only for numbers. A time content is
       always below one day (rule 4). It stays a time, and so does a value
       below one day under a time format: when its rounding reaches a whole
       day it is written as `00:00:00`, which is midnight, the time of day
@@ -1071,7 +1082,7 @@ reference data generator and the measurement scripts.
 | Calculation date | With the host's date moved forward: on a small sheet (the offsite budget of the typical flow with one `TODAY` formula) an open screen shows the new value within a minute; on the reference sheet the recalculation starts within a minute and the new values appear together when it has ended; a read begun before the change returns the old date on every page; and a revision closed before it still shows the old value. |
 | Limits | Each limit of rule 9 has its stated outcome. A write over a stored limit (tabs, rows, columns, filled cells, formulas, characters of a cell or a formula, nesting, cells read by one formula and by all formulas, typed text, bytes of a call) is refused whole with the limit's name. A text value inside a calculation that would pass 32,767 characters gives `#VALUE!` and the write is accepted. A state whose formulas calculate more text than it may hold is accepted and calculated in limited mode, with `#LIMIT!` exactly where rule 9 puts it, the same on every screen and through `get_sheet`; this is checked for a write that causes it and for a sheet that passes the limit only from a new calculation date on, and every result shows again after an edit brings the total back under the limit. While the host refuses a write, runs the longest recalculation the limits allow, with or without an edit starting it, or produces the largest CSV download, it answers other flats' requests within 1 second, and no reader of the sheet gets partly calculated values. |
 | Durability | An edit shown as Saved is present, with the values that follow from it, after the host process is killed and restarted. |
-| Export | A fixed list of cells, set by the technical design, covers every case of rule 60: each dangerous first character, the full-width ones included, with and without leading spaces, in text typed and text calculated by a formula; negative numbers under every number format, a currency symbol made of letters included, which export as plain numbers; numbers that need an exponent or 17 significant digits; dates, times and dates with time under every date and time format, with and without a fraction of a second, which export in ISO 8601 form; text that holds a semicolon followed by `=`, quotes, commas and line breaks. It exports to the exact expected CSV bytes, and that file, opened in each supported way of rule 60, shows no calculated field. |
+| Export | A fixed list of cells, set by the technical design, covers every case of rule 60: each dangerous first character, the full-width ones included, with and without leading spaces, in text typed and text calculated by a formula; negative numbers under every number format, a currency symbol made of letters included, which export as plain numbers; numbers that need an exponent or 15 significant digits, a number whose last bit differs from its 15-digit value, and negative zero; dates, times and dates with time under every date and time format, with and without a fraction of a second, which export in ISO 8601 form; text that holds a semicolon followed by `=`, quotes, commas and line breaks. It exports to the exact expected CSV bytes, and that file, opened in each supported way of rule 60, shows no calculated field. |
 | Accessibility | With VoiceOver on Safari and on Chrome, a person moves through the large tab, hears each cell's address and content, edits a formula, switches tabs and hears a refused edit and the save status (rule 20b). |
 | Reconnection | After disconnecting and reconnecting, each unconfirmed edit applies exactly once. |
 | Recovery | Every tab of a retained revision can be viewed and restored. Rollback succeeds with the disk quota full. |
@@ -1144,7 +1155,7 @@ Not done yet:
    workbook an import keeps is decided in the design of that phase.
 3. **Fill choices.** The S1 choices of rule 21a wait for the requester:
    short names, weekend days, three or more names, the form and capitals
-   of names, the hour step of a time and a series of times inside one day,
+   of names (the form of `May` included), the hour step of a time and a series of times inside one day,
    the day step of a date with time, whole days in a trend of dates, whole
    numbers and dropped signs in the trend of a text, a final number of more
    than 15 digits, and the step of 1 for one number in the series. A check
@@ -1157,9 +1168,9 @@ Not done yet:
    gives the requester Excel's order for the cases of section 22.2.
 5. **Times in CSV.** The S1 choice of rule 60 waits for the requester: a
    time is written to the millisecond, and a part of a millisecond is
-   dropped. The requester's decision of 2026-11-19 names "CSV with stored
-   values and ISO dates", and the earlier rule sets full precision only for
-   numbers.
+   dropped. The requester's decisions of 2026-11-19 name "CSV with stored
+   values and ISO dates" and set 15 significant digits for numbers; they set
+   no precision for times.
 6. **Checks by hand in Excel.** The check by hand of technical design
    section 22.4 covers typed dates without a year (rule 5) and the cut
    (rule 15), as well as the cases of open questions 3 and 4. A result that
