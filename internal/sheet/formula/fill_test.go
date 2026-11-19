@@ -77,8 +77,19 @@ func TestFillSeries(t *testing.T) {
 		{"Jan, Apr, Jul", texts("Jan", "Apr", "Jul"), 2, false, false, "Oct, Jan", ContentText},
 		{"Jan, Apr, Jul up", texts("Jan", "Apr", "Jul"), 2, true, false, "Oct, Jul", ContentText},
 		{"the form of the last name", texts("Monday", "Tue"), 1, false, false, "Wed", ContentText},
-		{"May is both forms", texts("April", "May"), 1, false, false, "June", ContentText},
-		{"May alone", texts("MAY"), 1, false, false, "JUN", ContentText},
+		// The form is that of the last source cell whose name has one
+		// form, and the three-letter form when none has; May has both.
+		{"May", texts("May"), 1, false, false, "Jun", ContentText},
+		{"May up", texts("May"), 1, true, false, "Apr", ContentText},
+		{"April, May", texts("April", "May"), 1, false, false, "June", ContentText},
+		{"April, May up", texts("April", "May"), 1, true, false, "March", ContentText},
+		{"Jan, May", texts("Jan", "May"), 1, false, false, "Sep", ContentText},
+		{"January, May", texts("January", "May"), 1, false, false, "September", ContentText},
+		{"May alone in capitals", texts("MAY"), 1, false, false, "JUN", ContentText},
+		// Equal names step by none and repeat the name.
+		{"Mon, Mon", texts("Mon", "Mon"), 2, false, false, "Mon, Mon", ContentText},
+		{"Mon, Mon up", texts("Mon", "Mon"), 2, true, false, "Mon, Mon", ContentText},
+		{"May, May", texts("May", "May"), 2, false, false, "May, May", ContentText},
 		{"Item1", texts("Item1"), 2, false, false, "Item2, Item3", ContentText},
 		{"Item09", texts("Item09"), 2, false, false, "Item10, Item11", ContentText},
 		{"Item09 up", texts("Item09"), 2, true, false, "Item08, Item07", ContentText},
