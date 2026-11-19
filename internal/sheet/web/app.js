@@ -1618,11 +1618,13 @@ export class App {
 
   // #fillMenu offers the fill of the button again by the same ids, as a
   // copy or as a series. Each is one more fill with the sequence of the
-  // screen on show, so undo takes it back on its own.
+  // screen on show, so undo takes it back on its own. The fill, as the
+  // next edit, closes the button; a choice the sheet cannot take now, as
+  // while it calculates, says why and leaves the button.
   #fillMenu(btn) {
     const r = btn.getBoundingClientRect();
     const again = (mode, label) => () => {
-      const f = this.fillChoice.take();
+      const f = this.fillChoice.open ? this.fillChoice.fill : null;
       if (f && this.model.tab?.id === f.tab) this.#act([ops.fill(f.tab, f.source, f.target, mode)], { label });
     };
     this.popups.menu('Fill options', [

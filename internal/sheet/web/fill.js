@@ -104,13 +104,6 @@ export class FillChoice {
     if (w && (sel.moved !== w.moved || top !== w.top || left !== w.left)) this.close();
   }
 
-  // take closes the button and returns the fill it offered.
-  take() {
-    const f = this.cur?.fill ?? null;
-    this.close();
-    return f;
-  }
-
   close() {
     this.wait = null;
     this.early = null;

@@ -11,7 +11,7 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fire } from './dom.mjs';
-import { FakeServer, find, key, startApp, type } from './server.mjs';
+import { FakeServer, find, key, notices, startApp, type } from './server.mjs';
 
 const ev = () => ({ preventDefault() {}, clientX: 0, clientY: 0, button: 0 });
 // F-03: A1:A2 hold 1 and 2, B1 holds Mon and C1 holds =A1.
@@ -132,4 +132,23 @@ test('the button waits for the ack, and shows only for a fill that applied to a 
     server.socket.recv({ type: 'ack', n: fills(t)[0].n, seq: '11', results: [result] });
     assert.equal(shown(t), want, how);
   }
+});
+
+test('a choice made while the sheet cannot be edited sends nothing and keeps the button', async () => {
+  const t = await drag();
+  const choose = (label) => {
+    find(button(t), 'Fill options: copy cells or fill series').click();
+    menuItem(t, label).click();
+  };
+  t.server.socket.recv({ type: 'status', calculating: true });
+  assert.equal(shown(t), true, 'the calculating state leaves the button');
+  choose('Fill series');
+  assert.equal(fills(t).length, 1, 'nothing is sent while the sheet calculates');
+  assert.match(notices(t)[0][1], /The sheet is calculating\. Editing is available again when it ends\./);
+  assert.equal(shown(t), true, 'the button stays until a fill is queued');
+  t.server.socket.recv({ type: 'status', calculating: false });
+  choose('Fill series');
+  assert.equal(fills(t).length, 2);
+  assert.deepEqual(fills(t)[1].ops, [{ ...fills(t)[0].ops[0], mode: 'series' }], 'the same fill, as a series');
+  assert.equal(shown(t), false, 'the button closes with the fill it queued');
 });
