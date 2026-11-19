@@ -1866,6 +1866,7 @@ export class App {
     o.people = this.view ? [] : this.presence.outlines(this.model);
     o.handle = !this.readOnly && !this.editor.ed && !this.theme.phone;
     this.grid.paint();
+    this.find.sync();
     if (this.editor.ed) this.editor.placeHint();
     this.#fillCheck();
     this.#chrome();

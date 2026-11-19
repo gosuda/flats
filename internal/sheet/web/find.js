@@ -156,12 +156,20 @@ export class Find {
     return this.matches.findIndex((m) => m.r === a.r && m.c === a.c);
   }
 
-  #say() {
+  // sync shows the count for where the selection is now. The grid calls it as
+  // it draws, so a click or a key in the grid that moves the selection, which
+  // Find does not make, is counted at once. It announces nothing: the grid
+  // announces the cell.
+  sync() {
+    if (this.open) this.#say(false);
+  }
+
+  #say(announceIt = true) {
     const n = this.matches.length;
     const at = this.#at();
     const all = plural(n, 'match', 'matches');
     const text = !this.input.value ? '' : !n ? 'No matches' : at < 0 ? all : `${at + 1} of ${n}`;
     this.count.textContent = text;
-    if (this.input.value) announce(!n ? 'No matches' : at < 0 ? all : `Match ${at + 1} of ${all}`);
+    if (announceIt && this.input.value) announce(!n ? 'No matches' : at < 0 ? all : `Match ${at + 1} of ${all}`);
   }
 }

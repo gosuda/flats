@@ -113,6 +113,44 @@ test('T-03: Find starts at its anchor, steps from the active cell and keeps the 
   assert.equal(at(t), 'A8');
 });
 
+// A click moves the selection with the focus to the grid. The count follows
+// the selection however it moved, not only Find's own steps.
+test('the count follows a move the person makes: a click off the matches names none', async () => {
+  const t = await startApp({ server: anchored() });
+  const f = t.app.find;
+  t.sel.set(1, 2);
+  t.app.changed();
+  fire(t.grid.input, 'keydown', { key: 'f', ctrlKey: true });
+  search(t, 'x');
+  find(f.el, 'Next match (Enter)').click();
+  find(f.el, 'Previous match (Shift+Enter)').click();
+  assert.equal(at(t), 'D2');
+  assert.equal(f.count.textContent, '2 of 3');
+  click(t, 3, 0);
+  assert.equal(at(t), 'A4');
+  assert.equal(f.count.textContent, '3 matches', 'A4 is no match, so the count names none');
+  // The focus is on the grid after the click, so Enter edits A4 (rule 21) and Find does not move.
+  fire(t.doc.activeElement, 'keydown', { key: 'Enter' });
+  assert.equal(at(t), 'A4');
+  assert.equal(f.count.textContent, '3 matches');
+});
+
+test('Enter in the Find field after a click steps to the next match and the count names it', async () => {
+  const t = await startApp({ server: anchored() });
+  const f = t.app.find;
+  t.sel.set(1, 2);
+  t.app.changed();
+  fire(t.grid.input, 'keydown', { key: 'f', ctrlKey: true });
+  search(t, 'x');
+  find(f.el, 'Next match (Enter)').click();
+  find(f.el, 'Previous match (Shift+Enter)').click();
+  click(t, 3, 0);
+  f.input.focus();
+  fire(f.input, 'keydown', { key: 'Enter' });
+  assert.equal(at(t), 'B5', 'Next from A4 is B5');
+  assert.equal(f.count.textContent, '3 of 3', 'the count names the match at once');
+});
+
 test('Find opened again with text in its field selects nothing and steps from the active cell', async () => {
   const t = await startApp({ server: anchored() });
   const f = t.app.find;
