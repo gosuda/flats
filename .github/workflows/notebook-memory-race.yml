@@ -23,7 +23,7 @@ jobs:
           - {lane: notebook-large-reader, cache: notebook}
           - {lane: notebook-large-markdown, cache: notebook}
           - {lane: notebook-large-source, cache: core}
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4

@@ -22,6 +22,8 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-427a59?style=flat-square" alt="License: MIT"></a>
 </p>
 
+[![Built with Depot](https://depot.dev/badges/built-with-depot.svg)](https://depot.dev?utm_source=gosuda)
+
 <p align="center">
   <a href="#quick-start">Quick start</a> ·
   <a href="#what-you-can-make">What you can make</a> ·

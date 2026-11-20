@@ -16,7 +16,7 @@ concurrency:
 jobs:
   changes:
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04
     timeout-minutes: 5
     outputs:
       full: ${{ steps.select.outputs.full }}
@@ -35,7 +35,7 @@ jobs:
   docs:
     needs: changes
     if: needs.changes.outputs.full == 'false'
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -51,7 +51,7 @@ jobs:
   docs-web:
     needs: changes
     if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') }}
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04
     timeout-minutes: 10
     defaults:
       run:
@@ -89,7 +89,7 @@ jobs:
             shards: board
           - lane: other
             shards: other
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -133,7 +133,7 @@ jobs:
   netbird:
     needs: changes
     if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') }}
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -190,7 +190,7 @@ jobs:
           - {lane: notebook-2, cache: notebook}
           - {lane: board-1, cache: board}
           - {lane: board-2, cache: board}
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -206,7 +206,7 @@ jobs:
   notebook-memory:
     needs: changes
     if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') }}
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -312,7 +312,7 @@ jobs:
   container:
     needs: changes
     if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') }}
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
