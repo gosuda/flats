@@ -29,8 +29,6 @@
   <a href="docs/README.md">Documentation</a>
 </p>
 
-[![Built with Depot](https://depot.dev/badges/built-with-depot.svg)](https://depot.dev?utm_source=gosuda)
-
 ---
 
 Each thing Flats hosts is a **flat**: one web page, document, app, design,
@@ -416,4 +414,6 @@ including targets that are not fully implemented yet.
   <a href="LICENSE">MIT licensed</a> ·
   <a href="https://github.com/gosuda/flats/releases">Releases</a> ·
   <a href="https://github.com/gosuda/flats/issues">Issues</a>
+
+  [![Built with Depot](https://depot.dev/badges/built-with-depot.svg)](https://depot.dev?utm_source=gosuda)
 </p>
