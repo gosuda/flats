@@ -80,7 +80,8 @@ edit", explicit version creation and deployment, version deletion, rollback,
 data restore and deletion keep approvals. Autopilot is independent:
 if enabled it decides only the approvals its operation guide allows.
 Public is NOT access control. Anyone on the internet can open a ready
-Public route. Console, MCP and approval addresses are unchanged.
+Public route, except the Portal URL of a flat with Portal sign-in on
+(`topic.approvals`). Console, MCP and approval addresses are unchanged.
 
 ## public_instance_on
 

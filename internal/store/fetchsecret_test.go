@@ -272,7 +272,7 @@ func TestResealKeepsTheBinding(t *testing.T) {
 	}
 }
 
-// A flats.db of schema 27 migrates to 28: every secret stays readable and keeps its bytes (rule 32).
+// A flats.db of schema 27 migrates to the latest schema: every secret stays readable and keeps its bytes (rule 32).
 func TestMigrationFromVersion27KeepsSecretsReadable(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "flats.db")
 	t.Run("build schema 27", func(t *testing.T) {
@@ -297,7 +297,7 @@ func TestMigrationFromVersion27KeepsSecretsReadable(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if info, err := Inspect(path); err != nil || info.Version != 28 {
+	if info, err := Inspect(path); err != nil || info.Version != latestVersion() {
 		t.Fatalf("after: %+v, %v", info, err)
 	}
 	row, ok := secretRow(t, s, "app", "ONE")

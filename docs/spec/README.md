@@ -55,6 +55,7 @@ list.
 | [Audit events](audit-events.md) | implemented | A host-level, append-only audit log in `flats.db` for every change of a sealed value, every key backup, restore and reset, and (with the event webhook spec) every applied visibility change and grant change of a flat, which survives the deletion of a flat, and `flats audit ls` to read it |
 | [Event webhook and audit export](event-webhook.md) | implemented | A signed webhook for approvals, visibility changes and grant changes of a flat, configured by two sealed operator keys, with a bounded in-memory retry, and `flats audit export`, which writes the audit log and the approval records as JSON lines |
 | [Host backup](host-backup.md) | implemented | `flats backup --out` copies a running or stopped host into a directory with a manifest, and `flats backup --verify` checks such a copy: databases as snapshots, write-once blobs in two passes, coherence of the outbox databases of documents, boards and notebooks with `flats.db`, and a self-check that fails to be run again |
+| [Portal sign-in](portal-sign-in.md) | implemented | Sign-in for each flat on its Portal route through the gate of the Portal SDK: `oidc` or `credential` with an allowlist that the operator approves, a sealed OIDC client secret, access links, the headers of the visitor for flat code, and no other public provider while sign-in is on |
 
 ## Where the technical designs live
 

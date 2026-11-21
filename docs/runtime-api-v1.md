@@ -217,6 +217,19 @@ A body must keep arriving at 16 KiB/s on average after its first 30 seconds
 (else 408). One flat buffers at most 80 MiB of request bodies at once; a body
 beyond that gets 503 with Retry-After. Requests without a body are not limited.
 
+A flat whose Portal URL is behind Portal sign-in (`sign_in` in `get_flat`)
+gets the visitor who signed in on that URL as three request headers:
+`x-flats-visitor-provider` (`oidc` or `credential`), `x-flats-visitor-subject`
+(the principal that the allowlist let in: the verified email, also for an
+`@domain` entry, `sub:<subject>`, or the subject of an access link) and
+`x-flats-visitor-email` (the verified email, only when the provider vouched
+for one). Without a sign-in, on the private routes and in previews, the three
+are absent. The host removes every client copy of them, and of
+`x-portal-user`, `x-portal-auth`, `x-portal-proof` and
+`x-portal-access-credential`, on every route, so a value is always the
+host's. A visitor who signed in is still a Public visitor
+(`x-flats-access: public`). The operator sets up sign-in; flat code cannot.
+
 Return `new Response(body, {status, headers})`, `Response.json(value, init)`,
 `Response.redirect(url, status = 302)`, a string, or `{status, headers, body}`.
 Strings use UTF-8; Response string bodies default to text/plain;charset=UTF-8;
@@ -1195,12 +1208,14 @@ Rules:
   tunnel; read the current `public_url` from `get_flat`), or the operator's
   reverse proxy (`proxy-public`). A NetBird Expose address also changes each
   time the flat is exposed again.
-  Public is NOT access control: anyone can open a ready Public route.
+  Public is NOT access control: anyone can open a ready Public route, except
+  the Portal URL of a flat with Portal sign-in on (below).
 * An Unpublished flat cannot become Public. Requesting the current
   visibility changes nothing.
 * A Public board or document has a public access level, `public_access`:
   `view` (the default) or `edit`, where anyone on the internet can edit it as
-  a guest. Other flats are always view only. Request it with `set_visibility
+  a guest, or with Portal sign-in on anyone who passes the sign-in. Other
+  flats are always view only. Request it with `set_visibility
   {slug, visibility: "public", access: "edit"}`; it waits for approval and is
   refused with `public_edit_blocked` when the flat lacks the quotas it needs
   (`topic.board`, `topic.docs`). `access: "view"` stops guest editing.
@@ -1234,3 +1249,25 @@ Rules:
   about 90 seconds later. Only the operator changes it, in the console.
   Hidden is not access control: never describe a hidden public flat as
   private.
+
+### Portal sign-in
+
+* The operator can put the Portal URL of a flat behind sign-in. While it is
+  on, `get_flat` and `list_flats` show `sign_in`: the `provider` (`oidc`, a
+  sign-in at an OpenID Connect provider, or `credential`, access links that
+  the operator issues), `issuer`, `client_id` and `allow_count`, the number of
+  allowlist entries. Only the visitors on the allowlist can open the Portal
+  URL, and `public_notice` says so.
+* Sign-in protects the Portal URL only. The private routes of the flat, its
+  previews, the console and MCP are not behind sign-in. While it is on, the
+  flat is Public through Portal alone: the operator cannot allow it another
+  public provider.
+* A visitor who signs in is still a Public visitor: documents, designs and
+  boards stay view only, or open to guest editing as the Public level says.
+  A server flat gets the visitor in request headers (`topic.server`).
+* Only the operator changes sign-in, with `flats signin` on the host. Each
+  change is a `set_signin` approval that only the operator decides, in the
+  console: no agent can approve or reject it, and no MCP tool requests it.
+  `get_approval` shows its settings with the number of entries, never the
+  entries. Only the console issues access links. No MCP output holds an
+  allowlist entry, the client secret or an access link.

@@ -97,7 +97,8 @@ func addFetchBindings(ctx context.Context, x executor) error {
 
 // PutSecretChecked stores an encrypted secret by rules 2, 7, 8 and 9 of the spec, and writes its secret.set audit
 // event, in one write transaction. It returns the binding of the stored row. A refusal is an *InjectRefusal, and it
-// changes nothing.
+// changes nothing. The client secret of sign-in is not an ordinary secret: a set of its name gets ErrSignInSecretRow
+// (docs/spec/portal-sign-in.md, rule 6).
 func (s *Store) PutSecretChecked(ctx context.Context, flat string, sec SealedSecret, put SecretPut, a Audit) (Binding, error) {
 	var result Binding
 	_, err := s.immediate(ctx, func(x executor) (bool, error) {
@@ -106,13 +107,17 @@ func (s *Store) PutSecretChecked(ctx context.Context, flat string, sec SealedSec
 			return false, err
 		}
 		var stored Binding
+		var use string
 		existed := true
-		err = x.QueryRowContext(ctx, `SELECT fetch_origin, fetch_header FROM secrets WHERE flat=? AND name=?`, flat, sec.Name).
-			Scan(&stored.Origin, &stored.Header)
+		err = x.QueryRowContext(ctx, `SELECT fetch_origin, fetch_header, use FROM secrets WHERE flat=? AND name=?`, flat, sec.Name).
+			Scan(&stored.Origin, &stored.Header, &use)
 		if errors.Is(err, sql.ErrNoRows) {
 			existed = false
 		} else if err != nil {
 			return false, err
+		}
+		if use != "" {
+			return false, ErrSignInSecretRow
 		}
 		result = Binding{}
 		switch {
@@ -168,7 +173,7 @@ func checkNewBinding(ctx context.Context, x executor, flat, name string, b Bindi
 		return err
 	}
 	var n int
-	if err := x.QueryRowContext(ctx, `SELECT COUNT(*) FROM secrets WHERE flat=? AND (fetch_origin<>'' OR fetch_header<>'')`, flat).Scan(&n); err != nil {
+	if err := x.QueryRowContext(ctx, `SELECT COUNT(*) FROM secrets WHERE flat=? AND use='' AND (fetch_origin<>'' OR fetch_header<>'')`, flat).Scan(&n); err != nil {
 		return err
 	}
 	if n >= MaxInjectedSecrets {

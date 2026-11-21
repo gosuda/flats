@@ -118,7 +118,11 @@ The mode does not change them.
    `save_document`, `save_design`, `update_board` and `import_board`, and
    the API and CLI paths that reach them.
 9. It is allowed on Local and the default public network. It gets no private
-   network grant, whatever the default private network is.
+   network grant, whatever the default private network is. When the default
+   public network is not Portal, the flat holds that grant, so its
+   [Portal sign-in](portal-sign-in.md) cannot go on while it holds the grant.
+   The refusal says to make the flat Private, revoke the grant, and turn
+   sign-in on before the flat is Public again (its rule 73).
 10. Creation reads the mode and the default public network once, together,
     and uses what it read for the visibility and the grants. Creation needs
     no visibility approval. The flat's event log records that it was created

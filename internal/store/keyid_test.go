@@ -73,7 +73,7 @@ func TestMigrationFromVersion26AddsTheLabels(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if info, err := Inspect(path); err != nil || info.Version != 28 || info.Version != latestVersion() {
+	if info, err := Inspect(path); err != nil || info.Version != 29 || info.Version != latestVersion() {
 		t.Fatalf("after: %+v, %v", info, err)
 	}
 	secs, err := s.ListSecrets(ctx, "app")

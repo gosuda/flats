@@ -476,7 +476,7 @@ func (a *app) status(args []string) error {
 				fmt.Fprintf(w, "  %s: %s\n", k, indentJSON(body[k], "  "))
 			}
 			if hasPublicHosts(body["system"]) {
-				fmt.Fprintf(w, "  note: the public hosts above serve public flats. %s\n", publicURLNotice)
+				fmt.Fprintf(w, "  note: the public hosts above serve public flats. %s %s\n", publicURLNotice, signInHostsNote)
 			}
 		}
 	}

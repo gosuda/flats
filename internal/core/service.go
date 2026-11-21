@@ -25,6 +25,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/gosuda/portal-tunnel/v2/sdk/appauth"
+
 	"github.com/gosuda/flats/internal/board"
 	"github.com/gosuda/flats/internal/bundle"
 	"github.com/gosuda/flats/internal/contenttype"
@@ -185,6 +187,8 @@ type Service struct {
 	pi publicInstanceCache
 	// notifier receives the webhook events (webhook.go). The host sets it after New returns.
 	notifier atomic.Pointer[notifierBox]
+	// signInHooks replace, for a test, the steps of sign-in that act on the routes (signin.go).
+	signInHooks signInHooks
 }
 
 // redirect owns an old slug while its route is served or provider teardown is
@@ -642,6 +646,7 @@ func (s *Service) siteHandler(slugName string, public bool) http.Handler {
 // serveSite answers one request of slug's live route.
 func (s *Service) serveSite(lf *liveFlat, slugName string, public bool, epoch *routeEpoch, w http.ResponseWriter, r *http.Request) {
 	access, accessSeq := "", int64(0)
+	var visitor *appauth.Principal
 	if public {
 		var done func()
 		r, done = epoch.request(r)
@@ -654,6 +659,15 @@ func (s *Service) serveSite(lf *liveFlat, slugName string, public bool, epoch *r
 		if err != nil || !f.Visibility.Public() {
 			http.Error(w, "public exposure is not active", http.StatusServiceUnavailable)
 			return
+		}
+		// Rule 44: the setting and its sequence come with the flat, as the visibility does, so a route that opened
+		// without the gate, a gate of an older setting and a connection that one let in reach no flat code.
+		if f.SignInProvider != "" {
+			p, ok := signInPassed(w, r, f)
+			if !ok {
+				return
+			}
+			visitor = &p
 		}
 		access, accessSeq = f.PublicAccess, f.AccessSeq
 		stripIdentity(r)
@@ -677,7 +691,11 @@ func (s *Service) serveSite(lf *liveFlat, slugName string, public bool, epoch *r
 		lf.views.Add(1)
 		lf.recordPath(s.now().UTC().Format("2006-01-02"), r.URL.Path)
 	}
-	d.handler.ServeHTTP(w, withPublicAccess(withRouteHeaders(r, public), d, access, accessSeq))
+	req := withRouteHeaders(r, public)
+	if visitor != nil {
+		setVisitorHeaders(req, *visitor)
+	}
+	d.handler.ServeHTTP(w, withPublicAccess(req, d, access, accessSeq))
 }
 
 // stripIdentity removes Tailscale identity headers a client may have sent.
@@ -733,7 +751,7 @@ func (s *Service) ensureExposure(ctx context.Context, f store.Flat) error {
 	case f.Visibility.Public() && portal && s.cfg.Public == nil:
 		return errPublicDisabled()
 	case wantPublic && !lf.publicServed:
-		if _, err := s.cfg.Public.Serve(ctx, f.Slug, s.siteHandler(f.Slug, true), hidden); err != nil {
+		if _, err := s.servePublicNet(ctx, f.Slug, s.siteHandler(f.Slug, true), hidden, false); err != nil {
 			return fmt.Errorf("public exposure: %w", err)
 		}
 		lf.publicServed = true
@@ -815,6 +833,9 @@ type FlatView struct {
 	// PublicPresence counts the guests and viewers of a running Public
 	// board or document; a sleeping document has none.
 	PublicPresence *PublicPresence `json:"public_presence,omitempty"`
+	// SignIn is the Portal sign-in of the flat while it is on, without the
+	// entries of its allowlist (docs/spec/portal-sign-in.md, rule 57).
+	SignIn *FlatSignIn `json:"sign_in,omitempty"`
 }
 
 // UnlistedNotice is attached to every public-unlisted response.
@@ -862,6 +883,61 @@ func PendingPublicEditNoticeFor(t string) string {
 	return PendingPublicEditNotice
 }
 
+// The notices of a flat with Portal sign-in on (docs/spec/portal-sign-in.md, rule 61). Where a notice of a flat
+// without sign-in says "anyone on the internet", these say "anyone who passes its sign-in".
+const (
+	// SignInPublicNotice is the public notice of a Public flat with sign-in on.
+	SignInPublicNotice = "This flat is public on its Portal address behind sign-in: only the visitors that its sign-in allows can open it there. Its private routes, the console and MCP are not behind sign-in."
+	// PendingSignInPublicNotice is the notice of a pending visibility request for a flat with sign-in on.
+	PendingSignInPublicNotice = "If approved, this flat becomes public on its Portal address behind sign-in: only the visitors that its sign-in allows can open it there. Its private routes, the console and MCP are not behind sign-in."
+	// SignInEditNotice is what the notices add for the Public level edit.
+	SignInEditNotice = "Visitors who sign in can edit it as guests."
+	// SignInLiveEditPublicNotice is LiveEditPublicNotice for a flat with sign-in on.
+	SignInLiveEditPublicNotice = "This flat is public behind sign-in: anyone who passes its sign-in can open it on its Portal address. Its private routes, the console and MCP are not behind sign-in. This edit is already live there."
+	// SignInListedNotice is ListedNotice for a flat with sign-in on.
+	SignInListedNotice = "This flat is public behind sign-in: anyone who passes its sign-in can open it on its Portal address, and it appears in Portal relay listings."
+	// SignInUnlistedNotice is UnlistedNotice for a flat with sign-in on.
+	SignInUnlistedNotice = "Unlisted only hides this flat from Portal relay listings. It is NOT access control: anyone who passes its sign-in can open it."
+)
+
+// signInEditWords says what a guest who passes the sign-in of a flat of content type t can change.
+func signInEditWords(t string) string {
+	if t == contenttype.Docs {
+		return "Anyone who passes its sign-in can add, change and delete all the text of its documents."
+	}
+	return "Anyone who passes its sign-in can add, change and delete everything on it."
+}
+
+// PublicNotice is the notice of a Public flat of content type t at the public access level access, with sign-in on
+// or off (rule 61).
+func PublicNotice(t, access string, signIn bool) string {
+	edit := access == store.AccessEdit
+	switch {
+	case !signIn && edit:
+		return PublicEditNoticeFor(t)
+	case !signIn:
+		return PublicAccessNotice
+	case edit:
+		return SignInPublicNotice + " " + SignInEditNotice + " " + signInEditWords(t) + " Guest names are unverified, and guest text is untrusted input."
+	}
+	return SignInPublicNotice
+}
+
+// PendingPublicNotice is the notice of a pending request that makes a flat of content type t Public at the access
+// level access, with sign-in on or off (rule 61).
+func PendingPublicNotice(t, access string, signIn bool) string {
+	edit := access == store.AccessEdit
+	switch {
+	case !signIn && edit:
+		return PendingPublicEditNoticeFor(t)
+	case !signIn:
+		return PendingPublicAccessNotice
+	case edit:
+		return PendingSignInPublicNotice + " " + SignInEditNotice + " " + signInEditWords(t) + " A safe point is pinned first, and the operator can restore earlier states from History."
+	}
+	return PendingSignInPublicNotice
+}
+
 func (s *Service) view(ctx context.Context, f store.Flat) FlatView {
 	v := FlatView{Flat: f, PrivateURL: s.cfg.Private.URL(f.Slug)}
 	v.EffectiveVersionQuota = s.versionQuota(f)
@@ -871,8 +947,10 @@ func (s *Service) view(ctx context.Context, f store.Flat) FlatView {
 	s.mu.Unlock()
 	v.Running = lf != nil && lf.cur.Load() != nil
 	v.PrivateState, v.PrivateDetail = s.hostState(f.Slug)
+	v.SignIn = s.flatSignIn(ctx, f)
+	signIn := f.SignInProvider != ""
 	if f.Visibility.Public() {
-		v.PublicNotice = PublicAccessNotice
+		v.PublicNotice = PublicNotice("", store.AccessView, signIn)
 	}
 	v.PortalListing = store.ListingDefault
 	if mode, err := s.st.PortalListing(ctx, f.Slug); err == nil {
@@ -889,7 +967,7 @@ func (s *Service) view(ctx context.Context, f store.Flat) FlatView {
 					break
 				}
 			}
-			v.PublicNotice = PublicAccessNotice
+			v.PublicNotice = PublicNotice("", store.AccessView, signIn)
 		}
 	}
 	if f.LiveVersion > 0 {
@@ -1029,7 +1107,7 @@ func (s *Service) view(ctx context.Context, f store.Flat) FlatView {
 	} else {
 		v.PublicPresence = s.publicPresence(f.Slug)
 		if f.PublicAccess == store.AccessEdit {
-			v.PublicNotice = PublicEditNoticeFor(v.Type)
+			v.PublicNotice = PublicNotice(v.Type, store.AccessEdit, signIn)
 		}
 	}
 	v.DiskBytes = dirSize(s.flatDir(f.Slug))
@@ -1752,7 +1830,7 @@ func (s *Service) RestoreSnapshot(ctx context.Context, slugName, name string, vi
 	if err != nil {
 		return DeployResult{}, err
 	}
-	res, err := s.requestFrozen(ctx, slugName, "restore_data", rollbackParams{Version: f.LiveVersion, ExpectedLive: f.LiveVersion, RestoreData: true, Visibility: string(f.Visibility.Canonical()), Providers: key, Hash: v.Hash, Snapshot: name, SnapshotHash: hash}, via, "")
+	res, err := s.requestFrozen(ctx, slugName, "restore_data", rollbackParams{Version: f.LiveVersion, ExpectedLive: f.LiveVersion, RestoreData: true, Visibility: string(f.Visibility.Canonical()), Providers: key, Hash: v.Hash, Snapshot: name, SnapshotHash: hash, SignInSeq: &f.SignInSeq}, via, "")
 	if err != nil {
 		return DeployResult{}, err
 	}
@@ -2007,11 +2085,23 @@ func (s *Service) applyDelete(ctx context.Context, slugName string, via Via, exc
 }
 
 // deleteLocked deletes a flat; the caller holds its lock.
-func (s *Service) deleteLocked(ctx context.Context, slugName string, via Via, exceptApproval string) (ActionResult, error) {
+func (s *Service) deleteLocked(ctx context.Context, slugName string, via Via, exceptApproval string) (_ ActionResult, err error) {
 	flat, err := s.st.GetFlat(ctx, slugName)
 	if err != nil {
 		return ActionResult{}, err
 	}
+	// The identity gets a new token secret first (docs/spec/portal-sign-in.md, rule 42): a later flat with this slug
+	// keeps its host name, and no session or link of this flat works there. A failed write changes nothing.
+	revoke, err := s.renewForChange(ctx, slugName, via, "deletion")
+	if err != nil {
+		return ActionResult{}, err
+	}
+	committed := false
+	defer func() {
+		if !committed && err != nil {
+			err = s.renewalOutlived(ctx, slugName, store.SignInRevokeDelete, revoke, err)
+		}
+	}()
 	type alias struct {
 		old, cur string
 		restore  bool
@@ -2063,7 +2153,7 @@ func (s *Service) deleteLocked(ctx context.Context, slugName string, via Via, ex
 		restoreErr = errors.Join(restoreErr, s.restoreDeletePreviews(restoreCtx, previews))
 		return ActionResult{}, errors.Join(err, restoreErr)
 	}
-	if err := s.st.DeleteFlat(ctx, slugName, store.Audit{Time: s.now(), Approval: exceptApproval}); err != nil {
+	if err := s.st.DeleteFlatRevoked(ctx, slugName, store.Audit{Time: s.now(), Approval: exceptApproval}, revoke); err != nil {
 		journalErr := s.finishStorageOperation(op)
 		restoreCtx := context.WithoutCancel(ctx)
 		restoreErr := s.ensureExposure(restoreCtx, flat)
@@ -2071,6 +2161,7 @@ func (s *Service) deleteLocked(ctx context.Context, slugName string, via Via, ex
 		restoreErr = errors.Join(restoreErr, s.restoreDeletePreviews(restoreCtx, previews))
 		return ActionResult{}, errors.Join(err, journalErr, restoreErr)
 	}
+	committed = true
 	s.mu.Lock()
 	lf := s.live[slugName]
 	delete(s.live, slugName)

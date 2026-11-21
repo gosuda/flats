@@ -2,7 +2,8 @@
 
 This page is for operators: which networks a Flats host serves on, how to turn
 on Tailscale, Tailscale Funnel, Portal, zrok, Cloudflare quick tunnels,
-NetBird and your own reverse proxy, and how visibility works. The
+NetBird and your own reverse proxy, how visibility works, and how to put the
+Portal URL of a flat behind sign-in. The
 provider state machine is in [Network provider lifecycle](network-provider-lifecycle.md).
 
 ## Providers
@@ -14,7 +15,7 @@ provider state machine is in [Network provider lifecycle](network-provider-lifec
 | NetBird | Private | Peers your NetBird access policies allow |
 | Reverse proxy (`proxy`) | Private | Whoever your own reverse proxy lets through, at the addresses of `proxy.url_template` |
 | Tailscale Funnel | Public | Anyone on the internet |
-| Portal | Public | Anyone on the internet, through a Portal relay |
+| Portal | Public | Anyone on the internet, through a Portal relay. With [Portal sign-in](#portal-sign-in) on, only the visitors that the sign-in of the flat allows |
 | zrok | Public | Anyone on the internet, through a zrok public share on your zrok account |
 | Cloudflare quick tunnel | Public | Anyone on the internet, through an anonymous Cloudflare quick tunnel on a random `trycloudflare.com` address |
 | NetBird Expose | Public | Anyone on the internet, through NetBird's reverse proxy |
@@ -564,7 +565,10 @@ state.
   reverse proxy with the proxy's own access control.
 - **Public** routes use explicitly permitted Portal, zrok, Tailscale Funnel,
   Cloudflare quick tunnels, NetBird Expose or a Public reverse proxy.
-  Public is not access control: anyone with the URL can open the flat.
+  Public is not access control: anyone with the URL can open the flat. The
+  one exception is the Portal URL of a flat with
+  [Portal sign-in](#portal-sign-in) on, which opens only for the visitors
+  that its sign-in allows.
 
 Configuration alone never publishes a version or changes an existing flat's
 visibility. With public instance mode off, Public requires an approved
@@ -589,6 +593,150 @@ and Tailscale connectivity are external dependencies.
 Portal relay listing (whether a Public flat appears in relay listings) is a
 separate setting, described under Exposure in the
 [design document](design.md#exposure).
+
+## Portal sign-in
+
+A Public flat that Portal serves is open to anyone who has its Portal URL.
+Sign-in puts that URL behind the sign-in gate of the Portal SDK, so that only
+the visitors on an allowlist that you approve can open it. The product rules
+are in the [spec](spec/portal-sign-in.md).
+
+**What it protects.** Sign-in protects the Portal URL of the flat only. It
+does not protect the private routes of the flat (Local, Tailscale, NetBird
+and the Private reverse proxy), its previews, the console, MCP or the API. A
+visitor on a private route keeps the rights of a private visitor, also on a
+`proxy` route that your reverse proxy opens to many people. A visitor who
+signed in is a Public visitor: documents, designs, boards and notebooks stay
+read-only, or open to guest editing as the Public level says, and their
+history stays private.
+
+While sign-in is on, the flat is Public through Portal alone. The host
+refuses to allow it Tailscale Funnel, zrok, a Cloudflare quick tunnel, NetBird
+Expose or the public reverse proxy. It also refuses to make the flat Public,
+or to turn sign-in on, while one of those is allowed. Each refusal names the
+next step, and the Networks list of the flat in the console disables their
+switches. You can turn sign-in on while the flat is
+Private: the gate is in place when the flat becomes Public on Portal.
+
+**Turning it on.** Choose a provider:
+
+- `oidc`: a visitor signs in at your OpenID Connect provider. The issuer is
+  an `https` URL, which the host stores without a trailing `/`. An entry of
+  the allowlist is a verified email address, `@domain` for the verified
+  addresses of a domain, or `sub:<subject>`.
+- `credential`: a visitor opens an access link that the console issued for
+  one subject of the allowlist.
+
+```sh
+flats signin set blog oidc --issuer https://login.example.com --client-id flats-blog \
+  --allow ann@example.com --allow @example.org
+flats signin set blog credential --allow reviewer --allow partner
+flats signin off blog
+flats signin show blog
+```
+
+An allowlist has 1 to 100 entries. `set` and `off` only request the change:
+nothing changes until you approve it in the console, and the command exits
+with status 3 and the link of the approval. An agent cannot approve or reject
+it, also with Autopilot on, and MCP has no tool that requests it. The page of
+the approval shows the added and the removed entries, and it warns when the
+change widens access: sign-in goes off, an entry is added, or the provider,
+the issuer or the client ID changes. An applied change ends the open
+connections of the public routes of the flat, so a visitor who holds a
+WebSocket comes back through the new gate. `flats signin show` prints the
+setting, the Portal host names and the callback URLs; the Sign-in row on the
+Settings tab of the flat in the console shows the same.
+
+**Client secret.** Without a client secret, the gate signs in at the provider
+as a public client with PKCE. When your provider gives the client a secret,
+store it on the host:
+
+```sh
+flats signin secret set blog --issuer https://login.example.com --client-id flats-blog < client-secret.txt
+flats signin secret rm blog
+```
+
+The command reads the value from the terminal without echo, or from a pipe,
+and binds it to the issuer and the client ID that you name. It needs no
+approval and works only from the host itself. The value is sealed in
+`flats.db` like the other secrets and never shown again. `flats secret ls`
+does not list it, and no worker gets it. The gate sends it only to the issuer
+that it is bound to: while the stored secret is bound to another issuer or
+client ID than the `oidc` setting, the Portal route of the flat stays
+stopped, and `flats signin show` and the console say which command sets it
+again. So an approved change of the issuer never sends the old secret to the
+new issuer.
+
+**Callback URLs.** For `oidc`, register
+`https://<host>/_portal/auth/callback` at your provider for each Portal host
+name of the flat. `flats signin show` lists them once the flat has a Portal
+route. The host names change when discovery replaces a relay, when a pinned
+relay moves, when an alias is lost or comes back, and when the flat is
+renamed. Until you register the new callback URL, nobody can sign in on that
+host name. Explicit relays (`portal.relays`) keep the host names stable.
+
+**Access links.** For `credential`, choose **Issue a link…** on the Sign-in
+row of the flat in the console. Pick a subject of the allowlist and an expiry
+from 1 minute to 90 days; it is 7 days unless you change it. The flat must be
+Public on Portal with a ready relay. The console shows the link once, with a
+Copy button, and no log line, event, audit row or webhook holds it. The link
+works on the canonical host name of the first relay, never on an alias,
+because an alias can change hands. Whoever holds the link is that subject
+until the link expires, the subject leaves the allowlist, or you end every
+link. A subject that comes back on the allowlist makes its earlier links work
+again. A program can send the credential of a link in the header
+`X-Portal-Access-Credential` instead of a session. Only the console issues
+links: the CLI, the API and MCP cannot.
+
+**Ending sessions and links.** `flats signin revoke blog`, or **End all
+sessions and links** on the Sign-in row, gives the Portal identity of the flat
+a new token secret. Every session and every access link of the flat ends,
+also the links of an earlier `credential` setting, and the host names stay. It
+needs no approval. One link cannot be ended alone. After you remove a subject
+from the allowlist, run `flats signin revoke` to end its links for good:
+without it, they work again when the subject comes back. A rename and the
+deletion of a flat give its Portal identity a new token secret too. When the
+public routes of the flat do not open again after a revocation, the message
+says so: the Portal route is stopped, with the reason on its endpoint, until a
+deploy, a grant, a restart or a sign-in change serves it again.
+
+**Visitor headers.** A server flat gets the visitor who signed in through the
+headers `X-Flats-Visitor-Provider`, `X-Flats-Visitor-Subject` and
+`X-Flats-Visitor-Email` ([Server flats](design.md#server-flats-handler-abi)).
+A static flat cannot read them. A guest name on a board or a document is
+still the name that the visitor types.
+
+**Limits.**
+
+- The token secret in `portal/<slug>.json` signs every session and every
+  access link. The host key does not seal it, `flats secret rotate-key` does
+  not change it, and `flats backup` copies it. Whoever can read the file can
+  make a session or a link without Flats. A restore of an older backup brings
+  back the links that a later `flats signin revoke` ended.
+- A relay holds the certificate key of its host names. A relay that misuses
+  it can end the TLS itself and read sessions, links and content. Flats only
+  logs the warnings of the self-checks of the SDK. Use explicit relays that
+  you trust for a flat with sign-in on.
+- The gate answers the paths under `/_portal/auth/` that it serves, so the
+  flat cannot serve them on its Portal URL. Analytics does not count the
+  requests that the gate answers.
+- The host checks an `oidc` provider in the background after it builds the
+  gate. A failed check is a warning on the Portal endpoint of the flat, and a
+  provider that fails later shows only to the visitor who signs in.
+- The console has no form that turns sign-in off. When your provider fails,
+  you can make the flat Private in the console, but turning sign-in off needs
+  `flats signin off` on the host.
+
+**Changes for a flat without sign-in.** Client copies of `X-Flats-Visitor-*`,
+`X-Portal-User`, `X-Portal-Auth`, `X-Portal-Proof` and
+`X-Portal-Access-Credential` no longer reach flat code on any route. A rename
+and a deletion give the Portal identity of the flat a new token secret, and
+when the identity file cannot be written, they fail, change nothing and name
+the file. When one fails after that write, the flat stays as it was, but its
+sessions and access links ended: the audit log, the logs of the flat and the
+message say so. The upgrade to `flats.db` schema 29 needs a backup with
+[`flats backup`](configuration.md#what-to-back-up) first
+([Audit log](configuration.md#audit-log)).
 
 ## Upgrading provider grants from an older host
 
