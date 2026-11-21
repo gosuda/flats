@@ -280,6 +280,64 @@ func TestFillOpsF05(t *testing.T) {
 	})
 }
 
+// TestFillOpsF03 is case F-03 of section 22.2 on the engine, with the cells
+// of the case and the operations the client sends for them: a drag of the
+// fill handle in auto, "Copy cells" as a fill in copy over the same ids,
+// two undos, and Ctrl+D as a fill without a mode. Each step holds the
+// content of every cell it names (the formula text of a formula) and the
+// value it shows.
+func TestFillOpsF03(t *testing.T) {
+	type cell struct{ addr, text, shown string }
+	e := start(t)
+	e.mustAgent(`{"ops":[{"op":"write","tab":"Sheet1","at":"A1","rows":[[1,"Mon","=ROW()*10"],[2,"Tue","=ROW()*10"]]}]}`)
+	alice := e.person("Alice")
+	holds := func(step string, cells ...cell) {
+		t.Helper()
+		for _, c := range cells {
+			if got := e.text(c.addr); got != c.text {
+				t.Fatalf("%s: %s holds %q, want %q", step, c.addr, got, c.text)
+			}
+			if got := e.shown(c.addr); got != c.shown {
+				t.Fatalf("%s: %s shows %q, want %q", step, c.addr, got, c.shown)
+			}
+		}
+	}
+	top := []cell{{"A1", "1", "1"}, {"A2", "2", "2"}, {"B1", "Mon", "Mon"}, {"B2", "Tue", "Tue"}, {"C1", "=ROW()*10", "10"}, {"C2", "=ROW()*10", "20"}}
+	empty := []cell{{"A3", "", ""}, {"A4", "", ""}, {"B3", "", ""}, {"B4", "", ""}, {"C3", "", ""}, {"C4", "", ""}}
+	series := []cell{{"A3", "3", "3"}, {"A4", "4", "4"}, {"B3", "Wed", "Wed"}, {"B4", "Thu", "Thu"}, {"C3", "=ROW()*10", "30"}, {"C4", "=ROW()*10", "40"}}
+	copied := []cell{{"A3", "1", "1"}, {"A4", "2", "2"}, {"B3", "Mon", "Mon"}, {"B4", "Tue", "Tue"}, {"C3", "=ROW()*10", "30"}, {"C4", "=ROW()*10", "40"}}
+
+	holds("the cells as written", append(top, empty...)...)
+
+	// The drag of the handle over two rows, in auto.
+	if ack := alice.do(e.fillRange("A1:C2", "A3:C4", "auto")); status(ack) != "applied" || ack.Results[0].Applied != 6 {
+		t.Fatalf("the drag was answered %+v", ack.Results)
+	}
+	holds("the drag in auto", append(top, series...)...)
+
+	// "Copy cells" sends the same fill in copy, over the same ids.
+	if ack := alice.do(e.fillRange("A1:C2", "A3:C4", "copy")); status(ack) != "applied" || ack.Results[0].Applied != 6 {
+		t.Fatalf("Copy cells was answered %+v", ack.Results)
+	}
+	holds("Copy cells", append(top, copied...)...)
+
+	// The first undo takes back the copy, and the series is there again.
+	undo(t, alice)
+	holds("the first undo", append(top, series...)...)
+	// The second undo takes back the drag: the cells are as before.
+	undo(t, alice)
+	holds("the second undo", append(top, empty...)...)
+
+	// Ctrl+D over A1:C4 sends a fill of row 1 over rows 2 to 4, with no mode.
+	if ack := alice.do(e.fillRange("A1:C1", "A2:C4", "")); status(ack) != "applied" || ack.Results[0].Applied != 9 {
+		t.Fatalf("Ctrl+D was answered %+v", ack.Results)
+	}
+	holds("Ctrl+D over A1:C4",
+		cell{"A1", "1", "1"}, cell{"A2", "1", "1"}, cell{"A3", "1", "1"}, cell{"A4", "1", "1"},
+		cell{"B1", "Mon", "Mon"}, cell{"B2", "Mon", "Mon"}, cell{"B3", "Mon", "Mon"}, cell{"B4", "Mon", "Mon"},
+		cell{"C1", "=ROW()*10", "10"}, cell{"C2", "=ROW()*10", "20"}, cell{"C3", "=ROW()*10", "30"}, cell{"C4", "=ROW()*10", "40"})
+}
+
 // TestFillOpsSeriesPastTheSheetText fills a column of a long text that ends
 // in a number down 1,999 rows: its series would pass the typed text of a
 // sheet. The fill is refused with that limit before it builds a text or

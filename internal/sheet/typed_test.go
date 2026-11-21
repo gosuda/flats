@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/gosuda/flats/internal/sheet/formula"
 )
 
 // TestTypedEntry covers spec rule 5 on the engine: what a person types is
@@ -127,6 +129,13 @@ func TestLongTypedNumbersStayText(t *testing.T) {
 				continue
 			}
 			e.want(addr, c.shown)
+			// A number whose shown text is its typed text looks like text on
+			// screen, so only the kind of the cell tells the two apart.
+			if c.shown == c.typed {
+				if k := e.kindOf(addr); k != formula.ContentNumber {
+					t.Errorf("%s from %q holds content of kind %d, want a number", addr, c.typed, k)
+				}
+			}
 		}
 		if got := e.shown(fmt.Sprintf("D%d", i+1)); strings.HasPrefix(got, "#") || got == "" {
 			t.Errorf("VALUE of %q shows %q", c.typed, got)
