@@ -104,6 +104,7 @@ jobs:
           restore-keys: |
             go-mod-v2-${{ runner.os }}-root-
       - uses: actions/cache/restore@v4
+        id: build_cache
         with:
           path: ${{ steps.cache-paths.outputs.build }}
           key: go-build-v2-${{ runner.os }}-${{ runner.arch }}-go${{ steps.go.outputs.go-version }}-test-${{ matrix.cache || matrix.shard }}-root--${{ hashFiles('go.mod', 'go.sum') }}--read-only
@@ -114,6 +115,7 @@ jobs:
         if: matrix.shard == 'other'
         run: go vet ./...
       - name: Test
+        if: ${{ !cancelled() && steps.build_cache.outcome == 'success' }}
         run: .release-tools/scripts/ci-test.sh "${{ matrix.shard }}"
 
   # Compile while tests run; only publication waits for both to succeed.

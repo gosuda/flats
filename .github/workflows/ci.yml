@@ -94,6 +94,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-go
+        id: setup
         with:
           cache-key: test-${{ matrix.lane }}
           # The board packages used to be tested in the other shard.
@@ -119,6 +120,7 @@ jobs:
         if: matrix.lane == 'other'
         run: make docs-check
       - name: Tests
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         env:
           SHARDS: ${{ matrix.shards }}
         run: |
@@ -138,6 +140,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-go
+        id: setup
         with:
           # A cohort of its own since the job also builds the darwin/amd64
           # archive, whose objects the earlier netbird cache lacks.
@@ -150,11 +153,13 @@ jobs:
         run: |
           go mod tidy
           git diff --exit-code -- go.mod go.sum
-      - name: Vet and test
+      - name: Vet
         working-directory: netbird
-        run: |
-          go vet ./...
-          go test -race ./...
+        run: go vet ./...
+      - name: Test
+        working-directory: netbird
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: go test -race ./...
       # The only release target no other job builds. The release workflow uses
       # the same CGO-free cross-build on Linux; the container job builds the
       # Linux archives with the same script.
@@ -238,6 +243,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-go
+        id: setup
         with:
           cache-key: windows
           module-scope: netbird
@@ -246,6 +252,7 @@ jobs:
         id: archive
         run: FLATS_RELEASE_TARGETS=windows/amd64 scripts/build-release.sh v0.0.0-ci "$RUNNER_TEMP/dist"
       - name: Tests
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         # Verbose: the log keeps the skips and the timing lines of this job.
         # The test data goes to the runner's temporary drive. About 11 minutes
         # after a hosted runner boots, its system drive is read for about 45 s.
