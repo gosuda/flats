@@ -84,28 +84,39 @@ the gate exits 1 even when every case passes. Read the step summary for the
 per-case results.
 
 The weekly job uploads no artifact. It publishes the step summary and the job
-log. The step summary has one row per case, with its lane and outcome, and the
-first failure message of the first failing case. The job log has one line per
-case with the message of each failing case, and it has build errors.
+log. On a run without a leak, the step summary has one row per case, with its
+lane and outcome, and the first failure message of the first failing case. The
+job log has one line per case with the message of each failing case, and it has
+build errors.
 
-The wrapper withholds each line that contains a protected value. It also looks
-for a protected value that spans lines. A protected value is the run's canary,
-a random value that the workflow sets, or the value of an environment variable
-whose name contains `TOKEN`, `SECRET`, `KEY`, `PASS` or `AUTH`, when that value
-has at least 8 characters. If the printed text, the step summary or
-`evidence.json` holds a protected value, the job log shows only
-`[gate output withheld]` and the verdict line, and the step summary has no
-failure message.
+A protected value is the run's canary, a random value that the workflow sets,
+or the value of an environment variable whose name contains `TOKEN`, `SECRET`,
+`KEY`, `PASS` or `AUTH`, when that value has at least 8 characters. The wrapper
+handles a protected value in one of two ways.
+
+A line that contains a protected value is withheld. The line is replaced by
+`[line withheld: it contains a protected value]`, the rest of the output still
+prints, and the verdict is FAIL with the reason `a line was withheld`.
+
+A leak is a protected value that the wrapper finds in the printed text, in the
+step summary or in `evidence.json`. That includes a value that spans lines, and
+a multi-line value whose first line is also protected. The job log then shows
+only `[gate output withheld]` and the verdict line. The step summary holds the
+verdict line only, with no case table and no failure message. The verdict reason
+names the variable that holds the value and never the value itself. For the
+canary, the reason is `leak of LIFECYCLE_GATE_SENTINEL`.
 
 GitHub prints a step's `env:` values in the header of that step, and that header
 is part of the job log. A `$GITHUB_ENV` value, such as the canary, can appear
 there too. The wrapper's filter does not cover the header, and a canary that
 appears in it does not count as a leak.
 
-The filter matches exact values only. It does not detect a value that is printed
-in another form: one part of a multi-line value, a value without its trailing
-line break printed inside a line, or an escaped value that does not appear in
-`evidence.json`. The job holds no secret in its environment by design.
+The filter matches exact values only, so it does not detect every form of a
+value. It misses one part of a multi-line value printed on its own, a value
+printed without its trailing line break inside a line, a value printed with line
+breaks that differ from the value's (CR LF in the output for LF in the value,
+for example), and an escaped value that does not appear in `evidence.json`. The
+job holds no secret in its environment by design.
 
 The full `evidence.json` stays on the runner. To read the per-case traces, run
 the gate locally. A run that takes longer than 25 minutes fails, and the job
