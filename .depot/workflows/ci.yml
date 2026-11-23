@@ -99,14 +99,14 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
+      - name: Vet
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.lane == 'other' }}
+        run: go vet ./...
       - name: Verify module files
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.lane == 'other' }}
         run: |
           go mod tidy
           git diff --exit-code -- go.mod go.sum
-      - name: Vet
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.lane == 'other' }}
-        run: go vet ./...
       - name: CI workflow helper regressions
         if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.lane == 'other' }}
         run: |
@@ -142,16 +142,16 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
+      - name: Vet
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        working-directory: netbird
+        run: go vet ./...
       - name: Verify module files
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         working-directory: netbird
         run: |
           go mod tidy
           git diff --exit-code -- go.mod go.sum
-      - name: Vet
-        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
-        working-directory: netbird
-        run: go vet ./...
       - name: Test
         working-directory: netbird
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
