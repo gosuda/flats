@@ -38,6 +38,7 @@ SECRET = "test-access-secret-7731"
 MULTI = "line-one-aaaa1111\nline-two-bbbb2222"
 TRAILING = "tok-abcdef-123456\n"
 WITHHELD_OUTPUT = "[gate output withheld]"
+CANARY_NAME = "LIFECYCLE_GATE_SENTINEL"
 SECRET_NAME = re.compile(r"TOKEN|SECRET|KEY|PASS|AUTH")
 WITHHELD = "[line withheld: it contains a protected value]"
 TABLE_ROW = re.compile(r"^\| ([a-z0-9-]+) \|")
@@ -342,7 +343,7 @@ class DriverTests(unittest.TestCase):
         body = 'echo "ordinary-line-visible"\n' + self.evidence_body(source)
         code, out, summary = self.run_wrapper(body)
         self.assertEqual(code, 1)
-        self.assertEqual(out, f"{WITHHELD_OUTPUT}\nFAIL: leak\n")
+        self.assertEqual(out, f"{WITHHELD_OUTPUT}\nFAIL: leak of {CANARY_NAME}\n")
         self.assertNotIn("ordinary-line-visible", out)
         self.assertNotIn(CANARY, out)
         self.assertNotIn(CANARY, summary)
@@ -359,7 +360,7 @@ class DriverTests(unittest.TestCase):
                     body = printer + self.evidence_body(source)
                     code, out, summary = self.run_wrapper(body, env={"TEST_DEPLOY_KEY": value})
                     self.assertEqual(code, 1)
-                    self.assertEqual(out, f"{WITHHELD_OUTPUT}\nFAIL: leak\n")
+                    self.assertEqual(out, f"{WITHHELD_OUTPUT}\nFAIL: leak of TEST_DEPLOY_KEY\n")
                     self.assertNotIn(value.split("\n")[0], out)
                     self.assertNotIn(value.split("\n")[0], summary)
 
@@ -377,15 +378,6 @@ class DriverTests(unittest.TestCase):
         self.assertNotIn(MULTI, summary)
         self.assertNotIn("line-one-aaaa1111", summary)
         self.assertNotIn("First failure", summary)
-
-    def test_an_ordinary_line_is_absent_when_the_evidence_holds_the_canary(self):
-        report = passing_report()
-        report["cases"][0]["error"] = f"stored {CANARY}"
-        body = 'echo "ordinary-line-visible"\n' + self.evidence_body(self.evidence(report))
-        code, out, _ = self.run_wrapper(body)
-        self.assertEqual(code, 1)
-        self.assertNotIn("ordinary-line-visible", out)
-        self.assertEqual(out, f"{WITHHELD_OUTPUT}\nFAIL: leak\n")
 
     def test_an_escaped_copy_of_a_secret_stays_out_of_the_output_and_summary(self):
         secret = "pa55\\word-9911"
@@ -433,6 +425,97 @@ class DriverTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("First failure, draft-save-conflict: stop failed: exit status 2", summary)
         self.assertNotIn("None", summary)
+
+    def test_a_secret_with_a_crlf_or_cr_line_break_is_withheld_when_printed_verbatim(self):
+        printers = {
+            "printf": 'printf "%s" "$TEST_DEPLOY_KEY"\n',
+            "echo": 'echo "$TEST_DEPLOY_KEY"\n',
+        }
+        values = {
+            "CR LF inside": "line-one-aaaa1111\r\nline-two-bbbb2222",
+            "CR inside": "line-one-aaaa1111\rline-two-bbbb2222",
+            "CR LF at the end": "tok-abcdef-123456\r\n",
+        }
+        for label, value in values.items():
+            for how, printer in printers.items():
+                with self.subTest(value=label, printer=how):
+                    body = printer + self.evidence_body(self.evidence(passing_report()))
+                    code, out, summary = self.run_wrapper(body, env={"TEST_DEPLOY_KEY": value})
+                    self.assertEqual(code, 1)
+                    self.assertEqual(out, f"{WITHHELD_OUTPUT}\nFAIL: leak of TEST_DEPLOY_KEY\n")
+                    self.assertNotIn(value.splitlines()[0], out)
+                    self.assertNotIn(value.splitlines()[0], summary)
+
+    def test_every_line_break_character_inside_a_secret_is_withheld(self):
+        separators = {
+            "LF": "\n", "CR LF": "\r\n", "CR": "\r", "form feed": "\x0c",
+            "vertical tab": "\x0b", "U+2028": " ", "U+0085": "\x85",
+        }
+        for label, separator in separators.items():
+            with self.subTest(separator=label):
+                value = "part-one-aaaa1111" + separator + "part-two-bbbb2222"
+                body = 'printf "%s" "$TEST_DEPLOY_KEY"\n' + self.evidence_body(self.evidence(passing_report()))
+                code, out, _ = self.run_wrapper(body, env={"TEST_DEPLOY_KEY": value})
+                self.assertEqual(code, 1)
+                self.assertEqual(out.splitlines()[0], WITHHELD_OUTPUT)
+                self.assertEqual(len(out.splitlines()), 2)
+                self.assertIn("leak", out.splitlines()[-1])
+
+    def test_a_secret_printed_before_a_timeout_is_withheld_on_that_path_too(self):
+        body = 'printf "%s\\n" "$TEST_DEPLOY_KEY"\nexec sleep 60\n'
+        code, out, _ = self.run_wrapper(
+            body, env={"TEST_DEPLOY_KEY": "line-one-aaaa1111\r\nline-two-bbbb2222"}, timeout=3,
+        )
+        self.assertEqual(code, 1)
+        self.assertNotIn("line-one-aaaa1111", out)
+        self.assertIn("leak of TEST_DEPLOY_KEY", out.splitlines()[-1])
+
+    def test_a_canary_split_by_a_bare_cr_is_a_leak(self):
+        body = f"printf '{CANARY[:16]}\\r{CANARY[16:]}\\n'\n" + self.evidence_body(self.evidence(passing_report()))
+        code, out, _ = self.run_wrapper(body)
+        self.assertEqual(code, 1)
+        self.assertEqual(out, f"{WITHHELD_OUTPUT}\nFAIL: leak of {CANARY_NAME}\n")
+        self.assertNotIn(CANARY[:16], out)
+
+    def test_a_multi_line_secret_whose_first_line_is_also_protected_is_a_leak(self):
+        body = 'printf "%s\\n" "$TEST_DEPLOY_KEY"\n' + self.evidence_body(self.evidence(passing_report()))
+        code, out, _ = self.run_wrapper(
+            body, env={"TEST_DEPLOY_KEY": MULTI, "TEST_FIRST_TOKEN": "line-one-aaaa1111"},
+        )
+        self.assertEqual(code, 1)
+        self.assertEqual(len(out.splitlines()), 2)
+        self.assertEqual(out.splitlines()[0], WITHHELD_OUTPUT)
+        self.assertNotIn("line-two-bbbb2222", out)
+        self.assertIn("leak of TEST_DEPLOY_KEY", out.splitlines()[-1])
+
+    def test_the_leak_reason_names_the_variable_and_never_its_value(self):
+        body = 'printf "%s" "$TEST_DEPLOY_KEY"\n' + self.evidence_body(self.evidence(passing_report()))
+        code, out, summary = self.run_wrapper(body, env={"TEST_DEPLOY_KEY": MULTI})
+        last = out.splitlines()[-1]
+        self.assertIn("TEST_DEPLOY_KEY", last)
+        self.assertNotIn("line-one", last)
+        self.assertNotIn("line-two", last)
+        self.assertNotIn("line-one", summary)
+
+    def test_a_canary_leak_reason_names_the_sentinel_variable(self):
+        report = passing_report()
+        report["cases"][0]["error"] = f"stored {CANARY}"
+        body = 'echo "ordinary-line-visible"\n' + self.evidence_body(self.evidence(report))
+        code, out, summary = self.run_wrapper(body)
+        self.assertEqual(code, 1)
+        self.assertIn(f"leak of {CANARY_NAME}", out.splitlines()[-1])
+        self.assertNotIn(CANARY, out.splitlines()[-1])
+
+    def test_unparseable_evidence_is_searched_as_text(self):
+        source = self.evidence("{not json " + CANARY)
+        body = 'echo "ordinary-line-visible"\n' + self.evidence_body(source)
+        code, out, summary = self.run_wrapper(body)
+        self.assertEqual(code, 1)
+        self.assertNotIn("ordinary-line-visible", out)
+        self.assertNotIn(CANARY, out)
+        self.assertNotIn(CANARY, summary)
+        self.assertIn(f"leak of {CANARY_NAME}", out.splitlines()[-1])
+
 
 if __name__ == "__main__":
     unittest.main()

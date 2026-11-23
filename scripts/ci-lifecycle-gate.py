@@ -27,6 +27,7 @@ import gate  # noqa: E402
 GATE_TIMEOUT_SECONDS = 1500
 MIN_CANARY_LENGTH = 16
 MIN_SECRET_LENGTH = 8
+CANARY_NAME = "LIFECYCLE_GATE_SENTINEL"
 SECRET_NAME = re.compile(r"TOKEN|SECRET|KEY|PASS|AUTH")
 WITHHELD_LINE = "[line withheld: it contains a protected value]"
 WITHHELD_OUTPUT = "[gate output withheld]"
@@ -94,38 +95,56 @@ def verdict(report, process_exit, cases):
 
 
 def protected_values(environ, canary):
-    """The canary, and every long value of a secret-named variable."""
-    values = {canary}
-    values.update(
-        value for name, value in environ.items()
-        if SECRET_NAME.search(name) and len(value) >= MIN_SECRET_LENGTH
-    )
-    return sorted(values)
+    """Each protected value, mapped to the names of the variables that hold it."""
+    names = {canary: {CANARY_NAME}}
+    for name, value in environ.items():
+        if SECRET_NAME.search(name) and len(value) >= MIN_SECRET_LENGTH:
+            names.setdefault(value, set()).add(name)
+    return names
+
+
+def is_single(value):
+    """True when the value holds no line break."""
+    return value.splitlines() == [value]
+
+
+def crosses_break(value, joined, cuts):
+    """True when the value occurs in the joined lines across a line break."""
+    start = joined.find(value)
+    while start != -1:
+        if any(start < cut < start + len(value) for cut in cuts):
+            return True
+        start = joined.find(value, start + 1)
+    return False
 
 
 def scan(text, values):
-    """Withhold each line that holds a protected value, and look for what is left.
+    """Withhold each line that holds a protected value, and find the values the text holds.
 
-    Return the text with those lines replaced, the number of withheld lines,
-    and whether a protected value survives: whole in the text with its line
-    breaks, or split across lines. The text keeps its line breaks, so a value
-    that ends with a line break is found where it is printed.
+    Return the text with the withheld lines replaced, the number of withheld
+    lines, and the protected values that the text holds. A value that holds a
+    line break is searched for in the text as captured, so the line filter
+    cannot hide it. A value without a line break can only show across lines,
+    so it is searched for in the lines joined without their line breaks, and
+    only a match that crosses a line break counts.
     """
-    kept, contents, withheld = [], [], 0
+    kept, contents, cuts, withheld = [], [], [], 0
+    length = 0
     for piece in text.splitlines(keepends=True):
         content = piece.splitlines()[0]
         terminator = piece[len(content):]
         if any(value in content for value in values):
             kept.append(WITHHELD_LINE + terminator)
-            contents.append(WITHHELD_LINE)
             withheld += 1
         else:
             kept.append(piece)
-            contents.append(content)
-    kept_text = "".join(kept)
+        contents.append(content)
+        length += len(content)
+        cuts.append(length)
     joined = "".join(contents)
-    survives = any(value in kept_text or value in joined for value in values)
-    return kept_text, withheld, survives
+    matched = [value for value in values if not is_single(value) and value in text]
+    matched += [value for value in values if is_single(value) and crosses_break(value, joined, cuts)]
+    return "".join(kept), withheld, matched
 
 
 def json_strings(value):
@@ -140,8 +159,13 @@ def json_strings(value):
             yield from json_strings(item)
 
 
-def evidence_leaks(report, values):
-    return any(value in text for text in json_strings(report) for value in values)
+def evidence_matches(report, text, values):
+    """The protected values the evidence holds: its strings if it parses, else its raw text."""
+    if report is not None:
+        texts = list(json_strings(report))
+    else:
+        texts = [text] if text is not None else []
+    return [value for value in values if any(value in item for item in texts)]
 
 
 def decode(output):
@@ -159,16 +183,13 @@ def run_gate(gate_path, timeout):
             [gate_path],
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
             timeout=timeout,
         )
     except subprocess.TimeoutExpired as exc:
         return decode(exc.output), None, f"the gate did not finish within {timeout} seconds"
     except OSError as error:
         return "", None, f"the gate could not start: {error.strerror or error}"
-    return done.stdout, done.returncode, None
+    return decode(done.stdout), done.returncode, None
 
 
 def evidence_dirs(temp):
@@ -176,24 +197,29 @@ def evidence_dirs(temp):
 
 
 def read_evidence(temp, before, reasons):
-    """Return the report of the one new gate directory, or None and a reason."""
+    """Return the report of the one new gate directory and its raw text, or None with a reason."""
     new = sorted(evidence_dirs(temp) - before)
     if len(new) != 1:
         reasons.append(f"found {len(new)} new gate directories, expected one")
-        return None
+        return None, None
     path = temp / new[0] / "evidence.json"
     if not path.is_file():
         reasons.append("the new gate directory has no evidence.json")
-        return None
+        return None, None
     try:
-        report = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, ValueError):
+        text = path.read_bytes().decode("utf-8", errors="replace")
+    except OSError:
         reasons.append("evidence.json is unreadable")
-        return None
+        return None, None
+    try:
+        report = json.loads(text)
+    except ValueError:
+        reasons.append("evidence.json is unreadable")
+        return None, text
     if not isinstance(report, dict):
         reasons.append("evidence.json is not a JSON object")
-        return None
-    return report
+        return None, text
+    return report, text
 
 
 def summary_text(report):
@@ -230,32 +256,34 @@ def main(argv=None, timeout=GATE_TIMEOUT_SECONDS):
     environ = os.environ
     summary_path = environ.get("GITHUB_STEP_SUMMARY")
     temp = environ.get("TMPDIR", "")
-    canary = environ.get("LIFECYCLE_GATE_SENTINEL", "")
+    canary = environ.get(CANARY_NAME, "")
     if not temp or not Path(temp).is_dir():
         return conclude(["TMPDIR does not name an existing directory"], "", summary_path, [])
     if len(canary) < MIN_CANARY_LENGTH:
         return conclude(
-            [f"LIFECYCLE_GATE_SENTINEL has fewer than {MIN_CANARY_LENGTH} characters"],
+            [f"{CANARY_NAME} has fewer than {MIN_CANARY_LENGTH} characters"],
             "", summary_path, [],
         )
-    values = protected_values(environ, canary)
+    protected = protected_values(environ, canary)
+    values = sorted(protected)
     temp_dir = Path(temp)
     before = evidence_dirs(temp_dir)
     raw, process_exit, problem = run_gate(args.gate, timeout)
     reasons = [problem] if problem else []
-    report = None
+    report, evidence_text = None, None
     if process_exit is not None:
-        report = read_evidence(temp_dir, before, reasons)
-    evidence_leak = False
+        report, evidence_text = read_evidence(temp_dir, before, reasons)
     if report is not None:
-        evidence_leak = evidence_leaks(report, values)
         reasons.extend(verdict(report, process_exit, expected_cases()))
-    printed, withheld_printed, printed_leak = scan(raw, values)
-    summary, withheld_summary, summary_leak = scan(summary_text(report), values)
+    printed, withheld_printed, printed_matches = scan(raw, values)
+    summary, withheld_summary, summary_matches = scan(summary_text(report), values)
+    evidence_found = evidence_matches(report, evidence_text, values)
     if withheld_printed or withheld_summary:
         reasons.append("a line was withheld")
-    if printed_leak or summary_leak or evidence_leak:
-        reasons.append("leak")
+    matched = printed_matches + summary_matches + evidence_found
+    if matched:
+        names = sorted({name for value in matched for name in protected[value]})
+        reasons.append("leak of " + ", ".join(names))
         print(WITHHELD_OUTPUT)
         summary = ""
     elif printed:
