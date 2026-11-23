@@ -893,6 +893,45 @@ func TestRequireAuthTwoChangesAtTheSameTime(t *testing.T) {
 	}
 }
 
+// The stated limit of the spec: an open that is not the visit, such as a grant or a key change, can stop the Portal route of
+// a flat between the change of the setting and the visit of that flat. It ends no connection that is open on Portal, because
+// only the visit revokes the epoch. The test makes that order and pins it, so that a change of the limit is a decision.
+func TestRequireAuthOpenBeforeTheVisitEndsNoConnection(t *testing.T) {
+	ctx := t.Context()
+	s, network, _, _ := newRequireAuthService(t)
+	publicLifecycleFlat(t, s, "app", store.ProviderPortal, store.ProviderFunnel)
+	epoch := epochOf(s, "app")
+	if epoch == nil {
+		t.Fatal("the flat holds no route epoch")
+	}
+	unlock := s.lock("app") // the visit of the change waits for the flat
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { defer wg.Done(); setRequireAuth(t, s, true) }()
+	for deadline := time.Now().Add(5 * time.Second); !s.PortalRequireAuth(); {
+		if time.Now().After(deadline) {
+			t.Fatal("the setting was not stored")
+		}
+		time.Sleep(2 * time.Millisecond)
+	}
+	// The open that is not the visit runs first, under the lock of the flat.
+	f, err := s.st.GetFlat(ctx, "app")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.reapplyExposure(ctx, f, ProviderPortal, true); err == nil {
+		t.Fatal("the open of the Portal route was not refused")
+	}
+	unlock()
+	wg.Wait()
+	if network.serves("app", ProviderPortal) {
+		t.Fatal("the Portal route stayed")
+	}
+	if epoch.ctx.Err() != nil || epochOf(s, "app") != epoch {
+		t.Fatal("the epoch ended: the limit of the spec changed, and the spec and the docs must change with it")
+	}
+}
+
 // A reload by SIGHUP does the same visit as a console save (rule 18).
 func TestRequireAuthReloadDoesTheVisit(t *testing.T) {
 	ctx := t.Context()
