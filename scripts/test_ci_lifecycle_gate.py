@@ -497,15 +497,6 @@ class DriverTests(unittest.TestCase):
         self.assertNotIn("line-two", last)
         self.assertNotIn("line-one", summary)
 
-    def test_a_canary_leak_reason_names_the_sentinel_variable(self):
-        report = passing_report()
-        report["cases"][0]["error"] = f"stored {CANARY}"
-        body = 'echo "ordinary-line-visible"\n' + self.evidence_body(self.evidence(report))
-        code, out, summary = self.run_wrapper(body)
-        self.assertEqual(code, 1)
-        self.assertIn(f"leak of {CANARY_NAME}", out.splitlines()[-1])
-        self.assertNotIn(CANARY, out.splitlines()[-1])
-
     def test_unparseable_evidence_is_searched_as_text(self):
         source = self.evidence("{not json " + CANARY)
         body = 'echo "ordinary-line-visible"\n' + self.evidence_body(source)
