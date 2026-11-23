@@ -98,22 +98,22 @@ jobs:
           go-version-file: go.mod
           cache: false
       - name: Verify module files
-        if: matrix.lane == 'other'
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.lane == 'other' }}
         run: |
           go mod tidy
           git diff --exit-code -- go.mod go.sum
       - name: Vet
-        if: matrix.lane == 'other'
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.lane == 'other' }}
         run: go vet ./...
       - name: CI workflow helper regressions
-        if: matrix.lane == 'other'
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.lane == 'other' }}
         run: |
           python3 -B -m unittest discover -s scripts -p 'test_ci_*.py'
           python3 -B -m unittest discover -s scripts -p test_image_commits.py
       # Uncached, unlike TestRepositoryDocs: go test cannot see every Git
       # index change that adds or removes a link target.
       - name: Documentation links
-        if: matrix.lane == 'other'
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' && matrix.lane == 'other' }}
         run: make docs-check
       - name: Tests
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
@@ -141,11 +141,13 @@ jobs:
           go-version-file: go.mod
           cache: false
       - name: Verify module files
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         working-directory: netbird
         run: |
           go mod tidy
           git diff --exit-code -- go.mod go.sum
       - name: Vet
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
         working-directory: netbird
         run: go vet ./...
       - name: Test
