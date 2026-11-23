@@ -100,7 +100,7 @@ func TestRequireAuthWithPublicInstanceMode(t *testing.T) {
 
 // Scope: the setting covers the Portal route of a Public flat. For a flat that the visit refuses, the private route and the
 // preview stay: the visit ends the open connections of the public routes, and a private handler that was taken before it still
-// answers. The preview serves before and after, with the setting on and off.
+// answers, and so does a preview handler that was taken before it. The routes serve with the setting on and off.
 func TestRequireAuthLeavesPrivateRoutesAndPreviewsAlone(t *testing.T) {
 	ctx := t.Context()
 	s, network, _, _ := newRequireAuthService(t)
@@ -110,9 +110,10 @@ func TestRequireAuthLeavesPrivateRoutesAndPreviewsAlone(t *testing.T) {
 		t.Fatal(err)
 	}
 	privateBefore := network.handler("app", ProviderLocal)
+	previewBefore := network.handler(preview.Host, ProviderLocal)
 	publicEpoch := epochOf(s, "app")
-	if privateBefore == nil || publicEpoch == nil || !network.serves(preview.Host, ProviderLocal) {
-		t.Fatalf("the test did not set up the routes: private %t, epoch %t, preview %t", privateBefore != nil, publicEpoch != nil, network.serves(preview.Host, ProviderLocal))
+	if privateBefore == nil || previewBefore == nil || publicEpoch == nil {
+		t.Fatalf("the test did not set up the routes: private %t, preview %t, epoch %t", privateBefore != nil, previewBefore != nil, publicEpoch != nil)
 	}
 	check := func(when string) {
 		t.Helper()
@@ -121,6 +122,9 @@ func TestRequireAuthLeavesPrivateRoutesAndPreviewsAlone(t *testing.T) {
 		}
 		if h := network.handler("app", ProviderLocal); h == nil || providerRequest(h, ProviderLocal).Code != http.StatusOK {
 			t.Fatalf("%s: the private route of app does not serve", when)
+		}
+		if code := providerRequest(previewBefore, ProviderLocal).Code; code != http.StatusOK {
+			t.Fatalf("%s: a preview connection that was open before answers %d", when, code)
 		}
 		if !network.serves(preview.Host, ProviderLocal) {
 			t.Fatalf("%s: the preview does not serve", when)
