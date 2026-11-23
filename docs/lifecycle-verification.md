@@ -111,12 +111,11 @@ is part of the job log. A `$GITHUB_ENV` value, such as the canary, can appear
 there too. The wrapper's filter does not cover the header, and a canary that
 appears in it does not count as a leak.
 
-The filter matches exact values only, so it does not detect every form of a
-value. It misses one part of a multi-line value printed on its own, a value
-printed without its trailing line break inside a line, a value printed with line
-breaks that differ from the value's (CR LF in the output for LF in the value,
-for example), and an escaped value that does not appear in `evidence.json`. The
-job holds no secret in its environment by design.
+The filter matches values exactly, except that CR LF and bare CR count as LF on
+both sides, so it does not detect every form of a value. It misses one part of a
+multi-line value printed on its own, a value printed without its trailing line
+break inside a line, and an escaped value that does not appear in
+`evidence.json`. The job holds no secret in its environment by design.
 
 The full `evidence.json` stays on the runner. To read the per-case traces, run
 the gate locally. A run that takes longer than 25 minutes fails, and the job
