@@ -2,6 +2,7 @@ package core
 
 import (
 	"encoding/json"
+	"net/http"
 	"strings"
 	"testing"
 
@@ -97,32 +98,41 @@ func TestRequireAuthWithPublicInstanceMode(t *testing.T) {
 	}
 }
 
-// Scope: the setting covers the Portal route of a Public flat. A private route and a preview are not Portal, so the
-// setting turning on and off does not stop them and does not end their connections.
+// Scope: the setting covers the Portal route of a Public flat. For a flat that the visit refuses, the private route and the
+// preview stay: the visit ends the open connections of the public routes, and a private handler that was taken before it still
+// answers. The preview serves before and after, with the setting on and off.
 func TestRequireAuthLeavesPrivateRoutesAndPreviewsAlone(t *testing.T) {
 	ctx := t.Context()
 	s, network, _, _ := newRequireAuthService(t)
-	setRequireAuth(t, s, true)
-	lifecycleSave(t, s, "priv", "one")
-	lifecycleApprove(t, s, lifecycleRequest(t, s, "priv"))
-	preview, err := s.OpenPreview(ctx, "priv", 1)
+	publicLifecycleFlat(t, s, "app", store.ProviderPortal, store.ProviderFunnel)
+	preview, err := s.OpenPreview(ctx, "app", 1)
 	if err != nil {
 		t.Fatal(err)
 	}
+	privateBefore := network.handler("app", ProviderLocal)
+	publicEpoch := epochOf(s, "app")
+	if privateBefore == nil || publicEpoch == nil || !network.serves(preview.Host, ProviderLocal) {
+		t.Fatalf("the test did not set up the routes: private %t, epoch %t, preview %t", privateBefore != nil, publicEpoch != nil, network.serves(preview.Host, ProviderLocal))
+	}
 	check := func(when string) {
 		t.Helper()
-		if !network.serves("priv", ProviderLocal) || !network.serves(preview.Host, ProviderLocal) {
-			t.Fatalf("%s: the private route serves %t and the preview serves %t", when, network.serves("priv", ProviderLocal), network.serves(preview.Host, ProviderLocal))
+		if code := providerRequest(privateBefore, ProviderLocal).Code; code != http.StatusOK {
+			t.Fatalf("%s: a private connection that was open before answers %d", when, code)
 		}
-		if epochOf(s, "priv") != nil {
-			t.Fatalf("%s: the public routes of a Private flat got an epoch", when)
+		if h := network.handler("app", ProviderLocal); h == nil || providerRequest(h, ProviderLocal).Code != http.StatusOK {
+			t.Fatalf("%s: the private route of app does not serve", when)
 		}
+		if !network.serves(preview.Host, ProviderLocal) {
+			t.Fatalf("%s: the preview does not serve", when)
+		}
+	}
+	setRequireAuth(t, s, true)
+	if network.serves("app", ProviderPortal) || publicEpoch.ctx.Err() == nil {
+		t.Fatalf("the visit did not refuse the flat: Portal serves %t, the public epoch is cancelled %t", network.serves("app", ProviderPortal), publicEpoch.ctx.Err() != nil)
 	}
 	check("with the setting on")
 	setRequireAuth(t, s, false)
 	check("after the setting turned off")
-	setRequireAuth(t, s, true)
-	check("after the setting turned on again")
 }
 
 // Rule 3 and decision 2: no approval action changes the setting, so Autopilot has no operation for one. AutopilotNeeds

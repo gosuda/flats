@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"slices"
 	"strings"
@@ -149,7 +150,11 @@ func TestRequireAuthStopsAFlatWithoutARuntime(t *testing.T) {
 	s, network, _, log := newRequireAuthService(t)
 	publicLifecycleFlat(t, s, "app", store.ProviderPortal, store.ProviderFunnel)
 	s.state("app").cur.Store(nil)
+	epoch := epochOf(s, "app")
 	setRequireAuth(t, s, true)
+	if epoch == nil || epoch.ctx.Err() != nil || epochOf(s, "app") != epoch {
+		t.Fatal("the visit ended the public connections of a flat without a runtime; rule 16 stops only its Portal route")
+	}
 	if network.serves("app", ProviderPortal) {
 		t.Fatal("the Portal route of a flat without a runtime stayed")
 	}
@@ -300,5 +305,32 @@ func TestRequireAuthLegacyOpenStopsAServedRoute(t *testing.T) {
 	setRequireAuth(t, s, false)
 	if err := reopen(); err != nil || served() {
 		t.Fatalf("with the setting off, an open of a route that is not served = %v, serving %t, want nothing", err, served())
+	}
+}
+
+// Rule 18, the second path: the one host log line of a failed list names at most 20 slugs and then how many more.
+func TestRequireAuthFailedListLogLineNamesTwentyFlats(t *testing.T) {
+	s, network, dir, log := newRequireAuthService(t)
+	var slugs []string
+	for i := 0; i < 22; i++ {
+		slug := fmt.Sprintf("f%02d", i)
+		slugs = append(slugs, slug)
+		publicLifecycleFlat(t, s, slug, store.ProviderPortal)
+	}
+	if _, err := rawDB(t, dir).Exec(`ALTER TABLE flats RENAME TO flats_gone`); err != nil {
+		t.Fatal(err)
+	}
+	setRequireAuth(t, s, true)
+	for _, slug := range slugs {
+		if network.serves(slug, ProviderPortal) {
+			t.Fatalf("the Portal route of %s stayed", slug)
+		}
+	}
+	want := "stopped the Portal route of 22 flats: " + strings.Join(slugs[:20], ", ") + ", and 2 more"
+	if !strings.Contains(log(), want) {
+		t.Fatalf("the host log has no line with %q:\n%s", want, log())
+	}
+	if strings.Contains(log(), "f20, ") || strings.Contains(log(), ", f21") {
+		t.Fatal("the line names more than 20 slugs")
 	}
 }

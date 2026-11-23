@@ -1,6 +1,7 @@
 package mcpx
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -11,7 +12,11 @@ import (
 // portal.require_auth. The change paths of the setting are the console, config.json with SIGHUP, and the offline CLI.
 func TestNoToolChangesAHostSetting(t *testing.T) {
 	e := newEnv(t)
-	for _, name := range toolNames(t, e.local) {
+	names := toolNames(t, e.local)
+	if len(names) < 10 || !slices.Contains(names, "get_flat") {
+		t.Fatalf("the tool list is not the list of the host: %q", names)
+	}
+	for _, name := range names {
 		lower := strings.ToLower(name)
 		if strings.Contains(lower, "setting") || strings.Contains(lower, "require_auth") || strings.Contains(lower, "config") {
 			t.Errorf("the tool %q reaches the host settings", name)
