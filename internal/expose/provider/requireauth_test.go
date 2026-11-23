@@ -16,6 +16,12 @@ const authDetail = "portal.require_auth is on and notes has no sign-in. Run flat
 
 func authManager(t *testing.T) (*Manager, *fakePortal, *fakeTail) {
 	t.Helper()
+	return authManagerWith(t, func(p *fakePortal) PortalNet { return p })
+}
+
+// authManagerWith is authManager with a Portal backend that wraps the fake one.
+func authManagerWith(t *testing.T, wrap func(*fakePortal) PortalNet) (*Manager, *fakePortal, *fakeTail) {
+	t.Helper()
 	dir := t.TempDir()
 	if err := Save(dir, File{Version: 1, Permitted: []ID{Portal, Funnel}, Migration: Migration{GrantsFromState: []ID{}}}); err != nil {
 		t.Fatal(err)
@@ -32,7 +38,7 @@ func authManager(t *testing.T) (*Manager, *fakePortal, *fakeTail) {
 	t.Cleanup(func() { pubLn.Close() })
 	tail := &fakeTail{}
 	pub := &fakePortal{Public: local.NewPublic(pubLn)}
-	m, err := New(dir, Options{Local: ln, Tailscale: tail, Portal: pub})
+	m, err := New(dir, Options{Local: ln, Tailscale: tail, Portal: wrap(pub)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -113,8 +119,41 @@ func TestPortalRefusalStopsAServedRoute(t *testing.T) {
 	if pub.serve != 1 {
 		t.Fatalf("the backend served %d times", pub.serve)
 	}
+	if _, served := pub.Hidden("notes"); served {
+		t.Fatal("the backend still serves the flat that the refusal stopped")
+	}
 	if _, err := m.ServeExposure(ctx, authRequest([]ID{Portal}, &core.PortalSignIn{Seq: 1})); err != nil || pub.serve != 2 {
 		t.Fatalf("the open after the refusal = %v, served %d times", err, pub.serve)
+	}
+}
+
+// stopFailsPortal is a Portal backend whose stop fails, as a relay that refuses the unregistration does.
+type stopFailsPortal struct {
+	*fakePortal
+	err error
+}
+
+func (p *stopFailsPortal) Stop(string) error { return p.err }
+
+// A stop that is not confirmed is a failure, not a refusal (rule 8): the endpoint is an error, the open fails, and the route
+// stays registered.
+func TestPortalRefusalWhoseStopIsNotConfirmed(t *testing.T) {
+	var backend *stopFailsPortal
+	m, _, _ := authManagerWith(t, func(p *fakePortal) PortalNet { backend = &stopFailsPortal{fakePortal: p}; return backend })
+	ctx := context.Background()
+	if _, err := m.ServeExposure(ctx, authRequest([]ID{Portal}, nil)); err != nil {
+		t.Fatal(err)
+	}
+	backend.err = errors.New("relay refused the unregistration")
+	res, err := m.ServeExposure(ctx, authRequest([]ID{Portal}, &core.PortalSignIn{Seq: 1, Refuse: authDetail}))
+	if err == nil {
+		t.Fatal("a refusal whose stop was not confirmed did not fail the open")
+	}
+	if ep, ok := portalEndpointOf(res); !ok || ep.State != "error" {
+		t.Fatalf("the Portal endpoint = %+v, want the state error", ep)
+	}
+	if has, _ := m.HasProviderRoute(ctx, "notes", Portal); !has {
+		t.Fatal("the route was forgotten although its stop was not confirmed")
 	}
 }
 

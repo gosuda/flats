@@ -3052,6 +3052,22 @@ const minutesEdit = { ...minutes, public_access: 'edit', public_presence: { gues
   await tick();
   assert.equal(all(byId(servingFlat, 'net-portal').parentNode, (e) => (e.getAttribute('class') || '').includes('badge')).length, 0, 'a Portal route that serves shows no badge');
   stopServingFlat();
+  // A route that is ready shows nothing, also when it has a detail, because the row is for a route that is not ready.
+  routes['GET /console/api/flats/blog'] = { ...refusedPortal, endpoints: [ep('local', 'http://blog.localhost:7879/'), { ...ep('portal', 'https://blog.portal.example'), host: 'blog', ready: true, detail: 'DETAIL-OF-A-READY-ROUTE' }] };
+  const readyFlat = new Element('main');
+  const stopReadyFlat = flat.mountSettings(readyFlat, ['blog'], ctx);
+  await tick();
+  assert.ok(!byId(readyFlat, 'net-portal').parentNode.textContent.includes('DETAIL-OF-A-READY-ROUTE'), 'a ready Portal route shows no detail');
+  stopReadyFlat();
+  // A route in the state error shows its reason and never an address, also when the endpoint has one.
+  routes['GET /console/api/flats/blog'] = { ...refusedPortal, endpoints: [ep('local', 'http://blog.localhost:7879/'), { ...ep('portal', 'https://blog.portal.example'), host: 'blog', ready: false, state: 'error', detail: 'sign-in gate: boom' }] };
+  const brokenFlat = new Element('main');
+  const stopBrokenFlat = flat.mountSettings(brokenFlat, ['blog'], ctx);
+  await tick();
+  const brokenRow = byId(brokenFlat, 'net-portal').parentNode;
+  assert.ok(brokenRow.textContent.includes('sign-in gate: boom') && all(brokenRow, (e) => (e.getAttribute('class') || '').includes('badge-error')).length === 1, brokenRow.textContent);
+  assert.equal(all(brokenRow, (e) => e.tagName === 'A').length, 0, 'the Portal row shows no address');
+  stopBrokenFlat();
   routes['GET /console/api/flats/blog'] = blog;
 
   // A flat's Networks list names both kinds and shows the proxy address with
@@ -3734,6 +3750,20 @@ const minutesEdit = { ...minutes, public_access: 'edit', public_presence: { gues
     assert.equal(signin.signInNotes('gated', { from: on, to: off }, null, false).length, 1);
     assert.equal(signin.signInNotes('gated', { from: off, to: on }, null, true).length, 0);
     assert.equal(signin.secretMismatch('idp', toOIDC, { issuer: toOIDC.issuer, client_id: 'flats-app' }, true), '', 'a client secret of the same binding is no problem');
+    // With portal.require_auth on, the approval carries the setting, and the page and its confirmation say that the Portal
+    // address stops serving the flat and do not say that the change widens access (rule 21).
+    routes['GET /console/api/approvals/apr-si-guarded'] = { id: 'apr-si-guarded', flat: 'idp', action: 'set_signin', status: 'pending', via: 'cli', requested_at: '2026-10-03T00:00:00Z',
+      portal_require_auth: true, params: { flat_id: 'f-2', seq: 1, from: fromOIDC, to: off, public_grants: ['portal'] } };
+    main = await approvalPage('apr-si-guarded');
+    assert.ok(main.textContent.includes('Turn off sign-in for idp: its Portal address stops serving it'), main.textContent);
+    assert.ok(main.textContent.includes('portal.require_auth is on, so Portal does not serve a flat without sign-in. If you approve, the Portal address of idp stops serving it.'), main.textContent);
+    assert.ok(!main.textContent.includes('Sign-in goes off') && !main.textContent.includes('widens'), main.textContent);
+    byText(main, 'Approve…')[0].dispatch('click');
+    await tick();
+    confirm = openDialogs().pop();
+    assert.ok(confirm.textContent.includes('the Portal address of idp stops serving it') && !confirm.textContent.includes('widens'), confirm.textContent);
+    confirm.close('cancel');
+    await tick();
     // A request whose sign-in changed since cannot be approved (rule 18).
     signInApproval('apr-si-stale', fromOIDC, toOIDC, 0);
     main = await approvalPage('apr-si-stale');

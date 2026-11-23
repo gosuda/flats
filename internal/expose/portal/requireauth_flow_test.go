@@ -267,12 +267,13 @@ func TestRequireAuthOpensARouteWhoseStopWasNotConfirmed(t *testing.T) {
 				t.Fatalf("the endpoint of the stuck route = %+v, want the state error and the detail of the backend", ep)
 			}
 			// Nothing serves the slug until the off-visit, so the route is still registered in the state error when the
-			// lease has expired, however slow the run is (a visit that serves it again would confirm the stop).
+			// lease has expired, however slow the run is (a visit that serves it again would confirm the stop). The detail is
+			// the phrase of rule 10 of the spec, which the host and the backend share through core.TeardownPending.
 			time.Sleep(300 * time.Millisecond)
 			if has, _ := h.mgr.HasProviderRoute(ctx, "app", provider.Portal); !has {
 				t.Fatal("the route was forgotten before the off-visit")
 			}
-			if ep := portalEndpointOf(t, h, "app"); ep.State != "error" || !strings.Contains(ep.Detail, core.TeardownPending) {
+			if ep := portalEndpointOf(t, h, "app"); ep.State != "error" || !strings.Contains(ep.Detail, "teardown pending confirmation") || !strings.Contains(ep.Detail, core.TeardownPending) {
 				t.Fatalf("the endpoint of the stuck route after the lease = %+v", ep)
 			}
 			count := h.px.Count()

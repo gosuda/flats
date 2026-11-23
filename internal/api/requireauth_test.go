@@ -85,4 +85,16 @@ func TestRequireAuthApprovalMember(t *testing.T) {
 	if has(srv.URL+"/api/approvals/"+id, nil) || has(srv.URL+"/api/approvals?status=pending", nil) {
 		t.Fatal("the agent API carries the member")
 	}
+	code, out = call(t, "POST", srv.URL+"/api/flats/app/visibility", `{"visibility":"public"}`, map[string]string{"X-Flats-Client": "cli"})
+	var other struct {
+		Approval struct {
+			ID string `json:"id"`
+		} `json:"approval"`
+	}
+	if code != 202 || json.Unmarshal([]byte(out), &other) != nil || other.Approval.ID == "" {
+		t.Fatalf("visibility request = %d %s", code, out)
+	}
+	if has(srv.URL+"/console/api/approvals/"+other.Approval.ID, console) {
+		t.Fatal("an approval of another action carries the member")
+	}
 }
