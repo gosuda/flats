@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/gosuda/flats/internal/config"
 	"github.com/gosuda/flats/internal/store"
@@ -324,6 +325,9 @@ func TestRequireAuthFlatThatCannotBeRead(t *testing.T) {
 	var original int64
 	db := rawDB(t, dir)
 	network.onHas = func(host string) {
+		if slices.Contains(visited, host) {
+			return
+		}
 		visited = append(visited, host)
 		switch len(visited) {
 		case 1: // the read of the first flat fails
@@ -488,13 +492,25 @@ func TestRequireAuthReopenConditions(t *testing.T) {
 	if needs() {
 		t.Fatal("a Portal route that serves needs to open again")
 	}
-	for state, want := range map[string]bool{"error": true, "unavailable": true, "starting": false, "key-expiring": false} {
-		network.degraded = map[ProviderID]string{ProviderPortal: state}
-		if got := needs(); got != want {
-			t.Errorf("a registered Portal route in the state %q: needs to open again = %t, want %t", state, got, want)
+	stuck := "sign-in gate: x; " + unconfirmedStop + ": relay refused unregister"
+	for name, tc := range map[string]struct {
+		state, detail string
+		want          bool
+	}{
+		"a relay fault":        {"error", "relay unreachable", false},
+		"an unconfirmed stop":  {"error", stuck, true},
+		"unavailable":          {"unavailable", "", false},
+		"starting":             {"starting", "", false},
+		"key-expiring":         {"key-expiring", "", false},
+		"error without detail": {"error", "", false},
+	} {
+		network.degraded = map[ProviderID]string{ProviderPortal: tc.state}
+		network.degradedDetail = map[ProviderID]string{ProviderPortal: tc.detail}
+		if got := needs(); got != tc.want {
+			t.Errorf("a registered Portal route, %s: needs to open again = %t, want %t", name, got, tc.want)
 		}
 	}
-	network.degraded = nil
+	network.degraded, network.degradedDetail = nil, nil
 	if err := network.StopProviderRoutes(ctx, "app", ProviderPortal); err != nil {
 		t.Fatal(err)
 	}
@@ -727,7 +743,7 @@ func TestRequireAuthVisitReportsAProviderThatCannotOpen(t *testing.T) {
 		t.Fatal("the Portal route of app stayed")
 	}
 	events := eventTexts(t, s, "app")
-	if !hasEvent(events, "error", "funnel is down") || !hasEvent(events, "error", "Its other public routes answer 503 until a deploy, a grant or a restart.") {
+	if !hasEvent(events, "error", "funnel is down") || !hasEvent(events, "error", "A public route that did not open again answers 503 until a deploy, a grant or a restart.") {
 		t.Fatalf("events = %q", events)
 	}
 	if hasEvent(events, "warn", "portal.require_auth is on and app has no sign-in") {
@@ -769,6 +785,236 @@ func TestRequireAuthChangeAndOpenAtTheSameTime(t *testing.T) {
 		if !network.serves("app", ProviderPortal) {
 			t.Fatalf("round %d: the Portal route did not open when the setting went off", i)
 		}
+	}
+}
+
+// Rule 19: the result of a visibility apply says that Portal is refused, with the text of rule 10, when another public
+// provider opened. A flat without a Portal grant, a flat with the setting off, and a flat with sign-in get no such sentence.
+func TestRequireAuthVisibilityResult(t *testing.T) {
+	ctx := t.Context()
+	s, _, _, _ := newRequireAuthService(t)
+	apply := func(slug string, providers ...string) store.Approval {
+		t.Helper()
+		lifecycleSave(t, s, slug, "one")
+		lifecycleApprove(t, s, lifecycleRequest(t, s, slug))
+		for _, p := range providers {
+			if err := s.SetProviderPermission(ctx, slug, p, true, ViaConsole); err != nil {
+				t.Fatal(err)
+			}
+		}
+		req, err := s.SetVisibility(ctx, slug, store.Public, ViaAPI, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		a, err := s.Decide(ctx, req.Approval.ID, true)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return a
+	}
+	if a := apply("before", store.ProviderPortal, store.ProviderFunnel); strings.Contains(a.Result, "Portal is refused") {
+		t.Fatalf("the setting is off and the result says %q", a.Result)
+	}
+	setRequireAuth(t, s, true)
+	a := apply("pair", store.ProviderPortal, store.ProviderFunnel)
+	want := "; Portal is refused: portal.require_auth is on and pair has no sign-in. Sign-in is refused while a grant for tailscale-funnel exists."
+	if !strings.HasPrefix(a.Result, "visibility changed to public") || !strings.Contains(a.Result, want) {
+		t.Fatalf("the result = %q, want it to hold %q", a.Result, want)
+	}
+	if a := apply("nogrant", store.ProviderFunnel); strings.Contains(a.Result, "Portal is refused") {
+		t.Fatalf("a flat without a Portal grant: the result says %q", a.Result)
+	}
+}
+
+// Rule 17: a route that the setting did not stop is left alone. The off-visit writes nothing for a registered Portal
+// route that serves, and nothing for a registered route that failed for another cause.
+func TestRequireAuthOffVisitLeavesARouteThatServes(t *testing.T) {
+	s, network, _, _ := newRequireAuthService(t)
+	publicLifecycleFlat(t, s, "app", store.ProviderPortal)
+	approveSignIn(t, s, "app", oidcRequest)
+	// The route is registered and failed for a relay fault, which the setting did not cause.
+	network.degraded = map[ProviderID]string{ProviderPortal: "error"}
+	network.degradedDetail = map[ProviderID]string{ProviderPortal: "relay unreachable"}
+	setRequireAuth(t, s, true)
+	setRequireAuth(t, s, false)
+	for _, text := range eventTexts(t, s, "app") {
+		if strings.Contains(text, "turned off") {
+			t.Fatalf("the off-visit wrote an event for a route that the setting did not stop: %q", text)
+		}
+	}
+	if !network.serves("app", ProviderPortal) {
+		t.Fatal("the route of a flat with sign-in stopped")
+	}
+}
+
+// Two changes at the same time end with the state of the last stored value, and a visit that runs late does nothing
+// (rule 18, last bullet).
+func TestRequireAuthTwoChangesAtTheSameTime(t *testing.T) {
+	s, network, _, _ := newRequireAuthService(t)
+	publicLifecycleFlat(t, s, "app", store.ProviderPortal, store.ProviderFunnel)
+	for round := 0; round < 15; round++ {
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() { defer wg.Done(); setRequireAuth(t, s, true) }()
+		go func() { defer wg.Done(); setRequireAuth(t, s, false) }()
+		wg.Wait()
+		on := s.PortalRequireAuth()
+		if network.serves("app", ProviderPortal) == on {
+			t.Fatalf("round %d: the setting is on %t and Portal serves %t", round, on, network.serves("app", ProviderPortal))
+		}
+		setRequireAuth(t, s, false)
+		if !network.serves("app", ProviderPortal) {
+			t.Fatalf("round %d: Portal does not serve with the setting off", round)
+		}
+	}
+
+	// A late visit: the flat lock is held, so the visit of the first change waits after the second change is stored.
+	wait := func(cond func() bool) {
+		t.Helper()
+		for deadline := time.Now().Add(5 * time.Second); !cond(); {
+			if time.Now().After(deadline) {
+				t.Fatal("timeout")
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+	}
+	unlock := s.lock("app")
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() { defer wg.Done(); setRequireAuth(t, s, true) }()
+	wait(s.PortalRequireAuth)
+	wg.Add(1)
+	go func() { defer wg.Done(); setRequireAuth(t, s, false) }()
+	wait(func() bool { return !s.PortalRequireAuth() })
+	unlock()
+	wg.Wait()
+	if !network.serves("app", ProviderPortal) {
+		t.Fatal("a visit of an earlier change stopped the Portal route after the setting went off")
+	}
+}
+
+// A reload by SIGHUP does the same visit as a console save (rule 18).
+func TestRequireAuthReloadDoesTheVisit(t *testing.T) {
+	ctx := t.Context()
+	s, path := newReloadService(t)
+	network := newRequireAuthNet()
+	s.cfg.Lifecycle = network
+	publicLifecycleFlat(t, s, "app", store.ProviderPortal, store.ProviderFunnel)
+	editConfig(t, path, func(d *config.Document) error { return d.Set("portal.require_auth", "true") })
+	rep, err := s.ReloadConfig(ctx)
+	if err != nil || !slices.Contains(rep.Applied, SetRequireAuth) || slices.Contains(rep.AwaitRestart, "portal.require_auth") {
+		t.Fatalf("reload = %+v, %v: the key must be listed as applied", rep, err)
+	}
+	if network.serves("app", ProviderPortal) || !network.serves("app", ProviderFunnel) {
+		t.Fatalf("after the reload Portal serves %t and Funnel serves %t", network.serves("app", ProviderPortal), network.serves("app", ProviderFunnel))
+	}
+	editConfig(t, path, func(d *config.Document) error { return d.Set("portal.require_auth", "false") })
+	if _, err := s.ReloadConfig(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if !network.serves("app", ProviderPortal) {
+		t.Fatal("the reload that turned the setting off did not open the Portal route")
+	}
+}
+
+// A client that drops the request after the commit does not leave a flat served: the visit does not depend on it.
+func TestRequireAuthSaveCancelledAfterTheCommit(t *testing.T) {
+	s, network, _, _ := newRequireAuthService(t)
+	for _, slug := range []string{"one", "two"} {
+		publicLifecycleFlat(t, s, slug, store.ProviderPortal, store.ProviderFunnel)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	network.onHas = func(string) { cancel() }
+	if _, err := s.UpdateSettings(ctx, map[string]string{SetRequireAuth: "true"}); err != nil {
+		t.Fatal(err)
+	}
+	network.onHas = nil
+	if ctx.Err() == nil {
+		t.Fatal("the test did not cancel the request")
+	}
+	for _, slug := range []string{"one", "two"} {
+		if network.serves(slug, ProviderPortal) {
+			t.Fatalf("the Portal route of %s stayed after the request was cancelled", slug)
+		}
+	}
+}
+
+// The off-visit that cannot list the flats opens nothing and says so in the log. A flat that it cannot read stays
+// stopped with an event, and the next visit opens it (rule 17).
+func TestRequireAuthOffVisitThatCannotRead(t *testing.T) {
+	ctx := t.Context()
+	s, network, dir, log := newRequireAuthService(t)
+	publicLifecycleFlat(t, s, "app", store.ProviderPortal, store.ProviderFunnel)
+	setRequireAuth(t, s, true)
+	db := rawDB(t, dir)
+	if _, err := db.Exec(`ALTER TABLE flats RENAME TO flats_gone`); err != nil {
+		t.Fatal(err)
+	}
+	setRequireAuth(t, s, false)
+	if network.serves("app", ProviderPortal) {
+		t.Fatal("the off-visit opened a route without a store")
+	}
+	if !strings.Contains(log(), "turned off, but the host cannot list the flats to open their Portal routes again") {
+		t.Fatalf("the host log = %s", log())
+	}
+	if _, err := db.Exec(`ALTER TABLE flats_gone RENAME TO flats`); err != nil {
+		t.Fatal(err)
+	}
+
+	// One flat that cannot be read.
+	var original int64
+	if err := db.QueryRow(`SELECT created_at FROM flats WHERE slug='app'`).Scan(&original); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.Exec(`UPDATE flats SET created_at='unreadable' WHERE slug='app'`); err != nil {
+		t.Fatal(err)
+	}
+	unlock := s.lock("app")
+	s.requireAuthReopen(ctx, "app")
+	unlock()
+	if network.serves("app", ProviderPortal) {
+		t.Fatal("a flat that cannot be read was opened")
+	}
+	if events := eventTexts(t, s, "app"); !hasEvent(events, "error", "turned off, but the host cannot read app to open its Portal route again") {
+		t.Fatalf("events = %q", events)
+	}
+	if _, err := db.Exec(`UPDATE flats SET created_at=? WHERE slug='app'`, original); err != nil {
+		t.Fatal(err)
+	}
+	unlock = s.lock("app")
+	s.requireAuthReopen(ctx, "app")
+	unlock()
+	if !network.serves("app", ProviderPortal) {
+		t.Fatal("the next visit did not open the route")
+	}
+}
+
+// Rule 16: a flat with no registered Portal route is not read. The route check comes before the read, so a flat that the
+// host cannot read keeps its epoch and its routes when it has nothing on Portal.
+func TestRequireAuthDoesNotReadAFlatWithoutAPortalRoute(t *testing.T) {
+	s, network, dir, _ := newRequireAuthService(t)
+	publicLifecycleFlat(t, s, "other", store.ProviderFunnel)
+	publicLifecycleFlat(t, s, "both", store.ProviderFunnel, store.ProviderPortal)
+	epoch := epochOf(s, "other")
+	eventsBefore := eventTexts(t, s, "other")
+	db := rawDB(t, dir)
+	network.onHas = func(host string) {
+		if host == "other" {
+			if _, err := db.Exec(`UPDATE flats SET created_at='unreadable' WHERE slug='other'`); err != nil {
+				t.Error(err)
+			}
+		}
+	}
+	setRequireAuth(t, s, true)
+	network.onHas = nil
+	if epoch == nil || epoch.ctx.Err() != nil || epochOf(s, "other") != epoch || !network.serves("other", ProviderFunnel) {
+		t.Fatal("the host read a flat without a Portal route, and its epoch or route changed")
+	}
+	if events := eventTexts(t, s, "other"); !slices.Equal(events, eventsBefore) {
+		t.Fatalf("events of other = %q, before %q", events, eventsBefore)
+	}
+	if network.serves("both", ProviderPortal) {
+		t.Fatal("the Portal route of both stayed")
 	}
 }
 

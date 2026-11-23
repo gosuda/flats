@@ -68,6 +68,11 @@ func (in flatInstance) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		brw.Flush()
 		<-r.Context().Done()
 		c.Close()
+	case "/hold":
+		// A plain request that runs until its request ends, as a long download or an event stream does.
+		w.WriteHeader(http.StatusOK)
+		http.NewResponseController(w).Flush()
+		<-r.Context().Done()
 	case "/headers":
 		seen := map[string]string{}
 		for k, v := range r.Header {

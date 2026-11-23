@@ -1277,6 +1277,9 @@ func (s *Service) applyVisibilityApproval(ctx context.Context, a store.Approval)
 		if note != "" {
 			res.Message += "; " + note
 		}
+		if refused := s.portalRefusalNote(ctx, a.Flat); refused != "" {
+			res.Message += "; " + refused
+		}
 		fv := s.view(ctx, next)
 		res.Flat, res.Notice = &fv, fv.PublicNotice
 		return res, nil

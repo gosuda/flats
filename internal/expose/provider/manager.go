@@ -1127,8 +1127,8 @@ func (m *Manager) PortalHosts(slug string) []string {
 //
 // It changes the route records of slug without enterSlug, so the lock of the
 // flat in core orders it with the opens and the retirements of the slug: its
-// only caller, closePortal in core, holds that lock. A new caller without that
-// lock must enter the slug first.
+// callers, closePortal and requireAuthStopPortal in core, hold that lock. A new
+// caller without that lock must enter the slug first.
 func (m *Manager) FailPortalGate(ctx context.Context, slug, reason string) error {
 	p := m.portalNet()
 	if p == nil {

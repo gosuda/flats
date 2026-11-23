@@ -1,12 +1,20 @@
 package portal_test
 
 import (
+	"bufio"
 	"context"
+	"errors"
+	"io"
+	"net"
+	"net/http"
+	"os"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/gosuda/flats/internal/core"
 	"github.com/gosuda/flats/internal/expose/portal"
+	"github.com/gosuda/flats/internal/expose/provider"
 	"github.com/gosuda/flats/internal/store"
 )
 
@@ -121,5 +129,72 @@ func TestRequireAuthOnThePortalRoute(t *testing.T) {
 	}
 	if refused, err := h.svc.PortalRefused(ctx, true); err != nil || len(refused) != 0 {
 		t.Fatalf("the refused flats = %q, %v", refused, err)
+	}
+
+}
+
+// A change of the host setting writes no audit row and sends no webhook event, in either direction (rule 5). Only the
+// flat event and the host log record its effect on a flat.
+func TestRequireAuthWritesNoAuditRowAndSendsNoEvent(t *testing.T) {
+	h := startHost(t, t.TempDir())
+	deployServer(t, h, "app")
+	publicOnPortal(t, h, "app")
+	h.px.Of(t, "app").SetRelays(portal.ReadyRelay("relay.test", appHost))
+	counts := func() (audit, notes int) {
+		h.notes.mu.Lock()
+		defer h.notes.mu.Unlock()
+		return len(auditRows(t, h.dir, "")), len(h.notes.bodies)
+	}
+	for _, on := range []bool{true, false} {
+		audit, notes := counts()
+		setRequireAuth(t, h, on)
+		if a, n := counts(); a != audit || n != notes {
+			t.Fatalf("setting %t: audit rows %d to %d, webhook events %d to %d", on, audit, a, notes, n)
+		}
+	}
+	if events, err := h.st.ListEvents(context.Background(), "app", "exposure", 0, 100); err != nil || len(events) < 2 {
+		t.Fatalf("the flat events of the two changes = %+v, %v", events, err)
+	}
+}
+
+// A request that is not a WebSocket and that the flat holds open ends when the setting turns on, because the visit ends
+// the public connections before it stops the route, so the stop is confirmed (rules 16 and 18).
+func TestRequireAuthEndsARunningRequest(t *testing.T) {
+	h := startHost(t, t.TempDir())
+	deployServer(t, h, "app")
+	publicOnPortal(t, h, "app")
+	exp := h.px.Of(t, "app")
+	exp.SetRelays(portal.ReadyRelay("relay.test", appHost))
+	anon := portal.NewTestVisitor(exp.Addr(), appHost)
+	wantPage(t, anon, "/", "v1 /")
+
+	c, err := net.Dial("tcp", exp.Addr())
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.Close() })
+	if _, err := io.WriteString(c, "GET /hold HTTP/1.1\r\nHost: "+appHost+"\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	c.SetReadDeadline(time.Now().Add(10 * time.Second))
+	resp, err := http.ReadResponse(bufio.NewReader(c), nil)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("the request that the flat holds = %v, %v", resp, err)
+	}
+	c.SetReadDeadline(time.Time{})
+
+	setRequireAuth(t, h, true)
+	c.SetReadDeadline(time.Now().Add(10 * time.Second))
+	if _, err := io.Copy(io.Discard, resp.Body); errors.Is(err, os.ErrDeadlineExceeded) {
+		t.Fatal("the request that the flat holds did not end")
+	}
+	if exp.Closes() != 1 {
+		t.Fatalf("the Portal route closed %d times, want one confirmed stop", exp.Closes())
+	}
+	if ep := portalEndpointOf(t, h, "app"); ep.State != "unavailable" {
+		t.Fatalf("the Portal endpoint = %+v: a stop that was not confirmed shows the state error", ep)
+	}
+	if has, _ := h.mgr.HasProviderRoute(context.Background(), "app", provider.Portal); has {
+		t.Fatal("the route is still registered after a confirmed stop")
 	}
 }
