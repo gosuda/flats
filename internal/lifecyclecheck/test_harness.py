@@ -190,6 +190,7 @@ class StoreSnapshotChecks(unittest.TestCase):
     def test_equal_snapshots_pass_and_read_the_slug(self):
         before = version_rows(self.host, "boundary-notebook")
         self.assertEqual(before["versions"], [(1, "h1", 1, 0)])
+        self.assertEqual(before["version_numbers"], [(1,)])
         self.assertEqual(version_rows(self.host, "boundary-notebook"), before)
         self.write("INSERT INTO versions (flat, number, hash, published) VALUES ('other-flat', 1, 'x', 1)")
         self.write("INSERT INTO version_numbers VALUES ('other-flat', 1)")
@@ -199,6 +200,14 @@ class StoreSnapshotChecks(unittest.TestCase):
         before = version_rows(self.host, "boundary-notebook")
         self.write("INSERT INTO versions (flat, number, hash, published) VALUES ('boundary-notebook', 2, 'h2', 1)")
         self.assertNotEqual(version_rows(self.host, "boundary-notebook"), before)
+
+    def test_a_version_numbers_row_alone_makes_the_snapshots_differ(self):
+        before = version_rows(self.host, "boundary-notebook")
+        self.write("INSERT INTO version_numbers VALUES ('boundary-notebook', 2)")
+        after = version_rows(self.host, "boundary-notebook")
+        self.assertEqual(after["versions"], before["versions"])
+        self.assertEqual(after["version_numbers"], [(1,), (2,)])
+        self.assertNotEqual(after, before)
 
     def test_missing_store_file_raises(self):
         with tempfile.TemporaryDirectory() as folder:
