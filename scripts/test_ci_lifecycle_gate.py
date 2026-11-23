@@ -449,7 +449,7 @@ class DriverTests(unittest.TestCase):
     def test_every_line_break_character_inside_a_secret_is_withheld(self):
         separators = {
             "LF": "\n", "CR LF": "\r\n", "CR": "\r", "form feed": "\x0c",
-            "vertical tab": "\x0b", "U+2028": " ", "U+0085": "\x85",
+            "vertical tab": "\x0b", "U+2028": "\u2028", "U+0085": "\x85",
         }
         for label, separator in separators.items():
             with self.subTest(separator=label):
