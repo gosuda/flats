@@ -3,11 +3,13 @@ package portal_test
 import (
 	"bufio"
 	"context"
+	"database/sql"
 	"errors"
 	"io"
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -196,5 +198,70 @@ func TestRequireAuthEndsARunningRequest(t *testing.T) {
 	}
 	if has, _ := h.mgr.HasProviderRoute(context.Background(), "app", provider.Portal); has {
 		t.Fatal("the route is still registered after a confirmed stop")
+	}
+}
+
+// Rule 17 with the real manager and the real Portal backend: a route whose stop was not confirmed stays registered, in the
+// state error, and the detail that the manager reports for it is the one of the Portal backend (core.TeardownPending).
+// The visit that turns the setting off opens it again, whichever path left it stuck.
+func TestRequireAuthOpensARouteWhoseStopWasNotConfirmed(t *testing.T) {
+	failedList := func(t *testing.T, h *host) {
+		t.Helper()
+		db, err := sql.Open("sqlite", filepath.Join(h.dir, "flats.db"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer db.Close()
+		if _, err := db.Exec(`ALTER TABLE flats RENAME TO flats_gone`); err != nil {
+			t.Fatal(err)
+		}
+		setRequireAuth(t, h, true)
+		if _, err := db.Exec(`ALTER TABLE flats_gone RENAME TO flats`); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for name, turnOn := range map[string]func(*testing.T, *host){
+		"the visit":     func(t *testing.T, h *host) { setRequireAuth(t, h, true) },
+		"a failed list": failedList,
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			h := startHost(t, t.TempDir())
+			// A failed unregistration counts as confirmed once the relay has dropped the lease (the SDK closes only once).
+			h.pn.SetLeaseTTL(200 * time.Millisecond)
+			deployServer(t, h, "app")
+			publicOnPortal(t, h, "app")
+			exp := h.px.Of(t, "app")
+			exp.SetRelays(portal.ReadyRelay("relay.test", appHost))
+			exp.FailClose(errors.New("relay refused unregister"))
+
+			turnOn(t, h)
+
+			if has, _ := h.mgr.HasProviderRoute(ctx, "app", provider.Portal); !has {
+				t.Fatal("a stop that was not confirmed forgot the route")
+			}
+			if ep := portalEndpointOf(t, h, "app"); ep.State != "error" || !strings.Contains(ep.Detail, core.TeardownPending) {
+				t.Fatalf("the endpoint of the stuck route = %+v, want the state error and the detail of the backend", ep)
+			}
+			// Before the lease has expired, the off-visit cannot confirm the stop: the route stays stuck, and the host says so.
+			setRequireAuth(t, h, false)
+			if has, _ := h.mgr.HasProviderRoute(ctx, "app", provider.Portal); !has {
+				t.Fatal("the off-visit forgot a route whose stop was not confirmed")
+			}
+			setRequireAuth(t, h, true)
+			time.Sleep(300 * time.Millisecond)
+			count := h.px.Count()
+			setRequireAuth(t, h, false)
+			if h.px.Count() != count+1 {
+				t.Fatalf("exposures = %d, want one more: the visit did not open the route whose stop was not confirmed", h.px.Count())
+			}
+			exp2 := h.px.Of(t, "app")
+			exp2.SetRelays(portal.ReadyRelay("relay.test", appHost))
+			wantPage(t, portal.NewTestVisitor(exp2.Addr(), appHost), "/", "v1 /")
+			events, err := h.st.ListEvents(ctx, "app", "exposure", 0, 100)
+			if err != nil || len(events) == 0 || !strings.Contains(events[len(events)-1].Message, "the Portal route of app is open again") {
+				t.Fatalf("events = %+v, %v", events, err)
+			}
+		})
 	}
 }

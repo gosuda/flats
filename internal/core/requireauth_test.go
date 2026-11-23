@@ -488,11 +488,20 @@ func TestRequireAuthReopenConditions(t *testing.T) {
 	ctx := t.Context()
 	s, network, _, _ := newRequireAuthService(t)
 	publicLifecycleFlat(t, s, "app", store.ProviderPortal, store.ProviderFunnel)
-	needs := func() bool { t.Helper(); return s.portalNeedsReopen(ctx, "app") }
+	needs := func() bool {
+		t.Helper()
+		v, err := s.portalNeedsReopen(ctx, "app")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return v
+	}
 	if needs() {
 		t.Fatal("a Portal route that serves needs to open again")
 	}
-	stuck := "sign-in gate: x; " + unconfirmedStop + ": relay refused unregister"
+	// What the provider manager reports for a registered route whose stop was not confirmed: the detail of the Portal
+	// backend (the test of package portal_test makes it with the real manager and backend).
+	stuck := "sign-in gate: x; " + TeardownPending
 	for name, tc := range map[string]struct {
 		state, detail string
 		want          bool
@@ -511,6 +520,12 @@ func TestRequireAuthReopenConditions(t *testing.T) {
 		}
 	}
 	network.degraded, network.degradedDetail = nil, nil
+	// A failed read of the routes is an error, not an answer.
+	network.statusErr = errors.New("status unreadable")
+	if v, err := s.portalNeedsReopen(ctx, "app"); err == nil || v {
+		t.Fatalf("a failed read of the routes = %t, %v, want an error", v, err)
+	}
+	network.statusErr = nil
 	if err := network.StopProviderRoutes(ctx, "app", ProviderPortal); err != nil {
 		t.Fatal(err)
 	}
@@ -971,10 +986,38 @@ func TestRequireAuthSaveCancelledAfterTheCommit(t *testing.T) {
 	if ctx.Err() == nil {
 		t.Fatal("the test did not cancel the request")
 	}
+	// An effect that only a completed visit has: the refusal event, no failed read, and the other public route that is
+	// served again. A visit that reads with the cancelled context fails each read, stops each Portal route, and ends the
+	// public connections without a re-serve.
 	for _, slug := range []string{"one", "two"} {
 		if network.serves(slug, ProviderPortal) {
 			t.Fatalf("the Portal route of %s stayed after the request was cancelled", slug)
 		}
+		events := eventTexts(t, s, slug)
+		if !hasEvent(events, "warn", "portal.require_auth is on and "+slug+" has no sign-in") || hasEvent(events, "error", "cannot read") {
+			t.Fatalf("events of %s = %q", slug, events)
+		}
+		if code := providerRequest(network.handler(slug, ProviderFunnel), ProviderFunnel).Code; code != http.StatusOK {
+			t.Fatalf("the Funnel route of %s = %d, want it served again", slug, code)
+		}
+	}
+}
+
+// A failed read of the routes on the off-visit opens nothing for that flat, and the host says why (rule 17).
+func TestRequireAuthOffVisitWithUnreadableRoutes(t *testing.T) {
+	ctx := t.Context()
+	s, network, _, _ := newRequireAuthService(t)
+	publicLifecycleFlat(t, s, "gated", store.ProviderPortal)
+	approveSignIn(t, s, "gated", oidcRequest)
+	network.statusErr = errors.New("status unreadable")
+	unlock := s.lock("gated")
+	s.requireAuthReopen(ctx, "gated")
+	unlock()
+	if events := eventTexts(t, s, "gated"); !hasEvent(events, "error", "cannot read the routes of gated to open its Portal route again") {
+		t.Fatalf("events = %q", events)
+	}
+	if !network.serves("gated", ProviderPortal) {
+		t.Fatal("the route of a flat with sign-in stopped")
 	}
 }
 
@@ -1037,8 +1080,13 @@ func TestRequireAuthDoesNotReadAFlatWithoutAPortalRoute(t *testing.T) {
 	epoch := epochOf(s, "other")
 	eventsBefore := eventTexts(t, s, "other")
 	db := rawDB(t, dir)
+	// The list is newest first: "both" is visited before "other", and its hook breaks the row of "other" before the visit
+	// reaches it. A visit that read the flat before it checked the route would fail that read.
+	if _, err := db.Exec(`UPDATE flats SET updated_at=updated_at+100 WHERE slug='both'`); err != nil {
+		t.Fatal(err)
+	}
 	network.onHas = func(host string) {
-		if host == "other" {
+		if host == "both" {
 			if _, err := db.Exec(`UPDATE flats SET created_at='unreadable' WHERE slug='other'`); err != nil {
 				t.Error(err)
 			}

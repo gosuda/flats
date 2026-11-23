@@ -1271,7 +1271,7 @@ func (n *Net) hostInfo(e *entry) (core.HostInfo, bool) {
 	}
 	if stopping {
 		hi.State = "error"
-		parts = append(parts, "teardown pending confirmation")
+		parts = append(parts, core.TeardownPending)
 	}
 	hi.Detail = strings.Join(parts, "; ")
 	return hi, conflict

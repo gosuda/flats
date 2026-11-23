@@ -181,6 +181,10 @@ func (p *PortalSignIn) Refused() bool {
 // refuses (rule 10). The provider manager recognizes a refusal by it.
 const PortalAuthDetailPrefix = "portal.require_auth is on"
 
+// TeardownPending is the phrase that the Portal backend puts in the detail of an entry whose stop was not confirmed. A
+// registered route reports the detail of the backend, so the host recognizes such a route by it (rule 17).
+const TeardownPending = "teardown pending confirmation"
+
 // PortalAuthError is an open of a Portal route that portal.require_auth refuses
 // (docs/spec/portal-require-auth.md, rules 7 and 8). Its text is the detail of
 // the Portal endpoint. StopErr is set when the route was served and its stop is

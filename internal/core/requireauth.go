@@ -73,14 +73,22 @@ func (s *Service) portalRefusalNote(ctx context.Context, slugName string) string
 	if !s.requireAuthOn() {
 		return ""
 	}
-	f, err := s.st.GetFlat(ctx, slugName)
-	if err != nil || f.SignInProvider != "" {
+	obs, ok := s.cfg.Lifecycle.(LifecycleObserver)
+	if !ok {
 		return ""
 	}
-	if granted, err := s.st.ProviderPermitted(ctx, slugName, store.ProviderPortal); err != nil || !granted {
+	st, err := obs.ExposureStatus(ctx, slugName)
+	if err != nil {
 		return ""
 	}
-	return "Portal is refused: " + s.requireAuthDetail(ctx, slugName)
+	// The note repeats the refusal that the Portal endpoint shows, so it says nothing when Portal is refused for another
+	// cause, such as a host that does not permit Portal.
+	for _, ep := range st.Endpoints {
+		if ep.Host == slugName && ep.Audience == AudienceCurrent && PortalAuthRefusal(ep) {
+			return "Portal is refused: " + ep.Detail
+		}
+	}
+	return ""
 }
 
 // requireAuthEvent writes a flat event of kind exposure and one host log line with the slug and the text, so that
@@ -172,6 +180,9 @@ func (s *Service) requireAuthRefuse(ctx context.Context, slugName string) {
 		s.requireAuthEvent(ctx, slugName, "warn", detail)
 		return
 	}
+	if err == nil && !s.requireAuthOn() {
+		return // the setting went off while the visit ran: the off-visit opens the route again
+	}
 	// The re-serve failed after the connections ended, or it did not refuse the Portal route: stop the Portal route
 	// and name the failure. A public route that did not open again answers 503 on the cancelled epoch (rule 18).
 	if err == nil {
@@ -260,7 +271,15 @@ func (s *Service) requireAuthReopen(ctx context.Context, slugName string) {
 		s.requireAuthEvent(ctx, slugName, "error", fmt.Sprintf("portal.require_auth turned off, but the host cannot read the Portal grant of %s: %v. A deploy, a grant, a restart or a sign-in change tries again.", slugName, err))
 		return
 	}
-	if !granted || !s.portalNeedsReopen(ctx, slugName) {
+	if !granted {
+		return
+	}
+	needs, err := s.portalNeedsReopen(ctx, slugName)
+	if err != nil {
+		s.requireAuthEvent(ctx, slugName, "error", fmt.Sprintf("portal.require_auth turned off, but the host cannot read the routes of %s to open its Portal route again: %v. A deploy, a grant, a restart or a sign-in change tries again.", slugName, err))
+		return
+	}
+	if !needs {
 		return
 	}
 	if err := s.reapplyExposure(ctx, f, ProviderPortal, true); err != nil {
@@ -271,32 +290,28 @@ func (s *Service) requireAuthReopen(ctx context.Context, slugName string) {
 }
 
 // portalNeedsReopen reports whether the Portal route of a flat is not registered, or is registered with a stop that was
-// not confirmed, or whose last open failed: the routes that rule 17 serves again.
-func (s *Service) portalNeedsReopen(ctx context.Context, slugName string) bool {
+// not confirmed: the routes that rule 17 serves again. A registered route reports the detail of the Portal backend, which
+// holds TeardownPending for such a stop. A route in the state error for another cause, such as a relay fault, was not
+// stopped by the setting and is left alone. The error is a failed read of the routes.
+func (s *Service) portalNeedsReopen(ctx context.Context, slugName string) (bool, error) {
 	if !s.portalRouteRegistered(ctx, slugName) {
-		return true
+		return true, nil
 	}
-	// A registered route needs the visit only when a stop of it was not confirmed (rule 17). A route in the state
-	// error for another cause, such as a relay fault, was not stopped by the setting.
 	obs, ok := s.cfg.Lifecycle.(LifecycleObserver)
 	if !ok {
-		return false
+		return false, nil
 	}
 	st, err := obs.ExposureStatus(ctx, slugName)
 	if err != nil {
-		return false
+		return false, err
 	}
 	for _, ep := range st.Endpoints {
 		if ep.Provider == ProviderPortal && ep.Audience == AudienceCurrent && ep.Host == slugName {
-			return ep.State == "error" && strings.Contains(ep.Detail, unconfirmedStop)
+			return ep.State == "error" && strings.Contains(ep.Detail, TeardownPending), nil
 		}
 	}
-	return false
+	return false, nil
 }
-
-// unconfirmedStop is the phrase of the detail of a route whose stop was not confirmed (PortalAuthError and
-// SignInGateError).
-const unconfirmedStop = "the stop of the route is not confirmed"
 
 // PortalRefused lists the flats that portal.require_auth refuses now, sorted (rule 10): the setting is on, Portal is
 // permitted for the host, and the flat is Public with a live version, has a Portal grant and has no sign-in. The
