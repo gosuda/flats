@@ -687,27 +687,10 @@ func TestRequireAuthSettingValue(t *testing.T) {
 	}
 }
 
-// The issue: the setting survives a host restart. The console saves it to config.json, and a new service on the same
-// files opens no Portal route for a flat without sign-in (rules 2 and 7).
-func TestRequireAuthSurvivesARestart(t *testing.T) {
-	ctx := t.Context()
-	s, path := newReloadService(t)
-	network := newRequireAuthNet()
-	s.cfg.Lifecycle = network
-	publicLifecycleFlat(t, s, "app", store.ProviderPortal, store.ProviderFunnel)
-	if !network.serves("app", ProviderPortal) {
-		t.Fatal("the test did not serve app on Portal")
-	}
-	setRequireAuth(t, s, true)
-	if l, err := config.Load(path); err != nil {
-		t.Fatal(err)
-	} else if c, err := l.Doc.Effective(nil); err != nil {
-		t.Fatal(err)
-	} else if v, _, _ := c.Lookup("portal.require_auth"); v != true {
-		t.Fatalf("config.json holds %v, want true", v)
-	}
-
-	// A restart: a new service on the same files serves the flat as the setting says.
+// restartOnFiles is a new service with a new fake net on the config file and the data folder of a service that a test made
+// with newReloadService, as a restart makes it.
+func restartOnFiles(t *testing.T, path string) (*Service, *requireAuthNet) {
+	t.Helper()
 	dir := filepath.Dir(path)
 	l, err := config.Load(path)
 	if err != nil {
@@ -729,13 +712,37 @@ func TestRequireAuthSurvivesARestart(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	restarted := newRequireAuthNet()
-	s2, err := New(ctx, Config{DataDir: dir, Store: st, Settings: src, Lifecycle: restarted,
+	network := newRequireAuthNet()
+	s, err := New(t.Context(), Config{DataDir: dir, Store: st, Settings: src, Lifecycle: network,
 		Private: &memNet{hosts: map[string]http.Handler{}}, Logf: t.Logf})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { s2.Close(); st.Close() })
+	t.Cleanup(func() { s.Close(); st.Close() })
+	return s, network
+}
+
+// The issue: the setting survives a host restart. The console saves it to config.json, and a new service on the same
+// files opens no Portal route for a flat without sign-in (rules 2 and 7).
+func TestRequireAuthSurvivesARestart(t *testing.T) {
+	s, path := newReloadService(t)
+	network := newRequireAuthNet()
+	s.cfg.Lifecycle = network
+	publicLifecycleFlat(t, s, "app", store.ProviderPortal, store.ProviderFunnel)
+	if !network.serves("app", ProviderPortal) {
+		t.Fatal("the test did not serve app on Portal")
+	}
+	setRequireAuth(t, s, true)
+	if l, err := config.Load(path); err != nil {
+		t.Fatal(err)
+	} else if c, err := l.Doc.Effective(nil); err != nil {
+		t.Fatal(err)
+	} else if v, _, _ := c.Lookup("portal.require_auth"); v != true {
+		t.Fatalf("config.json holds %v, want true", v)
+	}
+
+	// A restart: a new service on the same files serves the flat as the setting says.
+	s2, restarted := restartOnFiles(t, path)
 	if !s2.PortalRequireAuth() {
 		t.Fatal("the setting did not survive the restart")
 	}

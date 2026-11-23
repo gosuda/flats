@@ -170,20 +170,7 @@ func TestRequireAuthEndsARunningRequest(t *testing.T) {
 	anon := portal.NewTestVisitor(exp.Addr(), appHost)
 	wantPage(t, anon, "/", "v1 /")
 
-	c, err := net.Dial("tcp", exp.Addr())
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { c.Close() })
-	if _, err := io.WriteString(c, "GET /hold HTTP/1.1\r\nHost: "+appHost+"\r\n\r\n"); err != nil {
-		t.Fatal(err)
-	}
-	c.SetReadDeadline(time.Now().Add(10 * time.Second))
-	resp, err := http.ReadResponse(bufio.NewReader(c), nil)
-	if err != nil || resp.StatusCode != http.StatusOK {
-		t.Fatalf("the request that the flat holds = %v, %v", resp, err)
-	}
-	c.SetReadDeadline(time.Time{})
+	c, resp := holdRequest(t, exp.Addr())
 
 	setRequireAuth(t, h, true)
 	c.SetReadDeadline(time.Now().Add(10 * time.Second))
@@ -290,4 +277,113 @@ func TestRequireAuthOpensARouteWhoseStopWasNotConfirmed(t *testing.T) {
 			}
 		})
 	}
+}
+
+// holdRequest opens a plain request that the flat holds open until its request ends, and returns its connection and its
+// response, whose headers have arrived.
+func holdRequest(t *testing.T, addr string) (net.Conn, *http.Response) {
+	t.Helper()
+	c, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { c.Close() })
+	if _, err := io.WriteString(c, "GET /hold HTTP/1.1\r\nHost: "+appHost+"\r\n\r\n"); err != nil {
+		t.Fatal(err)
+	}
+	c.SetReadDeadline(time.Now().Add(10 * time.Second))
+	resp, err := http.ReadResponse(bufio.NewReader(c), nil)
+	if err != nil || resp.StatusCode != http.StatusOK {
+		t.Fatalf("the request that the flat holds = %v, %v", resp, err)
+	}
+	c.SetReadDeadline(time.Time{})
+	return c, resp
+}
+
+// Rule 18, the second path, with the real backend: the stop of a route that has a running request does not confirm, because
+// a failed list ends no connection. The route stays registered, answers 503 and never the flat, and shows the state error.
+// While the request runs, the visit that turns the setting off cannot open it, and the host says so. Once the request has
+// ended, a visit that refuses the flat confirms the stop, and the next visit that turns the setting off opens the route.
+func TestRequireAuthFailedListWithARunningRequest(t *testing.T) {
+	ctx := context.Background()
+	h := startHostWith(t, t.TempDir(), func(c *portal.Config) { c.ShutdownTimeout = 300 * time.Millisecond })
+	deployServer(t, h, "app")
+	publicOnPortal(t, h, "app")
+	exp := h.px.Of(t, "app")
+	exp.SetRelays(portal.ReadyRelay("relay.test", appHost))
+	anon := portal.NewTestVisitor(exp.Addr(), appHost)
+	wantPage(t, anon, "/", "v1 /")
+	held, _ := holdRequest(t, exp.Addr())
+
+	db, err := sql.Open("sqlite", filepath.Join(h.dir, "flats.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.Exec(`ALTER TABLE flats RENAME TO flats_gone`); err != nil {
+		t.Fatal(err)
+	}
+	setRequireAuth(t, h, true)
+	if _, err := db.Exec(`ALTER TABLE flats_gone RENAME TO flats`); err != nil {
+		t.Fatal(err)
+	}
+
+	registered := func() bool {
+		t.Helper()
+		has, err := h.mgr.HasProviderRoute(ctx, "app", provider.Portal)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return has
+	}
+	if !registered() {
+		t.Fatal("a stop that a running request holds forgot the route")
+	}
+	if ep := portalEndpointOf(t, h, "app"); ep.State != "error" || !strings.Contains(ep.Detail, core.TeardownPending) {
+		t.Fatalf("the endpoint of the route that a request holds = %+v", ep)
+	}
+	// The route never gives the flat to a new request: it answers 503, or it takes no connection once its listener is closed.
+	req, err := http.NewRequest(http.MethodGet, "http://"+exp.Addr()+"/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = appHost
+	if resp, err := http.DefaultClient.Do(req); err == nil {
+		body, _ := io.ReadAll(resp.Body)
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusServiceUnavailable || strings.Contains(string(body), "v1") {
+			t.Fatalf("the route that a request holds answers %d %q, want 503 and never the flat", resp.StatusCode, body)
+		}
+	}
+
+	count := h.px.Count()
+	setRequireAuth(t, h, false)
+	if !registered() || h.px.Count() != count {
+		t.Fatalf("the off-visit opened a route that a running request holds: registered %t, exposures %d to %d", registered(), count, h.px.Count())
+	}
+	events, err := h.st.ListEvents(ctx, "app", "exposure", 0, 100)
+	if err != nil || len(events) == 0 || !strings.Contains(events[len(events)-1].Message, "turned off, but the Portal route of app did not open") {
+		t.Fatalf("events = %+v, %v", events, err)
+	}
+
+	// The request ends. A visit that refuses the flat then confirms the stop, and the next off-visit opens the route.
+	held.Close()
+	for deadline := time.Now().Add(10 * time.Second); ; time.Sleep(100 * time.Millisecond) {
+		setRequireAuth(t, h, true)
+		if !registered() {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the stop was not confirmed after the request ended")
+		}
+		setRequireAuth(t, h, false)
+	}
+	count = h.px.Count()
+	setRequireAuth(t, h, false)
+	if h.px.Count() != count+1 {
+		t.Fatalf("exposures = %d, want one more: the off-visit did not open the route", h.px.Count())
+	}
+	exp2 := h.px.Of(t, "app")
+	exp2.SetRelays(portal.ReadyRelay("relay.test", appHost))
+	wantPage(t, portal.NewTestVisitor(exp2.Addr(), appHost), "/", "v1 /")
 }

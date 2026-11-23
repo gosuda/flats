@@ -178,3 +178,20 @@ func TestRequireAuthSignInOffDecidedAfterTheSettingChanged(t *testing.T) {
 		t.Fatalf("the result = %+v, %v, Portal serves %t", a, err, network.serves("app", ProviderPortal))
 	}
 }
+
+// The issue, a restart: with the setting off in config.json, a new service on the same files opens the Portal route of a flat
+// without sign-in, so a host that never turned the setting on, or turned it off again, serves as before.
+func TestRequireAuthRestartWithTheSettingOff(t *testing.T) {
+	s, path := newReloadService(t)
+	s.cfg.Lifecycle = newRequireAuthNet()
+	publicLifecycleFlat(t, s, "app", store.ProviderPortal, store.ProviderFunnel)
+	setRequireAuth(t, s, true)
+	setRequireAuth(t, s, false)
+	s2, restarted := restartOnFiles(t, path)
+	if s2.PortalRequireAuth() {
+		t.Fatal("the setting is on after the restart")
+	}
+	if !restarted.serves("app", ProviderPortal) || !restarted.serves("app", ProviderFunnel) {
+		t.Fatalf("after the restart Portal serves %t and Funnel serves %t", restarted.serves("app", ProviderPortal), restarted.serves("app", ProviderFunnel))
+	}
+}
