@@ -118,15 +118,22 @@ def crosses_break(value, joined, cuts):
     return False
 
 
+def normalize_breaks(text):
+    """The text with each CR LF and each bare CR read as LF."""
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
 def scan(text, values):
     """Withhold each line that holds a protected value, and find the values the text holds.
 
     Return the text with the withheld lines replaced, the number of withheld
     lines, and the protected values that the text holds. A value that holds a
     line break is searched for in the text as captured, so the line filter
-    cannot hide it. A value without a line break can only show across lines,
-    so it is searched for in the lines joined without their line breaks, and
-    only a match that crosses a line break counts.
+    cannot hide it, and also with CR LF and bare CR read as LF on both sides,
+    so a value printed with other line breaks still shows. A value without a
+    line break can only show across lines, so it is searched for in the lines
+    joined without their line breaks, and only a match that crosses a line
+    break counts.
     """
     kept, contents, cuts, withheld = [], [], [], 0
     length = 0
@@ -142,7 +149,11 @@ def scan(text, values):
         length += len(content)
         cuts.append(length)
     joined = "".join(contents)
-    matched = [value for value in values if not is_single(value) and value in text]
+    normalized = normalize_breaks(text)
+    matched = [
+        value for value in values
+        if not is_single(value) and (value in text or normalize_breaks(value) in normalized)
+    ]
     matched += [value for value in values if is_single(value) and crosses_break(value, joined, cuts)]
     return "".join(kept), withheld, matched
 

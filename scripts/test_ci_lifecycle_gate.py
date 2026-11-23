@@ -461,6 +461,33 @@ class DriverTests(unittest.TestCase):
                 self.assertEqual(len(out.splitlines()), 2)
                 self.assertIn("leak", out.splitlines()[-1])
 
+    def test_a_value_printed_with_other_line_breaks_is_a_leak(self):
+        cases = {
+            "LF value printed with CR LF": (
+                "line-one-aaaa1111\nline-two-bbbb2222",
+                "printf 'line-one-aaaa1111\\r\\nline-two-bbbb2222\\r\\n'\n",
+            ),
+            "LF value printed with bare CR": (
+                "line-one-aaaa1111\nline-two-bbbb2222",
+                "printf 'line-one-aaaa1111\\rline-two-bbbb2222\\r'\n",
+            ),
+            "CR LF value printed with LF": (
+                "line-one-aaaa1111\r\nline-two-bbbb2222",
+                "printf 'line-one-aaaa1111\\nline-two-bbbb2222\\n'\n",
+            ),
+            "CR LF value printed with bare CR": (
+                "line-one-aaaa1111\r\nline-two-bbbb2222",
+                "printf 'line-one-aaaa1111\\rline-two-bbbb2222\\r'\n",
+            ),
+        }
+        for label, (value, printer) in cases.items():
+            with self.subTest(case=label):
+                body = printer + self.evidence_body(self.evidence(passing_report()))
+                code, out, summary = self.run_wrapper(body, env={"TEST_DEPLOY_KEY": value})
+                self.assertEqual(code, 1)
+                self.assertEqual(out, f"{WITHHELD_OUTPUT}\nFAIL: leak of TEST_DEPLOY_KEY\n")
+                self.assertNotIn("line-one-aaaa1111", summary)
+
     def test_a_secret_printed_before_a_timeout_is_withheld_on_that_path_too(self):
         body = 'printf "%s\\n" "$TEST_DEPLOY_KEY"\nexec sleep 60\n'
         code, out, _ = self.run_wrapper(
