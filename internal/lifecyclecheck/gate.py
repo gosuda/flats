@@ -651,11 +651,17 @@ def approval_boundary(h):
         "delete_env": {"slug": "boundary", "name": "MODE"},
         "get_notebook": {"slug": "boundary"},
         "update_notebook": {"slug": "boundary", "op_id": "lc-1", "ops": [NOTEBOOK_PAGE]},
+        "get_board": {"slug": "boundary"},
+        "get_board_share": {"slug": "boundary"},
+        "update_board": {"slug": "boundary", "op_id": "census-board-1", "ops": []},
+        "import_board": {"slug": "boundary", "op_id": "census-import-1", "archive": "UEsFBgAAAAAAAAAAAAAAAAAAAAAAAA==", "mode": "add"},
     }
     refusals = {"get_document": "not_docs", "update_document": "not_docs", "get_design": "not_design",
                 "list_revisions": "no_revisions", "get_revision": "no_revisions",
                 "pin_revision": "no_revisions", "rollback_revision": "no_revisions",
-                "get_notebook": "not_notebook", "update_notebook": "not_notebook"}
+                "get_notebook": "not_notebook", "update_notebook": "not_notebook",
+                "get_board": "not_board", "get_board_share": "not_board",
+                "update_board": "not_board", "import_board": "not_board"}
     census = []
     for tool in tools:
         name = tool['name']
