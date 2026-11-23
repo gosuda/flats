@@ -721,13 +721,40 @@ def approval_boundary(h):
                     "boundary": "console transport only; no separate operator credential"})
 
 
+def version_rows(h, slug):
+    # Read-only, with the store's busy timeout: the live server writes in WAL mode.
+    path = h.data / "flats.db"
+    require(path.is_file(), f"{slug}: store file is missing: {path}")
+    try:
+        conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=5.0)
+    except sqlite3.Error as error:
+        raise AssertionError(f"{slug}: cannot open the store: {error}") from error
+    try:
+        versions = conn.execute("SELECT number, hash, published, pruned FROM versions WHERE flat = ? ORDER BY number",
+                                (slug,)).fetchall()
+        numbers = conn.execute("SELECT number FROM version_numbers WHERE flat = ? ORDER BY number", (slug,)).fetchall()
+    except sqlite3.Error as error:
+        raise AssertionError(f"{slug}: cannot read the version rows: {error}") from error
+    finally:
+        conn.close()
+    return {"versions": versions, "version_numbers": numbers}
+
+
+def approval_states(h):
+    return sorted((a['id'], a['status']) for a in h.ok('GET', '/api/approvals')['approvals'])
+
+
 def notebook_writes_need_no_approval(h, pending):
     h.mcp('create_flat', slug='boundary-notebook', type='notebook')
     require(h.flat('boundary-notebook')['type'] == 'notebook', 'MCP create_flat did not create a notebook')
     h.mcp('get_notebook', slug='boundary-notebook')
+    before = version_rows(h, 'boundary-notebook')
+    approvals_before = approval_states(h)
+    require(before["versions"], 'notebook snapshot has no creation row')
     written = h.mcp('update_notebook', slug='boundary-notebook', op_id='lc-2', ops=[NOTEBOOK_PAGE])
     require(not written.get('approval') and not written.get('deploy'), f"notebook write requested an approval: {written}")
-    require(h.versions('boundary-notebook') == [], 'notebook write allocated a website version')
+    require(version_rows(h, 'boundary-notebook') == before, 'notebook write changed the version rows')
+    require(approval_states(h) == approvals_before, 'notebook write changed the approval list')
     require(h.ok('GET', f'/api/approvals/{pending}')['status'] == 'pending', 'notebook write decided existing approval')
 
 
