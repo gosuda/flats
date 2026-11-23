@@ -117,6 +117,14 @@ Rules:
   previews, the console and MCP are not behind sign-in. While it is on, the
   flat is Public through Portal alone: the operator cannot allow it another
   public provider.
+* The operator can also set the host setting `portal.require_auth`. While it
+  is on, Portal serves a flat only when the flat has sign-in. The Portal
+  endpoint of a Public flat without sign-in is then `unavailable`, and its
+  `detail` names the setting and the next step. Do not tell the user that
+  such a flat is available on its Portal address. Only the operator changes
+  the setting, in the console, and no agent can. Turning sign-in off for a
+  flat while the setting is on stops its Portal route instead of opening it
+  to anyone.
 * A visitor who signs in is still a Public visitor: documents, designs and
   boards stay view only, or open to guest editing as the Public level says.
   A server flat gets the visitor in request headers (`topic.server`).

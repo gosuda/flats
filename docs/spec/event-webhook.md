@@ -62,7 +62,7 @@ Out of scope:
 
 - A console view, a route or an MCP tool for the webhook, and a test button. The operator sets the keys with `flats key`
   while the host is stopped. A console form is a later change.
-- Webhook events for the host-wide `network.permitted` list, for the creation of a flat, for the public instance mode, for
+- Webhook events for the host-wide `network.permitted` list and `portal.require_auth` setting, for the creation of a flat, for the public instance mode, for
   the downgrade of a stored public access level when guest editing is off, for the grant that `PreserveLegacyTailscale`
   inserts, for the statuses that `resumeApplying` and `AdoptLegacyDraft` write, and for secrets and operator keys. A
   set or a removal of the client secret of [Portal sign-in](portal-sign-in.md) sends nothing either, as every secret

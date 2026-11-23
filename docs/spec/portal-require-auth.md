@@ -1,6 +1,6 @@
 # Portal require_auth
 
-Status: planned. The request is issue #222. It depends on [Portal sign-in](portal-sign-in.md) (#221), which is
+Status: implemented. The request is issue #222. It depends on [Portal sign-in](portal-sign-in.md) (#221), which is
 implemented.
 
 ## Summary
@@ -152,8 +152,8 @@ The author of this spec decided these points, and each can change before the imp
       `portal.require_auth is on and <slug> has no sign-in. Run flats signin set <slug> to turn sign-in on, or turn the
       setting off in the console.` A flat that is refused is always Public. For a flat that has a grant for another
       public provider that sign-in excludes, the host refuses `flats signin set` (sign-in rule 8), so the detail is:
-      `portal.require_auth is on and <slug> has no sign-in. Sign-in is refused while <providers> is granted. Make the
-      flat Private, revoke <providers> under Networks, then run flats signin set <slug>. Or turn the setting off in the
+      `portal.require_auth is on and <slug> has no sign-in. Sign-in is refused while a grant for <providers> exists. Make
+      the flat Private, revoke <providers> under Networks, then run flats signin set <slug>. Or turn the setting off in the
       console.` Every action in these texts is one that the host accepts for such a flat. When the stop of a served
       route is not confirmed, the endpoint has the state `error` and the detail followed by `; the stop of the route is
       not confirmed: <cause>`, as in sign-in rule 35.
@@ -272,15 +272,14 @@ The author of this spec decided these points, and each can change before the imp
     Portal open, so the Portal route stops. The title and the warning of the approval page read the setting when the
     page renders: while it is on, the title is `Turn off sign-in for <slug>: its Portal address stops serving it` and the
     page does not say that anyone can open the address. With the setting off, the texts of sign-in rule 64 stay as they
-    are. The result of the approval reads the setting at the apply and says what happened: the Portal route stopped, or
-    the Portal address is open to anyone. When the flat is not Public at the apply, the result says only that sign-in is
-    off. When the setting changes between the render and the decision, the result tells the truth and the approval is
+    are. The result of the approval reads the setting at the apply. While the setting is on and the flat is Public, it says
+    that the Portal route of the flat is stopped; otherwise it is as before. When the setting changes between the render and the decision, the result tells the truth and the approval is
     not stale.
 22. A flat created by public instance mode with Portal as the default public network is Public with no sign-in. While
     the setting is on, its Portal route is refused, and the flat is reachable on no route that serves it, because the
     mode turns private links off. The endpoint detail of rule 10 says what to do. The mode and the setting stay
-    independent, and neither changes the other. The texts of the mode that say that anyone can open a new flat say it
-    for a flat that its network serves.
+    independent, and neither changes the other. The agent guide of the mode says that Portal refuses such a flat and that
+    the agent must not tell the user that it is available.
 
 ## Surfaces
 
@@ -316,11 +315,9 @@ The author of this spec decided these points, and each can change before the imp
       that sign-in rule 7 allows, and the lists of occasions that open a Portal route (rules 35 and 38) gain the visit of
       rule 17 here;
     - [config reload](config-reload.md): requirement 4 lists `portal.require_auth` as a key with immediate effect;
-    - [Operator keys and console domains](console-settings.md): the settings list and the console toggle;
-    - [public instance mode](public-instance.md): a note on rule 22 here, and the lines (85 to 89) that say that anyone
-      can open a new flat;
-    - [audit events](audit-events.md) and [event webhook](event-webhook.md): the scope lines that name host settings gain
-      this setting as one that writes nothing;
+    - [public instance mode](public-instance.md): a note on rule 22 here;
+    - [event webhook](event-webhook.md): the scope line that names the host-wide settings gains this setting as one that
+      sends nothing ([audit events](audit-events.md) already excludes every change of `config.json`);
     - `docs/spec/README.md`: the row of this spec.
 
 ## Docs
@@ -339,8 +336,7 @@ The author of this spec decided these points, and each can change before the imp
     - `docs/design.md`: the Portal sign-in design text and Exposure gain the setting;
     - `docs/agent/topics/approvals.md`: the agent guide for Portal sign-in says that the setting can stop a Portal route
       that sign-in off would open;
-    - the texts of public instance mode in `internal/mcpx/public_instance.go` and in `docs/agent/public-instance.md`, as
-      rule 22 says;
+    - the agent guide of public instance mode, `docs/agent/public-instance.md`, as rule 22 says;
     - the CLI help of `flats status`, if it lists its notes;
     - the tests that pin changed texts change with them.
 

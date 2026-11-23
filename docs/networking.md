@@ -727,6 +727,22 @@ still the name that the visitor types.
   you can make the flat Private in the console, but turning sign-in off needs
   `flats signin off` on the host.
 
+**Requiring sign-in for the whole host.** One missed flat setting can open a
+page to the internet. The host setting
+[`portal.require_auth`](configuration.md#configjson) closes that gap for
+Portal: while it is on, Portal serves a flat only when the flat has sign-in
+(the [spec](spec/portal-require-auth.md) has the rules). A Public flat
+without sign-in gets no Portal route, and a Portal route that serves such a
+flat stops when you turn the setting on. The endpoint of the refused route
+has the state `unavailable` and a detail that names the next step, and
+`flats status` lists the refused flats. The setting covers Portal only: a
+flat can still be Public on another public provider without sign-in, so turn
+those providers off for the whole host with `network.permitted`. The private
+routes of a refused flat stay. Turning sign-in off for a flat while the
+setting is on stops its Portal route instead of opening it to anyone. Only
+the operator changes the setting, from the console, in `config.json` or with
+`flats config set`, and agents cannot.
+
 **Changes for a flat without sign-in.** Client copies of `X-Flats-Visitor-*`,
 `X-Portal-User`, `X-Portal-Auth`, `X-Portal-Proof` and
 `X-Portal-Access-Credential` no longer reach flat code on any route. A rename
