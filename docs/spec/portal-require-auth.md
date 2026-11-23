@@ -155,8 +155,10 @@ The author of this spec decided these points, and each can change before the imp
       `portal.require_auth is on and <slug> has no sign-in. Sign-in is refused while a grant for <providers> exists. Make
       the flat Private, revoke <providers> under Networks, then run flats signin set <slug>. Or turn the setting off in the
       console.` Every action in these texts is one that the host accepts for such a flat. When the stop of a served
-      route is not confirmed, the endpoint has the state `error` and the detail followed by `; the stop of the route is
-      not confirmed: <cause>`, as in sign-in rule 35.
+      route is not confirmed, the result of the open has the state `error` and the detail followed by `; the stop of the
+      route is not confirmed: <cause>`, as in sign-in rule 35. The route stays registered, so the flat view then shows the
+      row of the Portal backend: the state `error` and the detail `teardown pending confirmation` (`core.TeardownPending`),
+      with the reason of the gate when the visit stopped it. The flat event of the visit names the setting and the cause.
     - When a served route stops, the host writes one flat event (level `warn`, kind `exposure`) with the same text and
       one host log line with the slug. A refused open of a route that was not served writes the event only when its
       caller writes one (a restart or a deploy writes the `exposure` event today).
@@ -244,7 +246,9 @@ The author of this spec decided these points, and each can change before the imp
       restarts.` The host writes one host log line that gives the number of flats that it stopped and their slugs (at
       most 20, then `and N more`). A flat with sign-in on loses its Portal route the same way.
     - A flat that these two paths stopped, or whose stop was not confirmed, is opened again by a deploy, a grant, a
-      restart, a sign-in change, or the visit of rule 17 after the setting is turned off.
+      restart, a sign-in change, or the visit of rule 17 after the setting is turned off. A stop that waits for a running
+      request is confirmed only after that request has ended: each earlier attempt waits for the shutdown limit of the
+      backend and fails, and the flat event says so.
     - When the write of a flat event fails, as it does with a store fault, the host log holds the text of the event with
       the slug. So the log names every flat that a path of this rule stopped.
     - A failure of the re-serve after `revokeRoute` leaves the Portal route stopped and the other public routes of the
@@ -358,7 +362,8 @@ The author of this spec decided these points, and each can change before the imp
   rule 10. Rule 7 keeps every later open refused.
 - A Portal route whose unregistration the relay refused stays registered, in the state `error`, because the Portal SDK closes
   once. The backend counts the stop as confirmed after the lease of the relay has expired (2 minutes), so the visit that
-  turns the setting off opens such a route only after that time. A deploy, a grant, a restart, a sign-in change, or the next
+  turns the setting off opens such a route only after that time. A route that a running request holds is confirmed only after
+  the request has ended, and each attempt before that waits for the shutdown limit of the backend. A deploy, a grant, a restart, a sign-in change, or the next
   visit that turns the setting off, opens it then.
 - A short request that the Portal route accepted before the change can finish after it. Rule 16 ends the open
   connections, and rule 15 refuses the next request.
@@ -402,7 +407,7 @@ in package `core`. A failure of a read uses a store that a test makes fail. No t
   rename redirect still answers. After the setting turns off, the visit of rule 17 opens the stopped routes again, for a
   flat with sign-in off and for one with sign-in on, whose gate builds again. A slug that `Service.live` holds and `Service.redir` holds as a
   redirect source is not stopped. A flat with a running request that is not a WebSocket stays registered and answers
-  503, and the visit of rule 17 opens it after the setting turns off. With a store that also fails the write of flat
+  503, and the visit of rule 17 opens it after the setting turns off and that request has ended. With a store that also fails the write of flat
   events, the host log holds the text of each event with the slug, and its one line names the stopped flats. A failed
   read on the off-visit leaves that flat stopped and writes the `error` event.
 - Fail closed, other: a failure of the re-serve after `revokeRoute` leaves the Portal route stopped, and the flat event
