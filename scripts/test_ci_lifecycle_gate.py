@@ -333,6 +333,7 @@ class DriverTests(unittest.TestCase):
         body = 'echo "PASS: draft-save-conflict"\n' + self.evidence_body(self.evidence(passing_report()))
         code, out, _ = self.run_wrapper(body)
         self.assertEqual(code, 0, out)
+        self.assertIn("PASS: draft-save-conflict\n", out)
 
     def test_canary_only_in_evidence_json_withholds_the_output_and_fails(self):
         report = passing_report()
@@ -432,12 +433,6 @@ class DriverTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("First failure, draft-save-conflict: stop failed: exit status 2", summary)
         self.assertNotIn("None", summary)
-
-    def test_output_without_a_protected_value_is_printed_as_is(self):
-        body = 'echo "PASS: draft-save-conflict"\n' + self.evidence_body(self.evidence(passing_report()))
-        code, out, _ = self.run_wrapper(body)
-        self.assertIn("PASS: draft-save-conflict\n", out)
-
 
 if __name__ == "__main__":
     unittest.main()
