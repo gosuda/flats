@@ -51,11 +51,13 @@ const entryList = (list) => (list.length
 
 // describeSignIn is the title of a set_signin approval of flat with the
 // params p.
-export function describeSignIn(flat, p) {
+export function describeSignIn(flat, p, requireAuth) {
   const from = signInOn(p.from);
   const to = signInOn(p.to);
   if (to && !from) return `Turn on sign-in for ${flat}`;
-  if (from && !to) return `Turn off sign-in for ${flat}: anyone can open its Portal address`;
+  // While portal.require_auth is on, no sign-in means that Portal does not serve the flat, so the address stops
+  // answering instead of opening to anyone (docs/spec/portal-require-auth.md, rule 21).
+  if (from && !to) return `Turn off sign-in for ${flat}: ${requireAuth ? 'its Portal address stops serving it' : 'anyone can open its Portal address'}`;
   return `Change the sign-in of ${flat}`;
 }
 
@@ -71,11 +73,12 @@ function entryChanges(from, to) {
 // widening says why a request widens who can open the Portal address of a
 // flat: sign-in goes off, an entry is added, or the provider, the issuer or
 // the client ID changes. Turning sign-in on narrows it, so it says nothing.
-export function widening(p) {
+export function widening(p, requireAuth) {
   const from = p.from;
   const to = p.to;
   if (!signInOn(from)) return [];
-  if (!signInOn(to)) return ['Sign-in goes off: anyone can open its Portal address while the flat is Public.'];
+  // With portal.require_auth on, turning sign-in off stops the Portal address; it does not open it (rule 21).
+  if (!signInOn(to)) return requireAuth ? [] : ['Sign-in goes off: anyone can open its Portal address while the flat is Public.'];
   const out = [];
   if (from.provider !== to.provider) out.push(`The provider changes from ${providerName(from)} to ${providerName(to)}.`);
   else if (to.provider === 'oidc') {
@@ -128,22 +131,30 @@ export function signInFacts(p) {
 // what widens access, and the text of rule 27 when the stored client secret
 // (from view, the sign-in of the flat now) has another binding than the
 // requested setting.
-export function signInNotes(slug, p, view) {
-  const reasons = widening(p);
+export function signInNotes(slug, p, view, requireAuth) {
+  const reasons = widening(p, requireAuth);
   const mismatch = secretMismatch(slug, p.to, view && view.client_secret, true);
   return [
     reasons.length ? h('div', { class: 'alert alert-warn', role: 'alert' },
       h('strong', { text: `This change widens who can open the Portal address of ${slug}.` }),
       h('ul', { class: 'compact' }, reasons.map((r) => h('li', { text: r })))) : null,
+    requireAuthStop(slug, p, requireAuth) ? h('p', { class: 'alert alert-warn', text: requireAuthStop(slug, p, requireAuth) }) : null,
     mismatch ? h('p', { class: 'alert alert-warn', text: mismatch }) : null,
   ].filter(Boolean);
 }
 
+// requireAuthStop is the warning of rule 21 for a request that turns sign-in off while portal.require_auth is on, or ''.
+function requireAuthStop(slug, p, requireAuth) {
+  return requireAuth && signInOn(p.from) && !signInOn(p.to)
+    ? `portal.require_auth is on, so Portal does not serve a flat without sign-in. If you approve, the Portal address of ${slug} stops serving it.` : '';
+}
+
 // signInConfirmNotice is the warning of the confirmation before a set_signin
 // approval is approved, or ''.
-export function signInConfirmNotice(slug, p, view) {
-  const reasons = widening(p);
+export function signInConfirmNotice(slug, p, view, requireAuth) {
+  const reasons = widening(p, requireAuth);
   return [reasons.length ? `This change widens who can open the Portal address of ${slug}. ${reasons.join(' ')}` : '',
+    requireAuthStop(slug, p, requireAuth),
     secretMismatch(slug, p.to, view && view.client_secret, true)].filter(Boolean).join(' ');
 }
 

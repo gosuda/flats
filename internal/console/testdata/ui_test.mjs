@@ -1717,6 +1717,24 @@ await tick();
 assert.equal(puts().length, putCount + 1);
 assert.deepEqual(JSON.parse(puts().at(-1).body), { portal_hide: 'true' });
 
+// portal.require_auth is a switch of the same page that applies at once (docs/spec/portal-require-auth.md, rule 23).
+page = await mountSettings(['networks', 'portal']);
+const authBox = byId(page, 'set-portal_require_auth');
+assert.equal(authBox.getAttribute('role'), 'switch');
+assert.equal(authBox.checked, false);
+assert.ok(byId(page, 'set-portal_require_auth-help').textContent.includes('Portal serves a flat only when the flat has sign-in'));
+assert.ok(byId(page, 'set-portal_require_auth-help').textContent.includes('Other public providers are not covered'));
+assert.ok(byId(page, 'row-portal_require_auth').textContent.includes('Applies at once'));
+assert.ok(!byId(page, 'row-portal_require_auth').textContent.includes('Applies after restart'));
+authBox.checked = true;
+byId(page, 'portal-form').dispatch('change');
+assert.ok(savebarOf(page).textContent.includes('Serve flats on Portal only with sign-in: Off → On'));
+putCount = puts().length;
+byId(page, 'portal-form').dispatch('submit');
+await tick();
+assert.equal(puts().length, putCount + 1);
+assert.deepEqual(JSON.parse(puts().at(-1).body), { portal_require_auth: 'true' });
+
 // Networks lists new-flat defaults, then Private and Public providers, each
 // a row that opens its own page.
 routes['GET /console/api/settings'] = settingsRoute({ ...CONFIG, etag: 'etag-9', pinned: {} });
@@ -3013,6 +3031,29 @@ const minutesEdit = { ...minutes, public_access: 'edit', public_presence: { gues
   stopFailingFlat();
   routes['GET /console/api/flats/blog'] = blog;
 
+  // The Networks row of Portal shows the reason of a route that portal.require_auth refuses, and nothing for a route
+  // that is ready (docs/spec/portal-require-auth.md, rule 24).
+  const REFUSED = 'portal.require_auth is on and blog has no sign-in. Run flats signin set blog to turn sign-in on, or turn the setting off in the console.';
+  const refusedPortal = { ...blog, visibility: 'public-listed', providers: ['portal'],
+    endpoints: [ep('local', 'http://blog.localhost:7879/'), { provider: 'portal', audience: 'current', host: 'blog', permitted: true, configured: true, ready: false, state: 'unavailable', detail: REFUSED }] };
+  routes['GET /console/api/flats/blog'] = refusedPortal;
+  const refusedFlat = new Element('main');
+  const stopRefusedFlat = flat.mountSettings(refusedFlat, ['blog'], ctx);
+  await tick();
+  const refusedRow = byId(refusedFlat, 'net-portal').parentNode;
+  assert.ok(refusedRow.textContent.includes('unavailable') && refusedRow.textContent.includes(REFUSED), refusedRow.textContent);
+  assert.equal(all(refusedRow, (e) => (e.getAttribute('class') || '').includes('badge-unavailable')).length, 1);
+  assert.equal(all(refusedRow, (e) => e.tagName === 'A').length, 0, 'the Portal row shows no address');
+  stopRefusedFlat();
+  const servingPortal = { ...refusedPortal, endpoints: [ep('local', 'http://blog.localhost:7879/'), { ...ep('portal', 'https://blog.portal.example'), host: 'blog', ready: true, detail: '' }] };
+  routes['GET /console/api/flats/blog'] = servingPortal;
+  const servingFlat = new Element('main');
+  const stopServingFlat = flat.mountSettings(servingFlat, ['blog'], ctx);
+  await tick();
+  assert.equal(all(byId(servingFlat, 'net-portal').parentNode, (e) => (e.getAttribute('class') || '').includes('badge')).length, 0, 'a Portal route that serves shows no badge');
+  stopServingFlat();
+  routes['GET /console/api/flats/blog'] = blog;
+
   // A flat's Networks list names both kinds and shows the proxy address with
   // the note that Flats cannot check the proxy.
   const proxied = { ...blog, visibility: 'private', providers: ['proxy'], private_url: 'https://blog.site.example.org', private_state: 'ready', private_detail: DETAIL,
@@ -3605,6 +3646,12 @@ const minutesEdit = { ...minutes, public_access: 'edit', public_presence: { gues
     assert.equal(title(on, { provider: 'credential', allow: ['alice', 'bob'] }), 'Change the sign-in of gated');
     assert.equal(title(on, off), 'Turn off sign-in for gated: anyone can open its Portal address');
     assert.equal(approvalsPage.describeApproval({ action: 'set_signin', flat: 'gated', params: JSON.stringify({ from: on, to: off }) }), 'Turn off sign-in for gated: anyone can open its Portal address');
+    // With portal.require_auth on, turning sign-in off stops the Portal address, and the page warns of that and not of
+    // a widening (docs/spec/portal-require-auth.md, rule 21).
+    const guarded = (from, to) => ({ action: 'set_signin', flat: 'gated', portal_require_auth: true, params: { from, to } });
+    assert.equal(approvalsPage.describeApproval(guarded(on, off)), 'Turn off sign-in for gated: its Portal address stops serving it');
+    assert.equal(approvalsPage.describeApproval(guarded(off, on)), 'Turn on sign-in for gated');
+    assert.equal(approvalsPage.describeApproval(guarded(on, { provider: 'credential', allow: ['alice', 'bob'] })), 'Change the sign-in of gated');
     routes['GET /console/api/approvals'] = { approvals: [{ id: 'apr-si-on', action: 'set_signin', flat: 'gated', via: 'cli', status: 'pending', requested_at: '2026-10-03T00:00:00Z', params: { from: off, to: on } }] };
     main = new Element('main');
     approvalsPage.mountList(main, [], ctx);
@@ -3676,6 +3723,16 @@ const minutesEdit = { ...minutes, public_access: 'edit', public_presence: { gues
     assert.deepEqual(signin.widening({ from: on, to: fromOIDC }), ['The provider changes from Access links to OpenID Connect.', '2 entries are added to the allowlist.']);
     assert.deepEqual(signin.widening({ from: { ...on, allow: ['alice', 'bob'] }, to: on }), []);
     assert.deepEqual(signin.widening({ from: { provider: 'credential', count: 2 }, to: { provider: 'credential', count: 1 } }), ['The console cannot compare the entries of this request.']);
+    // Sign-in off widens access only while portal.require_auth is off.
+    assert.deepEqual(signin.widening({ from: on, to: off }), ['Sign-in goes off: anyone can open its Portal address while the flat is Public.']);
+    assert.deepEqual(signin.widening({ from: on, to: off }, true), []);
+    assert.ok(signin.signInConfirmNotice('gated', { from: on, to: off }, null, true).includes('the Portal address of gated stops serving it'));
+    assert.ok(!signin.signInConfirmNotice('gated', { from: on, to: off }, null, true).includes('widens'));
+    assert.ok(signin.signInConfirmNotice('gated', { from: on, to: off }, null, false).includes('widens'));
+    assert.equal(signin.signInConfirmNotice('gated', { from: off, to: on }, null, true), '');
+    assert.equal(signin.signInNotes('gated', { from: on, to: off }, null, true).length, 1);
+    assert.equal(signin.signInNotes('gated', { from: on, to: off }, null, false).length, 1);
+    assert.equal(signin.signInNotes('gated', { from: off, to: on }, null, true).length, 0);
     assert.equal(signin.secretMismatch('idp', toOIDC, { issuer: toOIDC.issuer, client_id: 'flats-app' }, true), '', 'a client secret of the same binding is no problem');
     // A request whose sign-in changed since cannot be approved (rule 18).
     signInApproval('apr-si-stale', fromOIDC, toOIDC, 0);

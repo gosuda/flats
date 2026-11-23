@@ -409,7 +409,7 @@ a.menu-item { text-decoration: none; color: inherit; display: block; }
   background: var(--surface-2); color: var(--muted); border: 1px solid var(--border); vertical-align: middle; white-space: nowrap;
 }
 .badge-live, .badge-ready, .badge-approved { background: var(--ok-bg); color: var(--ok); border-color: transparent; }
-.badge-warn, .badge-draft, .badge-pending, .badge-key-expiring, .badge-starting { background: var(--warn-bg); color: var(--warn); border-color: transparent; }
+.badge-warn, .badge-draft, .badge-pending, .badge-key-expiring, .badge-starting, .badge-unavailable { background: var(--warn-bg); color: var(--warn); border-color: transparent; }
 .badge-error, .badge-failed, .badge-rejected, .badge-needs-login { background: var(--danger-bg); color: var(--danger); border-color: transparent; }
 td > .badge:first-child { margin-left: 0; }
 

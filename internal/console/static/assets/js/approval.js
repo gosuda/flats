@@ -48,7 +48,7 @@ export function describeApproval(a) {
   if (a.action === 'activate') return `Publish version ${p.version} of ${a.flat} (put it live)`;
   if (a.action === 'rollback') return `Roll back ${a.flat} to version ${p.version}` + (p.restore_data ? ' and restore its data' : '');
   if (a.action === 'restore_data') return `Restore the data of ${a.flat}`;
-  if (a.action === 'set_signin') return describeSignIn(a.flat, p);
+  if (a.action === 'set_signin') return describeSignIn(a.flat, p, a.portal_require_auth);
   return `${a.action} on ${a.flat}`;
 }
 
@@ -159,7 +159,7 @@ export function mount(main, [id], ctx) {
       return;
     }
     if (a.action === 'set_signin' && a.status === 'pending') {
-      for (const note of signInNotes(a.flat, p, signIn)) body.appendChild(note);
+      for (const note of signInNotes(a.flat, p, signIn, a.portal_require_auth)) body.appendChild(note);
     }
     const grantsEdit = a.action === 'set_visibility' && p.access === 'edit';
     const notice = a.action === 'set_visibility' && !grantsEdit ? visibilityNotice(p.visibility, flat) : '';
@@ -195,7 +195,7 @@ export function mount(main, [id], ctx) {
   async function decide(a, yes, flat, signIn) {
     const p = params(a);
     const notice = !yes ? ''
-      : a.action === 'set_signin' ? signInConfirmNotice(a.flat, p, signIn)
+      : a.action === 'set_signin' ? signInConfirmNotice(a.flat, p, signIn, a.portal_require_auth)
         : a.action !== 'set_visibility' ? ''
           : p.access === 'edit' ? `${signInOf(flat) ? 'Anyone who passes its sign-in' : 'Anyone on the internet who has the link'} will be able to add, change and delete ${editWords(flat).everything}.`
             : visibilityNotice(p.visibility, flat);
