@@ -516,6 +516,22 @@ class DriverTests(unittest.TestCase):
         self.assertNotIn(CANARY, summary)
         self.assertIn(f"leak of {CANARY_NAME}", out.splitlines()[-1])
 
+    def test_a_canary_split_across_two_lines_of_the_first_failure_message_is_a_leak(self):
+        report = passing_report()
+        report["cases"][0] = {
+            "id": "draft-save-conflict",
+            "lane": LOCAL_LANE,
+            "outcome": "fail",
+            "error": CANARY[:16] + "\n" + CANARY[16:],
+        }
+        body = 'echo "ordinary-line-visible"\n' + self.evidence_body(self.evidence(report))
+        code, out, summary = self.run_wrapper(body)
+        self.assertEqual(code, 1)
+        self.assertNotIn("ordinary-line-visible", out)
+        self.assertIn(f"leak of {CANARY_NAME}", out.splitlines()[-1])
+        for half in (CANARY[:16], CANARY[16:]):
+            self.assertNotIn(half, summary)
+
 
 if __name__ == "__main__":
     unittest.main()
