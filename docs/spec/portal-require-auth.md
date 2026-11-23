@@ -354,7 +354,12 @@ The author of this spec decided these points, and each can change before the imp
   restart (rule 9).
 - An open that is not the visit, such as a grant or a key change, can stop the Portal route of a flat between the change of
   the setting and the visit of that flat. It ends no connection that is open on Portal, because only the visit revokes the
-  epoch. Such a connection stays until it closes or the host restarts. Rule 7 keeps every later open refused.
+  epoch. Such a connection stays until it closes or the host restarts. That stop writes no flat event and no host log line of
+  rule 10. Rule 7 keeps every later open refused.
+- A Portal route whose unregistration the relay refused stays registered, in the state `error`, because the Portal SDK closes
+  once. The backend counts the stop as confirmed after the lease of the relay has expired (2 minutes), so the visit that
+  turns the setting off opens such a route only after that time. A deploy, a grant, a restart, a sign-in change, or the next
+  visit that turns the setting off, opens it then.
 - A short request that the Portal route accepted before the change can finish after it. Rule 16 ends the open
   connections, and rule 15 refuses the next request.
 - The rename redirect of an old slug stays on Portal, and its target is the Portal address of the flat. While the flat
@@ -404,6 +409,11 @@ in package `core`. A failure of a read uses a store that a test makes fail. No t
   names the failure. A save whose request is cancelled after the commit still completes the visit. Two changes that
   run at the same time, many times, end with the state of the last value, also when the visit of the earlier change
   runs late.
+- A stop that was not confirmed: with the real provider manager and the real Portal backend, a route whose unregistration the
+  relay refused stays registered in the state `error`, with the detail of the backend, on the path of the visit and on the path
+  of a failed list. After the lease has expired, the visit that turns the setting off opens it again. A registered route in the
+  state `error` for another cause, and a failed read of the routes, are not taken for it: the first is left alone, and the second
+  writes the `error` event of rule 17.
 - Not affected: a flat with sign-in on serves through its gate with the setting on. A flat with sign-in on whose gate
   cannot be built is stopped by sign-in rule 35 as before. The rename redirect of an old slug opens with the setting
   on, on a backend with the gate and on one without it (the plain `Serve` of `serveRedirect`). A private route and a

@@ -482,7 +482,9 @@ restart. When the host cannot list the flats, it stops the Portal route of
 every flat that has one, with sign-in on or off, and ends no connection: a
 Portal connection that is open stays until it closes or the host restarts. A
 grant or a key change that runs between the change and the visit of a flat
-stops its Portal route in the same way, without ending its open connections. A
+stops its Portal route in the same way, without ending its open connections and
+without the event of this setting. A route whose unregistration the relay refused
+opens again only after the lease of the relay has expired (2 minutes). A
 deploy, a grant, a restart, a sign-in change, or turning the setting off,
 opens a stopped Portal route again. An older release refuses a `config.json`
 that holds `portal.require_auth`, as it refuses any key it does not know, so
