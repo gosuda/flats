@@ -463,8 +463,8 @@ sign-in gets no Portal route, and a Portal route that already serves such a
 flat stops when you turn the setting on. The flat stays Public on its other
 public providers and keeps its private routes. The Portal endpoint of a
 refused flat has the state `unavailable` and a detail that names the next
-step. The detail shows in the console, in the flat view and in
-`flats status`, which also lists the refused flats. Turning the setting off
+step. The detail shows in the console and in the flat view, and
+`flats status` lists the refused flats. Turning the setting off
 opens the stopped Portal routes again. The setting covers Portal only:
 `network.permitted` is the switch of every other public provider, and a flat
 can still be Public on one of them without sign-in. Only the operator changes
@@ -481,6 +481,8 @@ the other public routes of the flat answer 503 until a deploy, a grant or a
 restart. When the host cannot list the flats, it stops the Portal route of
 every flat that has one, with sign-in on or off, and ends no connection: a
 Portal connection that is open stays until it closes or the host restarts. A
+grant or a key change that runs between the change and the visit of a flat
+stops its Portal route in the same way, without ending its open connections. A
 deploy, a grant, a restart, a sign-in change, or turning the setting off,
 opens a stopped Portal route again. An older release refuses a `config.json`
 that holds `portal.require_auth`, as it refuses any key it does not know, so

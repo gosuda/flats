@@ -249,7 +249,7 @@ The author of this spec decided these points, and each can change before the imp
       the slug. So the log names every flat that a path of this rule stopped.
     - A failure of the re-serve after `revokeRoute` leaves the Portal route stopped and the other public routes of the
       flat answering 503 on the cancelled epoch until a deploy, a grant or a restart serves them again. The flat event
-      names those routes and says so.
+      names the failure and says that a public route that did not open again answers 503.
     - A save of the same value runs no visit, because only a change of the value does.
     - The visit uses a context that the request does not cancel, as `applyHostListing` does. A client that drops the
       request does not leave a flat served. A reload by SIGHUP does the same visit and logs a failure as a save does.
@@ -352,6 +352,9 @@ The author of this spec decided these points, and each can change before the imp
   until one of the opens of rule 18 serves it again.
 - On the legacy path without a provider manager, a Portal route that is already served keeps serving until the next
   restart (rule 9).
+- An open that is not the visit, such as a grant or a key change, can stop the Portal route of a flat between the change of
+  the setting and the visit of that flat. It ends no connection that is open on Portal, because only the visit revokes the
+  epoch. Such a connection stays until it closes or the host restarts. Rule 7 keeps every later open refused.
 - A short request that the Portal route accepted before the change can finish after it. Rule 16 ends the open
   connections, and rule 15 refuses the next request.
 - The rename redirect of an old slug stays on Portal, and its target is the Portal address of the flat. While the flat
@@ -398,7 +401,7 @@ in package `core`. A failure of a read uses a store that a test makes fail. No t
   events, the host log holds the text of each event with the slug, and its one line names the stopped flats. A failed
   read on the off-visit leaves that flat stopped and writes the `error` event.
 - Fail closed, other: a failure of the re-serve after `revokeRoute` leaves the Portal route stopped, and the flat event
-  names the other routes. A save whose request is cancelled after the commit still completes the visit. Two changes that
+  names the failure. A save whose request is cancelled after the commit still completes the visit. Two changes that
   run at the same time, many times, end with the state of the last value, also when the visit of the earlier change
   runs late.
 - Not affected: a flat with sign-in on serves through its gate with the setting on. A flat with sign-in on whose gate
