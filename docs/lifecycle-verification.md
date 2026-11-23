@@ -86,12 +86,26 @@ per-case results.
 The weekly job uploads no artifact. It publishes the step summary and the job
 log. The step summary has one row per case, with its lane and outcome, and the
 first failure message of the first failing case. The job log has one line per
-case with the message of each failing case, and it has build errors. The wrapper withholds a line
-that contains a protected value. The protected values are the run's canary, a
-random value that the workflow sets, and the values of environment variables
-whose names contain `TOKEN`, `SECRET`, `KEY`, `PASS` or `AUTH`. GitHub may print
-the canary in a step header. That header is outside the job log, and it does
-not count as a leak.
+case with the message of each failing case, and it has build errors.
+
+The wrapper withholds each line that contains a protected value. It also looks
+for a protected value that spans lines. A protected value is the run's canary,
+a random value that the workflow sets, or the value of an environment variable
+whose name contains `TOKEN`, `SECRET`, `KEY`, `PASS` or `AUTH`, when that value
+has at least 8 characters. If the printed text, the step summary or
+`evidence.json` holds a protected value, the job log shows only
+`[gate output withheld]` and the verdict line, and the step summary has no
+failure message.
+
+GitHub prints a step's `env:` values in the header of that step, and that header
+is part of the job log. A `$GITHUB_ENV` value, such as the canary, can appear
+there too. The wrapper's filter does not cover the header, and a canary that
+appears in it does not count as a leak.
+
+The filter matches exact values only. It does not detect a value that is printed
+in another form: one part of a multi-line value, a value without its trailing
+line break printed inside a line, or an escaped value that does not appear in
+`evidence.json`. The job holds no secret in its environment by design.
 
 The full `evidence.json` stays on the runner. To read the per-case traces, run
 the gate locally. A run that takes longer than 25 minutes fails, and the job
@@ -100,8 +114,9 @@ stops at 30 minutes.
 A red run notifies the person who last changed the workflow's schedule line, by
 GitHub's default failure email. The workflow opens no issue.
 
-The `legacy-build` job in `ci.yml` runs `scripts/lifecycle-gate.sh --prepare-only`
-on every pull request that the changes job selects as full. It builds the five
+The `legacy-build` job in `ci.yml` runs
+`scripts/lifecycle-gate.sh --prepare-only` on every pull request that the changes
+job selects as full. It builds the five
 gate binaries, including the pinned legacy adapter and the tagged crash adapter.
 The job is not a required check, and a skipped job is not a pass. Docs-only
 pull requests skip it.
