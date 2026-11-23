@@ -698,6 +698,8 @@ def approval_boundary(h):
         census.append({"name": tool["name"], "is_error": result.get("isError", False)})
     if any(tool['name'] == 'update_notebook' for tool in tools):
         notebook_writes_need_no_approval(h, pending)
+    if any(tool['name'] == 'update_board' for tool in tools):
+        board_writes_need_no_approval(h, pending)
     # Console decisions are authorized by the console transport (same-origin
     # browser requests). A local agent that forges those headers can decide;
     # a separate operator credential is a known open design item.
@@ -756,6 +758,21 @@ def notebook_writes_need_no_approval(h, pending):
     require(version_rows(h, 'boundary-notebook') == before, 'notebook write changed the version rows')
     require(approval_states(h) == approvals_before, 'notebook write changed the approval list')
     require(h.ok('GET', f'/api/approvals/{pending}')['status'] == 'pending', 'notebook write decided existing approval')
+
+
+def board_writes_need_no_approval(h, pending):
+    h.mcp('create_flat', slug='boundary-board', type='board')
+    require(h.flat('boundary-board')['type'] == 'board', 'MCP create_flat did not create a board')
+    before = version_rows(h, 'boundary-board')
+    require(before["versions"], 'board snapshot has no creation row')
+    approvals_before = approval_states(h)
+    elements_before = len(h.mcp('get_board', slug='boundary-board')['elements'])
+    h.mcp('update_board', slug='boundary-board', op_id='lc-board-2', ops=[{'op': 'add', 'el': {'type': 'sticky', 'text': 'census'}}])
+    require(len(h.mcp('get_board', slug='boundary-board')['elements']) == elements_before + 1,
+            'board write did not land')
+    require(version_rows(h, 'boundary-board') == before, 'board write changed the version rows')
+    require(approval_states(h) == approvals_before, 'board write changed the approval list')
+    require(h.ok('GET', f'/api/approvals/{pending}')['status'] == 'pending', 'board write decided existing approval')
 
 
 def denied_visibility(h, slug):
