@@ -8,8 +8,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
-import gate
-from gate import Host, accepted, data_impact, failed, mcp_payload, reserve_ports, source_identity
+from gate import Host, accepted, data_impact, failed, mcp_payload, reserve_ports, source_identity, version_rows
 
 
 class HarnessChecks(unittest.TestCase):
@@ -189,22 +188,22 @@ class StoreSnapshotChecks(unittest.TestCase):
         self.writer.commit()
 
     def test_equal_snapshots_pass_and_read_the_slug(self):
-        before = gate.version_rows(self.host, "boundary-notebook")
+        before = version_rows(self.host, "boundary-notebook")
         self.assertEqual(before["versions"], [(1, "h1", 1, 0)])
-        self.assertEqual(gate.version_rows(self.host, "boundary-notebook"), before)
+        self.assertEqual(version_rows(self.host, "boundary-notebook"), before)
         self.write("INSERT INTO versions (flat, number, hash, published) VALUES ('other-flat', 1, 'x', 1)")
         self.write("INSERT INTO version_numbers VALUES ('other-flat', 1)")
-        self.assertEqual(gate.version_rows(self.host, "boundary-notebook"), before)
+        self.assertEqual(version_rows(self.host, "boundary-notebook"), before)
 
     def test_inserted_row_makes_the_snapshots_differ(self):
-        before = gate.version_rows(self.host, "boundary-notebook")
+        before = version_rows(self.host, "boundary-notebook")
         self.write("INSERT INTO versions (flat, number, hash, published) VALUES ('boundary-notebook', 2, 'h2', 1)")
-        self.assertNotEqual(gate.version_rows(self.host, "boundary-notebook"), before)
+        self.assertNotEqual(version_rows(self.host, "boundary-notebook"), before)
 
     def test_missing_store_file_raises(self):
         with tempfile.TemporaryDirectory() as folder:
             with self.assertRaises(AssertionError):
-                gate.version_rows(Host("unused", folder), "boundary-notebook")
+                version_rows(Host("unused", folder), "boundary-notebook")
 
     def test_missing_table_raises(self):
         with tempfile.TemporaryDirectory() as folder:
@@ -215,12 +214,12 @@ class StoreSnapshotChecks(unittest.TestCase):
             db.commit()
             db.close()
             with self.assertRaises(AssertionError):
-                gate.version_rows(host, "boundary-notebook")
+                version_rows(host, "boundary-notebook")
 
     def test_locked_store_raises(self):
         with patch("gate.sqlite3.connect", side_effect=sqlite3.OperationalError("database is locked")):
             with self.assertRaisesRegex(AssertionError, "database is locked"):
-                gate.version_rows(self.host, "boundary-notebook")
+                version_rows(self.host, "boundary-notebook")
 
 
 if __name__ == "__main__":
