@@ -519,6 +519,13 @@ func (s *Service) applySignInApproval(ctx context.Context, a store.Approval) (Ac
 // It runs under the lock of the flat.
 func (s *Service) finishSignIn(ctx context.Context, slugName string, from *store.SignIn, to store.SignIn, seq int64) string {
 	msg := signInResult(to)
+	if to.Provider == "" && s.requireAuthOn() {
+		// portal.require_auth is on at the apply: the Portal open that follows is refused, so the Portal route stops
+		// and nobody can open the flat there (docs/spec/portal-require-auth.md, rule 21).
+		if f, err := s.st.GetFlat(ctx, slugName); err == nil && f.Visibility.Public() {
+			msg += "; portal.require_auth is on, so the Portal route of " + slugName + " is stopped"
+		}
+	}
 	if err := s.signInApplied(ctx, slugName, to, seq); err != nil {
 		msg += "; the setting is stored, and " + routesText(slugName, err, true)
 	}

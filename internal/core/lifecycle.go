@@ -487,6 +487,12 @@ func (s *Service) SetProviderPermission(ctx context.Context, slugName, provider 
 		return nil
 	}
 	if err := s.applyProviderGrant(ctx, f, ProviderID(provider)); err != nil {
+		if ae, ok := err.(*PortalAuthError); ok && ae.StopErr == nil {
+			// portal.require_auth refuses the route (docs/spec/portal-require-auth.md, rule 20): the grant is recorded,
+			// and allowing it again, a deploy or a restart does not help.
+			s.Event(ctx, slugName, "warn", "exposure", fmt.Sprintf("provider %s permitted, but its route is refused: %s", provider, ae.Detail), nil)
+			return fmt.Errorf("%w: %s is permitted, but its route is refused: %s", ErrProviderNotReady, provider, ae.Detail)
+		}
 		s.Event(ctx, slugName, "error", "exposure", fmt.Sprintf("provider %s permitted, but its route did not open: %v", provider, err), nil)
 		return fmt.Errorf("%w: %s is permitted, but its route did not open (allow this provider again, deploy or restart to retry): %v", ErrProviderNotReady, provider, err)
 	}
@@ -613,6 +619,14 @@ func (s *Service) reapplyExposure(ctx context.Context, f store.Flat, provider Pr
 				s.Event(ctx, f.Slug, "warn", "exposure", string(provider)+" route opened; another route reported: "+err.Error(), nil)
 			}
 			return nil
+		}
+	}
+	// portal.require_auth refuses the Portal route of a flat without sign-in: that is the answer, not a failure of
+	// the open (docs/spec/portal-require-auth.md, rules 19 and 20). A failure of another provider stays the answer,
+	// so the refusal does not hide it.
+	for _, ep := range res.Endpoints {
+		if ep.Provider == provider && ep.Host == f.Slug && ep.Audience == AudienceCurrent && PortalAuthRefusal(ep) && onlyPortalAuth(err) {
+			return &PortalAuthError{Detail: ep.Detail}
 		}
 	}
 	if err == nil {

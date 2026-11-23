@@ -160,11 +160,42 @@ type PortalSignIn struct {
 	// Rebuild builds the gate again also when a gate of Seq is in place,
 	// because its client secret changed (rule 28).
 	Rebuild bool
+	// Refuse is the detail of the refusal when portal.require_auth is on and
+	// the flat has no sign-in (docs/spec/portal-require-auth.md, rule 7). The
+	// Portal route then opens nothing, or stops when it is served.
+	Refuse string
 }
 
 // On reports whether the open asks for a gate. A nil open does not.
 func (p *PortalSignIn) On() bool {
 	return p != nil && !p.Redirect && (p.Err != nil || p.Gate.Provider != "")
+}
+
+// Refused reports whether portal.require_auth refuses the open (rule 7). The
+// mark Redirect is never refused, and neither is an open that carries nothing.
+func (p *PortalSignIn) Refused() bool {
+	return p != nil && !p.Redirect && p.Refuse != ""
+}
+
+// PortalAuthDetailPrefix starts the detail of an endpoint that portal.require_auth
+// refuses (rule 10). The provider manager recognizes a refusal by it.
+const PortalAuthDetailPrefix = "portal.require_auth is on"
+
+// PortalAuthError is an open of a Portal route that portal.require_auth refuses
+// (docs/spec/portal-require-auth.md, rules 7 and 8). Its text is the detail of
+// the Portal endpoint. StopErr is set when the route was served and its stop is
+// not confirmed, so the route stays registered; it then answers 503 and never
+// the flat.
+type PortalAuthError struct {
+	Detail  string
+	StopErr error
+}
+
+func (e *PortalAuthError) Error() string {
+	if e.StopErr != nil {
+		return e.Detail + "; the stop of the route is not confirmed: " + e.StopErr.Error()
+	}
+	return e.Detail
 }
 
 // String writes the open without the client secret.
