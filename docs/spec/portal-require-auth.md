@@ -73,7 +73,7 @@ Out of scope:
 
 ## Decisions
 
-The owner of the repository decided six points:
+The owner of the repository decided seven points:
 
 1. The setting covers Portal only.
 2. It changes as `portal.hide` does: the console, `config.json` with SIGHUP, and the offline `flats config set`. A
@@ -89,6 +89,11 @@ The owner of the repository decided six points:
 6. When the setting turns on, the host ends the open public connections of a refused flat and serves its other public
    routes again with a new epoch, as sign-in does (sign-in rule 20, steps 3 and 4), because stopping the Portal route
    does not end a connection that is open on it.
+7. The two fail-closed paths of rule 18 differ. When the host cannot read one flat, it stops the Portal route of that
+   flat and also ends the open public connections of that flat, and the other public routes of the flat answer 503 until
+   a deploy, a grant or a restart. When the host cannot list the flats, it stops the Portal routes only. An open Portal
+   connection of such a flat stays until it closes or the host restarts. This is a known limit, which the flat event and
+   the host log line name. A store fault then does not take every public route of the host down.
 
 The author of this spec decided these points, and each can change before the implementation:
 
@@ -100,7 +105,8 @@ The author of this spec decided these points, and each can change before the imp
 - A second check on each request stops a route that an open without the check serves (rules 7 and 15).
 - The list of refused flats in `flats status` is derived from the stored facts when the status is read. No record of a
   refusal outlives its cause.
-- A failure of the visit fails closed: it stops a Portal route that it cannot check (rule 18).
+- A failure of the visit fails closed: it stops a Portal route that it cannot check (rule 18). The slugs for a failed
+  list come from the in-memory map of live flats of the service (`Service.live`), which needs no store read.
 
 ## The setting
 
@@ -128,35 +134,47 @@ The author of this spec decided these points, and each can change before the imp
    reads under the lock of the flat, as it reads the stored sign-in (sign-in rule 38). The open is refused when the
    setting is on, the open carries sign-in off, and it does not carry the mark `Redirect`. The open of the rename
    redirect is never refused. An open that carries nothing, which only a call from outside the service makes, is not
-   refused, because the backend cannot know the setting. Rule 15 then refuses each request on it while the setting is
-   on, as sign-in rule 44 does for sign-in.
+   refused, because the backend cannot know the setting. On a host with a provider manager, which marks each request
+   with its provider, rule 15 then refuses each request on it while the setting is on, as sign-in rule 44 does for
+   sign-in. A host without a provider manager is rule 9.
 8. For a new Portal entry, a refused open registers nothing with a relay, starts no HTTP server, and makes no identity
    file. For a served entry, a refused open stops the route and unregisters it from its relays, as sign-in rule 35 does
    for a gate that cannot be built. The route answers 503 until it stops. A stop that is not confirmed keeps the route
    registered, and it answers 503 and never the flat, as in sign-in rule 35.
 9. A Portal backend that cannot run the gate refuses too. The same holds for a host without a provider manager (the
    legacy path of `servePublicNet`, which production never uses). No open that the service makes serves a flat on
-   Portal without sign-in while the setting is on.
+   Portal without sign-in while the setting is on. On the legacy path a Portal route that is already served keeps
+   serving until the next deploy or restart, because the visit of rules 16 and 17 needs a provider manager and a request
+   there carries no provider mark for rule 15. This is a known limit of a path that is a test seam.
 10. The refusal shows in these places:
     - The Portal endpoint of the flat has the state `unavailable`, `ready` false and a detail that names the slug and
       the setting. For a flat that has no grant for another public provider that sign-in excludes, the detail is:
       `portal.require_auth is on and <slug> has no sign-in. Run flats signin set <slug> to turn sign-in on, or turn the
-      setting off in the console.` For a flat that has such a grant, the detail names the providers and says to revoke
-      them under Networks first, because sign-in is refused while they are granted (sign-in rule 8). When the stop of
-      a served route is not confirmed, the endpoint has the state `error` and the detail followed by `; the stop of the
-      route is not confirmed: <cause>`, as in sign-in rule 35.
+      setting off in the console.` A flat that is refused is always Public. For a flat that has a grant for another
+      public provider that sign-in excludes, the host refuses `flats signin set` (sign-in rule 8), so the detail is:
+      `portal.require_auth is on and <slug> has no sign-in. Sign-in is refused while <providers> is granted. Make the
+      flat Private, revoke <providers> under Networks, then run flats signin set <slug>. Or turn the setting off in the
+      console.` Every action in these texts is one that the host accepts for such a flat. When the stop of a served
+      route is not confirmed, the endpoint has the state `error` and the detail followed by `; the stop of the route is
+      not confirmed: <cause>`, as in sign-in rule 35.
     - When a served route stops, the host writes one flat event (level `warn`, kind `exposure`) with the same text and
       one host log line with the slug. A refused open of a route that was not served writes the event only when its
       caller writes one (a restart or a deploy writes the `exposure` event today).
     - `GET /api/status` holds two new members in `system`: `portal_require_auth`, the value of the setting, and
       `portal_refused`, the sorted slugs of the flats that the setting refuses now. A flat is in the list when the
-      setting is on, the flat is Public, it has a Portal grant and its sign-in is off. The host derives the list from
-      the stored facts when it answers, so a flat that becomes Private, is deleted, loses its Portal grant or gets
-      sign-in leaves the list at once, and the list is empty when the setting is off.
+      setting is on, Portal is permitted for the host (`network.permitted`), the flat is Public with a live version, it
+      has a Portal grant and its sign-in is off. A flat that Portal does not serve for another cause (Portal is not
+      permitted for the host, or the flat has no live version) is not in the list. The host derives the list from the
+      stored facts when it answers, so a flat that becomes Private, is deleted, loses its Portal grant or gets sign-in
+      leaves the list at once, and the list is empty when the setting is off. When the host cannot read the store, the
+      status still answers, because the CLI uses it as its liveness check: `portal_require_auth` has the value that the
+      settings hold in memory and `portal_refused` is `null`.
 11. `flats status` adds one note line after the existing note when `portal_require_auth` is true: `  note:
     portal.require_auth is on, so Portal serves only flats that have sign-in.` When `portal_refused` is not empty, the
-    line goes on with ` Portal does not serve these flats: <slug>[, <slug>...]. Run flats signin set <slug>, or turn the
-    setting off in the console.` It names at most 10 slugs, then `and N more`. With the setting off it adds no line.
+    line goes on with ` Portal does not serve these flats: <slug>[, <slug>...]. The Networks section of each flat in the
+    console says what to do, or turn the setting off in the console.` It names at most 10 slugs, then `and N more`. When
+    `portal_refused` is `null`, the line goes on with ` The refused flats cannot be read now.` With the setting off it
+    adds no line.
 12. The flat view (`GET /flats/{slug}`, MCP `get_flat` and `list_flats`) holds the endpoint with its state and detail
     (`endpoints[]`) and `connection_state` `unavailable` while the Portal route is the only public route of the flat.
     No MCP text says that the flat is available on its Portal address while the route is refused (public instance
@@ -180,40 +198,55 @@ The author of this spec decided these points, and each can change before the imp
 
 ## Applying a change
 
-16. When the setting changes to on, the host visits every flat under its lock, as `applyHostListing` does. For a flat
-    that is Public, has sign-in off and has a Portal grant, it does these steps in order:
+16. When the setting changes to on, the host visits every flat under its lock, as `applyHostListing` does. Each step of
+    the visit reads the current value of the setting under the lock of the flat and does nothing when it is off again.
+    For a flat that is Public, has sign-in off and has a registered Portal route (the provider manager reports one), the
+    visit does these steps in order:
     1. It reads what the re-serve needs: the flat, its permitted providers, its observed endpoints and its listing.
        A failure here is rule 18.
     2. For a flat with a runtime, it ends the open connections of the public routes of the flat (`revokeRoute`, as
        sign-in rule 20, step 3), and serves the public routes of the flat again. The Portal open is refused (rules 7
        and 8), and every other public route gets a new epoch.
-    3. For a flat without a runtime that still has a registered Portal route (a failed rename can leave one), it stops
-       the Portal route directly, as sign-in rule 35 stops a route whose gate cannot be built.
-    4. It writes the flat event of rule 10 when a Portal route was served.
+    3. For a flat without a runtime that has a registered Portal route (a failed rename can leave one), it stops the
+       Portal route directly, as sign-in rule 35 stops a route whose gate cannot be built.
+    4. It writes the flat event of rule 10.
     A visitor on a connection that was open on Portal gets no more content of the flat. A visitor on another public
-    provider of the flat reconnects through the re-served route.
-17. When the setting changes to off, the host visits every flat under its lock. For a flat that is Public, has sign-in
-    off and has a refused Portal endpoint, it serves the public routes again, so the Portal route opens as a restart
-    opens it. It opens only a route that the approved exposure of the flat already used, and it publishes nothing new.
-    It writes a flat event of level `info`. The visit applies to a host with a provider manager (rule 14).
+    provider of the flat reconnects through the re-served route. A flat that has a Portal grant and no registered Portal
+    route is left as it is: nothing serves it on Portal, a later open is refused by rule 7, and its other public routes
+    keep their epoch (decision 6 applies only to a connection that is open on Portal).
+17. When the setting changes to off, the host visits every flat under its lock. Each step reads the current value of
+    the setting and does nothing when it is on again. For a flat that is Public, has a runtime, has a Portal grant and
+    has no registered Portal route, it serves the public routes again, so the Portal route opens as a restart opens it.
+    This covers a flat whose Portal endpoint is `unavailable` by rule 10, and a flat that rule 18 stopped, with sign-in
+    on or off. It opens only a route that the approved exposure of the flat already used (the flat is Public and has the
+    grant), and it publishes nothing new. It writes a flat event of level `info`. The visit applies to a host with a
+    provider manager (rule 9).
 18. The visit fails closed:
     - A read that fails for one flat (step 1 of rule 16) stops the Portal route of that flat as sign-in rule 28 does
-      (`closePortal`), before `revokeRoute`, so the other public routes of the flat keep their epoch. The host writes
-      a flat event of level `error`: `portal.require_auth turned on, but the host cannot read <slug> to check its
-      sign-in: <cause>. Its Portal route is stopped. A deploy, a grant, a restart or a sign-in change tries again.` The
-      visit goes on with the other flats.
-    - A list of the flats that fails stops every Portal route that the Portal backend serves, with the same text, and
-      writes one host log line. A flat with sign-in on loses its Portal route the same way until one of the opens in
-      rule 14 serves it again.
+      (`closePortal`) and ends the open public connections of that flat (`revokeRoute`, an in-memory cancel that needs
+      no read) (decision 7). Its other public routes answer 503 on the cancelled epoch until a deploy, a grant or a
+      restart serves them again. The host writes a flat event of level `error`: `portal.require_auth turned on, but the
+      host cannot read <slug> to check its sign-in: <cause>. Its Portal route is stopped and its public connections are
+      ended. Its other public routes answer 503 until a deploy, a grant or a restart.` The visit goes on with the other
+      flats.
+    - A list of the flats that fails stops the Portal route of every flat in the in-memory map of live flats of the
+      service (`Service.live`) that the provider manager reports with a registered Portal route, each under the lock
+      of its flat, which the stop needs. It ends no connection (decision 7). The flat event for each flat says: `... its
+      Portal route is stopped. A Portal connection that is open stays until it closes or the host restarts.` The host
+      writes one host log line. The routes of the rename redirects belong to old slugs that `Service.live` does not
+      hold, so they stay. A flat with sign-in on loses its Portal route the same way.
+    - A flat that these two paths stopped is opened again by a deploy, a grant, a restart, a sign-in change, or the
+      visit of rule 17 after the setting is turned off.
     - A failure of the re-serve after `revokeRoute` leaves the Portal route stopped and the other public routes of the
       flat answering 503 on the cancelled epoch until a deploy, a grant or a restart serves them again. The flat event
       names those routes and says so.
-    - A save of the same value runs no visit, because only a change of the value does. The recovery of a stopped route
-      is the opens of rule 14.
+    - A save of the same value runs no visit, because only a change of the value does.
     - The visit uses a context that the request does not cancel, as `applyHostListing` does. A client that drops the
       request does not leave a flat served. A reload by SIGHUP does the same visit and logs a failure as a save does.
-    - Two changes that run at the same time end with every refusal or opening that matches the last stored value,
-      because each open in a visit reads the current value (rule 7).
+    - Two changes that run at the same time end with the state of the last stored value. Each open and each step of a
+      visit read the current value under the lock of the flat (rules 7, 16 and 17), and the stops of the failure paths
+      run under the same lock, so a late visit of the earlier change does nothing or is undone by the visit of the later
+      one.
 
 ## Other changes of state
 
@@ -230,8 +263,9 @@ The author of this spec decided these points, and each can change before the imp
     page renders: while it is on, the title is `Turn off sign-in for <slug>: its Portal address stops serving it` and the
     page does not say that anyone can open the address. With the setting off, the texts of sign-in rule 64 stay as they
     are. The result of the approval reads the setting at the apply and says what happened: the Portal route stopped, or
-    the Portal address is open to anyone. When the setting changes between the render and the decision, the result tells
-    the truth and the approval is not stale.
+    the Portal address is open to anyone. When the flat is not Public at the apply, the result says only that sign-in is
+    off. When the setting changes between the render and the decision, the result tells the truth and the approval is
+    not stale.
 22. A flat created by public instance mode with Portal as the default public network is Public with no sign-in. While
     the setting is on, its Portal route is refused, and the flat is reachable on no route that serves it, because the
     mode turns private links off. The endpoint detail of rule 10 says what to do. The mode and the setting stay
@@ -284,7 +318,8 @@ The author of this spec decided these points, and each can change before the imp
     - `docs/configuration.md`: a row in the `config.json` table (default `false`, applies immediately), a paragraph
       after the `portal.hide` text that says what the setting refuses, that it covers Portal only, that
       `network.permitted` is the switch for the other providers, that agents cannot change it, the downgrade note and the
-      restore note of rule 28, and the list of changes that send no webhook event;
+      restore note of rule 28, the known limits of the fail-closed paths (rule 18) and of the end of open connections
+      (decision 6), and the list of changes that send no webhook event;
     - `docs/networking.md`: the Portal sign-in section says that a host can require sign-in for every flat on Portal;
     - `docs/network-provider-lifecycle.md`: a Portal refusal by the setting is an `unavailable` endpoint;
     - `docs/surfaces.md`: the console toggle, the Networks row, the `flats status` note and members, and the title and
@@ -292,7 +327,8 @@ The author of this spec decided these points, and each can change before the imp
     - `docs/design.md`: the Portal sign-in design text and Exposure gain the setting;
     - `docs/agent/topics/approvals.md`: the agent guide for Portal sign-in says that the setting can stop a Portal route
       that sign-in off would open;
-    - the texts of public instance mode in `internal/mcpx/public_instance.go`, as rule 22 says;
+    - the texts of public instance mode in `internal/mcpx/public_instance.go` and in `docs/agent/public-instance.md`, as
+      rule 22 says;
     - the CLI help of `flats status`, if it lists its notes;
     - the tests that pin changed texts change with them.
 
@@ -300,8 +336,14 @@ The author of this spec decided these points, and each can change before the imp
 
 - The setting covers Portal only. A flat can be Public on another public provider without sign-in, because sign-in
   itself covers Portal only (sign-in decision 1).
-- Turning the setting on ends the open connections of the other public providers of a refused flat, and they reconnect
-  (decision 6). When the re-serve fails, those routes answer 503 until a deploy, a grant or a restart (rule 18).
+- Turning the setting on ends the open connections of the other public providers of a refused flat that has a registered
+  Portal route, and they reconnect (decision 6). When the re-serve fails, those routes answer 503 until a deploy, a
+  grant or a restart (rule 18).
+- When the host cannot list the flats, it stops the Portal routes and ends no connection (decision 7). A Portal
+  connection that was open stays until it closes or the host restarts. A flat with sign-in on also loses its Portal route
+  until one of the opens of rule 18 serves it again.
+- On the legacy path without a provider manager, a Portal route that is already served keeps serving until the next
+  deploy or restart (rule 9).
 - A short request that the Portal route accepted before the change can finish after it. Rule 16 ends the open
   connections, and rule 15 refuses the next request.
 - The rename redirect of an old slug stays on Portal, and its target is the Portal address of the flat. While the flat
@@ -317,13 +359,15 @@ in package `core`. A failure of a read uses a store that a test makes fail. No t
 
 - The issue, a new flat: with the setting on, a flat with sign-in off that is Public and granted Portal has no Portal
   route. The fake exposure is never called, the fake HTTP run never gets the handler of the flat, no identity file
-  exists, and the endpoint has the state `unavailable` and the detail of rule 10, with the form for a flat that has a
-  second public grant.
+  exists, and the endpoint has the state `unavailable` and the detail of rule 10. For a flat that is also granted a
+  second public provider whose route is registered, the detail is the second form of rule 10 and names only actions
+  that the host accepts: the test makes each named action and sees it accepted.
 - The issue, a served flat: a flat that Portal serves without sign-in stops when the setting turns on. The route
   unregisters, the open connections end (a WebSocket that is open on Portal closes), an endpoint with the detail exists,
   the flat event and the host log line are written, and a second public provider route of the flat serves again with a
   new epoch. With the setting off again, the Portal route opens. A flat without a runtime that has a registered Portal
-  route is stopped too.
+  route is stopped too. A flat with a Portal grant and no registered Portal route keeps its epoch, and its other public
+  routes keep their connections.
 - The issue, a restart: with the setting on in `config.json`, a new `Service` and a new `Net` on the same folder open no
   Portal route for the flat. A value that a running host stored through the console is read by the next start. With the
   setting off, they open the route.
@@ -331,21 +375,29 @@ in package `core`. A failure of a read uses a store that a test makes fail. No t
   `flats config set` and `unset` store and remove it while the host is stopped. A value that is not a boolean is refused.
   A console request with `X-Flats-Client` is refused. MCP has no tool and `/api` has no route for it, and
   `AutopilotNeeds` has no operation for it.
-- Fail closed: with a store that fails the list of flats, every served Portal route stops and no flat serves on Portal.
-  With a store that fails the read of one flat, the Portal route of that flat stops, its other public routes keep their
-  epoch, and the visit goes on with the other flats. A failure of the re-serve after `revokeRoute` leaves the Portal
-  route stopped, and the flat event names the other routes. A save whose request is cancelled after the commit still
-  completes the visit. Two changes that run at the same time, many times, end with the state of the last value.
+- Fail closed, one flat: with a store that fails the read of one flat, the Portal route of that flat stops, a WebSocket
+  that is open on its Portal URL closes, its other public routes answer 503 on the cancelled epoch, the flat event of
+  rule 18 is written, and the visit goes on with the other flats.
+- Fail closed, the list: with a store that fails the list of flats, the Portal route of every live flat with a registered
+  Portal route stops, including a flat with sign-in on, and each flat event and the host log line name the open
+  connections that stay. A WebSocket that was open on Portal stays open (the stated limit of decision 7). The route of a
+  rename redirect still answers. After the setting turns off, the visit of rule 17 opens the stopped routes again, for a
+  flat with sign-in off and for one with sign-in on, whose gate builds again.
+- Fail closed, other: a failure of the re-serve after `revokeRoute` leaves the Portal route stopped, and the flat event
+  names the other routes. A save whose request is cancelled after the commit still completes the visit. Two changes that
+  run at the same time, many times, end with the state of the last value, also when the visit of the earlier change
+  runs late.
 - Not affected: a flat with sign-in on serves through its gate with the setting on. A flat with sign-in on whose gate
   cannot be built is stopped by sign-in rule 35 as before. The rename redirect of an old slug opens with the setting
   on, on a backend with the gate and on one without it (the plain `Serve` of `serveRedirect`). A private route and a
   preview are unchanged. Another public provider route of a refused flat serves.
 - Each request: a request marked with the Portal provider for a flat with sign-in off gets 403 with the text of rule
   15, also when a test opened the route without the check of the open, and when an open that carries nothing served a
-  new entry (rule 7). The same request marked with another provider passes. A request for a flat with sign-in on gets
-  the answers of sign-in rule 44.
+  new entry (rule 7) through a provider manager. The same request marked with another provider passes. A request for a
+  flat with sign-in on gets the answers of sign-in rule 44.
 - The backends: a Portal backend without the gate and the legacy path without a provider manager refuse the open. On
-  the legacy path, turning the setting off opens the route at the next deploy.
+  the legacy path, a Portal route that is already served keeps serving until the next deploy (the stated limit of rule
+  9), and turning the setting off opens an unserved route at the next deploy.
 - Races: a change of the setting and an open of the Portal route of one flat that run at the same time, many times, give
   one of the two orders and never a served flat without sign-in after both end.
 - Visibility: the application of a visibility approval for a flat with Portal granted and sign-in off fails with the text
@@ -353,15 +405,17 @@ in package `core`. A failure of a read uses a store that a test makes fail. No t
   applies, the other provider serves, Portal is refused, and the result says so. A grant of Portal to a Public flat
   without sign-in says that the route is refused.
 - Sign-in off: the approval of `flats signin off` with the setting on stops the Portal route, and its title and result
-  are the texts of rule 21. A change of the setting between the render and the decision gives a result that tells the
-  truth.
+  are the texts of rule 21, also for a flat that is not Public at the apply. A change of the setting between the render
+  and the decision gives a result that tells the truth.
 - Public instance mode: a flat that the mode created with Portal as the default public network has a refused Portal route
   with the setting on, and no MCP text promises its Portal address.
 - Views: the flat view, `get_flat` and `list_flats` hold the endpoint and its detail. `GET /api/status` holds
-  `portal_require_auth` and `portal_refused`, and the list loses a flat that becomes Private, is deleted, loses its Portal
-  grant or gets sign-in, and is empty with the setting off. `flats status` holds the note of rule 11, and no note with
-  the setting off. The console UI test shows the toggle with its hint, the Portal row with the badge and the detail on the
-  Networks section, and the settings view with the key.
+  `portal_require_auth` and `portal_refused`. The list loses a flat that becomes Private, is deleted, loses its Portal
+  grant or gets sign-in, and is empty with the setting off. It does not hold a flat when Portal is not permitted for the
+  host or the flat has no live version. With a store that fails, the status still answers with `portal_refused` `null`,
+  and `flats status` says that the refused flats cannot be read. `flats status` holds the note of rule 11, and no note
+  with the setting off. The console UI test shows the toggle with its hint, the Portal row with the badge and the
+  detail on the Networks section, and the settings view with the key.
 - No audit row and no webhook event follow a change of the setting.
 - The docs: `docs/configuration.md` has the row and the paragraph. The doc checks pass, and the generated references
   match their sources.
