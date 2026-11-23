@@ -1,3 +1,5 @@
+# Native Depot CI. Fork pull requests do not start Depot workflows,
+# so .github/workflows/ci.yml stays their CI path.
 name: CI
 
 on:
