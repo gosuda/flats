@@ -104,20 +104,28 @@ def protected_values(environ, canary):
 
 
 def scan(text, values):
-    """Withhold each line that holds a protected value.
+    """Withhold each line that holds a protected value, and look for what is left.
 
-    Return the remaining lines, the number of withheld lines, and whether a
-    protected value still shows once the line breaks are removed.
+    Return the text with those lines replaced, the number of withheld lines,
+    and whether a protected value survives: whole in the text with its line
+    breaks, or split across lines. The text keeps its line breaks, so a value
+    that ends with a line break is found where it is printed.
     """
-    lines, withheld = [], 0
-    for line in text.splitlines():
-        if any(value in line for value in values):
-            lines.append(WITHHELD_LINE)
+    kept, contents, withheld = [], [], 0
+    for piece in text.splitlines(keepends=True):
+        content = piece.splitlines()[0]
+        terminator = piece[len(content):]
+        if any(value in content for value in values):
+            kept.append(WITHHELD_LINE + terminator)
+            contents.append(WITHHELD_LINE)
             withheld += 1
         else:
-            lines.append(line)
-    survives = any(value in "".join(lines) for value in values)
-    return lines, withheld, survives
+            kept.append(piece)
+            contents.append(content)
+    kept_text = "".join(kept)
+    joined = "".join(contents)
+    survives = any(value in kept_text or value in joined for value in values)
+    return kept_text, withheld, survives
 
 
 def json_strings(value):
@@ -145,7 +153,7 @@ def decode(output):
 
 
 def run_gate(gate_path, timeout):
-    """Run the gate. Return its output and exit code, or None as the code on timeout."""
+    """Run the gate. Return its output, its exit code and a reason if it did not finish."""
     try:
         done = subprocess.run(
             [gate_path],
@@ -157,8 +165,10 @@ def run_gate(gate_path, timeout):
             timeout=timeout,
         )
     except subprocess.TimeoutExpired as exc:
-        return decode(exc.output), None
-    return done.stdout, done.returncode
+        return decode(exc.output), None, f"the gate did not finish within {timeout} seconds"
+    except OSError as error:
+        return "", None, f"the gate could not start: {error.strerror or error}"
+    return done.stdout, done.returncode, None
 
 
 def evidence_dirs(temp):
@@ -166,17 +176,17 @@ def evidence_dirs(temp):
 
 
 def read_evidence(temp, before, reasons):
-    """Return the one new evidence report, or None and a reason when there is none."""
-    found = sorted(
-        temp / name / "evidence.json"
-        for name in evidence_dirs(temp) - before
-        if (temp / name / "evidence.json").is_file()
-    )
-    if len(found) != 1:
-        reasons.append(f"found {len(found)} new evidence files, expected one")
+    """Return the report of the one new gate directory, or None and a reason."""
+    new = sorted(evidence_dirs(temp) - before)
+    if len(new) != 1:
+        reasons.append(f"found {len(new)} new gate directories, expected one")
+        return None
+    path = temp / new[0] / "evidence.json"
+    if not path.is_file():
+        reasons.append("the new gate directory has no evidence.json")
         return None
     try:
-        report = json.loads(found[0].read_text(encoding="utf-8"))
+        report = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         reasons.append("evidence.json is unreadable")
         return None
@@ -195,7 +205,8 @@ def summary_text(report):
     lines += [f"| {row.get('id')} | {row.get('lane')} | {row.get('outcome')} |" for row in rows]
     failed = next((row for row in rows if row.get("outcome") == "fail"), None)
     if failed is not None:
-        lines += ["", f"First failure, {failed.get('id')}: {failed.get('error')}"]
+        message = failed.get("error") or failed.get("shutdown_error") or "no message in the report"
+        lines += ["", f"First failure, {failed.get('id')}: {message}"]
     return "\n".join(lines)
 
 
@@ -230,28 +241,25 @@ def main(argv=None, timeout=GATE_TIMEOUT_SECONDS):
     values = protected_values(environ, canary)
     temp_dir = Path(temp)
     before = evidence_dirs(temp_dir)
-    raw, process_exit = run_gate(args.gate, timeout)
-    reasons = []
-    if process_exit is None:
-        reasons.append(f"the gate did not finish within {timeout} seconds")
-    lines, withheld, leaked = scan(raw, values)
-    if leaked:
-        print(WITHHELD_OUTPUT)
-    else:
-        for line in lines:
-            print(line)
+    raw, process_exit, problem = run_gate(args.gate, timeout)
+    reasons = [problem] if problem else []
     report = None
     if process_exit is not None:
         report = read_evidence(temp_dir, before, reasons)
+    evidence_leak = False
     if report is not None:
-        leaked = leaked or evidence_leaks(report, values)
+        evidence_leak = evidence_leaks(report, values)
         reasons.extend(verdict(report, process_exit, expected_cases()))
-    body, body_withheld, body_leaked = scan(summary_text(report), values)
-    summary = WITHHELD_OUTPUT if body_leaked else "\n".join(body)
-    if withheld or body_withheld:
+    printed, withheld_printed, printed_leak = scan(raw, values)
+    summary, withheld_summary, summary_leak = scan(summary_text(report), values)
+    if withheld_printed or withheld_summary:
         reasons.append("a line was withheld")
-    if leaked or body_leaked:
+    if printed_leak or summary_leak or evidence_leak:
         reasons.append("leak")
+        print(WITHHELD_OUTPUT)
+        summary = ""
+    elif printed:
+        sys.stdout.write(printed if printed.endswith("\n") else printed + "\n")
     return conclude(reasons, summary, summary_path, values)
 
 
