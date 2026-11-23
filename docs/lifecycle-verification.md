@@ -116,10 +116,9 @@ GitHub's default failure email. The workflow opens no issue.
 
 The `legacy-build` job in `ci.yml` runs
 `scripts/lifecycle-gate.sh --prepare-only` on every pull request that the changes
-job selects as full. It builds the five
-gate binaries, including the pinned legacy adapter and the tagged crash adapter.
-The job is not a required check, and a skipped job is not a pass. Docs-only
-pull requests skip it.
+job selects as full. It builds the five gate binaries, including the pinned
+legacy adapter and the tagged crash adapter. The job is not a required check,
+and a skipped job is not a pass. Docs-only pull requests skip it.
 
 The census coverage test runs in the `other` shard.
 
