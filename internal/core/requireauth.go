@@ -67,8 +67,8 @@ func (s *Service) requireAuthDetail(ctx context.Context, slugName string) string
 }
 
 // portalRefusalNote is the sentence that the result of a visibility apply adds when portal.require_auth refuses the
-// Portal route of the flat (rule 19): the setting is on, and the flat has a Portal grant and no sign-in. Another public
-// provider opened, or the apply failed before this point. It is empty otherwise.
+// Portal route of the flat (rule 19). It repeats the refusal that the Portal endpoint of the flat shows, so it is empty
+// when the setting is off, and when Portal is refused for another cause.
 func (s *Service) portalRefusalNote(ctx context.Context, slugName string) string {
 	if !s.requireAuthOn() {
 		return ""

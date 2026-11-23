@@ -201,6 +201,29 @@ func TestRequireAuthEndsARunningRequest(t *testing.T) {
 	}
 }
 
+// Before the lease of the relay has expired, the off-visit cannot confirm the stop: the route stays registered, in the state
+// error, and the host says that the Portal route did not open. The lease is the default one of 2 minutes, which no run of
+// this test reaches.
+func TestRequireAuthOffVisitBeforeTheLeaseHasExpired(t *testing.T) {
+	ctx := context.Background()
+	h := startHost(t, t.TempDir())
+	deployServer(t, h, "app")
+	publicOnPortal(t, h, "app")
+	exp := h.px.Of(t, "app")
+	exp.SetRelays(portal.ReadyRelay("relay.test", appHost))
+	exp.FailClose(errors.New("relay refused unregister"))
+	setRequireAuth(t, h, true)
+	count := h.px.Count()
+	setRequireAuth(t, h, false)
+	if has, _ := h.mgr.HasProviderRoute(ctx, "app", provider.Portal); !has || h.px.Count() != count {
+		t.Fatalf("the off-visit forgot the route or made an exposure before the lease expired: registered %t, exposures %d to %d", has, count, h.px.Count())
+	}
+	events, err := h.st.ListEvents(ctx, "app", "exposure", 0, 100)
+	if err != nil || len(events) == 0 || !strings.Contains(events[len(events)-1].Message, "turned off, but the Portal route of app did not open") {
+		t.Fatalf("events = %+v, %v", events, err)
+	}
+}
+
 // Rule 17 with the real manager and the real Portal backend: a route whose stop was not confirmed stays registered, in the
 // state error, and the detail that the manager reports for it is the one of the Portal backend (core.TeardownPending).
 // The visit that turns the setting off opens it again, whichever path left it stuck.
@@ -243,13 +266,15 @@ func TestRequireAuthOpensARouteWhoseStopWasNotConfirmed(t *testing.T) {
 			if ep := portalEndpointOf(t, h, "app"); ep.State != "error" || !strings.Contains(ep.Detail, core.TeardownPending) {
 				t.Fatalf("the endpoint of the stuck route = %+v, want the state error and the detail of the backend", ep)
 			}
-			// Before the lease has expired, the off-visit cannot confirm the stop: the route stays stuck, and the host says so.
-			setRequireAuth(t, h, false)
-			if has, _ := h.mgr.HasProviderRoute(ctx, "app", provider.Portal); !has {
-				t.Fatal("the off-visit forgot a route whose stop was not confirmed")
-			}
-			setRequireAuth(t, h, true)
+			// Nothing serves the slug until the off-visit, so the route is still registered in the state error when the
+			// lease has expired, however slow the run is (a visit that serves it again would confirm the stop).
 			time.Sleep(300 * time.Millisecond)
+			if has, _ := h.mgr.HasProviderRoute(ctx, "app", provider.Portal); !has {
+				t.Fatal("the route was forgotten before the off-visit")
+			}
+			if ep := portalEndpointOf(t, h, "app"); ep.State != "error" || !strings.Contains(ep.Detail, core.TeardownPending) {
+				t.Fatalf("the endpoint of the stuck route after the lease = %+v", ep)
+			}
 			count := h.px.Count()
 			setRequireAuth(t, h, false)
 			if h.px.Count() != count+1 {
