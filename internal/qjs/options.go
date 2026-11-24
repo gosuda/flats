@@ -193,8 +193,8 @@ func FlagBacktraceBarrier() EvalOptionFunc {
 	}
 }
 
-// Handle creates QuickJS evaluation option handle for WASM function calls.
-func (o *EvalOption) Handle() (handle uint64) {
+// CreateHandle creates QuickJS evaluation option handle for WASM function calls.
+func (o *EvalOption) CreateHandle() (handle uint64) {
 	codeHandle := uint64(0)
 	byteCodeHandle := uint64(0)
 	o.fileValue = o.c.NewStringHandle(o.file)
