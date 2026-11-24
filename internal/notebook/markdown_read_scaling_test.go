@@ -43,7 +43,7 @@ func TestMarkdownManyRichRuns(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if peak > 4<<20 {
+	if peak > readerHeapCeiling {
 		t.Fatalf("rich run capture exceeds heap bound: %d", peak)
 	}
 	text, _, _ := continueMarkdownRead(t, f.in, body)
@@ -84,7 +84,7 @@ func TestMarkdownManyOptionRows(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if peak > 4<<20 {
+	if peak > readerHeapCeiling {
 		t.Fatalf("option row capture exceeds heap bound: %d", peak)
 	}
 	text, _, _ := continueMarkdownRead(t, f.in, body)

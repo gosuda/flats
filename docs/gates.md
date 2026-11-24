@@ -32,7 +32,9 @@ diffs, nested paths, other filenames and every other changed file run the full
 suite, including `docs/agent/`, generated references, plugin skills and CI
 files. Invalid merge context or a failed comparison fails the changes job.
 No workflow-level path filter hides its result. Main skips the changes job
-and starts its full suite without waiting for a classifier runner.
+and starts its full suite without waiting for a classifier runner. The
+`legacy-build` job runs `scripts/lifecycle-gate.sh --prepare-only` on every pull
+request that the changes job selects as full.
 
 The full suite uses the Go version from `go.mod` and runs these checks in
 parallel jobs:
@@ -100,6 +102,11 @@ even when the absolute ceiling alone would pass. Run the full
 `option_schema` parent to include both measurements and their comparison;
 individual size subtests still run independently. The
 `notebook-large-markdown` lane keeps 1, 1.5, 8 and 32 MiB for every kind.
+In the reader and Markdown tests that sample through `measureReaderHeap`, a
+whole-read heap sample above the 4 MiB ceiling counts only what survives a
+forced collection. Under host CPU contention the Go GC CPU limiter can turn
+off mutator assists, and the heap then outgrows the pacer's goal with garbage
+that the read no longer holds.
 
 The `notebook-memory` CI job runs `scripts/ci-memory.sh` for `reader`,
 `markdown` and `source` sequentially, without race instrumentation. Every
@@ -124,6 +131,12 @@ remain on every full-suite PR. Both modes share selectors in
 cache for reader/Markdown and `race-core` for source. Main CI writes those
 package caches; the weekly jobs never write them and still force the large
 fixtures to execute with `-count=1`.
+
+The weekly [Lifecycle gate](../.github/workflows/lifecycle-gate.yml) workflow runs
+the full lifecycle gate, through `scripts/ci-lifecycle-gate.py`, on Wednesdays at
+05:23 UTC and on manual dispatch. The census coverage test runs in the `other`
+shard. [Scheduled and pull-request checks](lifecycle-verification.md#scheduled-and-pull-request-checks)
+describes what each run publishes and what a green run means.
 
 The many-option Markdown fixture keeps all 5,000 options
 and 100 rows in the default run, batching schema-only continuations rather

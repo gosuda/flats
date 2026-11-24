@@ -5,6 +5,8 @@ Run with: python3 scripts/compose-config-test.py
 Requires Docker Compose v2 or newer; no Docker daemon is needed.
 """
 
+from __future__ import annotations
+
 import json
 import os
 from pathlib import Path

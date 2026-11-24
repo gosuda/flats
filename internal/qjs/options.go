@@ -222,8 +222,8 @@ func (o *EvalOption) CreateHandle() (handle uint64) {
 	return option.Raw()
 }
 
-// Free releases QuickJS value handles to prevent memory leaks.
-// Must be called after Handle() to clean up WASM memory.
+// Free releases the WASM handles allocated by [EvalOption.CreateHandle].
+// Call Free after the last use of the returned handle.
 func (o *EvalOption) Free() {
 	for _, value := range []*Value{o.fileValue, o.codeValue, o.byteCodeValue, o.optionValue} {
 		if value != nil && value.handle != nil {

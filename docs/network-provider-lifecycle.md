@@ -44,6 +44,16 @@ If a public request lists no permitted public provider, or none of the
 requested public routes open, `ServeExposure` returns an error. If some open
 and some fail, the result and the joined error are both returned.
 
+A Portal open that [`portal.require_auth`](spec/portal-require-auth.md)
+refuses is neither: it returns an `unavailable` endpoint whose detail starts
+`portal.require_auth is on`, and no error. The other public providers of the
+flat still open, and the refusal does not fail them. When no other public
+route opens, the error holds the detail, so a visibility apply fails with it
+and a grant of Portal to a Public flat answers that its route is refused
+instead of advising to allow the provider again. A refused route that was
+served stops and unregisters, and a stop that is not confirmed shows the state
+`error`.
+
 `StopPublicRoutes` closes Funnel, Portal, zrok, quick tunnels, NetBird Expose
 and `proxy-public` for that slug. Local and private routes stay up. A stop error, or a Funnel state that is still `ready` or
 `starting`, is reported in `Unconfirmed` and the route stays tracked so a later

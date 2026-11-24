@@ -35,6 +35,7 @@ type fakeExposure struct {
 	statuses []sdk.RelayStatus
 	metas    []types.LeaseMetadata
 	closes   int
+	closeErr error // Close returns it, after it closes the listener
 	changed  chan struct{}
 	updates  chan sdk.RelayStatus
 	metaGate chan struct{} // if set, UpdateMetadata waits for it
@@ -111,9 +112,10 @@ func (f *fakeExposure) WaitReady(ctx context.Context) ([]sdk.RelayStatus, error)
 func (f *fakeExposure) Close() error {
 	f.mu.Lock()
 	f.closes++
+	err := f.closeErr
 	f.mu.Unlock()
 	f.Listener.Close()
-	return nil
+	return err
 }
 
 // set replaces the relay snapshot and, like the SDK, pushes the last

@@ -186,7 +186,7 @@ def mcp_payload(result: dict[str, Any]) -> dict[str, Any]:
 
 
 class Host:
-    def __init__(self, binary, work, adapter=False, legacy=False, without_tailnet=False):
+    def __init__(self, binary: str | Path, work: str | Path, adapter: bool = False, legacy: bool = False, without_tailnet: bool = False) -> None:
         self.binary, self.work, self.adapter = str(binary), Path(work), adapter
         self.legacy = legacy
         self.without_tailnet = without_tailnet
@@ -201,7 +201,7 @@ class Host:
         self.trace = []
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
-    def start(self):
+    def start(self) -> None:
         # Reserve both ports until immediately before spawn. Bind-race failures
         # fail the run; never kill another process or reuse the operator's port.
         reservations, ports = reserve_ports(self.addresses)
@@ -246,7 +246,7 @@ class Host:
             time.sleep(.1)
         raise AssertionError("server not ready in 30 seconds")
 
-    def stop(self):
+    def stop(self) -> None:
         if self.proc is not None:
             if self.proc.poll() is None:
                 self.proc.terminate()
@@ -381,7 +381,7 @@ class Host:
         require("error" not in result, f"MCP protocol error: {result}")
         return result["result"]
 
-    def initialize_mcp(self):
+    def initialize_mcp(self) -> None:
         self.rpc("initialize", {"protocolVersion": "2025-03-26", "capabilities": {},
                                 "clientInfo": {"name": "lifecyclecheck", "version": "2"}})
         self.ok("POST", "/mcp", {"jsonrpc": "2.0", "method": "notifications/initialized"}, status=202,
@@ -654,11 +654,17 @@ def approval_boundary(h: Host) -> None:
         "delete_env": {"slug": "boundary", "name": "MODE"},
         "get_notebook": {"slug": "boundary"},
         "update_notebook": {"slug": "boundary", "op_id": "lc-1", "ops": [NOTEBOOK_PAGE]},
+        "get_board": {"slug": "boundary"},
+        "get_board_share": {"slug": "boundary"},
+        "update_board": {"slug": "boundary", "op_id": "census-board-1", "ops": []},
+        "import_board": {"slug": "boundary", "op_id": "census-import-1", "archive": "UEsFBgAAAAAAAAAAAAAAAAAAAAAAAA==", "mode": "add"},
     }
     refusals = {"get_document": "not_docs", "update_document": "not_docs", "get_design": "not_design",
                 "list_revisions": "no_revisions", "get_revision": "no_revisions",
                 "pin_revision": "no_revisions", "rollback_revision": "no_revisions",
-                "get_notebook": "not_notebook", "update_notebook": "not_notebook"}
+                "get_notebook": "not_notebook", "update_notebook": "not_notebook",
+                "get_board": "not_board", "get_board_share": "not_board",
+                "update_board": "not_board", "import_board": "not_board"}
     census = []
     for tool in tools:
         name = tool['name']
@@ -695,6 +701,8 @@ def approval_boundary(h: Host) -> None:
         census.append({"name": tool["name"], "is_error": result.get("isError", False)})
     if any(tool['name'] == 'update_notebook' for tool in tools):
         notebook_writes_need_no_approval(h, pending)
+    if any(tool['name'] == 'update_board' for tool in tools):
+        board_writes_need_no_approval(h, pending)
     # Console decisions are authorized by the console transport (same-origin
     # browser requests). A local agent that forges those headers can decide;
     # a separate operator credential is a known open design item.
@@ -718,14 +726,56 @@ def approval_boundary(h: Host) -> None:
                     "boundary": "console transport only; no separate operator credential"})
 
 
+def version_rows(h, slug):
+    # Read-only, with the store's busy timeout: the live server writes in WAL mode.
+    path = h.data / "flats.db"
+    require(path.is_file(), f"{slug}: store file is missing: {path}")
+    try:
+        conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=5.0)
+    except sqlite3.Error as error:
+        raise AssertionError(f"{slug}: cannot open the store: {error}") from error
+    try:
+        versions = conn.execute("SELECT number, hash, published, pruned FROM versions WHERE flat = ? ORDER BY number",
+                                (slug,)).fetchall()
+        numbers = conn.execute("SELECT number FROM version_numbers WHERE flat = ? ORDER BY number", (slug,)).fetchall()
+    except sqlite3.Error as error:
+        raise AssertionError(f"{slug}: cannot read the version rows: {error}") from error
+    finally:
+        conn.close()
+    return {"versions": versions, "version_numbers": numbers}
+
+
+def approval_states(h):
+    return sorted((a['id'], a['status']) for a in h.ok('GET', '/api/approvals')['approvals'])
+
+
 def notebook_writes_need_no_approval(h: Host, pending: str) -> None:
     h.mcp('create_flat', slug='boundary-notebook', type='notebook')
     require(h.flat('boundary-notebook')['type'] == 'notebook', 'MCP create_flat did not create a notebook')
     h.mcp('get_notebook', slug='boundary-notebook')
+    before = version_rows(h, 'boundary-notebook')
+    approvals_before = approval_states(h)
+    require(before["versions"], 'notebook snapshot has no creation row')
     written = h.mcp('update_notebook', slug='boundary-notebook', op_id='lc-2', ops=[NOTEBOOK_PAGE])
     require(not written.get('approval') and not written.get('deploy'), f"notebook write requested an approval: {written}")
-    require(h.versions('boundary-notebook') == [], 'notebook write allocated a website version')
+    require(version_rows(h, 'boundary-notebook') == before, 'notebook write changed the version rows')
+    require(approval_states(h) == approvals_before, 'notebook write changed the approval list')
     require(h.ok('GET', f'/api/approvals/{pending}')['status'] == 'pending', 'notebook write decided existing approval')
+
+
+def board_writes_need_no_approval(h, pending):
+    h.mcp('create_flat', slug='boundary-board', type='board')
+    require(h.flat('boundary-board')['type'] == 'board', 'MCP create_flat did not create a board')
+    before = version_rows(h, 'boundary-board')
+    require(before["versions"], 'board snapshot has no creation row')
+    approvals_before = approval_states(h)
+    elements_before = len(h.mcp('get_board', slug='boundary-board')['elements'])
+    h.mcp('update_board', slug='boundary-board', op_id='lc-board-2', ops=[{'op': 'add', 'el': {'type': 'sticky', 'text': 'census'}}])
+    require(len(h.mcp('get_board', slug='boundary-board')['elements']) == elements_before + 1,
+            'board write did not land')
+    require(version_rows(h, 'boundary-board') == before, 'board write changed the version rows')
+    require(approval_states(h) == approvals_before, 'board write changed the approval list')
+    require(h.ok('GET', f'/api/approvals/{pending}')['status'] == 'pending', 'board write decided existing approval')
 
 
 def denied_visibility(h: Host, slug: str) -> None:
