@@ -404,3 +404,157 @@ test('the page declares the find region as a polite live region of its own', () 
   const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
   assert.match(html, /<div id="announce-find" class="sr" aria-live="polite" aria-atomic="true"><\/div>/);
 });
+
+// A browser frame runs the callbacks the app queued with requestAnimationFrame,
+// so a test can paint between the frames of a snapshot as the browser does.
+const frames = () => {
+  const q = [];
+  return { raf: (fn) => { q.push(fn); return 0; }, frame: () => { for (const fn of q.splice(0)) fn(); } };
+};
+// recordFind keeps every text put into #announce-find, in order. heard reads
+// only the last one, so a test that needs each announcement reads this.
+const recordFind = (t) => {
+  const el = t.doc.querySelector('#announce-find');
+  const log = [];
+  let proto = Object.getPrototypeOf(el);
+  let d;
+  while (proto && !(d = Object.getOwnPropertyDescriptor(proto, 'textContent'))) proto = Object.getPrototypeOf(proto);
+  Object.defineProperty(el, 'textContent', { configurable: true, get() { return d.get.call(this); }, set(v) { if (v !== '' && v != null) log.push(v); d.set.call(this, v); } });
+  return { take: () => log.splice(0) };
+};
+const tabs = () => new FakeServer({ tabs: [
+  { id: 1, name: 'Budget', rows: 20, cols: 5, cells: { '1,0': 'Train tickets', '1,2': 'train', '3,3': 'trains' } },
+  { id: 2, name: 'Trips', rows: 20, cols: 5, cells: { '5,0': 'Train pass', '8,1': 'fare' } },
+  { id: 3, name: 'Same', rows: 20, cols: 5, cells: { '0,0': 'train', '2,2': 'train', '4,4': 'train' } },
+  { id: 4, name: 'Empty', rows: 20, cols: 5, cells: { '0,0': 'fare' } },
+] });
+// askTab asks the server for another tab and holds its answer: the messages of
+// the snapshot come back one at a time, a row to a frame.
+const askTab = (t, fr, server, tab) => {
+  server.manual.add('watch');
+  t.app.openTab(tab);
+  fr.frame();
+  const got = [];
+  server.snapshot({ recv: (m) => got.push(m) }, t.net.generation, tab, 1);
+  return got;
+};
+// step delivers one message of a snapshot and runs the frame after it.
+const step = (t, fr, m) => { t.server.socket.recv(m); fr.frame(); };
+
+test('a change of tab speaks the count of the tab shown once, at its end, with paints between the frames of its snapshot', async () => {
+  const server = tabs();
+  const fr = frames();
+  const t = await startApp({ server, raf: fr.raf });
+  fr.frame();
+  const said = recordFind(t);
+  fire(t.grid.input, 'keydown', { key: 'f', ctrlKey: true });
+  search(t, 'train');
+  fr.frame();
+  assert.deepEqual(said.take(), ['Match 1 of 3 matches']);
+  const got = askTab(t, fr, server, 2);
+  assert.ok(got.length >= 4, 'the snapshot comes in several frames');
+  const spoken = [];
+  const shown = [];
+  for (const m of got) { step(t, fr, m); spoken.push(...said.take()); shown.push(t.app.find.count.textContent); }
+  assert.ok(shown.slice(0, -1).every((c) => c === ''), 'the count shows nothing while the tab loads');
+  assert.equal(shown.at(-1), '1 match');
+  assert.deepEqual(spoken, ['1 match'], 'the count of the tab shown is spoken once, at the end');
+});
+
+test('a change of tab to a tab whose count text is the same speaks that count once, at its end', async () => {
+  const server = tabs();
+  const fr = frames();
+  const t = await startApp({ server, raf: fr.raf });
+  fr.frame();
+  const said = recordFind(t);
+  fire(t.grid.input, 'keydown', { key: 'f', ctrlKey: true });
+  search(t, 'train');
+  fr.frame();
+  assert.deepEqual(said.take(), ['Match 1 of 3 matches']);
+  const spoken = [];
+  for (const m of askTab(t, fr, server, 3)) { step(t, fr, m); spoken.push(...said.take()); }
+  assert.equal(t.app.find.count.textContent, '1 of 3');
+  assert.deepEqual(spoken, ['Match 1 of 3 matches'], 'the other tab has the same count text, and it is spoken once, at the end');
+});
+
+test('a change of tab to a tab where nothing matches speaks "No matches" once, at its end, after "No matches" on the tab left', async () => {
+  const server = tabs();
+  const fr = frames();
+  const t = await startApp({ server, raf: fr.raf });
+  fr.frame();
+  const said = recordFind(t);
+  fire(t.grid.input, 'keydown', { key: 'f', ctrlKey: true });
+  search(t, 'zzz');
+  fr.frame();
+  assert.deepEqual(said.take(), ['No matches']);
+  const spoken = [];
+  for (const m of askTab(t, fr, server, 4)) { step(t, fr, m); spoken.push(...said.take()); }
+  assert.equal(t.app.find.count.textContent, 'No matches');
+  assert.deepEqual(spoken, ['No matches'], 'the tab shown has no match, and that is spoken once, at the end');
+});
+
+test('typing and Next while a tab loads speak nothing until its cells have arrived', async () => {
+  const server = tabs();
+  const fr = frames();
+  const t = await startApp({ server, raf: fr.raf });
+  fr.frame();
+  const said = recordFind(t);
+  fire(t.grid.input, 'keydown', { key: 'f', ctrlKey: true });
+  search(t, 'train');
+  fr.frame();
+  assert.deepEqual(said.take(), ['Match 1 of 3 matches']);
+  const got = askTab(t, fr, server, 2);
+  step(t, fr, got[0]);
+  step(t, fr, got[1]);
+  search(t, 'pass');
+  fr.frame();
+  find(t.app.find.el, 'Next match (Enter)').click();
+  fr.frame();
+  click(t, 5, 0);
+  fr.frame();
+  assert.deepEqual(said.take(), [], 'typing, Next and a click while the tab loads speak nothing');
+  assert.equal(t.app.find.count.textContent, '', 'the count shows nothing while the tab loads');
+  const spoken = [];
+  for (const m of got.slice(2)) { step(t, fr, m); spoken.push(...said.take()); }
+  assert.deepEqual(spoken, ['Match 1 of 1 match'], 'the count of the tab shown is spoken at its end');
+});
+
+test('a reload of the same tab speaks its count only when the count changed', async () => {
+  const server = tabs();
+  const fr = frames();
+  const t = await startApp({ server, raf: fr.raf });
+  fr.frame();
+  const said = recordFind(t);
+  fire(t.grid.input, 'keydown', { key: 'f', ctrlKey: true });
+  search(t, 'train');
+  fr.frame();
+  assert.deepEqual(said.take(), ['Match 1 of 3 matches']);
+  reload(t);
+  fr.frame();
+  assert.equal(t.app.find.count.textContent, '1 of 3', 'the count is back after the reload');
+  assert.deepEqual(said.take(), [], 'a reload that changes nothing speaks nothing');
+  const tab = t.server.tab(1);
+  tab.cells.delete(`${tab.rows[3]}:${tab.cols[3]}`);
+  reload(t);
+  fr.frame();
+  assert.deepEqual(said.take(), ['Match 1 of 2 matches'], 'a count that the reload changed is spoken once');
+});
+
+test('Ctrl+F or the Find button while Find is open speaks the count again', async () => {
+  const server = sheet();
+  const fr = frames();
+  const t = await startApp({ server, raf: fr.raf });
+  fr.frame();
+  const said = recordFind(t);
+  fire(t.grid.input, 'keydown', { key: 'f', ctrlKey: true });
+  search(t, 'train');
+  fr.frame();
+  assert.deepEqual(said.take(), ['Match 1 of 4 matches']);
+  fire(t.app.find.input, 'keydown', { key: 'f', ctrlKey: true });
+  fr.frame();
+  assert.equal(t.doc.activeElement, t.app.find.input, 'the field keeps focus');
+  assert.deepEqual(said.take(), ['Match 1 of 4 matches'], 'Ctrl+F while open speaks the count');
+  find(t.app.top, 'Find in this tab (Ctrl or Cmd+F)').click();
+  fr.frame();
+  assert.deepEqual(said.take(), ['Match 1 of 4 matches'], 'the Find button while open speaks the count');
+});

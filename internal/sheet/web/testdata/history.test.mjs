@@ -599,3 +599,20 @@ test('a revision tab the person leaves while it arrives is read no further', asy
   assert.ok(count.lines < ESCAPED_ROWS, `${count.lines} lines of ${ESCAPED_ROWS + 2} were read`);
   assert.equal(t.app.view, null);
 });
+
+test('a Find open on the live sheet speaks the count of a revision it opens, and of the live sheet again when the revision closes', async () => {
+  const t = await open();
+  const heard = () => { const r = t.doc.querySelector('#announce-find'); const said = r.textContent; r.textContent = ''; return said; };
+  t.app.find.show();
+  t.app.find.input.value = 'item';
+  fire(t.app.find.input, 'input');
+  assert.equal(heard(), 'Match 1 of 1 match');
+  t.rev(2).click();
+  await settle();
+  assert.equal(t.app.find.count.textContent, '1 of 1');
+  assert.equal(heard(), 'Match 1 of 1 match', 'a revision is another sheet: its count is spoken though the text is the same');
+  find(t.app.banners, 'Back to current').click();
+  await settle();
+  assert.equal(t.app.find.count.textContent, '1 of 1');
+  assert.equal(heard(), 'Match 1 of 1 match', 'the live sheet is spoken again when the revision closes');
+});

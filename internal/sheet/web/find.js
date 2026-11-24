@@ -35,9 +35,13 @@ export class Find {
     // last move, so any other move shows as a change of that count.
     this.anchor = null; // {row, col, r, c}
     this.seen = null;   // {sel, moved}
-    // spoken is the count's text when it was last spoken. A paint or a
-    // refresh speaks the count only when that text has changed.
+    // spoken is the count's text when it was last spoken, and spokenModel and
+    // spokenTab are the model and the tab it was spoken of. A paint or a
+    // refresh speaks the count only when that text has changed for the same
+    // tab of the same sheet.
     this.spoken = null;
+    this.spokenModel = null;
+    this.spokenTab = null;
     this.input = h('input', { type: 'text', 'aria-label': 'Find in this tab', placeholder: 'Find in this tab', autocomplete: 'off', spellcheck: 'false' });
     this.count = h('span', { class: 'find-count', 'aria-hidden': 'true' });
     this.el = h('div', { class: 'pop find', role: 'dialog', 'aria-label': 'Find', hidden: true },
@@ -73,7 +77,6 @@ export class Find {
     this.matches = [];
     this.anchor = null;
     this.seen = null;
-    this.spoken = null;
     this.cb.marks(null);
     this.cb.closed();
   }
@@ -169,11 +172,18 @@ export class Find {
     if (this.open) this.#say(false);
   }
 
-  // #say shows the count and speaks it in the find region: at once after one
-  // of Find's own actions (force), otherwise only when its text has changed
-  // since it was last spoken. An empty field speaks nothing and forgets the
-  // count it spoke.
+  // #say shows the count of the tab on screen and speaks it in the find
+  // region. While that tab loads its matches are not the tab's, so the count
+  // shows nothing and nothing is spoken; the count is spoken when the tab
+  // ends. Otherwise the text is spoken at once after one of Find's own
+  // actions (force), and else only when it has changed since it was last
+  // spoken of the same tab of the same sheet. A view of a revision is
+  // another model, so its count is spoken as a change of tab.
   #say(force) {
+    const model = this.cb.model();
+    const tab = model.tab;
+    if (model !== this.spokenModel || tab?.id !== this.spokenTab) this.spoken = null;
+    if (!tab || tab.loading) { this.count.textContent = ''; return; }
     const n = this.matches.length;
     const at = this.#at();
     const all = plural(n, 'match', 'matches');
@@ -182,6 +192,8 @@ export class Find {
     if (!text) { this.spoken = null; return; }
     if (!force && text === this.spoken) return;
     this.spoken = text;
+    this.spokenModel = model;
+    this.spokenTab = tab.id;
     announce(!n ? 'No matches' : at < 0 ? all : `Match ${at + 1} of ${all}`, '#announce-find');
   }
 }
