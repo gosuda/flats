@@ -344,6 +344,21 @@ func (n *Net) serve(ctx context.Context, slug string, h http.Handler, hidden boo
 			e = nil
 		}
 	}
+	if si.Refused() {
+		// portal.require_auth refuses a flat without sign-in
+		// (docs/spec/portal-require-auth.md, rules 7 and 8). A served entry
+		// stops and unregisters, and answers 503 until it stops. A new entry
+		// registers nothing, starts no HTTP server and makes no identity file.
+		n.mu.Lock()
+		delete(n.gateErrs, slug)
+		n.mu.Unlock()
+		aerr := &core.PortalAuthError{Detail: si.Refuse}
+		if e != nil {
+			e.front.Store(&frontHandler{closedFront})
+			aerr.StopErr = n.finishStop(slug, e)
+		}
+		return "", aerr
+	}
 	if e != nil {
 		// A redeploy puts a new handler into the box and keeps the gate
 		// (docs/spec/portal-sign-in.md, rule 38). A request that the old
@@ -1256,7 +1271,7 @@ func (n *Net) hostInfo(e *entry) (core.HostInfo, bool) {
 	}
 	if stopping {
 		hi.State = "error"
-		parts = append(parts, "teardown pending confirmation")
+		parts = append(parts, core.TeardownPending)
 	}
 	hi.Detail = strings.Join(parts, "; ")
 	return hi, conflict

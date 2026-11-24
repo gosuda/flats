@@ -32,6 +32,10 @@ func NewTestNet(t *testing.T, cfg Config) (*Net, *TestExposures) {
 	return n, &TestExposures{ff}
 }
 
+// SetLeaseTTL shortens the time after which a failed unregistration counts as confirmed: the relay has dropped the lease. Call
+// it before the Net serves.
+func (n *Net) SetLeaseTTL(d time.Duration) { n.leaseTTL = d }
+
 // TestExposures are the exposures that a test Net made.
 type TestExposures struct{ ff *fakeFactory }
 
@@ -66,6 +70,13 @@ func (x *TestExposure) Addr() string { return x.f.Addr().String() }
 
 // SetRelays replaces what the exposure reports.
 func (x *TestExposure) SetRelays(sts ...sdk.RelayStatus) { x.f.set(sts...) }
+
+// FailClose makes Close return err, as a relay that refuses the unregistration does, until it is called with nil.
+func (x *TestExposure) FailClose(err error) {
+	x.f.mu.Lock()
+	x.f.closeErr = err
+	x.f.mu.Unlock()
+}
 
 // Closes counts the Close calls, each of which unregisters the exposure.
 func (x *TestExposure) Closes() int { return x.f.closeCount() }

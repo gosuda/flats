@@ -37,6 +37,9 @@ const (
 	SetRevisionQuota   = "revision_quota"    // unpinned revisions kept per design; 0 = all
 	SetPinQuota        = "pin_quota"         // pinned revisions per design; 0 = unlimited
 	SetPortalHide      = "portal_hide"       // "true" keeps public flats out of relay listings by default
+	// SetRequireAuth is "true" while Portal serves a flat only when the flat has sign-in
+	// (docs/spec/portal-require-auth.md).
+	SetRequireAuth = "portal_require_auth"
 	// The providers new flats inherit, one per mode. "" for private follows
 	// network.private_backend; "" for public grants none.
 	SetDefaultPrivate = "default_private_provider"
@@ -62,6 +65,7 @@ var settingKeys = map[string]string{
 	SetPortalDiscover:  "portal.discovery",
 	SetPortalMaxRelay:  "portal.max_active_relays",
 	SetPortalHide:      "portal.hide",
+	SetRequireAuth:     "portal.require_auth",
 	SetDefaultPrivate:  "network.default_private",
 	SetDefaultPublic:   "network.default_public",
 	SetProxyTemplate:   config.ProxyTemplateKey,
@@ -110,8 +114,11 @@ type SettingsSource struct {
 	values map[string]string
 	// proxy is the proxy section in effect, published after each commit so
 	// readers never wait for a save that holds mu.
-	proxy  atomic.Pointer[config.ProxyConfig]
-	pinned map[string]string // setting -> who sets it
+	proxy atomic.Pointer[config.ProxyConfig]
+	// requireAuth is portal.require_auth in effect, published with proxy, so
+	// the check of each request on the Portal route never waits for a save.
+	requireAuth atomic.Bool
+	pinned      map[string]string // setting -> who sets it
 	// pinnedProviders are the providers whose network.permitted membership
 	// a service flag sets: provider -> who sets it.
 	pinnedProviders map[string]string
@@ -209,6 +216,7 @@ func (s *SettingsSource) refresh() error {
 	}
 	s.values = values
 	s.proxy.Store(&c.Proxy)
+	s.requireAuth.Store(c.Portal.RequireAuth)
 	return nil
 }
 
@@ -332,6 +340,9 @@ func (s *SettingsSource) network() config.NetworkConfig {
 // template on every request, so this neither parses the document nor waits
 // for a settings save in progress.
 func (s *SettingsSource) Proxy() config.ProxyConfig { return *s.proxy.Load() }
+
+// RequireAuth reports portal.require_auth, without waiting for a save.
+func (s *SettingsSource) RequireAuth() bool { return s.requireAuth.Load() }
 
 // permitted returns network.permitted in effect.
 func (s *SettingsSource) permitted() []string {
@@ -804,6 +815,9 @@ func (s *Service) applySettingChanges(ctx context.Context, changed []string) {
 	if slices.Contains(changed, SetPortalHide) {
 		s.applyHostListing(ctx)
 	}
+	if slices.Contains(changed, SetRequireAuth) {
+		s.applyRequireAuth(ctx)
+	}
 	if slices.Contains(changed, SetRevisionQuota) {
 		s.retainAllRevisions(ctx, true)
 	}
@@ -884,7 +898,7 @@ func normalizeSetting(k, v string) (string, error) {
 			return v, nil
 		}
 		return "", fmt.Errorf("setting %s must be tailscale-funnel, portal, zrok, cloudflare-quick, netbird-expose or proxy-public, or empty for none", k)
-	case SetPortalDiscover, SetPortalHide:
+	case SetPortalDiscover, SetPortalHide, SetRequireAuth:
 		b, err := strconv.ParseBool(v)
 		if err != nil {
 			return "", fmt.Errorf("setting %s must be true or false", k)

@@ -828,14 +828,21 @@ func (m *Manager) servePublic(ctx context.Context, req ExposureRequest) (Exposur
 		eps, errs = collectOpen(eps, errs, proxy, err)
 	}
 	opened := 0
+	var refusals []error // routes that portal.require_auth refuses, which fail no other provider
 	for _, id := range want {
 		ep, err := m.openPublic(ctx, req, id)
 		eps, errs = collectOpen(eps, errs, ep, err)
+		if err == nil && core.PortalAuthRefusal(ep) {
+			refusals = append(refusals, &core.PortalAuthError{Detail: ep.Detail})
+			continue
+		}
 		if err == nil && (ep.State == stateReady || ep.State == stateStarting || ep.State == "needs-login" || ep.State == "key-expiring") {
 			opened++
 		}
 	}
 	if opened == 0 {
+		// When no public route opens, the refusal is the reason, with the text that names the next action.
+		errs = append(errs, refusals...)
 		if len(errs) == 0 {
 			errs = append(errs, fmt.Errorf("%w: no public route opened", ErrProviderNotPermitted))
 		}
@@ -987,6 +994,12 @@ func (m *Manager) openPublic(ctx context.Context, req ExposureRequest, id ID) (E
 			return unconfiguredRefusal(Portal, "portal is permitted but not configured", "portal")
 		}
 		url, err := m.servePortal(ctx, p, req)
+		if aerr := (*core.PortalAuthError)(nil); errors.As(err, &aerr) && aerr.StopErr == nil {
+			// portal.require_auth refuses the route (docs/spec/portal-require-auth.md, decision 5): the endpoint shows
+			// the refusal, and the open is not a failure of the other public providers of the flat. servePublic
+			// reports it when no other public route opens. A stop that is not confirmed is a failure, as for a gate.
+			return ExposureEndpoint{Provider: Portal, State: stateUnavailable, Detail: aerr.Error()}, nil
+		}
 		if err != nil {
 			return serveFailed(Portal, "portal", err)
 		}
@@ -1050,10 +1063,20 @@ func (m *Manager) servePortal(ctx context.Context, p PortalNet, req ExposureRequ
 			gerr.StopErr = p.Stop(req.Slug)
 		}
 		err = gerr
+	case req.SignIn.Refused():
+		// portal.require_auth: a backend without the gate refuses too (docs/spec/portal-require-auth.md, rule 9).
+		aerr := &core.PortalAuthError{Detail: req.SignIn.Refuse}
+		if m.hasRoute(req.Slug, req.Slug, Portal) {
+			aerr.StopErr = p.Stop(req.Slug)
+		}
+		err = aerr
 	default:
 		url, err = p.Serve(ctx, req.Slug, h, req.Hidden)
 	}
 	if gerr := (*core.SignInGateError)(nil); errors.As(err, &gerr) && gerr.StopErr == nil {
+		m.forgetRoutes(req.Slug, req.Slug, Portal)
+	}
+	if aerr := (*core.PortalAuthError)(nil); errors.As(err, &aerr) && aerr.StopErr == nil {
 		m.forgetRoutes(req.Slug, req.Slug, Portal)
 	}
 	return url, err
@@ -1104,8 +1127,8 @@ func (m *Manager) PortalHosts(slug string) []string {
 //
 // It changes the route records of slug without enterSlug, so the lock of the
 // flat in core orders it with the opens and the retirements of the slug: its
-// only caller, closePortal in core, holds that lock. A new caller without that
-// lock must enter the slug first.
+// callers, closePortal and requireAuthStopPortal in core, hold that lock. A new
+// caller without that lock must enter the slug first.
 func (m *Manager) FailPortalGate(ctx context.Context, slug, reason string) error {
 	p := m.portalNet()
 	if p == nil {

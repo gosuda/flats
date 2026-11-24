@@ -41,6 +41,7 @@ type lifecycleRouteNet struct {
 	failPrivateAfterLocal error
 	failOpen              map[ProviderID]error  // per-provider open failure; siblings still open
 	degraded              map[ProviderID]string // status state of a registered route
+	degradedDetail        map[ProviderID]string // status detail of a registered route in a degraded state
 	// observed mirrors provider.Manager.observe: one endpoint list per host,
 	// replaced by every request for that host.
 	observed      map[string][]lifecycleObserved
@@ -102,8 +103,19 @@ func (n *lifecycleRouteNet) ServeExposure(_ context.Context, req ExposureRequest
 			ids = append(ids, ProviderTailscale)
 		}
 	}
-	var openErrs []error
+	var openErrs, refusals []error
+	openedPublic := 0
 	for _, id := range ids {
+		if id == ProviderPortal && req.SignIn.Refused() {
+			// Like provider.Manager.openPublic: portal.require_auth refuses the route, which registers nothing and stops
+			// a served one, and fails no other public provider (docs/spec/portal-require-auth.md, rules 7 and 8).
+			key := lifecycleRouteKey{host: req.Host, provider: id}
+			delete(n.routes, key)
+			delete(n.owners, key)
+			refusals = append(refusals, &PortalAuthError{Detail: req.SignIn.Refuse})
+			res.Endpoints = append(res.Endpoints, ExposureEndpoint{Provider: id, State: "unavailable", Detail: req.SignIn.Refuse, Configured: true, Permitted: true, Audience: req.Audience, Host: req.Host})
+			continue
+		}
 		if id == ProviderTailscale && n.failPrivateAfterLocal != nil {
 			res.Endpoints = append(res.Endpoints, ExposureEndpoint{Provider: id, State: "unavailable", Detail: n.failPrivateAfterLocal.Error(), Audience: req.Audience, Host: req.Host})
 			continue
@@ -124,9 +136,16 @@ func (n *lifecycleRouteNet) ServeExposure(_ context.Context, req ExposureRequest
 			n.identities[req.Host] = n.nextIdentity
 		}
 		res.Endpoints = append(res.Endpoints, ExposureEndpoint{Provider: id, URL: fmt.Sprintf("https://%s.%s.test", req.Host, id), State: "ready", Configured: true, Permitted: true, Ready: true, Audience: req.Audience, Host: req.Host})
+		if PublicProvider(id) {
+			openedPublic++
+		}
 	}
 	if req.Visibility == "private" && n.failPrivateAfterLocal != nil && slices.Contains(req.Permitted, ProviderTailscale) {
 		return res, n.failPrivateAfterLocal
+	}
+	if openedPublic == 0 {
+		// Like provider.Manager.servePublic: with no other public route open, the refusal is the error.
+		openErrs = append(openErrs, refusals...)
 	}
 	return res, errors.Join(openErrs...)
 }
@@ -222,7 +241,7 @@ func (n *lifecycleRouteNet) ExposureStatus(_ context.Context, host string) (Expo
 			if _, ok := n.routes[lifecycleRouteKey{host: host, provider: ep.Provider}]; ok {
 				ep.URL, ep.State = fmt.Sprintf("https://%s.%s.test", host, ep.Provider), "ready"
 				if st := n.degraded[ep.Provider]; st != "" {
-					ep.State = st
+					ep.State, ep.Detail = st, n.degradedDetail[ep.Provider]
 				}
 				ep.Ready = ep.State == "ready"
 			} else if o.registered {

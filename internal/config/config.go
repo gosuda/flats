@@ -186,6 +186,10 @@ var specs = []spec{
 	// it. It is not access control: the URL still opens the flat.
 	{key: "portal.hide", kind: kindBool, def: false,
 		hint: "use true or false"},
+	// require_auth makes Portal serve a flat only when the flat has sign-in
+	// (docs/spec/portal-require-auth.md). It covers Portal only.
+	{key: "portal.require_auth", kind: kindBool, def: false,
+		hint: "use true or false"},
 	// Unset, zrok uses the environment Flats manages in the data directory,
 	// connected from the console with the account token. Set, it names an
 	// environment managed with the zrok CLI.
@@ -839,6 +843,7 @@ type PortalConfig struct {
 	Discovery       bool
 	MaxActiveRelays int64
 	Hide            bool // default relay listing of public flats
+	RequireAuth     bool // Portal serves only flats that have sign-in
 }
 
 type NetbirdConfig struct {
@@ -1015,7 +1020,7 @@ func (c *Config) fill() error {
 	c.System = SystemConfig{num("system.upload_max_bytes"), num("system.version_quota"),
 		num("system.disk_quota_bytes"), num("system.preview_ttl_seconds"), num("system.rate_limit_rps"),
 		num("system.redirect_days"), num("system.events_keep")}
-	c.Portal = PortalConfig{list("portal.relays"), flag("portal.discovery"), num("portal.max_active_relays"), flag("portal.hide")}
+	c.Portal = PortalConfig{list("portal.relays"), flag("portal.discovery"), num("portal.max_active_relays"), flag("portal.hide"), flag("portal.require_auth")}
 	c.Zrok = ZrokConfig{str("zrok.environment"), str("zrok.namespace")}
 	c.Netbird = NetbirdConfig{str("netbird.management_url"), list("netbird.console_hosts")}
 	c.Proxy = ProxyConfig{Addr: str("proxy.addr")}
