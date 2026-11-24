@@ -4415,10 +4415,13 @@ of the overscan. The formula bar is a labeled text field that mirrors the
 editor. The tab bar is a `role="tablist"`. Menus and dialogs are named,
 take focus and return it to the text area. Save status, refusals, ignored
 and overwritten edits, agent activity and the find count go to
-`aria-live="polite"` regions. The find count is spoken at once after
-one of Find's own actions, and otherwise when its text changes. A change
-of tab speaks the count of the tab shown once, when all its cells have
-arrived, and nothing while they arrive; an empty field speaks nothing.
+`aria-live="polite"` regions. The find count is spoken at once after one
+of Find's own actions, and otherwise when its text changes. While a tab
+loads or no tab is shown, the field shows no count and nothing is spoken.
+When all cells of the tab have arrived, the count is spoken once after a
+change of tab or after one of Find's own actions in that time, and
+otherwise when its text has changed. A revision that opens or closes is a
+change of tab here. An empty field speaks nothing.
 
 Tab and Shift+Tab move between cells and never leave the grid. F6 and
 Shift+F6 move focus through the top bar, the toolbar, the formula bar, the

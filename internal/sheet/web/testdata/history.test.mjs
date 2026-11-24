@@ -616,3 +616,80 @@ test('a Find open on the live sheet speaks the count of a revision it opens, and
   assert.equal(t.app.find.count.textContent, '1 of 1');
   assert.equal(heard(), 'Match 1 of 1 match', 'the live sheet is spoken again when the revision closes');
 });
+
+// reachesFromFind says whether value is reachable from the own state of Find:
+// its own properties, followed through objects, arrays, Maps and Sets. The
+// callbacks (cb) and the DOM nodes are not followed.
+function reachesFromFind(find, value) {
+  const seen = new Set();
+  const stack = Reflect.ownKeys(find).filter((k) => k !== 'cb').map((k) => find[k]);
+  while (stack.length) {
+    const x = stack.pop();
+    if (x === value) return true;
+    if (x === null || typeof x !== 'object' || 'nodeType' in x || seen.has(x)) continue;
+    seen.add(x);
+    if (x instanceof Map) for (const [k, v] of x) stack.push(k, v);
+    else if (x instanceof Set) for (const v of x) stack.push(v);
+    for (const k of Reflect.ownKeys(x)) stack.push(x[k]);
+  }
+  return false;
+}
+
+test('the reachability walk finds a model held by a Selection in Find state', () => {
+  const model = { tab: null };
+  assert.equal(reachesFromFind({ seen: { sel: { model } } }, model), true);
+  assert.equal(reachesFromFind({ seen: { sel: new WeakRef(model) } }, model), false, 'a WeakRef is not followed');
+});
+
+// Over a revision Find counts the revision's tab. Once the live sheet is back,
+// nothing Find owns may keep that revision's model reachable (the anchor, the
+// selection it saw and the model its count was spoken of).
+async function overRevision(text) {
+  const t = await open();
+  t.app.find.show();
+  t.app.find.input.value = text;
+  fire(t.app.find.input, 'input');
+  t.rev(2).click();
+  await settle();
+  return { ...t, revModel: t.app.view.model };
+}
+
+test('a revision whose Find was closed over it is not kept by Find after the live sheet is back', async () => {
+  const t = await overRevision('item');
+  fire(t.app.find.input, 'keydown', { key: 'Escape' });
+  assert.equal(t.app.find.open, false);
+  find(t.app.banners, 'Back to current').click();
+  await settle();
+  assert.equal(reachesFromFind(t.app.find, t.revModel), false, 'Find keeps no model of the closed revision');
+});
+
+test('a field emptied over a revision, and Find closed over it, leave no model of the revision in Find', async () => {
+  const t = await overRevision('item');
+  t.app.find.input.value = '';
+  fire(t.app.find.input, 'input');
+  fire(t.app.find.input, 'keydown', { key: 'Escape' });
+  find(t.app.banners, 'Back to current').click();
+  await settle();
+  assert.equal(reachesFromFind(t.app.find, t.revModel), false, 'Find keeps no model of the revision');
+});
+
+test('Find left open with text after a revision keeps no model of the revision', async () => {
+  const t = await overRevision('item');
+  find(t.app.find.el, 'Next match (Enter)').click();
+  assert.equal(t.app.find.open, true);
+  find(t.app.banners, 'Back to current').click();
+  await settle();
+  assert.equal(t.app.find.count.textContent, '1 of 1');
+  assert.equal(reachesFromFind(t.app.find, t.revModel), false, 'Find keeps no model of the revision');
+});
+
+test('Find left open with an empty field after a revision keeps no model of the revision', async () => {
+  const t = await overRevision('item');
+  t.app.find.input.value = '';
+  fire(t.app.find.input, 'input');
+  find(t.app.banners, 'Back to current').click();
+  await settle();
+  assert.equal(t.app.find.open, true);
+  assert.equal(t.app.find.count.textContent, '');
+  assert.equal(reachesFromFind(t.app.find, t.revModel), false, 'Find keeps no model of the revision');
+});

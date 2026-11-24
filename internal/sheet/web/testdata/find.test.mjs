@@ -558,3 +558,106 @@ test('Ctrl+F or the Find button while Find is open speaks the count again', asyn
   fr.frame();
   assert.deepEqual(said.take(), ['Match 1 of 4 matches'], 'the Find button while open speaks the count');
 });
+
+// reloadFrames asks for the snapshot of the tab on screen again, as a resync
+// does: the messages come back one at a time, a row to a frame.
+const reloadFrames = (t, fr, server, tab = 1) => {
+  const generation = t.net.generation + 1;
+  t.server.socket.recv({ type: 'resync', generation, seq: String(server.seq), date: server.date, tabs: server.tabInfo() });
+  fr.frame();
+  const got = [];
+  server.snapshot({ recv: (m) => got.push(m) }, generation, tab, 1);
+  return got;
+};
+
+test('a reload of the same tab with a paint between its messages speaks nothing when the count did not change', async () => {
+  const server = sheet();
+  const fr = frames();
+  const t = await startApp({ server, raf: fr.raf });
+  fr.frame();
+  const said = recordFind(t);
+  fire(t.grid.input, 'keydown', { key: 'f', ctrlKey: true });
+  search(t, 'train');
+  fr.frame();
+  assert.deepEqual(said.take(), ['Match 1 of 4 matches']);
+  const got = reloadFrames(t, fr, server, 1);
+  assert.ok(got.length >= 4, 'the snapshot comes in several messages');
+  const spoken = [];
+  for (const m of got) { step(t, fr, m); spoken.push(...said.take()); }
+  assert.equal(t.app.find.count.textContent, '1 of 4', 'the count is back when the reload ends');
+  assert.deepEqual(spoken, [], 'a reload that changes no count speaks nothing');
+});
+
+test('a tab deleted while Find is open leaves no tab on screen: the count is empty and nothing is spoken until another tab is shown', async () => {
+  const server = tabs();
+  const fr = frames();
+  const t = await startApp({ server, raf: fr.raf });
+  fr.frame();
+  const said = recordFind(t);
+  fire(t.grid.input, 'keydown', { key: 'f', ctrlKey: true });
+  search(t, 'train');
+  fr.frame();
+  assert.deepEqual(said.take(), ['Match 1 of 3 matches']);
+  for (const m of askTab(t, fr, server, 3)) step(t, fr, m);
+  assert.equal(t.model.tab.name, 'Same');
+  said.take();
+  server.manual.add('watch');
+  server.deleteTab(3);
+  fr.frame();
+  assert.equal(t.model.tab, null, 'no tab is on screen while the page asks for the next one');
+  assert.equal(t.app.find.count.textContent, '', 'the count shows nothing');
+  assert.deepEqual(said.take(), [], 'nothing is spoken');
+  const spoken = [];
+  const got = [];
+  server.snapshot({ recv: (m) => got.push(m) }, t.net.generation, 1, 1);
+  for (const m of got) { step(t, fr, m); spoken.push(...said.take()); }
+  assert.equal(t.model.tab.name, 'Budget');
+  assert.equal(t.app.find.count.textContent, '1 of 3', 'the count of the tab shown is back');
+  assert.deepEqual(spoken, ['Match 1 of 3 matches'], 'the count of the tab shown is spoken once, at its end');
+});
+
+test('a Next press during a reload of the same tab is spoken when the reload ends, though the text did not change', async () => {
+  const server = sheet();
+  const fr = frames();
+  const t = await startApp({ server, raf: fr.raf });
+  fr.frame();
+  const said = recordFind(t);
+  fire(t.grid.input, 'keydown', { key: 'f', ctrlKey: true });
+  search(t, 'night');
+  fr.frame();
+  assert.deepEqual(said.take(), ['Match 1 of 1 match']);
+  const got = reloadFrames(t, fr, server, 1);
+  const spoken = [];
+  for (const m of got.slice(0, -1)) { step(t, fr, m); spoken.push(...said.take()); }
+  find(t.app.find.el, 'Next match (Enter)').click();
+  fr.frame();
+  assert.deepEqual(said.take(), [], 'the Next press speaks nothing while the tab reloads');
+  step(t, fr, got.at(-1));
+  spoken.push(...said.take());
+  assert.deepEqual(spoken, ['Match 1 of 1 match'], 'the Next press is spoken when the reload ends');
+});
+
+test('a Find reopened during a reload of the same tab is spoken when the reload ends, though the text did not change', async () => {
+  const server = sheet();
+  const fr = frames();
+  const t = await startApp({ server, raf: fr.raf });
+  fr.frame();
+  const said = recordFind(t);
+  fire(t.grid.input, 'keydown', { key: 'f', ctrlKey: true });
+  search(t, 'night');
+  fr.frame();
+  assert.deepEqual(said.take(), ['Match 1 of 1 match']);
+  fire(t.app.find.input, 'keydown', { key: 'Escape' });
+  fr.frame();
+  assert.equal(t.app.find.open, false);
+  assert.deepEqual(said.take(), [], 'closing speaks nothing');
+  const got = reloadFrames(t, fr, server, 1);
+  const spoken = [];
+  for (const m of got.slice(0, -1)) { step(t, fr, m); spoken.push(...said.take()); }
+  fire(t.grid.input, 'keydown', { key: 'f', ctrlKey: true });
+  fr.frame();
+  assert.deepEqual(said.take(), [], 'reopening speaks nothing while the tab reloads');
+  step(t, fr, got.at(-1));
+  spoken.push(...said.take());
+  assert.deepEqual(spoken, ['Match 1 of 1 match'], 'the reopened count is spoken when the reload ends');
+});

@@ -34,11 +34,12 @@ export class Find {
     // person makes: Find keeps the selection's move count from its own
     // last move, so any other move shows as a change of that count.
     this.anchor = null; // {row, col, r, c}
-    this.seen = null;   // {sel, moved}
+    this.seen = null;   // {sel: a WeakRef to the selection, moved}
     // spoken is the count's text when it was last spoken, and spokenModel and
     // spokenTab are the model and the tab it was spoken of. A paint or a
     // refresh speaks the count only when that text has changed for the same
-    // tab of the same sheet.
+    // tab of the same sheet. spokenModel and seen.sel are WeakRefs: Find only
+    // compares them, so a closed revision's model is not kept by Find.
     this.spoken = null;
     this.spokenModel = null;
     this.spokenTab = null;
@@ -117,8 +118,7 @@ export class Find {
     const m = moved && this.matches.length ? pick() : null;
     if (m) {
       this.cb.go(m.r, m.c);
-      const sel = this.cb.selection();
-      this.seen = { sel, moved: sel.moved };
+      this.#see(this.cb.selection());
     }
     this.#say(true);
   }
@@ -127,7 +127,14 @@ export class Find {
   // since Find last saw it, which only the person or another tab does.
   #follow() {
     const sel = this.cb.selection();
-    if (!this.seen || this.seen.sel !== sel || this.seen.moved !== sel.moved) this.#anchorHere();
+    if (!this.seen || this.seen.sel.deref() !== sel || this.seen.moved !== sel.moved) this.#anchorHere();
+  }
+
+  // #see keeps the selection Find has seen as a WeakRef. Find only compares it
+  // with the selection on screen, which the app keeps; a selection of a closed
+  // revision is then not kept by Find.
+  #see(sel) {
+    this.seen = { sel: new WeakRef(sel), moved: sel.moved };
   }
 
   #anchorHere() {
@@ -135,7 +142,7 @@ export class Find {
     const model = this.cb.model();
     const a = sel.active();
     this.anchor = model.tab ? { row: model.rowAt(a.r), col: model.colAt(a.c), r: a.r, c: a.c } : null;
-    this.seen = { sel, moved: sel.moved };
+    this.#see(sel);
   }
 
   // #anchorAt is where the anchor is now: where its row and column are, or
@@ -182,8 +189,14 @@ export class Find {
   #say(force) {
     const model = this.cb.model();
     const tab = model.tab;
-    if (model !== this.spokenModel || tab?.id !== this.spokenTab) this.spoken = null;
-    if (!tab || tab.loading) { this.count.textContent = ''; return; }
+    if (model !== this.spokenModel?.deref() || tab?.id !== this.spokenTab) this.spoken = null;
+    if (!tab || tab.loading) {
+      // An action of Find during a load is spoken when the load ends, even if
+      // its text is the text spoken last.
+      if (tab && force) this.spoken = null;
+      this.count.textContent = '';
+      return;
+    }
     const n = this.matches.length;
     const at = this.#at();
     const all = plural(n, 'match', 'matches');
@@ -192,7 +205,7 @@ export class Find {
     if (!text) { this.spoken = null; return; }
     if (!force && text === this.spoken) return;
     this.spoken = text;
-    this.spokenModel = model;
+    this.spokenModel = new WeakRef(model);
     this.spokenTab = tab.id;
     announce(!n ? 'No matches' : at < 0 ? all : `Match ${at + 1} of ${all}`, '#announce-find');
   }
