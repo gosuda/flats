@@ -102,6 +102,11 @@ even when the absolute ceiling alone would pass. Run the full
 `option_schema` parent to include both measurements and their comparison;
 individual size subtests still run independently. The
 `notebook-large-markdown` lane keeps 1, 1.5, 8 and 32 MiB for every kind.
+In the reader and Markdown tests that sample through `measureReaderHeap`, a
+whole-read heap sample above the 4 MiB ceiling counts only what survives a
+forced collection. Under host CPU contention the Go GC CPU limiter can turn
+off mutator assists, and the heap then outgrows the pacer's goal with garbage
+that the read no longer holds.
 
 The `notebook-memory` CI job runs `scripts/ci-memory.sh` for `reader`,
 `markdown` and `source` sequentially, without race instrumentation. Every
