@@ -796,6 +796,11 @@ type SystemStatus struct {
 	Grants      []string                `json:"provider_grants,omitempty"`
 	Providers   []core.ExposureEndpoint `json:"providers"`
 	Redirects   map[string]string       `json:"redirects,omitempty"`
+	// PortalRequireAuth is portal.require_auth, and PortalRefused lists the flats that it refuses now, derived from the
+	// stored facts when the status is read (docs/spec/portal-require-auth.md, rule 10). PortalRefused is null when the
+	// store cannot be read; the status still answers, because the CLI uses it as its liveness check.
+	PortalRequireAuth bool     `json:"portal_require_auth"`
+	PortalRefused     []string `json:"portal_refused"`
 }
 
 // Status implements api.System.
@@ -816,6 +821,16 @@ func (h *Host) Status(ctx context.Context) any {
 	if h.Public != nil {
 		ps := h.Public.Status()
 		s.Public = &ps
+	}
+	s.PortalRequireAuth = h.Svc.PortalRequireAuth()
+	portalPermitted := h.Providers == nil && h.Public != nil
+	if h.Providers != nil {
+		for _, id := range h.Providers.File().Permitted {
+			portalPermitted = portalPermitted || string(id) == string(core.ProviderPortal)
+		}
+	}
+	if refused, err := h.Svc.PortalRefused(ctx, portalPermitted); err == nil {
+		s.PortalRefused = refused
 	}
 	return s
 }

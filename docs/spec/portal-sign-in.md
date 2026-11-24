@@ -16,8 +16,8 @@ The first version has two providers. With `oidc`, a visitor signs in at an OpenI
 of the operator in the console. Sign-in protects the Portal URL of the flat only. It does not protect the private routes
 of the flat, its previews, the console, MCP or the API.
 
-The request is issue #221. Host-wide sign-in (#222) and the authentication of operators and agents (#139) are other
-issues.
+The request is issue #221. Host-wide sign-in (#222, [Portal require_auth](portal-require-auth.md)) and the
+authentication of operators and agents (#139) are other issues.
 
 ## Before this change
 
@@ -101,7 +101,7 @@ Out of scope:
 - The rights of a private visitor for a signed-in visitor. A signed-in visitor is a Public visitor (decision 3).
 - A console form that requests a change or sets the client secret.
 - Revocation of one access link. `flats signin revoke` ends every session and every link of the flat (rule 54).
-- Host-wide sign-in (#222).
+- Host-wide sign-in (#222), which [Portal require_auth](portal-require-auth.md) specifies.
 - Protection of the Portal identity file with the host key (see "Known limits").
 
 ## Decisions
@@ -376,7 +376,8 @@ console issues the access links.
     of the flat has the state `error` and the detail `sign-in gate: <reason>`, with the next action. The host log has
     one line with the slug and the reason. The other routes of the flat stay. A visibility approval that needs the
     Portal route fails with that reason, as it fails today when no public route opens. The next build tries again: a
-    deploy, a grant, a restart, a sign-in change or a client secret change.
+    deploy, a grant, a restart, a sign-in change, a client secret change, or the visit that turns
+    `portal.require_auth` off ([Portal require_auth](portal-require-auth.md), rule 17).
 36. Before the first build for an identity, the Portal provider checks that the identity file holds a token secret. When
     the file has none, the provider writes the file again with the identity that it loaded, atomically and with mode
     0600 (on Windows the access list of the SDK). The address, the keys and the canonical host name stay the same. When
@@ -390,7 +391,9 @@ console issues the access links.
     check.
 38. The Portal provider builds the gate when it opens a Portal route for a flat with sign-in on (an approved deploy or
     visibility change, a grant, a host start, a rename), when a sign-in change applies (rule 20), when the client
-    secret changes (rule 28), and after a new token secret of rule 54. A redeploy, a rollback, a data restore
+    secret changes (rule 28), after a new token secret of rule 54, and when the visit that turns
+    `portal.require_auth` off opens a stopped route ([Portal require_auth](portal-require-auth.md), rule 17). A
+    redeploy, a rollback, a data restore
     and a replacement of the worker put a new handler into the handler box and keep the gate. When sign-in goes off,
     the provider removes the gate and serves the handler box as today. Each open of the Portal route of a flat carries
     the stored setting, which the host reads under the lock of the flat, or the mark `redirect` of rule 41, and the host
@@ -583,7 +586,10 @@ console issues the access links.
     of rule 27 when the stored client secret has another binding. A change widens access when it turns sign-in off, adds
     an entry while sign-in stays on, or changes the provider, the issuer or the client ID. Turning sign-in on adds every
     entry and narrows access, so it gives no warning. While sign-in is on, the Networks section disables the switch of
-    each other public provider and shows the reason of rule 8.
+    each other public provider and shows the reason of rule 8. While `portal.require_auth` is on, the title of the
+    approval that turns sign-in off is `Turn off sign-in for <slug>: its Portal address stops serving it`, and the page
+    warns that the Portal address stops serving the flat instead of warning about a widening
+    ([Portal require_auth](portal-require-auth.md), rule 21).
 
 ## Audit and the webhook
 
@@ -719,6 +725,8 @@ console issues the access links.
   cut it.
 - The console has no form that turns sign-in off. When the identity provider fails, an operator away from the host can
   make the flat Private in the console, but cannot open it without sign-in.
+- The host setting `portal.require_auth` can refuse the Portal route of a flat that rule 7 allows, because the flat has
+  no sign-in. The setting covers Portal only ([Portal require_auth](portal-require-auth.md)).
 - A relay holds the certificate key of its host names and signs the TLS handshakes. A relay that misuses the key can
   end the TLS itself and read sessions, credentials and content. The SDK checks for that with self-probes, and Flats
   only logs their warnings. A flat with sign-in on is as safe as its relays; explicit relays that the operator trusts

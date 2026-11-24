@@ -388,6 +388,7 @@ written; `flats config unset KEY` removes it.
 | `portal.discovery` | `true`; `false` needs relays | restart |
 | `portal.max_active_relays` | `3` | restart |
 | `portal.hide` | `false` (public flats appear in relay listings) | immediately; relays follow at their next lease renewal |
+| `portal.require_auth` | `false` (Portal serves every Public flat that allows it) | immediately; a Public flat without sign-in stops being served on Portal |
 | `zrok.environment` | none (Flats manages `zrok-environment/` in the data directory) | restart, or when zrok is turned on from the console |
 | `zrok.namespace` | `public` | restart, or when zrok is turned on from the console |
 | `netbird.management_url` | `https://api.netbird.io:443` (NetBird Cloud); an https URL | restart, or when NetBird is turned on from the console; applies to peers started afterwards |
@@ -455,6 +456,41 @@ what Flats asks the relays for: a served route's lease metadata changes at
 once, and relays apply it at their next lease renewal (up to about 90
 seconds). If that update fails, the choice stays saved, the flat logs the
 error and the next activation of the route retries it.
+
+`portal.require_auth: true` makes Portal serve a flat only when the flat has
+[sign-in](networking.md#portal-sign-in). While it is on, a flat without
+sign-in gets no Portal route, and a Portal route that already serves such a
+flat stops when you turn the setting on. The flat stays Public on its other
+public providers and keeps its private routes. The Portal endpoint of a
+refused flat has the state `unavailable` and a detail that names the next
+step. The detail shows in the console and in the flat view, and
+`flats status` lists the refused flats. Turning the setting off
+opens the stopped Portal routes again. The setting covers Portal only:
+`network.permitted` is the switch of every other public provider, and a flat
+can still be Public on one of them without sign-in. Only the operator changes
+the setting, from the console (Settings), by editing `config.json` and
+sending SIGHUP, or offline with `flats config set`. It needs no approval,
+agents cannot change it, and a change writes no audit row and sends no
+webhook event; the log of each affected flat records the effect.
+
+When the setting turns on, the host ends the open public connections of each
+refused flat and serves its other public routes again, so a visitor on
+another provider reconnects. When the host cannot read a flat at that moment,
+it ends the public connections of that flat and stops its Portal route, and
+the other public routes of the flat answer 503 until a deploy, a grant or a
+restart. When the host cannot list the flats, it stops the Portal route of
+every flat that has one, with sign-in on or off, and ends no connection: a
+Portal connection that is open stays until it closes or the host restarts. A
+grant or a key change that runs between the change and the visit of a flat
+stops its Portal route in the same way, without ending its open connections and
+without the event of this setting. A route whose unregistration the relay refused
+opens again only after the lease of the relay has expired (2 minutes). A
+deploy, a grant, a restart, a sign-in change, or turning the setting off,
+opens a stopped Portal route again. An older release refuses a `config.json`
+that holds `portal.require_auth`, as it refuses any key it does not know, so
+run `flats config unset portal.require_auth` before you start one. `flats
+backup` copies `config.json`, so a restore brings back the value of the time
+of the backup.
 
 zrok keeps the connected account's token and identity in `zrok-environment/`
 (mode 0600), never in `config.json`, unless `zrok.environment` names an
@@ -1700,7 +1736,7 @@ The secret has at least 16 bytes.
 | `network.changed` | the provider permission of a flat, or the list of origins that its server code may fetch, changes |
 | `signin.changed` | an approval applied a change of the [Portal sign-in](networking.md#portal-sign-in) of a flat (`set_signin`), the console issued an access link (`issue_signin_link`), or the sessions and the links of a flat were ended (`revoke_signin`) |
 
-A change that alters nothing sends nothing. The host-wide `network.permitted` list, the creation of a flat, the public
+A change that alters nothing sends nothing. The host-wide `network.permitted` list, the host-wide `portal.require_auth` setting, the creation of a flat, the public
 instance mode, the downgrade of "anyone can edit" when guest editing is off, an approval that a restart finishes, the
 new token secret that a rename or a deletion gives the Portal identity of a flat, and secrets and operator keys, also
 the client secret of Portal sign-in, send no event. The [audit log](#audit-log) records the changes of secrets and

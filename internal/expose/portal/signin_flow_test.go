@@ -68,6 +68,11 @@ func (in flatInstance) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		brw.Flush()
 		<-r.Context().Done()
 		c.Close()
+	case "/hold":
+		// A plain request that runs until its request ends, as a long download or an event stream does.
+		w.WriteHeader(http.StatusOK)
+		http.NewResponseController(w).Flush()
+		<-r.Context().Done()
 	case "/headers":
 		seen := map[string]string{}
 		for k, v := range r.Header {
@@ -136,7 +141,10 @@ type host struct {
 }
 
 // startHost starts a host on dir with Portal granted to the host. A second start on the same dir is a restart.
-func startHost(t *testing.T, dir string) *host {
+func startHost(t *testing.T, dir string) *host { return startHostWith(t, dir, nil) }
+
+// startHostWith is startHost with a change of the Portal backend config.
+func startHostWith(t *testing.T, dir string, edit func(*portal.Config)) *host {
 	t.Helper()
 	ctx := context.Background()
 	st, err := store.Open(filepath.Join(dir, "flats.db"))
@@ -148,7 +156,11 @@ func startHost(t *testing.T, dir string) *host {
 		t.Fatal(err)
 	}
 	logs := &logLines{}
-	pn, px := portal.NewTestNet(t, portal.Config{Dir: filepath.Join(dir, "portal"), Discovery: true, Logf: logs.logf})
+	cfg := portal.Config{Dir: filepath.Join(dir, "portal"), Discovery: true, Logf: logs.logf}
+	if edit != nil {
+		edit(&cfg)
+	}
+	pn, px := portal.NewTestNet(t, cfg)
 	mgr, err := provider.New(dir, provider.Options{Local: loop, Portal: pn, Grants: &provider.File{Permitted: []provider.ID{provider.Portal}},
 		Permission: func(ctx context.Context, slug string, id provider.ID) (bool, error) {
 			return st.ProviderPermitted(ctx, slug, string(id))
