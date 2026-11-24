@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -301,5 +302,148 @@ func TestToolErrorCarriesPublicEditProblems(t *testing.T) {
 	}
 	if len(detail.Problems) != 1 || detail.Problems[0].Code != core.ProblemDiskQuotaOff {
 		t.Fatalf("problems = %+v", detail.Problems)
+	}
+}
+
+func TestCensusCoversEveryRegisteredMCPTool(t *testing.T) {
+	e := newEnv(t)
+	listed, err := e.local.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	source, err := os.ReadFile(filepath.Join("..", "lifecyclecheck", "gate.py"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	keys, err := censusKeys(string(source))
+	if err != nil {
+		t.Fatal(err)
+	}
+	have := make(map[string]bool, len(keys))
+	for _, key := range keys {
+		have[key] = true
+	}
+	var missing []string
+	for _, tool := range listed.Tools {
+		if !have[tool.Name] {
+			missing = append(missing, tool.Name)
+		}
+	}
+	if len(missing) > 0 {
+		sort.Strings(missing)
+		t.Fatalf("gate.py census has no inputs entry for: %s", strings.Join(missing, ", "))
+	}
+}
+
+// censusKeys returns the keys of the census inputs dict in gate.py. A key is a
+// double-quoted string at depth 0 of the dict, followed by ":" and "{". Comments
+// outside strings and values nested inside entries are not keys.
+func censusKeys(body string) ([]string, error) {
+	lines := strings.Split(body, "\n")
+	start := -1
+	for i, line := range lines {
+		if line == "    inputs = {" {
+			if start >= 0 {
+				return nil, errors.New("gate.py has more than one census inputs dict")
+			}
+			start = i
+		}
+	}
+	if start < 0 {
+		return nil, errors.New("gate.py has no census inputs dict")
+	}
+	end := -1
+	for i := start + 1; i < len(lines); i++ {
+		if lines[i] == "    }" {
+			end = i
+			break
+		}
+	}
+	if end < 0 {
+		return nil, errors.New("gate.py census inputs dict has no closing brace")
+	}
+	block := strings.Join(lines[start+1:end], "\n")
+	var keys []string
+	depth := 0
+	for i := 0; i < len(block); {
+		switch block[i] {
+		case '#':
+			if eol := strings.IndexByte(block[i:], '\n'); eol >= 0 {
+				i += eol
+			} else {
+				i = len(block)
+			}
+		case '"':
+			key, next, err := quotedString(block, i)
+			if err != nil {
+				return nil, err
+			}
+			if depth == 0 && startsObject(block[next:]) {
+				keys = append(keys, key)
+			}
+			i = next
+		case '{', '[':
+			depth++
+			i++
+		case '}', ']':
+			depth--
+			i++
+		default:
+			i++
+		}
+	}
+	if len(keys) == 0 {
+		return nil, errors.New("gate.py census inputs dict has no keys")
+	}
+	return keys, nil
+}
+
+// quotedString returns the contents of the double-quoted string that starts at
+// block[start], and the index just after its closing quote.
+func quotedString(block string, start int) (string, int, error) {
+	for i := start + 1; i < len(block); i++ {
+		switch block[i] {
+		case '\\':
+			i++
+		case '"':
+			return block[start+1 : i], i + 1, nil
+		}
+	}
+	return "", 0, errors.New("gate.py census inputs dict has an unterminated string")
+}
+
+// startsObject reports whether rest begins with ":" and then "{".
+func startsObject(rest string) bool {
+	rest = strings.TrimLeft(rest, " \t\r\n")
+	if !strings.HasPrefix(rest, ":") {
+		return false
+	}
+	return strings.HasPrefix(strings.TrimLeft(rest[1:], " \t\r\n"), "{")
+}
+
+func TestCensusKeysSkipCommentedEntries(t *testing.T) {
+	body := "    inputs = {\n" +
+		"        \"one\": {\"markdown\": \"# not a comment\"}, \"two\": {\"slug\": \"b\"},\n" +
+		"        # \"three\": {\"slug\": \"c\"},\n" +
+		"    }\n"
+	keys, err := censusKeys(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(keys, ","); got != "one,two" {
+		t.Fatalf("census keys = %s, want one,two", got)
+	}
+}
+
+func TestCensusKeysIgnoreNestedValues(t *testing.T) {
+	body := "    inputs = {\n" +
+		"        \"outer\": {\"inner\": {\"get_board\": {\"slug\": \"b\"}}, \"ops\": [{\"op\": \"x\"}]},\n" +
+		"    }\n"
+	keys, err := censusKeys(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := strings.Join(keys, ","); got != "outer" {
+		t.Fatalf("census keys = %s, want outer", got)
 	}
 }

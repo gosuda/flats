@@ -32,7 +32,9 @@ diffs, nested paths, other filenames and every other changed file run the full
 suite, including `docs/agent/`, generated references, plugin skills and CI
 files. Invalid merge context or a failed comparison fails the changes job.
 No workflow-level path filter hides its result. Main skips the changes job
-and starts its full suite without waiting for a classifier runner.
+and starts its full suite without waiting for a classifier runner. The
+`legacy-build` job runs `scripts/lifecycle-gate.sh --prepare-only` on every pull
+request that the changes job selects as full.
 
 The full suite uses the Go version from `go.mod` and runs these checks in
 parallel jobs:
@@ -124,6 +126,12 @@ remain on every full-suite PR. Both modes share selectors in
 cache for reader/Markdown and `race-core` for source. Main CI writes those
 package caches; the weekly jobs never write them and still force the large
 fixtures to execute with `-count=1`.
+
+The weekly [Lifecycle gate](../.github/workflows/lifecycle-gate.yml) workflow runs
+the full lifecycle gate, through `scripts/ci-lifecycle-gate.py`, on Wednesdays at
+05:23 UTC and on manual dispatch. The census coverage test runs in the `other`
+shard. [Scheduled and pull-request checks](lifecycle-verification.md#scheduled-and-pull-request-checks)
+describes what each run publishes and what a green run means.
 
 The many-option Markdown fixture keeps all 5,000 options
 and 100 rows in the default run, batching schema-only continuations rather
