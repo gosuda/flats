@@ -2,9 +2,10 @@
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { findMatches } from '../find.js';
 import { fire } from './dom.mjs';
-import { FakeServer, find, startApp, type } from './server.mjs';
+import { FakeServer, find, key, startApp, type } from './server.mjs';
 
 const sheet = (access = 'private') => new FakeServer({ access, tabs: [{ id: 1, name: 'Budget', rows: 200, cols: 5, cells: {
   '0,0': 'Item', '1,0': 'Train tickets', '1,2': 'train', '4,1': { kind: 'n', value: 0.5, shown: '50% of TRAIN fare' }, '150,3': 'Night train', '3,0': 'Bus',
@@ -29,7 +30,7 @@ test('Ctrl or Cmd+F opens the field, counts the matches and moves the selection 
   assert.equal(t.doc.activeElement, f.input);
   search(t, 'train');
   assert.equal(f.count.textContent, '1 of 4');
-  assert.match(t.doc.querySelector('#announce').textContent, /Match 1 of 4 matches/, 'the count is announced without moving focus');
+  assert.match(t.doc.querySelector('#announce-find').textContent, /Match 1 of 4 matches/, 'the count is announced without moving focus');
   assert.equal(t.doc.activeElement, f.input);
   assert.deepEqual(t.sel.active(), { r: 1, c: 0 });
   assert.ok(t.grid.activeEl.classList.contains('hit'), 'matches are marked in the grid');
@@ -46,7 +47,7 @@ test('Ctrl or Cmd+F opens the field, counts the matches and moves the selection 
   assert.equal(f.count.textContent, '4 of 4');
   search(t, 'plane');
   assert.equal(f.count.textContent, 'No matches');
-  assert.match(t.doc.querySelector('#announce').textContent, /No matches/);
+  assert.match(t.doc.querySelector('#announce-find').textContent, /No matches/);
   // Escape closes, clears the marks and returns focus to the grid
   fire(f.input, 'keydown', { key: 'Escape' });
   assert.equal(f.open, false);
@@ -215,4 +216,191 @@ test('Find selects the match where it is after the edit it commits releases a he
   assert.deepEqual([t.model.rowAt(a.r), t.model.colAt(a.c)], needle, 'the selection is on the match');
   assert.deepEqual(a, { r: 2, c: 1 });
   assert.equal(t.app.find.count.textContent, '1 of 1');
+});
+
+// The count is spoken in its own polite region, #announce-find, and only
+// when its text changes; Find's own steps and field edits always speak. heard
+// reads the region and empties it. Each expected announcement is asserted
+// before it is read away, so a silent fault cannot hide in a read.
+const heard = (t) => { const r = t.doc.querySelector('#announce-find'); const said = r.textContent; r.textContent = ''; return said; };
+
+test('a click that moves the selection onto a match speaks the count in the find region, not in the status', async () => {
+  const t = await startApp({ server: sheet() });
+  const f = t.app.find;
+  fire(t.grid.input, 'keydown', { key: 'f', ctrlKey: true });
+  search(t, 'train');
+  assert.equal(heard(t), 'Match 1 of 4 matches');
+  click(t, 4, 1);
+  assert.equal(f.count.textContent, '3 of 4');
+  assert.equal(heard(t), 'Match 3 of 4 matches', 'a click onto a match is spoken');
+  assert.doesNotMatch(t.doc.querySelector('#announce').textContent, /match/i, 'the status region carries no count');
+  assert.equal(f.count.getAttribute('aria-hidden'), 'true', 'the visible count stays hidden from the reader');
+});
+
+test('a click on a cell that is no match speaks the count it leaves, once', async () => {
+  const t = await startApp({ server: sheet() });
+  const f = t.app.find;
+  fire(t.grid.input, 'keydown', { key: 'f', ctrlKey: true });
+  search(t, 'train');
+  assert.equal(heard(t), 'Match 1 of 4 matches');
+  click(t, 4, 1);
+  assert.equal(heard(t), 'Match 3 of 4 matches');
+  click(t, 3, 0);
+  assert.equal(f.count.textContent, '4 matches');
+  assert.equal(heard(t), '4 matches', 'the count changed from 3 of 4 to 4 matches');
+  click(t, 3, 0);
+  assert.equal(heard(t), '', 'a click on the same cell speaks nothing');
+});
+
+test('an arrow key from one cell that is no match to another speaks nothing while the count keeps its text', async () => {
+  const t = await startApp({ server: sheet() });
+  fire(t.grid.input, 'keydown', { key: 'f', ctrlKey: true });
+  search(t, 'train');
+  assert.equal(heard(t), 'Match 1 of 4 matches');
+  click(t, 3, 0);
+  assert.equal(heard(t), '4 matches');
+  key(t, 'ArrowDown');
+  assert.deepEqual(t.sel.active(), { r: 4, c: 0 }, 'the arrow key moved to another cell that is no match');
+  assert.equal(t.app.find.count.textContent, '4 matches');
+  assert.equal(heard(t), '', 'the text did not change, so nothing is spoken');
+});
+
+test('an own edit that adds a match speaks the new count, and the save status does not cut it short', async () => {
+  const t = await startApp({ server: sheet() });
+  const f = t.app.find;
+  fire(t.grid.input, 'keydown', { key: 'f', ctrlKey: true });
+  search(t, 'train');
+  assert.equal(heard(t), 'Match 1 of 4 matches');
+  click(t, 2, 0);
+  assert.equal(heard(t), '4 matches', 'the click moves off the matches');
+  type(t, 'Train');
+  key(t, 'Enter');
+  assert.equal(f.count.textContent, '5 matches');
+  assert.equal(t.doc.querySelector('#announce').textContent, 'Saved', 'the save status is spoken');
+  assert.equal(t.doc.querySelector('#announce-find').textContent, '5 matches', 'the save status did not replace the count');
+});
+
+test('an own edit that removes the match the selection is on speaks the new count', async () => {
+  const t = await startApp({ server: sheet() });
+  const f = t.app.find;
+  fire(t.grid.input, 'keydown', { key: 'f', ctrlKey: true });
+  search(t, 'train');
+  assert.equal(heard(t), 'Match 1 of 4 matches');
+  click(t, 1, 0);
+  assert.equal(heard(t), '', 'a click on the match the selection is already on speaks nothing');
+  key(t, 'Delete');
+  assert.equal(f.count.textContent, '3 matches');
+  assert.equal(heard(t), '3 matches', 'the own edit removed a match');
+});
+
+test('a remote edit speaks a count it changed, and speaks nothing for one it did not change', async () => {
+  const t = await startApp({ server: sheet() });
+  fire(t.grid.input, 'keydown', { key: 'f', ctrlKey: true });
+  search(t, 'train');
+  assert.equal(heard(t), 'Match 1 of 4 matches');
+  const focus = t.doc.activeElement;
+  t.server.setCell(1, 5, 0, 'train again');
+  assert.equal(t.app.find.count.textContent, '1 of 5');
+  assert.equal(heard(t), 'Match 1 of 5 matches', 'the count the remote edit changed is spoken');
+  assert.equal(t.doc.activeElement, focus, 'the announcement does not move focus');
+  t.server.setCell(1, 6, 1, 'nothing here');
+  assert.equal(heard(t), '', 'a remote edit that leaves the count alone speaks nothing');
+});
+
+test('a rollback speaks the count of the sheet it restores', async () => {
+  const t = await startApp({ server: sheet() });
+  fire(t.grid.input, 'keydown', { key: 'f', ctrlKey: true });
+  search(t, 'train');
+  assert.equal(heard(t), 'Match 1 of 4 matches');
+  const before = t.server.socket;
+  const tab = t.server.tab(1);
+  tab.cells.delete(`${tab.rows[4]}:${tab.cols[1]}`);
+  before.recv({ type: 'reset', seq: String(++t.server.seq) });
+  t.server.socket.open();
+  assert.equal(t.app.find.count.textContent, '1 of 3');
+  assert.equal(heard(t), 'Match 1 of 3 matches', 'the rollback changed the count');
+});
+
+test('a change of tab speaks the count the tab it shows has', async () => {
+  const server = new FakeServer({ tabs: [
+    { id: 1, name: 'Budget', rows: 20, cols: 5, cells: { '1,0': 'Train tickets', '1,2': 'train' } },
+    { id: 2, name: 'Trips', rows: 20, cols: 5, cells: { '0,0': 'Train pass' } },
+  ] });
+  const t = await startApp({ server });
+  fire(t.grid.input, 'keydown', { key: 'f', ctrlKey: true });
+  search(t, 'train');
+  assert.equal(heard(t), 'Match 1 of 2 matches');
+  t.app.openTab(2);
+  assert.equal(t.app.find.count.textContent, '1 of 1');
+  assert.equal(heard(t), 'Match 1 of 1 match', 'the count of the tab shown is spoken');
+});
+
+test('a paint that changes nothing speaks nothing: a scroll, a second paint and a status change', async () => {
+  const t = await startApp({ server: sheet() });
+  const f = t.app.find;
+  fire(t.grid.input, 'keydown', { key: 'f', ctrlKey: true });
+  search(t, 'train');
+  assert.equal(heard(t), 'Match 1 of 4 matches');
+  const focus = t.doc.activeElement;
+  t.grid.el.scrollTop = 400;
+  t.app.changed();
+  assert.equal(heard(t), '', 'a scroll that leaves the count as it was');
+  t.app.changed();
+  assert.equal(heard(t), '', 'a second paint');
+  t.app.status.set('saving', 0, false, false);
+  assert.equal(t.doc.querySelector('#announce').textContent, 'Saving…');
+  assert.equal(heard(t), '', 'a status change does not speak the count again');
+  assert.equal(t.doc.activeElement, focus, 'nothing moved focus');
+  assert.equal(f.count.textContent, '1 of 4');
+});
+
+test('Next on a single match speaks it again, and the same text typed again is spoken', async () => {
+  const t = await startApp({ server: sheet() });
+  fire(t.grid.input, 'keydown', { key: 'f', ctrlKey: true });
+  search(t, 'night');
+  assert.equal(heard(t), 'Match 1 of 1 match');
+  find(t.app.find.el, 'Next match (Enter)').click();
+  assert.equal(heard(t), 'Match 1 of 1 match', 'a press of Next speaks the count though it did not change');
+  search(t, 'night');
+  assert.equal(heard(t), 'Match 1 of 1 match', 'a change of the field speaks even when the text is the same');
+});
+
+test('with Find closed nothing is spoken, and reopening speaks the count it finds', async () => {
+  const t = await startApp({ server: sheet() });
+  fire(t.grid.input, 'keydown', { key: 'f', ctrlKey: true });
+  search(t, 'train');
+  assert.equal(heard(t), 'Match 1 of 4 matches');
+  fire(t.app.find.input, 'keydown', { key: 'Escape' });
+  assert.equal(t.app.find.open, false);
+  assert.equal(heard(t), '', 'closing speaks nothing');
+  fire(t.grid.input, 'keydown', { key: 'f', ctrlKey: true });
+  assert.equal(heard(t), 'Match 1 of 4 matches', 'reopening with the same text and count speaks the count afresh');
+  fire(t.app.find.input, 'keydown', { key: 'Escape' });
+  assert.equal(heard(t), '', 'closing again speaks nothing');
+  click(t, 4, 1);
+  t.server.setCell(1, 5, 0, 'train again');
+  assert.equal(heard(t), '', 'nothing is spoken while Find is closed');
+  fire(t.grid.input, 'keydown', { key: 'f', ctrlKey: true });
+  assert.equal(t.app.find.count.textContent, '3 of 5');
+  assert.equal(heard(t), 'Match 3 of 5 matches', 'reopening speaks the count at the selection');
+});
+
+test('an emptied field speaks nothing, and typing again speaks the count', async () => {
+  const t = await startApp({ server: sheet() });
+  const f = t.app.find;
+  fire(t.grid.input, 'keydown', { key: 'f', ctrlKey: true });
+  search(t, 'train');
+  assert.equal(heard(t), 'Match 1 of 4 matches');
+  search(t, '');
+  assert.equal(f.count.textContent, '');
+  assert.equal(heard(t), '', 'an empty field speaks nothing');
+  t.server.setCell(1, 5, 0, 'train again');
+  assert.equal(heard(t), '', 'with an empty field, a remote change speaks nothing');
+  search(t, 'train');
+  assert.equal(heard(t), 'Match 1 of 5 matches', 'typing again speaks the count');
+});
+
+test('the page declares the find region as a polite live region of its own', () => {
+  const html = readFileSync(new URL('../index.html', import.meta.url), 'utf8');
+  assert.match(html, /<div id="announce-find" class="sr" aria-live="polite" aria-atomic="true"><\/div>/);
 });

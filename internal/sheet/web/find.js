@@ -35,6 +35,9 @@ export class Find {
     // last move, so any other move shows as a change of that count.
     this.anchor = null; // {row, col, r, c}
     this.seen = null;   // {sel, moved}
+    // spoken is the count's text when it was last spoken. A paint or a
+    // refresh speaks the count only when that text has changed.
+    this.spoken = null;
     this.input = h('input', { type: 'text', 'aria-label': 'Find in this tab', placeholder: 'Find in this tab', autocomplete: 'off', spellcheck: 'false' });
     this.count = h('span', { class: 'find-count', 'aria-hidden': 'true' });
     this.el = h('div', { class: 'pop find', role: 'dialog', 'aria-label': 'Find', hidden: true },
@@ -53,15 +56,15 @@ export class Find {
   get open() { return !this.el.hidden; }
 
   // show opens the field, or focuses it when it is open. Opening sets the
-  // anchor and moves nothing: the text the field still holds is counted
-  // and marked.
+  // anchor and moves nothing: the text the field still holds is counted,
+  // marked and spoken.
   show() {
     const opening = !this.open;
     this.el.hidden = false;
     this.input.focus();
     this.input.select();
     if (opening) this.#anchorHere();
-    if (this.input.value) this.search();
+    if (this.input.value) { this.#find(); this.#say(true); }
   }
 
   close() {
@@ -70,6 +73,7 @@ export class Find {
     this.matches = [];
     this.anchor = null;
     this.seen = null;
+    this.spoken = null;
     this.cb.marks(null);
     this.cb.closed();
   }
@@ -77,10 +81,11 @@ export class Find {
   // search finds the matches again: after the tab's cells changed, and
   // with jump after a change of the text, which selects the first match at
   // or after the anchor, or else the first match of the tab. With no match
-  // the selection stays.
+  // the selection stays. A change of the cells speaks the count only when
+  // its text changed.
   search(jump = false) {
     if (!this.open) return;
-    if (!jump) { this.#find(); this.#say(); return; }
+    if (!jump) { this.#find(); this.#say(false); return; }
     this.#move(() => {
       const p = this.#anchorAt();
       return this.matches.find((m) => order(m, p) >= 0) ?? this.matches[0];
@@ -112,7 +117,7 @@ export class Find {
       const sel = this.cb.selection();
       this.seen = { sel, moved: sel.moved };
     }
-    this.#say();
+    this.#say(true);
   }
 
   // #follow moves the anchor to the active cell when the selection moved
@@ -158,18 +163,25 @@ export class Find {
 
   // sync shows the count for where the selection is now. The grid calls it as
   // it draws, so a click or a key in the grid that moves the selection, which
-  // Find does not make, is counted at once. It announces nothing: the grid
-  // announces the cell.
+  // Find does not make, is counted at once and spoken when its text changed.
+  // A paint that changes nothing speaks nothing.
   sync() {
     if (this.open) this.#say(false);
   }
 
-  #say(announceIt = true) {
+  // #say shows the count and speaks it in the find region: at once after one
+  // of Find's own actions (force), otherwise only when its text has changed
+  // since it was last spoken. An empty field speaks nothing and forgets the
+  // count it spoke.
+  #say(force) {
     const n = this.matches.length;
     const at = this.#at();
     const all = plural(n, 'match', 'matches');
     const text = !this.input.value ? '' : !n ? 'No matches' : at < 0 ? all : `${at + 1} of ${n}`;
     this.count.textContent = text;
-    if (announceIt && this.input.value) announce(!n ? 'No matches' : at < 0 ? all : `Match ${at + 1} of ${all}`);
+    if (!text) { this.spoken = null; return; }
+    if (!force && text === this.spoken) return;
+    this.spoken = text;
+    announce(!n ? 'No matches' : at < 0 ? all : `Match ${at + 1} of ${all}`, '#announce-find');
   }
 }
