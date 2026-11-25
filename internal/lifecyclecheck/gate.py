@@ -726,7 +726,7 @@ def approval_boundary(h: Host) -> None:
                     "boundary": "console transport only; no separate operator credential"})
 
 
-def version_rows(h, slug):
+def version_rows(h: Host, slug: str) -> dict[str, Any]:
     # Read-only, with the store's busy timeout: the live server writes in WAL mode.
     path = h.data / "flats.db"
     require(path.is_file(), f"{slug}: store file is missing: {path}")
@@ -745,7 +745,7 @@ def version_rows(h, slug):
     return {"versions": versions, "version_numbers": numbers}
 
 
-def approval_states(h):
+def approval_states(h: Host) -> list[tuple[str, str]]:
     return sorted((a['id'], a['status']) for a in h.ok('GET', '/api/approvals')['approvals'])
 
 
@@ -763,7 +763,7 @@ def notebook_writes_need_no_approval(h: Host, pending: str) -> None:
     require(h.ok('GET', f'/api/approvals/{pending}')['status'] == 'pending', 'notebook write decided existing approval')
 
 
-def board_writes_need_no_approval(h, pending):
+def board_writes_need_no_approval(h: Host, pending: str) -> None:
     h.mcp('create_flat', slug='boundary-board', type='board')
     require(h.flat('boundary-board')['type'] == 'board', 'MCP create_flat did not create a board')
     before = version_rows(h, 'boundary-board')
