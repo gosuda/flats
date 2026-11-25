@@ -94,9 +94,11 @@ runs the rest. The slowest subtests of the services lane
 and the metrics host tests) each build their own host, so they run in
 parallel. The default Markdown retained-memory test covers all six payload kinds at 1 MiB and keeps the option-schema cases
 at 1.5 and 16 MiB as well. Its default-only `bounded_growth` subtest permits
-at most 1 MiB more sampled heap at 16 MiB than at 1 MiB, in addition to the
-unchanged 4 MiB ceiling for each read. This rejects retaining every option id
-even when the absolute ceiling alone would pass. Run the full
+at most 1 MiB more post-collection retained heap at 16 MiB than at 1 MiB, in
+addition to the unchanged 4 MiB ceiling for each read. The growth comparison
+uses the retained figure because the mid-read collection fires only past the
+ceiling, so transient peaks would mix collected and uncollected regimes. This
+rejects retaining every option id even when the absolute ceiling alone would pass. Run the full
 `option_schema` parent to include both measurements and their comparison;
 individual size subtests still run independently. The
 `notebook-large-markdown` lane keeps 1, 1.5, 8 and 32 MiB for every kind.

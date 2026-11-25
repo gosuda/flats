@@ -38,7 +38,7 @@ func TestMarkdownManyRichRuns(t *testing.T) {
 		t.Fatal(err)
 	}
 	query, _ := json.Marshal(map[string]any{"page": f.page.ID, "format": "markdown", "limit": 1})
-	body, peak, err := measureReaderHeap(t, f.in, query)
+	body, peak, _, err := measureReaderHeap(t, f.in, query)
 	t.Logf("runs=%d retained=%d heap=%d", count, runs.Len(), peak)
 	if err != nil {
 		t.Fatal(err)
@@ -79,7 +79,7 @@ func TestMarkdownManyOptionRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	query, _ := json.Marshal(map[string]any{"page": f.page.ID, "format": "markdown", "limit": 64})
-	body, peak, err := measureReaderHeap(t, f.in, query)
+	body, peak, _, err := measureReaderHeap(t, f.in, query)
 	t.Logf("options=%d rows=%d heap=%d", options, rows, peak)
 	if err != nil {
 		t.Fatal(err)

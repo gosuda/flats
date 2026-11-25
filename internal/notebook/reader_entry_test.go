@@ -17,7 +17,13 @@ import (
 // readerHeapCeiling bounds the sampled heap growth of one whole read.
 const readerHeapCeiling = 4 << 20
 
-func measureReaderHeap(t *testing.T, in *Instance, query []byte) ([]byte, uint64, error) {
+// measureReaderHeap reports the transient sampled heap growth of one whole
+// read and, after a final collection, the heap the read still retains. The
+// transient peak serves the ceiling check; growth comparisons must use the
+// retained figure, because the mid-read collection below fires only for
+// fixtures that cross the ceiling and transient peaks otherwise mix
+// collected and uncollected regimes.
+func measureReaderHeap(t *testing.T, in *Instance, query []byte) ([]byte, uint64, uint64, error) {
 	t.Helper()
 	oldGC := debug.SetGCPercent(20)
 	defer debug.SetGCPercent(oldGC)
@@ -64,7 +70,16 @@ func measureReaderHeap(t *testing.T, in *Instance, query []byte) ([]byte, uint64
 	sample()
 	close(stop)
 	<-joined
-	return body, peak.Load() - before.HeapAlloc, err
+	// Collect once more so every fixture in a growth comparison reports what
+	// the read retains instead of what garbage it happened to hold.
+	runtime.GC()
+	var after runtime.MemStats
+	runtime.ReadMemStats(&after)
+	var retained uint64
+	if after.HeapAlloc > before.HeapAlloc {
+		retained = after.HeapAlloc - before.HeapAlloc
+	}
+	return body, peak.Load() - before.HeapAlloc, retained, err
 }
 
 func readerQueryFixture(t *testing.T) (writerFixture, WriteResult) {
@@ -118,7 +133,7 @@ func TestReaderSelectionPreparationMemory(t *testing.T) {
 						t.Fatal(err)
 					}
 					raw, _ := json.Marshal(query)
-					body, peak, err := measureReaderHeap(t, f.in, raw)
+					body, peak, _, err := measureReaderHeap(t, f.in, raw)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -247,7 +262,7 @@ func TestReaderCollectionQueryMemory(t *testing.T) {
 						query["filter"] = []Filter{{Property: Target{Ref: &property}, Op: Contains, Value: json.RawMessage(fmt.Sprintf(`{"id":%q,"inc":%q}`, created.Refs["first"].Ref.ID, fmt.Sprint(created.Refs["first"].Ref.Inc)))}}
 					}
 					raw, _ := json.Marshal(query)
-					body, peak, err := measureReaderHeap(t, f.in, raw)
+					body, peak, _, err := measureReaderHeap(t, f.in, raw)
 					if err != nil {
 						t.Fatal(err)
 					}

@@ -140,15 +140,15 @@ func TestMarkdownRetainedMemory(t *testing.T) {
 					}
 					fixtureElapsed := time.Since(started)
 					readStart := time.Now()
-					body, peak, err := measureReaderHeap(t, f.in, raw)
-					t.Logf("retained=%d sampled whole-read heap growth=%d response=%d fixture=%s read=%s", size, peak, len(body), fixtureElapsed, time.Since(readStart))
+					body, peak, retained, err := measureReaderHeap(t, f.in, raw)
+					t.Logf("retained=%d sampled whole-read heap growth=%d retained-heap=%d response=%d fixture=%s read=%s", size, peak, retained, len(body), fixtureElapsed, time.Since(readStart))
 					if err != nil {
 						t.Fatal(err)
 					}
 					if peak > readerHeapCeiling {
 						t.Errorf("Markdown read materialized retained %s: %d bytes exceeds 4 MiB", kind, peak)
 					} else if kind == "option_schema" && !large && (size == 1<<20 || size == 16<<20) {
-						schemaPeaks[size] = peak
+						schemaPeaks[size] = retained
 					}
 					// Delivery and its assertions are outside the whole-entry heap sample.
 					text, refs, warnings := continueMarkdownRead(t, f.in, body)
