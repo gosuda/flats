@@ -148,6 +148,10 @@ func (s *Server) Handler() http.Handler {
 		h("DELETE /flats/{slug}/secrets/{name}", s.deleteSecret)
 		h("GET /flats/{slug}/stats", s.stats)
 		h("GET /flats/{slug}/snapshots", s.snapshots)
+		h("GET /flats/{slug}/signin", s.getSignIn)
+		h("POST /flats/{slug}/signin", s.requestSignIn)
+		h("POST /flats/{slug}/signin/links", s.issueSignInLink)
+		h("POST /flats/{slug}/signin/revoke", s.revokeSignIn)
 		h("GET /approvals/{id}", s.getApproval)
 		h("GET /approvals", s.listApprovals)
 		if console {
@@ -192,6 +196,8 @@ func (s *Server) Handler() http.Handler {
 			h("POST /flats/{slug}/notebook", s.updateNotebook)
 			h("GET /flats/{slug}/sheet", s.getSheet)
 			h("POST /flats/{slug}/sheet", s.updateSheet)
+			h("PUT /flats/{slug}/signin/secret", s.putSignInSecret)
+			h("DELETE /flats/{slug}/signin/secret", s.deleteSignInSecret)
 		}
 	}
 	return mux
@@ -860,17 +866,34 @@ func (s *Server) putSecret(w http.ResponseWriter, r *http.Request, via core.Via)
 		return
 	}
 	var in struct {
-		Value string `json:"value"`
+		Value  string `json:"value"`
+		Inject *struct {
+			Origin *string `json:"origin"`
+			Header *string `json:"header"`
+		} `json:"inject"`
 	}
 	if err := decode(r, &in); err != nil {
 		writeErr(w, 400, err)
 		return
 	}
-	if err := s.Svc.SetSecret(r.Context(), r.PathValue("slug"), r.PathValue("name"), in.Value, v); err != nil {
+	var inject *core.SecretInject
+	if in.Inject != nil {
+		if in.Inject.Origin == nil || in.Inject.Header == nil {
+			writeErr(w, 400, errors.New("inject needs both origin and header"))
+			return
+		}
+		inject = &core.SecretInject{Origin: *in.Inject.Origin, Header: *in.Inject.Header}
+	}
+	stored, err := s.Svc.SetSecretBinding(r.Context(), r.PathValue("slug"), r.PathValue("name"), in.Value, inject, v)
+	if err != nil {
 		fail(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"name": r.PathValue("name"), "status": "stored; redeploy to apply", "note": "Changes apply to live on the next deploy/redeploy, rollback or data restoration (after any required approval), or Flats host restart. New previews capture current settings; automatic worker restarts reuse their captured settings."})
+	out := map[string]any{"name": r.PathValue("name"), "status": "stored; redeploy to apply", "note": "Changes apply to live on the next deploy/redeploy, rollback or data restoration (after any required approval), or Flats host restart. New previews capture current settings; automatic worker restarts reuse their captured settings."}
+	if stored != nil {
+		out["inject"] = stored
+	}
+	writeJSON(w, 200, out)
 }
 
 func (s *Server) deleteSecret(w http.ResponseWriter, r *http.Request, via core.Via) {
@@ -928,22 +951,55 @@ func (s *Server) snapshots(w http.ResponseWriter, r *http.Request, _ core.Via) {
 	writeJSON(w, 200, map[string]any{"snapshots": snaps, "note": "taken automatically before each deploy of a flat with a database; rollback with restore_data puts back the one taken before the current version"})
 }
 
-func (s *Server) getApproval(w http.ResponseWriter, r *http.Request, _ core.Via) {
+// getApproval and listApprovals show a set_signin approval to a caller of /api without the entries of its settings
+// (docs/spec/portal-sign-in.md, rule 58). The console keeps them: its approval page shows the added and the removed
+// entries (rule 64).
+func (s *Server) getApproval(w http.ResponseWriter, r *http.Request, via core.Via) {
 	a, err := s.Svc.GetApproval(r.Context(), r.PathValue("id"))
 	if err != nil {
 		fail(w, err)
 		return
 	}
-	writeJSON(w, 200, a)
+	if via != core.ViaConsole {
+		writeJSON(w, 200, core.WithoutSignInEntries(a))
+		return
+	}
+	writeJSON(w, 200, s.forConsole(a))
 }
 
-func (s *Server) listApprovals(w http.ResponseWriter, r *http.Request, _ core.Via) {
+// consoleApproval is an approval as the console reads it. A set_signin approval also says that portal.require_auth is
+// on, because the title and the warning of its page tell the operator what turning sign-in off does
+// (docs/spec/portal-require-auth.md, rule 21).
+type consoleApproval struct {
+	store.Approval
+	PortalRequireAuth bool `json:"portal_require_auth,omitempty"`
+}
+
+func (s *Server) forConsole(a store.Approval) any {
+	if a.Action != "set_signin" || !s.Svc.PortalRequireAuth() {
+		return a
+	}
+	return consoleApproval{Approval: a, PortalRequireAuth: true}
+}
+
+func (s *Server) listApprovals(w http.ResponseWriter, r *http.Request, via core.Via) {
 	as, err := s.Svc.ListApprovals(r.Context(), r.URL.Query().Get("status"))
 	if err != nil {
 		fail(w, err)
 		return
 	}
-	writeJSON(w, 200, map[string]any{"approvals": as})
+	if via != core.ViaConsole {
+		for i := range as {
+			as[i] = core.WithoutSignInEntries(as[i])
+		}
+		writeJSON(w, 200, map[string]any{"approvals": as})
+		return
+	}
+	out := make([]any, len(as))
+	for i := range as {
+		out[i] = s.forConsole(as[i])
+	}
+	writeJSON(w, 200, map[string]any{"approvals": out})
 }
 
 func (s *Server) decide(approve bool) func(w http.ResponseWriter, r *http.Request, via core.Via) {

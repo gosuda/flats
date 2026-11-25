@@ -94,7 +94,6 @@ func serve(args []string) error {
 	fault := &faults{}
 	public := &publicNet{Public: local.NewPublic(private), faults: fault}
 	rt := &runtime.Manager{DataDir: *data}
-	defer rt.Close() // after svc.Close stopped the instances
 	svc, err := core.New(ctx, core.Config{DataDir: *data, Store: st, Private: private, Public: public,
 		Runtime: rt, ConsoleURL: func() string { return "http://" + *listen }})
 	if err != nil {

@@ -28,7 +28,7 @@ env:
 
 jobs:
   resolve:
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04
     timeout-minutes: 10
     outputs:
       commit: ${{ steps.resolve.outputs.commit }}
@@ -69,7 +69,7 @@ jobs:
         include:
           - {shard: runtime-codec, cache: runtime-soak}
           - {shard: docs-soak, cache: docs-budget}
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
@@ -121,7 +121,7 @@ jobs:
     needs: resolve
     outputs:
       archives: ${{ steps.archives.outputs.artifact-id }}
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04
     timeout-minutes: 30
     steps:
       # Build the exact commit the resolve job checked, even if the tag moved.
@@ -194,7 +194,7 @@ jobs:
 
   release:
     needs: [resolve, test, build]
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: write
@@ -237,7 +237,7 @@ jobs:
 
   image:
     needs: [resolve, release]
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04
     timeout-minutes: 30
     permissions:
       contents: read

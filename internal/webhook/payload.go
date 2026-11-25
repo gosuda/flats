@@ -22,8 +22,8 @@ const atLayout = "2006-01-02T15:04:05.000Z"
 type Payload struct {
 	// ID is filled by Notify when empty.
 	ID string `json:"id"`
-	// Type is approval.created, approval.decided, visibility.changed or
-	// network.changed.
+	// Type is approval.created, approval.decided, visibility.changed,
+	// network.changed or signin.changed.
 	Type string `json:"type"`
 	// At is filled by Notify from Config.Now when empty.
 	At         string  `json:"at"`
@@ -51,13 +51,31 @@ type Access struct {
 	Access     string `json:"access"`
 }
 
-// Change describes what a visibility.changed or network.changed event
-// changed. Only the fields of its kind are written: From and To for a
-// visibility change, Grant "origins" with Count, Origins and Truncated, or
-// Grant "provider" with Provider and Permitted.
+// SignIn is a sign-in setting as an event names it: the provider and the
+// number of entries, never an entry (docs/spec/portal-sign-in.md, rule 68).
+type SignIn struct {
+	Provider string `json:"provider"`
+	Count    int    `json:"count"`
+}
+
+// Change describes what a visibility.changed, network.changed or
+// signin.changed event changed. Only the fields of its kind are written: From
+// and To for a visibility change, SignInFrom and SignInTo for a sign-in
+// change, ExpiresAt for an issued access link, nothing for Empty, Grant
+// "origins" with Count, Origins and Truncated, or Grant "provider" with
+// Provider and Permitted.
 type Change struct {
 	// From and To are the access before and after a visibility change.
 	From, To *Access
+	// SignInFrom and SignInTo are the sign-in before and after a change. They
+	// are written as from and to.
+	SignInFrom, SignInTo *SignIn
+	// ExpiresAt is the expiry of an access link that issue_signin_link
+	// issued, in RFC 3339. It is written as expires_at, and no other field of
+	// the link is (docs/spec/portal-sign-in.md, rule 68).
+	ExpiresAt string
+	// Empty writes {}: revoke_signin changes nothing that the body may name.
+	Empty bool
 	// Grant is "origins" or "provider" for a network change and empty for a
 	// visibility change.
 	Grant string
@@ -98,6 +116,19 @@ func (c Change) MarshalJSON() ([]byte, error) {
 			Provider  string `json:"provider"`
 			Permitted bool   `json:"permitted"`
 		}{c.Grant, c.Provider, c.Permitted})
+	}
+	switch {
+	case c.Empty:
+		return []byte(`{}`), nil
+	case c.ExpiresAt != "":
+		return json.Marshal(struct {
+			ExpiresAt string `json:"expires_at"`
+		}{c.ExpiresAt})
+	case c.SignInFrom != nil || c.SignInTo != nil:
+		return json.Marshal(struct {
+			From *SignIn `json:"from,omitempty"`
+			To   *SignIn `json:"to,omitempty"`
+		}{c.SignInFrom, c.SignInTo})
 	}
 	return json.Marshal(struct {
 		From *Access `json:"from,omitempty"`

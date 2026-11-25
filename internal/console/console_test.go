@@ -275,10 +275,16 @@ func TestLifecycleCopy(t *testing.T) {
 }
 
 // The confirm dialog shows the public notice before widening; it must be the
-// same text the API returns afterwards.
+// same text the API returns afterwards. The notices of a flat with Portal
+// sign-in on (docs/spec/portal-sign-in.md, rule 61) are copies of core's too.
 func TestNoticesMatchCore(t *testing.T) {
 	dom := readStatic(t, "assets/js/dom.js")
-	for name, want := range map[string]string{"PUBLIC_ACCESS_NOTICE": core.PublicAccessNotice} {
+	for name, want := range map[string]string{
+		"PUBLIC_ACCESS_NOTICE":          core.PublicAccessNotice,
+		"SIGN_IN_PUBLIC_NOTICE":         core.SignInPublicNotice,
+		"PENDING_SIGN_IN_PUBLIC_NOTICE": core.PendingSignInPublicNotice,
+		"SIGN_IN_EDIT_NOTICE":           core.SignInEditNotice,
+	} {
 		decl := "export const " + name + " = '" + want + "';"
 		if !strings.Contains(dom, decl) {
 			t.Errorf("dom.js %s differs from internal/core; want %s", name, decl)

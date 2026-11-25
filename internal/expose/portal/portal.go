@@ -47,7 +47,8 @@ const ConflictHint = "another Portal user owns this name on that relay; rename t
 type Config struct {
 	// ShutdownTimeout bounds HTTP drain, SDK close and listener-pump waits (default 30s).
 	ShutdownTimeout time.Duration
-	// Dir holds one identity file per slug (<Dir>/<slug>.json, mode 0600).
+	// Dir holds one identity file per slug (<Dir>/<slug>.json, mode 0600; on
+	// Windows the Portal SDK gives it an access list of its own).
 	Dir string
 	// Relays lists explicit relays. Empty means the Portal CLI default:
 	// discovery over the bootstrap relays only.
@@ -77,6 +78,10 @@ type exposure interface {
 type exposeFunc func(ctx context.Context, id types.Identity, relays []string, maxActive int, meta types.LeaseMetadata) (exposure, error)
 
 func sdkExpose(ctx context.Context, id types.Identity, relays []string, maxActive int, meta types.LeaseMetadata) (exposure, error) {
+	// No relay cache: the tenant TLS ends in this process and a relay forwards
+	// only ciphertext, which a flat with sign-in on needs
+	// (docs/spec/portal-sign-in.md, rule 43). An option that sets one must
+	// refuse sign-in.
 	opts := []sdk.Option{sdk.WithMetadata(meta)}
 	if maxActive > 0 {
 		opts = append(opts, sdk.WithDiscovery(maxActive))
@@ -107,12 +112,16 @@ type Net struct {
 	entries   map[string]*entry
 	locks     map[string]*sync.Mutex // per-slug Serve/Stop/SetHidden serialization
 	leaseTTL  time.Duration          // tests shorten it; zero means sdkLeaseTTL
+	// gateErrs holds, per slug, why the last open built no sign-in gate and so
+	// served nothing (docs/spec/portal-sign-in.md, rule 35), until a later open
+	// serves the slug or a Stop gives it up.
+	gateErrs map[string]string
 }
 
 // sdkLeaseTTL is the lease lifetime the Portal SDK requests and renews
-// (portal-tunnel v2.6.3 sdk/listener.go defaultLeaseTTL). Once SDK Close has
-// returned, nothing renews the lease, so a relay that missed the unregister
-// request drops it within this time.
+// (portal-tunnel v2.7.4 sdk/listener.go defaultLeaseTTL, the same as in
+// v2.6.3). Once SDK Close has returned, nothing renews the lease, so a relay
+// that missed the unregister request drops it within this time.
 const sdkLeaseTTL = 2 * time.Minute
 
 func (n *Net) leaseExpiry() time.Duration {
@@ -133,6 +142,13 @@ type entry struct {
 	httpErr error              // read only after done closes
 	done    chan struct{}      // closed when RunHTTP and the watcher returned
 
+	// id is the Portal identity of the slug, which the sign-in gate and its
+	// credentials are built from (docs/spec/portal-sign-in.md, rule 33). The
+	// slug lock guards it and gate; front is what RunHTTP serves through.
+	id    types.Identity
+	gate  gateState
+	front atomic.Pointer[frontHandler]
+
 	// The slug lock owns teardown state; e.mu guards stopping for status readers.
 	stopping    bool
 	closeResult <-chan closeResult // one SDK Close attempt, shared across retries
@@ -151,6 +167,11 @@ type entry struct {
 	sticky  map[string]sdk.RelayStatus // terminal failures, kept after deselection
 	logged  map[string]string          // relayURL -> last logged state
 	aliases map[string]string          // relayURL -> alias URL last shown (see aliasPath)
+	// checkErr is why the background check of the oidc provider of the
+	// latest gate failed (rule 37), and checkGen numbers the builds whose
+	// check may report it.
+	checkErr string
+	checkGen uint64
 }
 
 type handlerBox struct {
@@ -203,15 +224,16 @@ func New(cfg Config) (*Net, error) {
 	installSDKLogger(cfg.Logf)
 	ctx, cancel := context.WithCancel(context.Background())
 	return &Net{
-		cfg:     cfg,
-		relays:  relays,
-		expose:  sdkExpose,
-		runHTTP: func(ctx context.Context, ln net.Listener, h http.Handler) error { return sdk.RunHTTP(ctx, ln, h, "") },
-		logf:    logf,
-		ctx:     ctx,
-		cancel:  cancel,
-		entries: map[string]*entry{},
-		locks:   map[string]*sync.Mutex{},
+		cfg:      cfg,
+		relays:   relays,
+		expose:   sdkExpose,
+		runHTTP:  func(ctx context.Context, ln net.Listener, h http.Handler) error { return sdk.RunHTTP(ctx, ln, h, "") },
+		logf:     logf,
+		ctx:      ctx,
+		cancel:   cancel,
+		entries:  map[string]*entry{},
+		locks:    map[string]*sync.Mutex{},
+		gateErrs: map[string]string{},
 	}, nil
 }
 
@@ -245,11 +267,14 @@ func (n *Net) slugLock(slug string) *sync.Mutex {
 	return l
 }
 
-func (n *Net) identityPath(slug string) (string, error) {
+func (n *Net) identityPath(slug string) (string, error) { return identityFile(n.cfg.Dir, slug) }
+
+// identityFile is the identity file of slug in dir.
+func identityFile(dir, slug string) (string, error) {
 	if slug == "" || slug != filepath.Base(slug) || strings.ContainsAny(slug, `/\`) || strings.HasPrefix(slug, ".") {
 		return "", fmt.Errorf("portal: invalid slug %q", slug)
 	}
-	return filepath.Join(n.cfg.Dir, slug+".json"), nil
+	return filepath.Join(dir, slug+".json"), nil
 }
 
 // loadIdentity loads <Dir>/<slug>.json or creates it. An existing file wins,
@@ -263,7 +288,9 @@ func (n *Net) loadIdentity(slug string) (types.Identity, error) {
 	if err != nil {
 		return types.Identity{}, fmt.Errorf("portal: identity for %s: %w", slug, err)
 	}
-	// LoadOrCreate writes new files 0600 but leaves an existing file as is.
+	// LoadOrCreate writes new files 0600 but does not change the mode of an
+	// existing file. On Windows it sets the access list of the file instead
+	// (Windows support spec, rule 18), and Chmod changes only its read-only bit.
 	if err := os.Chmod(path, 0o600); err != nil {
 		return types.Identity{}, fmt.Errorf("portal: identity for %s: %w", slug, err)
 	}
@@ -277,8 +304,13 @@ func metadata(slug string, hidden bool) types.LeaseMetadata {
 // Serve exposes h for slug and returns at once; relays register in the
 // background. The returned URL is empty until a relay is ready (see
 // WaitReady). Serving an already-served slug swaps the handler and applies
-// hidden without re-registering.
+// hidden without re-registering. Serve carries no sign-in, so it keeps the
+// gate of a served slug (see ServeSignIn).
 func (n *Net) Serve(ctx context.Context, slug string, h http.Handler, hidden bool) (string, error) {
+	return n.serve(ctx, slug, h, hidden, nil)
+}
+
+func (n *Net) serve(ctx context.Context, slug string, h http.Handler, hidden bool, si *core.PortalSignIn) (string, error) {
 	if err := ctx.Err(); err != nil {
 		return "", err
 	}
@@ -312,8 +344,40 @@ func (n *Net) Serve(ctx context.Context, slug string, h http.Handler, hidden boo
 			e = nil
 		}
 	}
+	if si.Refused() {
+		// portal.require_auth refuses a flat without sign-in
+		// (docs/spec/portal-require-auth.md, rules 7 and 8). A served entry
+		// stops and unregisters, and answers 503 until it stops. A new entry
+		// registers nothing, starts no HTTP server and makes no identity file.
+		n.mu.Lock()
+		delete(n.gateErrs, slug)
+		n.mu.Unlock()
+		aerr := &core.PortalAuthError{Detail: si.Refuse}
+		if e != nil {
+			e.front.Store(&frontHandler{closedFront})
+			aerr.StopErr = n.finishStop(slug, e)
+		}
+		return "", aerr
+	}
 	if e != nil {
+		// A redeploy puts a new handler into the box and keeps the gate
+		// (docs/spec/portal-sign-in.md, rule 38). A request that the old
+		// gate lets in meanwhile reaches the new handler, and the check of
+		// rule 44 refuses it while its sequence is not the stored one.
 		e.handler.set(h)
+		built, err := n.applySignIn(e, si)
+		if err != nil {
+			// Never the flat without the gate while sign-in is on: stop the
+			// route and unregister it (rule 35).
+			e.front.Store(&frontHandler{closedFront})
+			return "", n.gateFailed(slug, err, n.finishStop(slug, e))
+		}
+		if built {
+			n.mu.Lock()
+			delete(n.gateErrs, slug)
+			n.mu.Unlock()
+			n.startCheck(e)
+		}
 		if err := n.setHidden(e, hidden); err != nil {
 			return "", err
 		}
@@ -323,6 +387,20 @@ func (n *Net) Serve(ctx context.Context, slug string, h http.Handler, hidden boo
 	id, err := n.loadIdentity(slug)
 	if err != nil {
 		return "", err
+	}
+	e = &entry{
+		slug:    slug,
+		id:      id,
+		handler: &handlerBox{h: h},
+		done:    make(chan struct{}),
+		hidden:  hidden,
+		sticky:  map[string]sdk.RelayStatus{},
+		logged:  map[string]string{},
+	}
+	// The gate comes before the exposure: a flat whose gate cannot be built
+	// gets no route at all (rule 35).
+	if _, err := n.applySignIn(e, si); err != nil {
+		return "", n.gateFailed(slug, err, nil)
 	}
 	// The exposure outlives the request that asked for it, so it hangs off
 	// n.ctx rather than ctx.
@@ -340,25 +418,14 @@ func (n *Net) Serve(ctx context.Context, slug string, h http.Handler, hidden boo
 		return "", fmt.Errorf("portal: expose %s: %w", slug, err)
 	}
 	runCtx, cancel := context.WithCancel(n.ctx)
-	e = &entry{
-		slug:    slug,
-		exp:     exp,
-		ln:      newDrainListener(exp),
-		handler: &handlerBox{h: h},
-		cancel:  cancel,
-		done:    make(chan struct{}),
-		hidden:  hidden,
-		pinned:  pinned,
-		sticky:  map[string]sdk.RelayStatus{},
-		logged:  map[string]string{},
-		aliases: n.loadAliases(slug),
-	}
+	e.exp, e.ln, e.cancel, e.pinned = exp, newDrainListener(exp), cancel, pinned
+	e.aliases = n.loadAliases(slug)
 
 	var wg sync.WaitGroup
 	wg.Add(2)
 	go func() {
 		defer wg.Done()
-		e.httpErr = n.runHTTP(runCtx, e.ln, publicHandler(e.handler))
+		e.httpErr = n.runHTTP(runCtx, e.ln, http.HandlerFunc(e.serveFront))
 		if err := e.httpErr; err != nil && !errors.Is(err, net.ErrClosed) && !errors.Is(err, context.Canceled) {
 			n.logf("portal: %s: http server stopped: %v", slug, err)
 		}
@@ -386,7 +453,9 @@ func (n *Net) Serve(ctx context.Context, slug string, h http.Handler, hidden boo
 		return "", errors.Join(errors.New("portal: closed"), stopErr)
 	}
 	n.entries[slug] = e
+	delete(n.gateErrs, slug)
 	n.mu.Unlock()
+	n.startCheck(e)
 	return n.URL(slug), nil
 }
 
@@ -486,9 +555,12 @@ func (n *Net) stop(slug string) error {
 	l.Lock()
 	defer l.Unlock()
 
-	n.mu.RLock()
+	n.mu.Lock()
 	e := n.entries[slug]
-	n.mu.RUnlock()
+	// A stopped slug is not wanted on Portal, so the failure of its gate is
+	// no longer its state.
+	delete(n.gateErrs, slug)
+	n.mu.Unlock()
 	if e == nil {
 		return nil
 	}
@@ -1093,6 +1165,7 @@ func (n *Net) Status() core.NetStatus {
 	for _, e := range n.entries {
 		entries = append(entries, e)
 	}
+	gateErrs := maps.Clone(n.gateErrs)
 	n.mu.RUnlock()
 	slices.SortFunc(entries, func(a, b *entry) int { return strings.Compare(a.slug, b.slug) })
 
@@ -1102,8 +1175,19 @@ func (n *Net) Status() core.NetStatus {
 		if conflict {
 			conflicts = append(conflicts, e.slug)
 		}
+		if reason, ok := gateErrs[e.slug]; ok {
+			// A route that stops after its gate failed (rule 35).
+			hi.Detail = strings.TrimSuffix("sign-in gate: "+reason+"; "+hi.Detail, "; ")
+		}
+		delete(gateErrs, e.slug)
 		ns.Hosts = append(ns.Hosts, hi)
 	}
+	// A slug whose gate could not be built has no route: its endpoint shows
+	// the reason with the next action (docs/spec/portal-sign-in.md, rule 35).
+	for slug, reason := range gateErrs {
+		ns.Hosts = append(ns.Hosts, core.HostInfo{Host: slug, State: "error", Detail: "sign-in gate: " + reason})
+	}
+	slices.SortFunc(ns.Hosts, func(a, b core.HostInfo) int { return strings.Compare(a.Host, b.Host) })
 	if len(conflicts) > 0 {
 		ns.Detail += fmt.Sprintf("; hostname conflict for %s: %s", strings.Join(conflicts, ", "), ConflictHint)
 	}
@@ -1115,6 +1199,7 @@ func (n *Net) hostInfo(e *entry) (core.HostInfo, bool) {
 	e.mu.Lock()
 	hidden := e.hidden
 	stopping := e.stopping
+	checkErr := e.checkErr
 	merged := maps.Clone(e.sticky)
 	var lost []string
 	for _, s := range live {
@@ -1180,9 +1265,13 @@ func (n *Net) hostInfo(e *entry) (core.HostInfo, bool) {
 	if hidden {
 		parts = append(parts, "unlisted")
 	}
+	if checkErr != "" {
+		// The gate stays and refuses every visitor without a session (rule 37).
+		parts = append(parts, "sign-in provider check failed: "+checkErr)
+	}
 	if stopping {
 		hi.State = "error"
-		parts = append(parts, "teardown pending confirmation")
+		parts = append(parts, core.TeardownPending)
 	}
 	hi.Detail = strings.Join(parts, "; ")
 	return hi, conflict

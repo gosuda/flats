@@ -868,8 +868,10 @@ func TestReaderOpensADatabaseWhoseWalFileIsEmpty(t *testing.T) {
 	}
 }
 
-// An older binary refuses a database of the latest schema, and so does its audit reader (rule 25).
-// The old registries end before the audit log, after the audit log, after the webhook, or after key IDs.
+// An older binary refuses a database of the latest schema, as Open does, and so does its reader (rule 25). The binaries
+// of schema 24 and 25 are the ones that exist before and after the audit log, the one of schema 26 is the last one
+// before the key IDs (docs/spec/secret-key-rotation.md, rule 33), and the one of schema 27 is the last one before the
+// fetch bindings (docs/spec/injected-fetch-secrets.md, rule 32).
 func TestAnOlderBinaryRefusesALaterSchemaDatabase(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "flats.db")
 	s, err := Open(path)

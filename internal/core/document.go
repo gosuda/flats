@@ -435,6 +435,18 @@ type DocumentEdit struct {
 // LiveEditPublicNotice is attached to every live edit result of a Public flat.
 const LiveEditPublicNotice = PublicAccessNotice + " This edit is already live there."
 
+// liveEditNotice is the notice of a live edit of f: LiveEditPublicNotice, or SignInLiveEditPublicNotice while f has
+// sign-in on, and empty while f is Private.
+func liveEditNotice(f store.Flat) string {
+	switch {
+	case !f.Visibility.Public():
+		return ""
+	case f.SignInProvider != "":
+		return SignInLiveEditPublicNotice
+	}
+	return LiveEditPublicNotice
+}
+
 // UpdateDocument applies guarded operations to the live Markdown of a
 // running docs version, through the same committed path as people's edits.
 // All operations apply or none do. It never publishes a version.
@@ -549,16 +561,14 @@ func (s *Service) UpdateDocument(ctx context.Context, slugName, doc string, ops 
 			return DocumentEdit{}, fmt.Errorf("%w: the docs app rolled the edit back; nothing changed, retry", ErrUnavailable)
 		}
 		// A timeout or worker failure can end the request after COMMIT.
-		return DocumentEdit{}, s.uncertainEdit(auditCtx, live, slugName, doc, id, via, fmt.Sprintf("docs app returned HTTP %d", rec.Code), deadline, f.Visibility.Public())
+		return DocumentEdit{}, s.uncertainEdit(auditCtx, live, slugName, doc, id, via, fmt.Sprintf("docs app returned HTTP %d", rec.Code), deadline, liveEditNotice(f))
 	}
 	var out DocumentEdit
 	if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil || out.Format != 1 || !fs.ValidPath(out.Doc) || !bundle.IsMarkdown(out.Doc) {
-		return DocumentEdit{}, s.uncertainEdit(auditCtx, live, slugName, doc, id, via, "docs app returned an invalid edit response", deadline, f.Visibility.Public())
+		return DocumentEdit{}, s.uncertainEdit(auditCtx, live, slugName, doc, id, via, "docs app returned an invalid edit response", deadline, liveEditNotice(f))
 	}
 	out.Source = "live"
-	if f.Visibility.Public() {
-		out.PublicNotice = LiveEditPublicNotice
-	}
+	out.PublicNotice = liveEditNotice(f)
 	if out.Changed {
 		// The edit recorded its revision in the same worker transaction.
 		out.Revision = s.docsAfterWriteLocked(auditCtx, slugName).byOp[id]
@@ -577,7 +587,7 @@ func (s *Service) UpdateDocument(ctx context.Context, slugName, doc string, ops 
 // may still be finishing after a lost response, so a missing receipt is
 // conclusive only after the edit's commit deadline has passed: until then
 // it waits and looks again.
-func (s *Service) uncertainEdit(auditCtx context.Context, live *deployed, slugName, doc, id string, via Via, cause string, deadline time.Time, public bool) error {
+func (s *Service) uncertainEdit(auditCtx context.Context, live *deployed, slugName, doc, id string, via Via, cause string, deadline time.Time, publicNotice string) error {
 	committed, seq, known := s.editReceipt(auditCtx, live, slugName, doc, id)
 	if known && !committed {
 		if wait := time.Until(deadline.Add(editSettleMargin)); wait > 0 {
@@ -593,8 +603,8 @@ func (s *Service) uncertainEdit(auditCtx context.Context, live *deployed, slugNa
 		name = "the entry document"
 	}
 	notice := ""
-	if public {
-		notice = " " + LiveEditPublicNotice
+	if publicNotice != "" {
+		notice = " " + publicNotice
 	}
 	data := map[string]any{"doc": doc, "id": id, "cause": cause}
 	if committed {

@@ -592,6 +592,40 @@ func TestSecretResetOverAnotherKey(t *testing.T) {
 	}
 }
 
+// reset lists the sign-in client secret under its flat and removes it, and no output holds its value
+// (docs/spec/portal-sign-in.md, rule 32).
+func TestSecretResetRemovesTheSignInSecret(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path, _, h := hostWithSecrets(t, dir)
+	const value = "cs-reset-distinct-5Rv"
+	if _, err := h.Svc.SetSignInSecret(ctx, "app", value, "https://idp.example.com", "flats-app", core.ViaCLI); err != nil {
+		t.Fatal(err)
+	}
+	h.Close()
+	if err := os.Remove(filepath.Join(dir, core.SecretKeyFile)); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runSecretKey(t, path, "reset", "--yes")
+	listed := "\n  secret " + store.SignInSecretName + " of app (sign-in client secret for issuer https://idp.example.com and client ID flats-app)\n"
+	// The sign-in client secret is set again with its own command, which the guidance names (rule 25).
+	again := "`flats signin secret set <slug> --issuer <issuer> --client-id <id>`"
+	if err != nil || !strings.Contains(out, listed) || !strings.Contains(out, again) || !strings.Contains(out, "deleted 3 values.") || strings.Contains(out, value) {
+		t.Fatalf("reset: %q %v", out, err)
+	}
+	st, err := store.Open(filepath.Join(dir, "flats.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, ok, err := st.SignInSecret(ctx, "app"); ok || err != nil {
+		t.Fatalf("the sign-in client secret after reset: %v %v", ok, err)
+	}
+	if secs, err := st.ListAllSecrets(ctx); err != nil || len(secs) != 0 {
+		t.Fatalf("secrets after reset: %+v %v", secs, err)
+	}
+}
+
 // The host warns at start while the copy holds another key or has no ID, and
 // stays silent without a copy or with a matching one.
 func TestStartWarnsAboutAStaleCopy(t *testing.T) {

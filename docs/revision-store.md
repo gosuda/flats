@@ -39,7 +39,7 @@ preview or a pending activation or rollback approval names.
 Migration 11 adds the first five tables; migration 12 adds the document
 columns and `content_sources` and `content_holds`; migration 18 adds the two
 board tables; migration 20 adds `revision_guest_lines`; migration 24 adds
-the two notebook tables; migration 28 adds the two sheet tables. Every table
+the two notebook tables; migration 30 adds the two sheet tables. Every table
 references `flats(slug)` (or `revisions`) with
 `ON DELETE CASCADE ON UPDATE CASCADE`, so rename and delete carry the whole
 history and nothing in memory needs moving.

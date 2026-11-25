@@ -52,6 +52,8 @@ Out of scope:
 
 - The webhook, `flats audit export` and the approval records in an export. They are in [event webhook](event-webhook.md)
   (#225), which also adds three kinds to this log.
+- The kinds of the Portal sign-in of a flat. [Portal sign-in](portal-sign-in.md) adds `signin.set`, `signin.link` and
+  `signin.revoke`, and the use of its client secret in `secret.set` and `secret.delete` (its rules 65 to 67).
 - The writer of the rotation event. This spec reserved the kind `key.rotate` (rule 15).
   [Secret key rotation](secret-key-rotation.md) gives its fields and writes it, in the transaction that seals every
   value again.
@@ -77,12 +79,20 @@ Out of scope:
    flat leaves its rows. A rename leaves them under the old slug and the same `flat_id`. A restore of the host from
    `flats backup` replaces `flats.db` and so drops the rows that were written after the copy; the docs say so. A person
    who can write `flats.db` can still change the rows, as "Scope" says.
-3. No row holds a secret value, an operator key value, key bytes, a recovery password or the recovery copy. A name is
-   not a value. `data` holds only the fields that rules 8 to 15 and rule 21 of [event webhook](event-webhook.md) name. The key IDs of rules 12, 13 and 15 are the ones that
+3. No row holds a secret value, an operator key value, key bytes, a recovery password, the recovery copy, or an access
+   link or a credential of [Portal sign-in](portal-sign-in.md). A name is not a value. `data` holds only the fields
+   that rules 8 to 15, rule 21 of [event webhook](event-webhook.md) and rules 65 to 67 of
+   [Portal sign-in](portal-sign-in.md) name. The key IDs of rules 12, 13 and 15 are the ones that
    [secret key recovery](secret-key-recovery.md) defines. They reveal nothing that opens the key.
 4. `via` says which channel made the change. It is one of
    - `console`: a route of the console API (the web console);
-   - `cli`: `flats secret set` or `rm` through the loopback API with the header `X-Flats-Client: cli`;
+   - `cli`: `flats secret set` or `rm` through the loopback API with the header `X-Flats-Client: cli`, and so also
+     `flats signin secret set` and `rm`, `flats signin revoke` and `flats rename` of
+     [Portal sign-in](portal-sign-in.md) (its rules 66 and 67);
+   - `api`: a call of the loopback API without that header (the kind `signin.revoke` of a revocation or a rename
+     only);
+   - `mcp`: an MCP request (the kind `signin.revoke` only, when the host removes a new board or notebook because the
+     first write that created it failed);
    - `command`: a command that the operator ran on the host and that works on the data directory
      (`flats key set` and `rm`, `flats secret backup-key`, `restore-key`, `rotate-key` and `reset`);
    - `start`: an input that the host read at its start (a key file flag, a `FLATS_*` variable, or the deprecated
@@ -90,14 +100,16 @@ Out of scope:
    - `migration`: the import of a legacy key file when an older installation moves to a configuration file;
    - `flat-delete`: the deletion of a flat removed its secrets;
    - `autopilot`: an agent decided an approval under [Autopilot](autopilot.md) (the kind `visibility.set` of
-     [event webhook](event-webhook.md) only).
+     [event webhook](event-webhook.md), and `signin.revoke` of the deletion of a flat).
 5. `actor` is the identity that the channel knows. For `console` it is the actor text that `consoleActor`
    (`internal/api/experiments.go`) derives from the request: a tailnet user or node, a NetBird peer, the external
    origin, or the socket address of the caller. For `command` it is the name of the operating-system user that ran the
    command, or empty when the system gives none. Under `sudo` that user is `root`, and the docs say so. For `cli`,
-   `start`, `migration` and `flat-delete` it is empty: the `cli` header is a client's claim and not an identity
-   ([design](../design.md), "Secrets"), and the others have no person. #139 may fill `actor` for `cli` later. For `visibility.set` with `via` `autopilot` it is the
-   text that `core.DeciderText` gives for the approval ([event webhook](event-webhook.md), rule 21). The log
+   `api`, `mcp`, `start`, `migration` and `flat-delete` it is empty: the `cli` header is a client's claim and not an
+   identity
+   ([design](../design.md), "Secrets"), and the others have no person. #139 may fill `actor` for `cli` later. For `visibility.set` and `signin.revoke` with `via`
+   `autopilot` it is the text that `core.DeciderText` gives for the approval ([event webhook](event-webhook.md), rule
+   21). The log
    holds these identities and is never trimmed. The docs say so, because #225 ships the log off the host.
 6. A row never changes the meaning of an existing per-flat event. The events `secret NAME set via VIA` and the events of
    `flats secret reset` stay as they are.
@@ -109,8 +121,8 @@ Out of scope:
 
 | Kind | `flat` | `name` | `data` | `via` |
 | --- | --- | --- | --- | --- |
-| `secret.set` (8) | the flat | the secret | `{"created": true or false}` | `console`, `cli` |
-| `secret.delete` (9) | the flat | the secret | `{"approval": ID}` for `flat-delete` when an approval deleted the flat, else none | `console`, `cli`, `command` (reset), `flat-delete` |
+| `secret.set` (8) | the flat | the secret | `{"created": true or false}`, and `"origin"` and `"header"` for an injected secret, and `"use": "signin"`, `"issuer"` and `"client_id"` for the client secret of [Portal sign-in](portal-sign-in.md) | `console`, `cli` (`cli` only for the client secret of sign-in) |
+| `secret.delete` (9) | the flat | the secret | `{"approval": ID}` for `flat-delete` when an approval deleted the flat, else none; `"use": "signin"` for the client secret of sign-in | `console`, `cli`, `command` (reset), `flat-delete` |
 | `key.set` (10) | none | `tailscale`, `netbird` or `zrok` | `{"replaced": true or false, "from": "flag", "env" or "config"}`, with `from` only for `start` and `migration` | `console`, `command`, `start`, `migration` |
 | `key.delete` (11) | none | the key | `{"reason": "removed" or "connected"}` | `console`, `command`, `start` |
 | `key.backup` (12) | none | none | `{"key_id": ..., "out": true or false}` | `command` |
@@ -118,10 +130,15 @@ Out of scope:
 | `key.reset` (14) | none | none | `{"secrets": N, "keys": M}` | `command` |
 | `key.rotate` (15) | none | none | `{"from": ..., "to": ..., "secrets": N, "keys": M, "out": true or false}` | `command` |
 | `visibility.set`, `network.set`, `provider.set` | the flat | none, none, the provider | [event webhook](event-webhook.md), rule 21 | `console`, `cli`, `autopilot` |
+| `signin.set` | the flat | none | [Portal sign-in](portal-sign-in.md), rule 65. A row whose issuers are cut keeps the first 512 bytes of each, so two issuers that differ only after byte 512 look equal in it | `console` |
+| `signin.link` | the flat | none | [Portal sign-in](portal-sign-in.md), rule 67: `{"subject": ..., "host": ..., "expires_at": ...}` | `console` |
+| `signin.revoke` | the flat | none | `{}` for a revocation, `{"cause": "rename"}` or `{"cause": "delete"}` for the new token secret of a rename or a deletion ([Portal sign-in](portal-sign-in.md), rule 67) | `cli`, `api` or `console` for a revocation or a rename; `console` or `autopilot` for a deletion; `mcp`, `cli` or `api` for the removal of a new board or notebook whose first write failed |
 
 8. `secret.set` is written for each successful set of a flat secret, whether the name is new (`created` true) or
    replaced. A set that fails validation or the name check changes nothing and writes nothing. `flat` and `flat_id`
-   are those of the flat that the secret belongs to.
+   are those of the flat that the secret belongs to. For each set of an injected secret, the first and each later one,
+   the data also has its `origin` and its `header`
+   ([injected fetch secrets](injected-fetch-secrets.md), rule 29). The value is never in the data.
 9. `secret.delete` is written for each secret that is removed: by `DeleteSecret` (a delete of a name that does not
    exist changes nothing and writes nothing), by `flats secret reset`, and by the deletion of a flat, one event for each
    secret the flat held, with `via` `flat-delete`. The names are read in the transaction that deletes the flat. When an

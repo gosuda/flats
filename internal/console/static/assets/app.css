@@ -416,7 +416,7 @@ a.menu-item { text-decoration: none; color: inherit; display: block; }
   background: var(--surface-2); color: var(--muted); border: 1px solid var(--border); vertical-align: middle; white-space: nowrap;
 }
 .badge-live, .badge-ready, .badge-approved { background: var(--ok-bg); color: var(--ok); border-color: transparent; }
-.badge-warn, .badge-draft, .badge-pending, .badge-key-expiring, .badge-starting { background: var(--warn-bg); color: var(--warn); border-color: transparent; }
+.badge-warn, .badge-draft, .badge-pending, .badge-key-expiring, .badge-starting, .badge-unavailable { background: var(--warn-bg); color: var(--warn); border-color: transparent; }
 .badge-error, .badge-failed, .badge-rejected, .badge-needs-login { background: var(--danger-bg); color: var(--danger); border-color: transparent; }
 td > .badge:first-child { margin-left: 0; }
 
@@ -685,6 +685,15 @@ td > .badge:first-child { margin-left: 0; }
 .setting-sharing { display: grid; gap: 6px; justify-items: end; min-width: 0; }
 .setting-sharing p { margin: 0; text-align: right; }
 .setting-pending { background: var(--warn-bg); padding-left: 12px; padding-right: 12px; }
+/* The Sign-in row (portal-sign-in.md rule 63) and its link dialog. */
+.setting-signin { align-items: flex-start; }
+.setting-signin .setting-sharing { justify-items: stretch; flex: 0 1 560px; }
+.setting-signin .setting-sharing p { text-align: left; }
+.setting-signin .setting-control { justify-content: flex-start; flex-wrap: wrap; }
+.signin-facts { font-size: 13px; }
+.signin-entries { margin: 4px 0 0; }
+.signin-link .snippet { white-space: pre-wrap; overflow-wrap: anywhere; }
+.vis-signin { white-space: nowrap; }
 input, select, textarea { caret-color: var(--focus); }
 input::placeholder { color: var(--muted); opacity: 1; }
 ::selection { background: var(--focus); color: var(--bg); }
