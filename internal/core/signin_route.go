@@ -107,7 +107,14 @@ func (s *Service) portalSignIn(ctx context.Context, slugName string) *PortalSign
 	if err != nil {
 		return &PortalSignIn{Seq: st.Seq, Err: err}
 	}
-	return &PortalSignIn{Seq: st.Seq, Gate: g}
+	si := &PortalSignIn{Seq: st.Seq, Gate: g}
+	if !si.On() && s.requireAuthOn() {
+		// portal.require_auth: the flat has no sign-in, so Portal does not serve it
+		// (docs/spec/portal-require-auth.md, rule 7). The setting is read under the
+		// lock of the flat, as the stored sign-in is.
+		si.Refuse = s.requireAuthDetail(ctx, slugName)
+	}
+	return si
 }
 
 // servePublicNet serves h for slug on the Portal backend without a provider manager, with the stored sign-in. A
@@ -117,6 +124,14 @@ func (s *Service) servePublicNet(ctx context.Context, slugName string, h http.Ha
 	si.Rebuild = rebuild
 	if g, ok := s.cfg.Public.(SignInPublicNet); ok {
 		return g.ServeSignIn(ctx, slugName, h, hidden, si)
+	}
+	if si.Refused() {
+		// A backend without the gate refuses too (docs/spec/portal-require-auth.md, rule 9).
+		ae := &PortalAuthError{Detail: si.Refuse}
+		if s.state(slugName).publicServed {
+			ae.StopErr = s.cfg.Public.Stop(slugName)
+		}
+		return "", ae
 	}
 	if !si.On() {
 		return s.cfg.Public.Serve(ctx, slugName, h, hidden)
@@ -155,6 +170,9 @@ func (s *Service) reopenPublic(ctx context.Context, slugName string, rebuild boo
 			err = s.closePortal(ctx, slugName, err)
 		}
 		if ge := (*SignInGateError)(nil); errors.As(err, &ge) && ge.StopErr == nil {
+			lf.publicServed = false
+		}
+		if ae := (*PortalAuthError)(nil); errors.As(err, &ae) && ae.StopErr == nil {
 			lf.publicServed = false
 		}
 		return err

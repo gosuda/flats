@@ -101,7 +101,7 @@ mounted under both prefixes; **console** routes exist only under
 
 | Method | Path | Mounted | Purpose |
 | --- | --- | --- | --- |
-| GET | `/status` | both | `{ok, system, upload_max_bytes}`: host, networks, limits, build version |
+| GET | `/status` | both | `{ok, system, upload_max_bytes}`: host, networks, limits, build version. `system` also holds `portal_require_auth`, the value of that [host setting](configuration.md#configjson), and `portal_refused`, the sorted slugs of the flats that it refuses on Portal now (derived from the stored facts, empty with the setting off, `null` when the host cannot read the store) |
 | GET | `/client` | both | Client manifest: server build, client contract, guide and bootstrap revisions, `server_url` ([Updating a client](release.md#updating-a-client)) |
 | GET | `/flats` | both | List; `?q=` filters by slug or name |
 | POST | `/flats` | api | `{slug, name}` creates an empty flat (201): Private by default, Public with view-only access while public instance mode is on. The console never creates flats |
@@ -251,7 +251,8 @@ the revocation of Portal sign-in take effect immediately.
   `apply_on_restart` and `config` (mode, ETag, `changed_on_disk`, read-only
   host, network, `proxy.addr` and credential values without paths, per-key
   sources and flag pins). `proxy_url_template` is one of the settings, so only
-  the console can change it. `PUT settings` saves to `config.json` and returns `applied` and
+  the console can change it, and so are `portal_hide` and `portal_require_auth`,
+  which apply at once. `PUT settings` saves to `config.json` and returns `applied` and
   `restart_required`. Changes send `If-Match`; 412 means `config.json` changed
   or the page is stale, and 409 means a flag of a service started without
   `--config` pins the key.
@@ -346,7 +347,7 @@ for server flats); `flats config`, `flats key`, and
 | `audit export [--since time] [--config path\|--data dir]` | Write the audit log and the approval records as JSON lines, oldest first, up to 30 seconds before now, and print that time on standard error for the next `--since` ([Audit export](configuration.md#audit-export)) |
 | `backup --out path [--exclude-secret-key] [--config path\|--data dir]`, `backup --verify path` | Copy the data directory of a running or stopped host into a new folder with a manifest, or check such a copy. With `host.secret_key_path` the key is outside the copy. Works on the data directory and never calls the host ([What to back up](configuration.md#what-to-back-up)) |
 | `approvals [--status s]` | List approvals (read-only) |
-| `status`, `install`, `uninstall`, `connect`, `mcp`, `mcp-config` | Host and client setup ([Connecting agents](agents.md)). `connect` chooses the host the CLI and `mcp` use; `mcp-config` prints the agent setup commands |
+| `status`, `install`, `uninstall`, `connect`, `mcp`, `mcp-config` | Host and client setup ([Connecting agents](agents.md)). `connect` chooses the host the CLI and `mcp` use; `mcp-config` prints the agent setup commands. While `portal.require_auth` is on, `status` adds a note line that names the flats that Portal does not serve (at most 10) |
 | `agent-setup docs [--agent a] [--scope user\|project] [--dry-run] [--yes] [--undo]` | Make Flats the document tool of Claude Code, Codex or Cursor. It prints a plan and changes files on this machine only after you confirm; `--undo` reverses it ([Use Flats for documents](agents.md#use-flats-for-documents)) |
 | `client check`, `update`, `skill sync`, `version` | Client freshness ([Updating a client](release.md#updating-a-client)) |
 
@@ -691,7 +692,10 @@ publishing: they run once saved.
   of Tailscale Funnel, zrok, Cloudflare Quick Tunnel, NetBird Expose and
   Reverse proxy (public) are disabled, each with `Off while Portal sign-in is
   on`, and a paragraph above them says why and that sign-in goes off only with
-  `flats signin off <slug>` and an approval.
+  `flats signin off <slug>` and an approval. The Portal row also shows the
+  state and the detail of a Portal route that is not ready: with
+  `portal.require_auth` on, a flat without sign-in shows `unavailable` and
+  the next step.
 - **Sign-in** on a flat's Settings, below Sharing ([Portal sign-in](networking.md#portal-sign-in)):
   the provider (`OpenID Connect · <host of the issuer>`, `Access links` or
   `Off`), for `oidc` the issuer, the client ID and the callback URLs, the
@@ -721,7 +725,10 @@ publishing: they run once saved.
   listener address, the kind (Off, Private or Public, which turns `proxy` or
   `proxy-public` on or off), the Private kind's access warning and a listener
   error from start. A template change while a kind is on, and every kind
-  change, asks for confirmation and says that pending approvals become stale. Console: the console's addresses on
+  change, asks for confirmation and says that pending approvals become stale.
+  The Portal page holds the relay settings and two switches: hide public flats
+  from relay listings, and `Serve flats on Portal only with sign-in`
+  (`portal.require_auth`, which applies at once). Console: the console's addresses on
   every network, the address for links, external reverse-proxy origins and the
   read-only host values. Limits:
   storage, history and traffic. Agents: setup for Claude Code, Codex and Cursor
@@ -777,11 +784,16 @@ publishing: they run once saved.
   changes, deletion and sign-in changes, so requests made by agents can be reviewed and decided
   there. A `set_signin` approval reads `Turn on sign-in for <slug>`,
   `Change the sign-in of <slug>` or `Turn off sign-in for <slug>: anyone can
-  open its Portal address`. Its page shows the setting when requested, the
+  open its Portal address`. While `portal.require_auth` is on, the last title
+  reads `Turn off sign-in for <slug>: its Portal address stops serving it`.
+  Its page shows the setting when requested, the
   requested one, and the added and the removed entries. It warns when the
   change widens access (sign-in goes off, an entry is added, or the provider,
   the issuer or the client ID changes), and when the stored client secret
   belongs to another issuer or client ID, so that the Portal route would stop.
+  With `portal.require_auth` on, turning sign-in off widens nothing: the page
+  warns instead that the Portal address stops serving the flat, and the result
+  says that its Portal route is stopped.
   A request whose sign-in changed since can only be dismissed. A decided
   approval shows "Decided by": "the console", the tailnet
   login or "NetBird peer <name>" as recorded, or for an agent decision

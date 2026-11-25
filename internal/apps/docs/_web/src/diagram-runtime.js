@@ -56,6 +56,10 @@ export function createDiagramRuntime(
               startOnLoad: false,
               securityLevel: "strict",
               suppressErrorRendering: true,
+              // Mermaid 12 defaults to the ELK layout and the neo look; keep
+              // the dagre layout and classic look diagrams rendered before.
+              layout: "dagre",
+              look: "classic",
               theme,
               ...(capped ? DIAGRAM_CAPS : {}),
             });

@@ -668,6 +668,13 @@ func (s *Service) serveSite(lf *liveFlat, slugName string, public bool, epoch *r
 				return
 			}
 			visitor = &p
+		} else if s.requireAuthOn() {
+			// portal.require_auth, rule 15: a route that opened without the check of the open still gives no access to a
+			// flat without sign-in on Portal. Another provider is not covered by the setting.
+			if id, ok := RouteProvider(r.Context()); ok && id == ProviderPortal {
+				http.Error(w, requireAuthRequestText, http.StatusForbidden)
+				return
+			}
 		}
 		access, accessSeq = f.PublicAccess, f.AccessSeq
 		stripIdentity(r)

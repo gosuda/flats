@@ -490,6 +490,20 @@ Implementation notes that the provider docs do not repeat:
   `portal_hidden` on the flat view is the requested listing, not the relays'
   observed state. Hiding is not access control. Rename redirect aliases are
   always hidden.
+* **Portal require_auth.** The host setting `portal.require_auth` (off by
+  default) makes Portal serve a flat only when the flat has sign-in
+  ([spec](spec/portal-require-auth.md)). Every open of a Portal route carries
+  the setting with the stored sign-in, and the Portal route of a flat
+  without sign-in is refused: a new entry opens nothing, and a served one
+  stops. The endpoint is `unavailable` with a detail that names the next
+  step, and a refusal fails no other public provider of the flat. A change
+  of the setting visits every flat under its lock, as `portal.hide` does:
+  turning it on ends the open public connections of each refused flat and
+  serves its other public routes again, and a read that fails stops the
+  Portal route instead of leaving it open. The public site handler also
+  refuses each request that arrives on Portal for a flat without sign-in
+  while the setting is on. The setting covers Portal only, and the private
+  routes stay.
 * **Portal relays.** Relays come from the Portal defaults (discovery, up to 3
   active relays) unless `portal.relays` lists explicit ones;
   `portal.discovery: false` uses only the explicit relays and
