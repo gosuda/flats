@@ -106,8 +106,13 @@ whole-read cases retain their 4 MiB ceiling. The default option-schema group
 also runs fresh `1MiB_live` and `16MiB_live` reads. Each live read samples heap
 after collection throughout capture, on a periodic timer and at bounded output
 checkpoints. Its default-only `bounded_growth` subtest permits at most 1 MiB
-more peak collected live heap at 16 MiB than at 1 MiB. These separate reads
-measure growth; the original whole-read cases enforce the absolute ceiling.
+more peak collected live heap at 16 MiB than at 1 MiB. Each size uses three
+sequential samples and compares settled heap before the first read with settled
+heap after the third. That per-size increase is also limited to 1 MiB. The test
+stores its selected response in a temporary file until the final sample, then
+reloads it for the continuation assertions. These measurements cover Go heap;
+unrelated process heap movement can affect the result. The separate whole-read
+cases enforce the absolute ceiling.
 The live samples can catch capture buffers released before the read returns,
 which a final retention sample misses. Run the full `option_schema` parent to
 include both live measurements and their comparison; individual size subtests

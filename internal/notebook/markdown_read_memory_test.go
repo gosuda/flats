@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -169,48 +170,17 @@ func TestMarkdownRetainedMemory(t *testing.T) {
 					readStart := time.Now()
 					var body []byte
 					if test.collected {
-						// One GC-sampled peak conflates allocator noise with
-						// retained schema: the 16 MiB read issues tens of
-						// thousands of stop-the-world collections, so GC timing
-						// under host load alone can swing a single peak by
-						// hundreds of kilobytes. Read once cold to warm
-						// allocator and page caches, then sample the warmed
-						// path twice and keep the steadier reading. A minimum
-						// over re-baselined samples alone could still pass
-						// while the first read retained more than the gate
-						// permits: later baselines sit above the retained heap,
-						// so the growth above them stays small. The post-GC
-						// baseline shift is gated separately below instead: it
-						// counts only what the reads still hold, after
-						// collections, so allocator noise cannot move it while
-						// any retained buffer raises it.
-						var peak uint64
-						var firstBaseline, lastBaseline uint64
-						for attempt := 0; attempt < collectedAttempts; attempt++ {
-							var sample, baseline uint64
-							var sampleBody []byte
-							sampleBody, sample, baseline, err = measureReaderLiveHeap(t, f.in, raw)
-							if err != nil {
-								t.Fatal(err)
-							}
-							t.Logf("retained=%d collected live-heap sample %d/%d growth=%d baseline=%d", size, attempt+1, collectedAttempts, sample, baseline)
-							if attempt == 0 || sample < peak {
-								peak, body = sample, sampleBody
-							}
-							if attempt == 0 {
-								firstBaseline = baseline
-							}
-							lastBaseline = baseline
-						}
-						// Cold-read retention escapes the growth comparison, so
-						// judge it on its own: the shift from the first to the
-						// last post-collection baseline is heap the collected
-						// reads still hold. Same yardstick as the growth gate.
+						// Keep the selected measured response outside the Go
+						// heap until all three reads have contributed to retention.
+						responsePath := filepath.Join(t.TempDir(), "response.json")
+						peak, firstBaseline := measureMarkdownLiveReads(t, f.in, raw, responsePath)
+						lastBaseline := settledReaderHeap()
 						shift := collectedRetentionShift(firstBaseline, lastBaseline)
 						t.Logf("retained=%d collected live-heap baseline shift=%d first=%d last=%d", size, shift, firstBaseline, lastBaseline)
 						if shift > collectedGrowthBudget {
 							t.Errorf("Markdown read retained %s for %d MiB payload: post-GC live heap rose %d bytes across %d collected reads, exceeds 1 MiB", kind, size>>20, shift, collectedAttempts)
 						}
+						body, err = os.ReadFile(responsePath)
 						schemaPeaks[size] = peak
 						t.Logf("retained=%d sampled collected live-heap growth=%d response=%d fixture=%s read=%s", size, peak, len(body), fixtureElapsed, time.Since(readStart))
 					} else {
@@ -279,12 +249,32 @@ func TestMarkdownRetainedMemory(t *testing.T) {
 	}
 }
 
-// collectedRetentionShift reports how much post-GC live heap the collected
-// reads still hold: the last sample baseline minus the first. Baselines are
-// single full-collection readings, so allocator noise cannot inflate the
-// shift the way GC timing inflates in-read peaks; only genuinely retained
-// buffers raise it. Saturates instead of underflowing if a later baseline
-// ever reads lower.
+// measureMarkdownLiveReads keeps response slices within this frame so the
+// caller's final heap sample excludes them. The file preserves the response
+// from the smallest sampled peak for the continuation assertions.
+func measureMarkdownLiveReads(t *testing.T, in *Instance, query []byte, responsePath string) (peak, firstBaseline uint64) {
+	t.Helper()
+	for attempt := 0; attempt < collectedAttempts; attempt++ {
+		body, sample, baseline, err := measureReaderLiveHeap(t, in, query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("collected live-heap sample %d/%d growth=%d baseline=%d", attempt+1, collectedAttempts, sample, baseline)
+		if attempt == 0 || sample < peak {
+			peak = sample
+			if err := os.WriteFile(responsePath, body, 0600); err != nil {
+				t.Fatalf("store measured Markdown response: %v", err)
+			}
+		}
+		if attempt == 0 {
+			firstBaseline = baseline
+		}
+	}
+	return peak, firstBaseline
+}
+
+// collectedRetentionShift reports the positive change in settled Go heap
+// across the measured reads. Unrelated heap movement can affect the result.
 func collectedRetentionShift(first, last uint64) uint64 {
 	if last < first {
 		return 0

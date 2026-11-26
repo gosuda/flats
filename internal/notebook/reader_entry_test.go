@@ -91,13 +91,9 @@ func measureReaderLiveHeap(t *testing.T, in *Instance, query []byte) ([]byte, ui
 	t.Helper()
 	oldGC := debug.SetGCPercent(20)
 	defer debug.SetGCPercent(oldGC)
-	// A second collection releases pool victims left by fixture construction.
-	runtime.GC()
-	runtime.GC()
-	var before runtime.MemStats
-	runtime.ReadMemStats(&before)
-	t.Logf("collected live-heap baseline=%d", before.HeapAlloc)
-	peak := before.HeapAlloc
+	before := settledReaderHeap()
+	t.Logf("collected live-heap baseline=%d", before)
+	peak := before
 	var mu sync.Mutex
 	sample := func() {
 		mu.Lock()
@@ -140,7 +136,16 @@ func measureReaderLiveHeap(t *testing.T, in *Instance, query []byte) ([]byte, ui
 	close(stop)
 	<-joined
 	t.Logf("collected live-heap periodic samples=%d", periodic)
-	return body, peak - before.HeapAlloc, before.HeapAlloc, err
+	return body, peak - before, before, err
+}
+
+// settledReaderHeap uses a second collection to release pool victims.
+func settledReaderHeap() uint64 {
+	runtime.GC()
+	runtime.GC()
+	var stats runtime.MemStats
+	runtime.ReadMemStats(&stats)
+	return stats.HeapAlloc
 }
 
 func readerQueryFixture(t *testing.T) (writerFixture, WriteResult) {
