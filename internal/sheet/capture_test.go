@@ -244,7 +244,7 @@ func TestSnapshotChargeFollowsOwners(t *testing.T) {
 	host := strings.TrimPrefix(s.server.URL, "http://")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	ws, err := wsconn.Dial(ctx, func(ctx context.Context) (net.Conn, error) { return new(net.Dialer).DialContext(ctx, "tcp", host) }, host, "/public/_sheet/ws")
+	ws, err := wsconn.Dial(ctx, func(ctx context.Context) (net.Conn, error) { return cappedDial(ctx, "tcp", host) }, host, "/public/_sheet/ws")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -773,7 +773,7 @@ func TestSnapshotEncodingStaysInBudget(t *testing.T) {
 	// far after each piece of the body.
 	history := func(read func(int)) (int64, int) {
 		for {
-			res, err := http.Get(historyURL)
+			res, err := cappedHTTP.Get(historyURL)
 			if err != nil {
 				t.Error(err)
 				return 0, 0
@@ -835,7 +835,7 @@ func TestSnapshotEncodingStaysInBudget(t *testing.T) {
 				host := strings.TrimPrefix(s.server.URL, "http://")
 				ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 				defer cancel()
-				ws, err := wsconn.Dial(ctx, func(ctx context.Context) (net.Conn, error) { return new(net.Dialer).DialContext(ctx, "tcp", host) }, host, "/public/_sheet/ws")
+				ws, err := wsconn.Dial(ctx, func(ctx context.Context) (net.Conn, error) { return cappedDial(ctx, "tcp", host) }, host, "/public/_sheet/ws")
 				if err != nil {
 					t.Error(err)
 					return
