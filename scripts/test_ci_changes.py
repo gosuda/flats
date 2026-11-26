@@ -287,44 +287,23 @@ class ChangeSelectionTests(unittest.TestCase):
 
 
 class WindowsPackageTests(unittest.TestCase):
-    def test_pretested_packages_are_excluded_without_losing_siblings(self) -> None:
+    def test_windows_runs_only_the_site_package(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         job = workflow.split("\n  windows:\n", 1)[1].split("\n  install-macos:\n", 1)[0]
-        self.assertIn("go test -v -count=1 ./internal/site || failed=1", job)
-        match = re.search(r"go list ./\.\.\. \| grep -v -E '([^']+)'", job)
-        self.assertIsNotNone(match)
-        assert match is not None
-        excluded = (
-            "runtime",
-            "apps/docs",
-            "site",
-            "board",
-            "board/engine",
-            "devreview",
-            "devreview/cmd/devreview",
-        )
-        retained = (
-            "runtimex",
-            "runtime/child",
-            "apps/docsx",
-            "apps/docs/child",
-            "sitex",
-            "site/child",
-            "boardx",
-            "devreviewx",
-            "core",
-        )
-        prefix = "github.com/gosuda/flats/internal/"
-        result = subprocess.run(
-            ["grep", "-v", "-E", match.group(1)],
-            input="\n".join(prefix + path for path in (*excluded, *retained)) + "\n",
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        self.assertEqual(
-            result.stdout.splitlines(), [prefix + path for path in retained]
-        )
+        self.assertIn("go test -v -count=1 ./internal/site", job)
+        self.assertNotIn("scripts/ci-test.sh", job)
+        self.assertNotIn("go list ./...", job)
+
+    def test_windows_archive_comes_from_the_container_build(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        container = workflow.split("\n  container:\n", 1)[1].split("\n  commit-images:\n", 1)[0]
+        windows = workflow.split("\n  windows:\n", 1)[1].split("\n  install-macos:\n", 1)[0]
+        self.assertIn("windows/amd64", container)
+        upload = re.search(r"^ *name: (flats-windows-archive-.+)$", container, re.M)
+        self.assertIsNotNone(upload)
+        assert upload is not None
+        self.assertIn(f"name: {upload.group(1)}", windows)
+        self.assertIn("if-no-files-found: error", container)
 
 
 if __name__ == "__main__":
