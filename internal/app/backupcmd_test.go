@@ -221,7 +221,11 @@ func TestBackupOfARunningHostRestoresToAWorkingHost(t *testing.T) {
 	}
 	close(stop)
 	wg.Wait()
-	for _, want := range []string{"backed up ", " files, ", " bytes", "secret.key is in the copy", " retries, ", "attempt(s)", "Keep it as protected", "flats backup --verify " + out} {
+	canonicalOut, err := filepath.EvalSymlinks(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"backed up ", " files, ", " bytes", "secret.key is in the copy", " retries, ", "attempt(s)", "Keep it as protected", "flats backup --verify " + canonicalOut} {
 		if !strings.Contains(text, want) {
 			t.Errorf("the output lacks %q:\n%s", want, text)
 		}
