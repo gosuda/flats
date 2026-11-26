@@ -126,4 +126,14 @@ func TestMarkdownCaptureReleasesOptions(t *testing.T) {
 	if ranks, vectors := optionBytes(); ranks != 0 || vectors != 0 {
 		t.Errorf("capture files not released: ranks=%d vectors=%d", ranks, vectors)
 	}
+	finalUsed := spillUsed()
+	slots := int64(1)
+	for slots < int64(optionCount+2)*2 {
+		slots *= 2
+	}
+	wantRefund := int64(optionCount+2)*64 + slots*spillRankSlot
+	t.Logf("capture quota: final=%d refunded=%d wantRefund=%d", finalUsed, peakUsed.Load()-finalUsed, wantRefund)
+	if refunded := peakUsed.Load() - finalUsed; refunded < wantRefund {
+		t.Errorf("options release refunded only %d quota bytes, want at least %d (peak=%d final=%d)", refunded, wantRefund, peakUsed.Load(), finalUsed)
+	}
 }
