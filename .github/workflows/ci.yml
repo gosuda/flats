@@ -328,7 +328,7 @@ jobs:
   install-macos:
     needs: changes
     if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') }}
-    runs-on: macos-latest
+    runs-on: depot-macos-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
