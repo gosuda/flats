@@ -1,4 +1,4 @@
-name: Regenerate merged sheet baselines
+name: Verify merged sheet baselines and browser suites
 
 on:
   push:
@@ -22,10 +22,14 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
-      - name: Generate baselines from the combined source
-        run: UPDATE_PUBLIC_INSTANCE_BASELINE=1 go test -count=1 ./internal/mcpx -run '^TestPublicInstanceOffBaseline$'
       - name: Verify the generated baselines and public-instance contracts
         run: go test -count=1 ./internal/mcpx -run '^TestPublicInstance'
+      - name: Verify sheet browser suites on Depot
+        run: |
+          CHROME=$(command -v google-chrome) || { echo "this runner image has no google-chrome" >&2; exit 1; }
+          export CHROME
+          "$CHROME" --version
+          FLATS_SHEET_E2E=1 go test -count=1 -v -run '^TestBrowser' ./internal/sheet
       - name: Record the exact source and generated values
         run: |
           printf '%s\n' "$GITHUB_SHA" > baseline-source.txt
