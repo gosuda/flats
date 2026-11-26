@@ -427,7 +427,7 @@ under `/_notebook/` ([Surfaces](surfaces.md)).
 
 A sheet is a spreadsheet of tabs whose cells hold numbers, text, dates and
 formulas that people and agents edit live
-([product spec](spec/sheet.md), [technical design](spec/sheet-technical-design.md)).
+([product spec](spec/sheet-as-built.md), [technical design](spec/sheet-as-built-technical-design.md)).
 Like a notebook it runs in the host process behind a shell `flats.json` that
 core writes once at creation, and it needs no worker. `internal/sheet` runs
 one `sheet.Instance` per sheet: the workbook in memory, a single writer queue

@@ -615,7 +615,7 @@ one that shrinks it; a rollback is still applied. A refusal is
 
 A sheet's current state, its receipts, edit groups and outbox live in
 `flats/<slug>/sheet/sheet.db`, owned by one `sheet.Instance` in the host
-process ([sheet technical design](spec/sheet-technical-design.md)). The host
+process ([sheet technical design](spec/sheet-as-built-technical-design.md)). The host
 never writes that database: it reaches it through the instance's writer.
 
 **Creating a sheet** (`CreateSheet`, under the flat lock) follows the

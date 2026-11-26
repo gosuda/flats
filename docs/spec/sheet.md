@@ -1,23 +1,23 @@
 # Sheet content type
 
-Status: partly implemented. The sheet type runs on the host and agents can
-use it, but no success criterion has been measured yet; see
-[Current state](#current-state).
+Status: planned. Nothing on this page is implemented yet; see
+[Current state](#current-state). The technical design is in
+[sheet-technical-design.md](sheet-technical-design.md).
+
+Code for this type exists and partly implements an earlier draft, not this text: see [sheet-as-built.md](sheet-as-built.md).
 
 This page sets what the first sheet release (S1) must do, why, and the rules
-a sheet keeps. The
-[technical design](sheet-technical-design.md) decides the storage format, the
-protocol and where formulas are calculated.
+a sheet keeps. The technical design decides the storage format, the protocol
+and where computation runs. The plan and its history are in
+[issue 233](https://github.com/gosuda/flats/issues/233).
 
 ## Summary
 
-A **sheet** (`type: "sheet"`) is a spreadsheet that people and agents edit
-live. It holds one or more **tabs**. Each tab is a grid of cells in lettered
-columns and numbered rows. A cell holds a number, text, a boolean, a date or
-time, or a formula that calculates its value from other cells. People use a
-sheet for budgets, trackers, comparisons and small calculations. Agents read
-it through MCP as cells and write cells, formulas, formats, rows, columns and
-tabs the same way people do.
+A **sheet** (`type: "sheet"`) is a workbook of worksheets that people and
+agents edit live in a cell grid. A cell holds a number, text, a boolean or a
+formula. Formulas calculate with built-in functions that follow Excel. An
+`.xlsx` or CSV file can come in and go out. Agents read and write cells
+through MCP as structured data.
 
 A sheet follows the **Revision model** of
 [content-models.md](content-models.md) unchanged. It has no Draft, versions,
@@ -30,820 +30,1131 @@ kept as revisions.
 | `design` | people and agents | artboard layout, text written in the source, tweaks and notes | at once |
 | `board` | people and agents | every element of a whiteboard | at once |
 | `notebook` | people and agents | every page, block, database, row and view | at once |
-| **`sheet`** | **people and agents** | **every cell, format, row, column and tab** | **at once** |
+| **`sheet`** | **people and agents** | **every cell, format, row, column, worksheet and name** | **at once** |
 | `page` | an agent | nothing | after an approved version and deployment |
 | `flat` | an agent | nothing | after an approved version and deployment |
 
 ## Why
 
-- **No type calculates.** A table in a `docs` flat is text: its total is
-  typed, and it is wrong after the next edit. A notebook database holds typed
-  records but has no formulas. A person who wants "sum this column" or "what
-  if the price rises 10%" has to leave Flats.
-- **Agents produce tables all the time.** A cost comparison, a test matrix or
-  a data extract is today a Markdown table in a document or a one-off page.
-  People cannot sort it, correct a number and see the totals follow, or add a
-  column of their own.
-- **People and agents should work on the same numbers.** A person fills in
-  the inputs and an agent writes the formulas, or the other way round, on the
-  same live grid and without one overwriting the other.
+- **No type holds a free cell grid.** A notebook inline database is a typed
+  table with targets of 5,000 rows and 32 properties. It has no formulas and
+  cannot read or write a file. [notebook.md](notebook.md#not-in-n1) lists
+  formulas and file export under "Not in N1".
+- **People keep budgets, estimates and reports in xlsx files.** Flats cannot
+  open one, and an agent cannot read or change one as structured data.
+- **Large files are common.** A file of 100,000 to 1,000,000 rows must open,
+  scroll and take an edit without a wait that grows with the row count.
 - **Hosted spreadsheets need accounts and outside servers.** Flats already
-  has a single binary, Private networking, the Revision model and MCP.
+  has a single binary, Private networking, the Revision model, live editing
+  and MCP.
 
 ## Users and scenarios
 
 | User | Scenario |
 |---|---|
-| An operator | Keeps a household or project budget with totals per category and month. |
-| A small team (tailnet members) | Fills in one tracker at the same time, each in their own rows, and sorts it by due date. |
-| An agent | Writes a comparison table with formulas for totals and shares, then updates the inputs later without touching the columns people added. |
+| An operator with a file | Imports a budget workbook, changes a few inputs, sees the totals change and exports the result. |
+| A small team (tailnet members) | Edits one estimate at the same time, each person in a different worksheet or cell. |
+| An agent | Reads a range as typed values, writes a block of rows with formulas in one call, and imports a file the user gave it. |
+| A person with a large export | Opens a file of 1,000,000 rows, jumps to a row, finds a text and corrects cells. |
 | An outside viewer | Reads, read-only and live, a sheet the operator approved as Public. |
 
 A typical flow:
 
-1. An agent creates a sheet with `create_flat {type: "sheet"}` and gives the
-   user the address the call returns: its Private URL, or its Public URL on a
-   host in public instance mode (rule 53).
-2. The user asks for "a budget for the offsite with a total and a share per
-   item". In one write the agent names the tab, writes the header row, the
-   items, a `=SUM(...)` total and a share formula per row, and formats the
-   amounts as currency. That write is one revision.
-3. The user corrects two amounts in the browser. The total and the shares
-   follow at once, on every open screen.
-4. A teammate inserts a row for a new item while the user is typing in
-   another row. Both edits stay, and the user's text lands in the cell they
-   were editing.
-5. Someone sorts the wrong rows. They undo it, or a person with write
-   access opens History and rolls back.
+1. A person runs `flats sheet import budget.xlsx` and opens the Private URL.
+   The import shows its progress, then the workbook and a report of the
+   parts it dropped.
+2. The person changes a rate in one cell. The cells that depend on it show
+   new results. On a large worksheet the edit is confirmed at once and the
+   results of rows off screen are calculated later.
+3. The person asks an agent to "add the November rows from this CSV to the
+   Costs worksheet". The agent reads the header row, then writes the rows and
+   a total formula in one call. The open sheet shows them live, and that
+   call becomes one revision.
+4. A teammate inserts a column while the first person types. Both changes
+   stay, and every formula still points at the cells it pointed at before.
+5. Someone overwrites a block of cells by mistake. A person with write
+   access opens History, opens a revision that still has the values, and
+   rolls back.
+
+## Phases
+
+S1 is this page. Each later phase has its own spec status, pull request and
+review cycle. S3 and S4 do not depend on each other and can swap.
+
+| Phase | Scope |
+|---|---|
+| S0 (prototype, done) | A server flat that imported, showed and edited a large xlsx file inside the limits of the server flat runtime. Its three reports on issue 233 hold the numbers this design uses |
+| **S1 (this page)** | The `sheet` type end to end: workbook model, built-in formulas, xlsx and CSV import and export, browser editor, live collaboration, revisions, agent tools, console and guide |
+| S2 | Notebook links that point or copy: a link block, and copying a notebook database to a sheet and a sheet range to a notebook database |
+| S3 | Live notebook links: a sheet range embedded in a notebook page, and sheet formulas that read notebook database rows |
+| S4 | Custom functions: JavaScript functions that people and agents write in a sheet and call from cells |
 
 ## Principles
 
-1. **One grid for people and agents.** Every cell, format, row, column and
-   tab is structured data. People change all of it in the browser. Agents
-   read and write the same data through MCP, never by scraping rendered HTML
-   or editing a serialized file.
-2. **One answer per cell.** A state of the sheet is its content together
-   with its calculation date (rule 13). For one state a formula has one
-   calculated value. A person in the browser, an agent through MCP, a Public
-   viewer and a CSV export all get that value.
-3. **Concurrent editing is the default.** Several people and agents edit the
+1. **Structure people can edit and agents can read.** Every cell, format,
+   row, column, worksheet, merged range and name is structured data. People
+   change all of it in the browser. Agents read and write the same data
+   through MCP, never by scraping a rendered grid or editing a file.
+2. **Concurrent editing is the default.** Several people and agents edit the
    same sheet at the same time. An edit that passes permission, validation,
    limit, disk quota and guard checks is never refused because someone else
-   changed another cell at the same moment. When two writers change the same
-   value, the [concurrency rules](#concurrency-rules) decide; the server's
-   order is final.
-4. **An edit stays with its cell.** When rows or columns are inserted,
-   deleted or sorted while someone edits a cell, the edit applies to the cell
-   they were editing, wherever it now lies, and not to whatever cell took its
-   address.
-5. **Cell content is data.** A sheet never runs script or HTML from a cell.
-   A formula calculates only from the sheet's own cells with the functions
-   listed on this page. It reads no file and makes no request.
-6. **Flats' existing rules apply unchanged.** A sheet does not redefine the
+   changed another value at the same moment. When two writers change the
+   same value, the [concurrency rules](#concurrency-rules) decide; the
+   server's order is final.
+3. **Inputs are content, results are derived.** What a person or agent wrote
+   into a cell is content, and history keeps it. A formula result is
+   calculated from inputs and can always be calculated again. A revision
+   holds inputs, not results, with the one exception of rule 22.
+4. **Work is bounded.** No read and no edit starts work without a limit. An
+   edit is confirmed in a time that fixed limits bound (a few slices and one
+   stab). These limits do not grow with the number of formulas that read the
+   edited cell. Work that is large by nature (an import, an export,
+   a recalculation of a million formulas) runs in the background with
+   progress, goes forward only, and can be stopped. The one exception is
+   the apply of a large sort (rule 41), which pauses writes to the sheet for
+   seconds.
+5. **A cell runs no code.** A formula uses a fixed set of built-in
+   functions. A sheet holds no macros and no script, and it never requests
+   an outside resource. Custom functions (S4) will get their own rules.
+6. **A file is a format, not the store.** Flats stores its own cell model.
+   An xlsx or CSV file is read into that model and written from it. Import
+   reports every part of a file that the model does not hold.
+7. **Flats' existing rules apply unchanged.** A sheet does not redefine the
    Revision model, Private and Public access, the actions that need approval
    (visibility changes and deletion), the disk quota or fixed types.
 
 ## Content
 
 1. **Explicit type.** A flat becomes a sheet only through
-   `create_flat {type: "sheet"}` or a sheet write to a new slug. The type
-   never changes, and saves of another type are refused.
-2. **Tabs.** A sheet holds 1 to 50 tabs in a fixed order.
-   - Each tab has an id unique within the sheet, a name, a position, a grid
-     and its settings (rule 8).
-   - A name has 1 to 100 characters, is unique in the sheet apart from
-     capitals, and contains none of `[ ] : * ? / \` or a control character.
-     It does not start or end with a space or an apostrophe.
-   - A new sheet has one empty tab named `Sheet1`.
-   - A sheet always keeps at least one tab. Deleting the last one is refused.
-   - Deleting a tab deletes its cells. The browser asks for confirmation
-     inline when the tab holds anything. A deleted tab is recovered through
-     undo or from history ([Revisions](#revisions)).
-3. **Grid.** A new tab has 1,000 rows and 26 columns.
-   - Columns are named `A` to `Z`, then `AA` to `ZZ`: at most 702 columns.
-     Rows are numbered from 1, at most 100,000.
-   - A write past the last row or column grows the tab to hold it, up to
-     those limits. People add rows and columns at the end from the grid.
-   - A tab keeps at least one row and one column. A delete that would take
-     every row or every column of a tab is refused.
-   - Every row and every column has an identity of its own. An insert or a
-     delete elsewhere leaves it unchanged, and a sort moves a row with its
-     identity (rule 22). A cell is the meeting of one row and one column.
-     Addresses such as `B7` name where a cell lies now.
-4. **Cell content.** A cell is blank or holds exactly one of:
+   `create_flat {type: "sheet"}`, a sheet write to a new slug, or a sheet
+   import to a new slug. The type never changes, and saves of another type
+   are refused.
+2. **Workbook.** A sheet is one workbook: an ordered list of worksheets, a
+   list of names (rule 10), a list of cell formats (rule 7) and two
+   settings.
+   - **Time zone.** `TODAY` and `NOW` use it (rule 23). A new workbook takes
+     the time zone of the host. People and agents can change it.
+   - **Date system.** 1900 by default. A workbook imported from a file that
+     uses the 1904 date system keeps 1904. It cannot be changed.
+   - A workbook always keeps at least one worksheet. Deleting the last one
+     is refused.
+3. **Worksheets.** A worksheet has an id unique in the workbook, a name, a
+   position, a hidden flag, a number of frozen rows and of frozen columns,
+   and a default row height and column width.
+   - A name has 1 to 31 characters, none of `: \ / ? * [ ]`, and no
+     apostrophe at its start or end. It is not `History`, which Excel
+     reserves, without regard to letter case. Names are unique in the
+     workbook without regard to letter case.
+   - People add, rename, reorder, duplicate, hide, show and delete
+     worksheets. A duplicate gets new ids and the name "<name> (2)".
+     Formulas inside the duplicate that read its own source worksheet read
+     the duplicate. Duplicating a large worksheet takes time and shows
+     progress.
+   - A hidden worksheet is not in the tab row. Its cells stay content, and
+     formulas read them.
+4. **Rows and columns.** A worksheet has a number of rows and a number of
+   columns. A new worksheet has 1,000 rows and 26 columns. An imported
+   worksheet has the rows and columns that its file uses, and at least
+   1,000 rows and 26 columns. The most are 1,048,576 rows and 16,384
+   columns (A to XFD), as in Excel.
+   - Each row and each column has an id that never changes and is never
+     used again. Its position is separate from its id, so an insert moves
+     later rows without changing what they are.
+   - A row has a height and a column has a width, or the default of the
+     worksheet. Each can be hidden. A hidden row or column is not drawn;
+     its cells stay content, and formulas read them.
+   - People add rows and columns at any place, and at the end.
+5. **Cells.** A cell is the meeting of one row and one column. It holds one
+   input, or none:
 
-   | Content | Examples | Notes |
-   |---|---|---|
-   | Number | `1200`, `-0.5`, `1e6` | A double-precision number. |
-   | Text | `Rent` | Up to 32,767 characters. Line breaks are kept. |
-   | Boolean | `TRUE`, `FALSE` | |
-   | Date, time, or date with time | `2026-03-15`, `14:30`, `2026-03-15 14:30` | Stored without a time zone. To a formula a date is a count of days, with 1900-01-01 as day 2 so that day numbers match other spreadsheets for every date from 1900-03-01, and a time is a fraction of a day. |
-   | Formula | `=SUM(B2:B9)` | Up to 8,192 characters. Its value is calculated ([Formulas](#formulas)). |
-
-5. **Typed entry.** What a person types or pastes is read once, when it is
-   committed.
-   - Text that starts with `=` and has more characters is a formula. A lone
-     `=` is text.
-   - `TRUE` and `FALSE`, capitals aside, are booleans.
-   - A number is read with a period before decimals and optional commas
-     between thousands: `1,200.50`. It may end in an exponent: `1.5E+20`. A trailing `%` divides by 100 and sets
-     the percent format on a cell without a number format. A leading `$`,
-     `€`, `£`, `¥` or `₩` sets the currency format with that symbol in the
-     same way.
-   - A date is read as `2026-03-15`, `3/15/2026` (month first) or
-     `Mar 15, 2026`. A time is read as `14:30`, `14:30:05` or `2:30 PM`. A
-     date and a time together are a date with time. A recognized date or
-     time sets a matching format on a cell without a number format.
-   - A leading apostrophe keeps the rest as text and is not shown: `'007`,
-     `'=not a formula`.
-   - Anything else is text.
-   - S1 reads numbers and dates in this one way for every person. Reading
-     them by locale is [not in S1](#not-in-s1).
-6. **Cell format.** A cell, blank or not, can carry:
-   - bold, italic, underline and strikethrough, each on or off;
-   - a text color and a fill color, each either none or one of the palette
-     colors: the hues gray, red, orange, yellow, green, teal, blue, purple
-     and magenta in the shades 100, 200, 300, 400, 600 and 800. The browser
-     draws each palette color for the light and the dark theme, so the same
-     cell reads in both;
-   - horizontal alignment: general (text left, numbers and dates right,
-     booleans and errors centered), left, center or right;
-   - wrap, on or off. Wrapped text breaks at the column's width and the row
-     grows to show it;
-   - a number format, one of the following.
-
-     | Number format | Settings | 1234.5 shows as |
-     |---|---|---|
-     | General | none | `1234.5` |
-     | Number | decimals 0 to 10, thousands separator on or off | `1,234.50` |
-     | Percent | decimals 0 to 10 | `123450.00%` |
-     | Currency | symbol of 1 to 3 characters, each a letter or a currency sign, decimals 0 to 10 | `$1,234.50` |
-     | Date | `yyyy-mm-dd`, `m/d/yyyy` or `mmm d, yyyy` | `1903-05-18` |
-     | Time | `hh:mm`, `hh:mm:ss` or `h:mm AM/PM` | `12:00` |
-     | Date and time | a date form and a time form | `1903-05-18 12:00` |
-     | Text | none | `1234.5`, left-aligned |
-
-   - General shows up to 15 significant digits and switches to scientific
-     notation for numbers that would need more than 15 digits before the
-     decimal point or more than 9 zeros after it.
-   - A format changes what a cell shows, never what it holds. A number
-     format on text has no effect. A number that does not fit its column
-     shows as `####`, never as a shorter number.
-7. **Column width.** Each column has a width of 40 to 1,000 pixels, 104 by
-   default. Row height follows the content: one line, or more when a cell of
-   the row wraps or holds line breaks.
-8. **Tab settings.** Each tab has a count of frozen rows (0 to 20) and of
-   frozen columns (0 to 10). Frozen rows and columns stay in view while the
-   rest scrolls, for everyone.
-9. **Limits.** The host enforces these limits on every write, by a person or
-   an agent.
-
-   | Limit | Value |
+   | Input | Holds |
    |---|---|
-   | Tabs in a sheet | 50 |
-   | Rows in a tab | 100,000 |
-   | Columns in a tab | 702 |
-   | Cells that hold content or a format, in a sheet | 500,000 |
-   | Formulas in a sheet | 100,000 |
-   | Characters in a text cell | 32,767 |
-   | Characters in a formula | 8,192 |
-   | Nesting of brackets and functions in a formula | 64 levels |
-   | Cells one formula reads, ranges included | 1,000,000 |
-   | Cells all formulas of a sheet read, ranges included | 20,000,000 |
-   | Characters of typed text in all cells of a sheet | 50,000,000 |
-   | Characters of text that all formulas of a sheet calculate, in one state | 50,000,000 |
-   | Characters of one text value inside a calculation | 32,767 |
-   | Bytes of one agent write call | 8 MiB |
-   | Bytes of one agent read or write result | 4 MiB |
+   | Number | A finite IEEE 754 double. A date or a time is a number with a date or time format (rule 16) |
+   | Text | Plain text of at most 32,767 characters |
+   | Boolean | `TRUE` or `FALSE` |
+   | Error value | One of the seven error values of rule 16, typed or imported as a literal. `#CIRC!` and `#LIMIT!` come only from calculation and cannot be typed. Excel has more error values, such as `#SPILL!` and `#GETTING_DATA` (rule 25) |
+   | Formula | Formula text of at most 8,192 characters (rule 14). The cell also has a result |
 
-   - A write that would exceed a limit is refused with the limit's name, and
-     nothing of that write applies. This holds for a formula that is too
-     long or nested too deep, which is refused and never stored as an error,
-     and for an insert of rows that would take a whole-column reference
-     over a read limit.
-   - **Calculated text.** No text value inside a calculation, intermediate
-     or final, is longer than 32,767 characters: a function or operator
-     that would build a longer one stops and gives `#VALUE!`. Ranges are
-     read in place and never copied whole. One formula therefore needs
-     memory bounded by its nesting limit and this length.
-   - The limit on the text that all formulas calculate is a property of a
-     state, not of an edit, because a date change or a rollback can pass it
-     without any write. When the text results of a state would together
-     pass it, the state is calculated in limited mode instead: a formula
-     whose text result would be longer than 255 characters has `#LIMIT!` as
-     its value, and a formula that reads such a cell reads that error, by
-     the usual rules for errors. With at most 100,000 formulas the results
-     of limited mode fit. Whether a state is in limited mode, and every
-     value in it, follows from the state alone, so every reader sees the
-     same. No edit is refused for this limit, and the next state whose
-     ordinary results fit shows every result again.
-   - Every other limit in the table is checked on what is stored, so every
-     stored state, a revision included, meets it. The two read limits bound
-     the work of any recalculation, and the two rules above bound its
-     memory, so that a small edit cannot start an unbounded one.
-   - The host also has a time limit for one edit: for the work of the edit
-     itself, such as a sort, a fill or an insert of rows, and for the
-     recalculation it starts. If they do not finish in time, the edit is
-     refused like any other refused edit, and the sheet stays as it was.
-     The same holds for an edit that changes more at once than the host
-     can take back if it has to refuse it; the technical design gives that
-     bound.
-   - A recalculation that no edit starts has no such edit to refuse: after
-     a host restart, a rollback, a change of the calculation date, or for
-     viewing a revision. The host runs it to its end, which the limits
-     above bound, without delaying other flats. Until it ends, readers of
-     that sheet or revision get no partly calculated values: the browser
-     shows that the sheet is calculating, and an agent read is refused as
-     temporarily unavailable and can be retried. A change of the
-     calculation date takes effect when its recalculation has ended; until
-     then the sheet stays whole in its previous state.
-   - A CSV download is produced row by row and is bounded by the limits of
-     the sheet. Results of agent calls are bounded by the result limit
-     (rules 42 and 43).
-   - A character is one Unicode code point, in every limit and in the text
-     functions.
-   - The numbers are planned values ([Open question 1](#open-questions)).
+   A cell with no input and no format is not stored. Cell text is plain
+   text: no rich text runs, no HTML.
+6. **Typed input.** Text that a person types into a cell, an agent sends as
+   typed input, or a CSV file holds, becomes an input by these rules, in
+   this order. Flats has no locale setting, so the rules are the same for
+   everyone.
+
+   | Typed text | Becomes |
+   |---|---|
+   | Starts with `=` and has more characters | A formula. Text that does not parse is refused (rule 38) |
+   | Starts with an apostrophe | Text without that apostrophe |
+   | `TRUE` or `FALSE`, in any letter case | A boolean |
+   | An error value, such as `#N/A` | That error value |
+   | A number: digits with an optional sign, decimal point, grouping commas in groups of three, exponent, or parentheses for a negative amount. Examples: `1234.5`, `1,234.5`, `-3`, `1e3`, `(500)` | A number |
+   | A number with a percent sign, such as `12%` | The number divided by 100, with a percent format |
+   | A number with a currency sign in front (`₩`, `$`, `€`, `£`, `¥`), such as `₩1,000` | The number, with a currency format |
+   | A date with the year first: `2026-11-13`, `2026/11/13`, `2026.11.13`, `2026년 11월 13일` | The date, with a date format |
+   | A date with an English month name: `Nov 13, 2026`, `13 Nov 2026`, `November 13, 2026` | The date, with a date format |
+   | A date in the order month/day/year, such as `11/13/2026` | The date, with a date format. A first number above 12, as in `13/11/2026`, stays text |
+   | A time: `14:30`, `14:30:15`, `2:30 PM`, `오후 2:30` | The time as a fraction of a day, with a time format |
+   | A date and a time with a space between them | The date and time, with a date and time format |
+   | Anything else | Text |
+
+   - A format comes with the value only when the cell has the General
+     format. A cell that already has another format keeps it.
+   - A whole number of more than 15 digits stays text, so that no digit is
+     lost. Excel keeps 15 digits and changes every later digit to zero, so
+     `1234567890123456` becomes `1234567890123450`. Excel keeps all the
+     digits as text only when its automatic conversion of long numbers is
+     off.
+   - Three typed forms differ from Excel on purpose. A fraction such as
+     `1/2` and a date without a year, such as `JAN 1` or `11/13`, stay
+     text, so that a value never depends on the current date. Excel makes
+     them dates of the current year. A number typed into a cell with a
+     percent format keeps its typed value, so that the value of a typed
+     number never depends on the format of its cell. `10` therefore shows
+     as `1000%`, while Excel stores 0.1.
+   - Leading and trailing spaces do not stop a number or date from being
+     recognized. Text keeps its spaces.
+   - Editing a text cell that these rules would read as something else
+     shows an apostrophe in front, so saving it unchanged keeps it text.
+7. **Formats.** A cell has a format. S1 holds these fields:
+
+   | Field | Values |
+   |---|---|
+   | Number format | An Excel format code. S1 shows General, fixed decimals with or without grouping, percent, currency, scientific, text, and date and time codes, with up to four sections (positive; negative; zero; text). A code that S1 cannot show is kept and the value shows as General |
+   | Bold, italic, strike | On or off, each |
+   | Text color, fill color | An RGB color, or none |
+   | Horizontal alignment | General, left, center or right. General puts text left, numbers right, and booleans and error values in the center |
+   | Wrap | On or off |
+
+   - A row and a column can have a format too. A cell without its own
+     format shows the format of its row, or else of its column.
+   - Formatting a whole row or column sets that format and also changes
+     every cell in it that has its own format.
+   - Colors keep enough contrast in the dark theme. The grid adjusts a
+     text color that would be unreadable on the dark background, and the
+     stored color does not change.
+8. **Imported style table.** The style table of an imported xlsx file holds
+   more than rule 7, for example borders, font family and size, and
+   vertical alignment. S1 keeps that table and the theme of the file as
+   assets of the workbook, and each imported format remembers its entry.
+   - S1 does not show the fields it does not hold. Export writes them back,
+     so another program shows the cell as before.
+   - When a person changes a rule 7 field of such a cell, the cell keeps
+     the other fields of its entry. Export writes a new entry that copies
+     the old one and changes that field.
+   - A sheet that never had a file, and a cell that got its format in
+     Flats, export a style table that holds the rule 7 fields only.
+   - The assets are content. A revision holds them, a rollback restores
+     them, and a new import replaces them.
+9. **Merged cells.** A merged range is a rectangle of at least two cells in
+   one worksheet that shows as one cell. Merged ranges do not overlap.
+   - Only the top-left cell holds an input and a format. A formula that
+     reads another cell of the range reads an empty cell.
+   - Merging a range in which other cells hold inputs deletes those
+     inputs. The browser asks first and names how many. An agent must say
+     so in the operation, or the call is refused.
+   - Unmerging leaves the input in the top-left cell.
+   - A merged range follows its rows and columns. Rows inserted inside it
+     make it larger. Deleting some of its rows or columns makes it
+     smaller, and a range of one cell stops being merged.
+   - An input written to another cell of the range is refused, for a
+     person and for an agent. The editor selects the whole range and
+     writes to its top-left cell.
+   - The host refuses a sort whose range holds a merged range or part of
+     one (rule 12). It also refuses a move of rows or columns that would
+     cut a merged range in two or change its rectangle.
+10. **Names.** A name gives a cell, a range or a constant a word that
+    formulas can use, as in `=SUM(Sales)`.
+    - A name has a scope, which is the workbook or one worksheet, and is
+      unique in its scope without regard to letter case. It has 1 to 255
+      characters, starts with a letter, an underscore or a backslash,
+      continues with letters, digits, underscores and periods, and is
+      not a cell reference in A1 or R1C1 form, such as `A1` or `R1C1`, not
+      `TRUE` or `FALSE`, and not one of the letters `C`, `c`, `R` and `r`.
+      Excel refuses the same names.
+    - Its definition is one cell or one rectangular range of one
+      worksheet, or one constant (a number, text or a boolean).
+    - People add, rename, change and delete names in a Names dialog.
+      Agents do it with operations.
+    - A name that points at cells follows them as a formula reference does
+      (rule 17). Renaming a name changes it in every formula that uses it.
+    - A formula that uses a deleted name shows `#NAME?` and keeps the word.
+      Defining that word again in the same scope makes the formula work
+      again.
+    - A name from a file whose definition is anything else (a formula, a
+      relative reference, several areas, another workbook) is kept as
+      text, shown in the dialog as not supported, and written back on
+      export, except that a name whose text names a part that the import
+      dropped (a table, a link to another workbook) is not written back,
+      and the export report counts it. A formula that uses it follows rule
+      22.
+11. **Structure edits.** People and agents insert, delete, move, resize,
+    hide and show rows and columns, and add, rename, reorder, duplicate,
+    hide, show and delete worksheets.
+    - Deleting a row or column deletes its cells. Undo and history bring
+      them back with their ids.
+    - A move changes positions only. Every cell reference, merged range
+      and name still points at the same cells. A range follows its end
+      rows and columns. Moving an end moves the end of the range with it
+      (open question 12).
+12. **Sort.** A sort orders the rows of one range by one or more of its
+    columns, each ascending or descending, with an optional header row
+    that does not move.
+    - Sort order: numbers, then text, then `FALSE`, then `TRUE`, then error
+      values in their existing order. Empty cells come last in both
+      directions. Ties keep their order.
+    - Text sorts without regard to letter case, in the order that Microsoft
+      documents for Excel. Digits come first, then the space and the other
+      ASCII punctuation in the order of Excel, then letters. This first
+      comparison reads the texts without their apostrophes and hyphens.
+    - Of two texts that differ only by a hyphen, the one with the hyphen
+      comes last, as in Excel.
+    - For other texts that the first comparison leaves equal, S1 puts the
+      text with fewer apostrophes and hyphens first. Texts that still differ
+      follow code-point order after case folding. This is an S1 choice,
+      because Microsoft documents no order for apostrophes. Every two texts
+      that differ after case folding therefore have one order.
+    - Every other character follows in code-point order, so Hangul sorts in
+      dictionary order. This part differs from Excel, whose order outside
+      ASCII depends on its region
+      ([technical design, section 9](sheet-technical-design.md#9-engine-semantics)).
+    - A formula is sorted by its result as of the start of the sort. A
+      formula that is pending then counts with its last result.
+    - A sort moves inputs and formats between the rows of the range. Rows
+      keep their ids, so a formula outside the range that reads a cell of
+      the range still reads that position and now sees the new content. A
+      formula inside the range moves with its row and its relative
+      references move with it, as in a copy.
+    - A sort is one action. A sort of at most the cell limit of one action
+      (rule 13) applies at once. A sort of more cells is a large sort (rule
+      41). The host refuses a range that holds a merged range or part of one.
+      Excel also sorts a range whose cells are all merged in blocks of one
+      size. S1 does not, so a sort never changes a merged range.
+13. **Limits.** Limits apply to the current workbook, and the host refuses
+    an edit or import that exceeds one, whole, with the name of the limit.
+    The grid size and the cell total are decided. The other numbers are S1
+    targets, fixed by measurement before release
+    ([Open questions](#open-questions)).
+
+    | Limit | Target |
+    |---|---|
+    | Rows per worksheet | 1,048,576 |
+    | Columns per worksheet | 16,384 |
+    | Cells with an input or a format per workbook | 20,000,000 |
+    | Rows of all worksheets of one workbook, empty rows included | 20,000,000 |
+    | Worksheets per workbook | 200 |
+    | Characters per text cell | 32,767 |
+    | Characters per formula | 8,192 |
+    | Nested function calls per formula | 64 |
+    | Arguments per function call | 255 |
+    | Distinct cell formats per workbook | 65,490 |
+    | Merged ranges per worksheet | 100,000 |
+    | Names per workbook | 10,000 |
+    | Stored data per workbook: the text of each cell counted once for every cell that holds it, and 26 bytes for each cell, 36 for each row and 83 for each formula | 2 GiB |
+    | Cells changed by one action or one agent call. Measurement may raise this number and may not lower it | 100,000 |
+| Cells in one large sort, which runs as a job (rule 41). Measurement may raise this number and may not lower it | 2,000,000 |
+    | Rows or columns created, deleted or moved by one action or one agent call, and blank rows that a write below the last row creates | 100,000 |
+    | Requests of a Public viewer over the rates that the technical design fixes. A request over a rate is refused with a retry hint | The rates of the technical design |
+    | Edits waiting for the host to finish marking their dependents, and the time that this work has been open without a break. A write over either is refused with a retry hint | 10,000 edits; 60 seconds |
+    | Size of an imported file | `system.upload_max_bytes`, 20 MiB by default |
+
+    Each limit is judged on its own. If a lowered limit leaves a workbook
+    over it, the workbook and rollbacks to its revisions are not refused.
+    Only edits that increase how far it is over the limit are refused.
 
 ## Formulas
 
-10. **Syntax.** A formula starts with `=` and holds:
-    - numbers, `"text"` with `""` for a quotation mark inside it, `TRUE` and
-      `FALSE`;
-    - references: a cell `B3`, a range `B3:D9`, whole columns `B:D`, whole
-      rows `2:5`, and each of these in another tab as `Costs!B3` or
-      `'Q1 costs'!B3:D9`. A `$` before a column or a row, as in `$B$3`,
-      keeps that part fixed when the formula is copied, filled or moved by a
-      sort;
-    - the operators `+ - * / ^ &`, the comparisons `= <> < <= > >=`, a
-      trailing `%`, a leading `-` or `+`, and brackets;
-    - calls of the functions in rule 12, with capitals in a name ignored.
-    Names for ranges and arrays in braces are [not in S1](#not-in-s1).
-11. **Values and errors.** A formula's value is one number, text, boolean or
-    error, or blank when the formula returns a blank cell it read, as `=A1`
-    does for a blank A1; such a cell shows nothing. A date function gives a number, shown as a date when the cell has
-    a date format; a formula cell that has no number format and whose
-    outermost function is one of `DATE`, `TODAY`, `EDATE` or `EOMONTH` shows
-    as a date.
-
-    | Error | Means |
-    |---|---|
-    | `#ERROR!` | The formula cannot be read: a bracket is missing, or an operator has nothing to work on. |
-    | `#NAME?` | It calls a function that does not exist. |
-    | `#REF!` | It reads a cell, row, column or tab that was deleted, or one outside the grid limits. |
-    | `#VALUE!` | A value has the wrong kind: text where a number is needed, or a range where one value is needed. |
-    | `#DIV/0!` | It divides by zero. |
-    | `#NUM!` | A number is out of range for the function, or the result is not a finite number. |
-    | `#N/A` | A lookup found nothing, or `NA()` was called. |
-    | `#CYCLE!` | The formula reads its own cell, directly or through other formulas. Every cell on the cycle shows it. |
-    | `#LIMIT!` | The formulas of the sheet calculate more text than a state may hold, and this formula's text result is longer than limited mode allows (rule 9). |
-
-    - A formula that reads a cell holding an error has that error as its
-      value, unless a function such as `IFERROR` handles it.
-    - A formula with an error is still stored as typed, so correcting what
-      it reads corrects its value.
-    - Text is converted to a number, and a number to text, where an operator
-      needs it: `="3"+1` is 4 and `=1&"a"` is `1a`. Text that is no number
-      gives `#VALUE!`. A blank cell counts as 0 in arithmetic and as empty
-      text in `&`. Comparisons of text ignore capitals.
-    - A reference to a range where one value is needed is `#VALUE!`. There
-      are no array results in S1: a formula never fills other cells.
-12. **Functions.** S1 has exactly these functions.
+14. **Syntax.** A formula is Excel formula text in the form an xlsx file
+    stores, shown and typed in A1 style.
+    - References: `A1`, absolute parts (`$A$1`, `A$1`, `$A1`), a range
+      (`A1:B4`), a whole column or row (`A:A`, `1:3`), a cell or range of
+      another worksheet (`Sheet2!A1:B4`, `'My sheet'!A1`), and a name.
+    - Values: numbers, text in double quotes, `TRUE` and `FALSE`, and error
+      values.
+    - Operators: `+ - * / ^`, a leading `-` or `+`, a trailing `%`, `&`,
+      and `= <> < > <= >=`. Operator order follows Excel: a leading minus
+      binds tighter than `^`.
+    - Function calls, with a comma between arguments and a period as the
+      decimal point. Function names have no regard to letter case and are
+      stored in capital letters in their English form.
+    - Array formulas, results that fill several cells, references to other
+      workbooks, table references such as `Table1[Amount]`, ranges over
+      several worksheets and the space operator are not calculated (rule
+      22).
+    - A range where a single value is expected, as in `=A1:A10*2` in one
+      cell, gives `#VALUE!`. This differs from Excel on purpose. Earlier
+      versions of Excel use implicit intersection there. They take the cell
+      of the range in the row or column of the formula. Excel 365 spills
+      the result instead (rule 15), and keeps implicit intersection where a
+      formula shows `@`, which a file stores as `_xlfn.SINGLE`. An import
+      removes `_xlfn.SINGLE` and keeps its argument, so `@A1` reads `A1` and
+      `@A1:A10` gives `#VALUE!`. Such a formula follows this rule and not
+      rule 22. The import report counts the formulas that lost an `@`, and
+      the conformance criterion leaves them out. Export writes such a
+      formula without the `@` and with the result of S1. In a typed formula,
+      an `@` outside text in double quotes and outside a quoted worksheet
+      name does not parse, and the host refuses the formula (rule 38). So
+      `=@A1` is refused, while `="a@b"` and `='Team@ops'!A1` are valid. Text
+      that starts with `@` without `=` stays text (rule 6). A typed
+      `_xlfn.SINGLE` names a function outside rule 15 and follows rule 22.
+15. **Functions.** S1 has these 111 built-in functions. Each follows the
+    documented behavior of Excel for the same arguments. The notes below
+    the table say where S1 differs from Excel and where it keeps a
+    documented error of Excel.
 
     | Group | Functions |
     |---|---|
-    | Math | `ABS`, `CEILING`, `EXP`, `FLOOR`, `INT`, `LN`, `LOG`, `LOG10`, `MOD`, `PI`, `POWER`, `PRODUCT`, `QUOTIENT`, `ROUND`, `ROUNDDOWN`, `ROUNDUP`, `SIGN`, `SQRT`, `SUM`, `SUMPRODUCT`, `TRUNC` |
-    | Statistics | `AVERAGE`, `COUNT`, `COUNTA`, `COUNTBLANK`, `LARGE`, `MAX`, `MEDIAN`, `MIN`, `RANK`, `SMALL`, `STDEV`, `STDEVP`, `VAR`, `VARP` |
-    | Conditional totals | `AVERAGEIF`, `AVERAGEIFS`, `COUNTIF`, `COUNTIFS`, `MAXIFS`, `MINIFS`, `SUMIF`, `SUMIFS` |
-    | Logic | `AND`, `FALSE`, `IF`, `IFERROR`, `IFNA`, `IFS`, `ISBLANK`, `ISERROR`, `ISLOGICAL`, `ISNA`, `ISNUMBER`, `ISTEXT`, `NA`, `NOT`, `OR`, `SWITCH`, `TRUE`, `XOR` |
-    | Text | `CONCAT`, `CONCATENATE`, `EXACT`, `FIND`, `LEFT`, `LEN`, `LOWER`, `MID`, `PROPER`, `REPLACE`, `REPT`, `RIGHT`, `SEARCH`, `SUBSTITUTE`, `TEXT`, `TEXTJOIN`, `TRIM`, `UPPER`, `VALUE` |
-    | Lookup | `CHOOSE`, `COLUMN`, `COLUMNS`, `HLOOKUP`, `INDEX`, `MATCH`, `ROW`, `ROWS`, `VLOOKUP`, `XLOOKUP` |
-    | Date and time | `DATE`, `DATEDIF`, `DAY`, `DAYS`, `EDATE`, `EOMONTH`, `HOUR`, `MINUTE`, `MONTH`, `SECOND`, `TIME`, `TODAY`, `WEEKDAY`, `YEAR` |
+    | Math | `SUM`, `PRODUCT`, `SUMPRODUCT`, `ABS`, `SIGN`, `INT`, `TRUNC`, `ROUND`, `ROUNDUP`, `ROUNDDOWN`, `MROUND`, `CEILING`, `FLOOR`, `MOD`, `POWER`, `SQRT`, `EXP`, `LN`, `LOG`, `LOG10`, `PI` |
+    | Statistics | `AVERAGE`, `MIN`, `MAX`, `COUNT`, `COUNTA`, `COUNTBLANK`, `MEDIAN`, `LARGE`, `SMALL`, `RANK`, `RANK.EQ`, `STDEV`, `STDEV.S`, `STDEV.P`, `VAR`, `VAR.S`, `VAR.P` |
+    | Conditional totals | `SUMIF`, `SUMIFS`, `COUNTIF`, `COUNTIFS`, `AVERAGEIF`, `AVERAGEIFS`, `MAXIFS`, `MINIFS` |
+    | Logic | `IF`, `IFS`, `IFERROR`, `IFNA`, `AND`, `OR`, `NOT`, `XOR`, `SWITCH`, `TRUE`, `FALSE` |
+    | Information | `ISBLANK`, `ISNUMBER`, `ISTEXT`, `ISERROR`, `ISNA`, `NA` |
+    | Lookup | `VLOOKUP`, `HLOOKUP`, `XLOOKUP`, `INDEX`, `MATCH`, `CHOOSE`, `ROW`, `COLUMN`, `ROWS`, `COLUMNS` |
+    | Text | `CONCAT`, `CONCATENATE`, `TEXTJOIN`, `LEFT`, `RIGHT`, `MID`, `LEN`, `TRIM`, `UPPER`, `LOWER`, `PROPER`, `SUBSTITUTE`, `REPLACE`, `FIND`, `SEARCH`, `REPT`, `EXACT`, `VALUE`, `TEXT` |
+    | Date and time | `DATE`, `TIME`, `YEAR`, `MONTH`, `DAY`, `HOUR`, `MINUTE`, `SECOND`, `TODAY`, `NOW`, `EDATE`, `EOMONTH`, `WEEKDAY`, `WEEKNUM`, `DATEDIF`, `DAYS`, `NETWORKDAYS`, `WORKDAY`, `DATEVALUE` |
 
-    - Each function takes the arguments and gives the results that the same
-      name has in the common spreadsheet programs, for the cases S1
-      supports. The technical design fixes a reference table of inputs and
-      expected results for every function; that table is the contract.
-    - Functions that total or count a range pass over text and blank cells
-      as those programs do, and criteria such as `">100"`, `"<>done"` and
-      `"a*"` are read as they read them.
-    - `SUMPRODUCT` multiplies ranges of the same size cell by cell. No other
-      operator or function works through a range cell by cell.
-    - `XLOOKUP` supports exact match and its if-not-found argument.
-      `VLOOKUP`, `HLOOKUP` and `MATCH` support exact match and the sorted
-      approximate match.
-    - `TEXT` takes the patterns that the number formats of rule 6 can
-      express.
-    - `TODAY` gives the calculation date of the state it is calculated in
-      (rule 13).
-    - A function outside this list is `#NAME?`. Random numbers, the current
-      time and every function that returns a range are
-      [not in S1](#not-in-s1).
-13. **Recalculation.** After any edit, every formula whose value can change
-    is recalculated before the edit is reported as saved, and each reader
-    gets the new values together with the edit. No reader sees a state in
-    which an edit has applied and a formula that reads it still shows the
-    old value.
-    - **Calculation date.** The live sheet has a calculation date: the date
-      of the host's clock in the host's time zone. When that date changes,
-      the sheet moves to a new state with the new date, and formulas that
-      read `TODAY` are recalculated as after an edit. While anyone has the
-      sheet open this starts within a minute and takes effect when the
-      recalculation has ended (rule 9); otherwise it happens before the next
-      read or edit is answered. It changes no content and creates no
-      revision.
-    - A read in several pages (rule 42) stays in the state it started in,
-      with that state's date, even past midnight.
-    - A revision records the calculation date it was closed with. Viewing
-      it, or reading it through `get_revision`, calculates with that date,
-      so a retained revision always shows the same values. A rollback
-      restores content and calculates it with the live date.
-14. **References follow structure.**
-    - Inserting rows or columns moves the cells after them, and every
-      formula that names a moved cell names its new address. A range grows
-      when rows or columns are inserted between its first and its last, and
-      not when they are inserted before its first or after its last.
-    - Deleting rows or columns shrinks a range that loses part of its cells.
-      A reference to a deleted cell, or a range that loses all of its cells,
-      becomes `#REF!` inside the formula, as in `=#REF!*2`.
-    - A formula names another tab by its name. Renaming a tab renames it in
-      every formula that reads it. A formula that names a tab that does not
-      exist keeps its text and shows `#REF!`; it reads the tab again once a
-      tab has that name, whether through undo, tab recovery or a new tab of
-      that name.
-    - Undoing a deletion of rows or columns also gives each formula that
-      the deletion changed the text it had before the deletion. A formula is
-      left as it is if someone has edited it since, or if rows or columns of
-      its own tab or of a tab it read were inserted, deleted or sorted after
-      the deletion; rows and columns added at the end do not count. No
-      other operation repairs a `#REF!` inside a formula.
-    - A rollback restores every formula exactly as revision R has it
-      (rule 50).
-    - Whole-column and whole-row references cover rows and columns added
-      later.
-    - **A formula in flight.** While a person types a formula, structural
-      changes that arrive adjust the references already typed, in the
-      editor, by the rules above. A formula a person commits is read
-      against the grid their screen showed. If rows or columns were
-      inserted, deleted or sorted, or a tab was renamed, before the server
-      receives it, the server adjusts its references, `$` references and
-      references to other tabs included, as if the formula had been in its
-      cell since that screen state. If the server no longer keeps the
-      changes made since then, or the sheet was rolled back since then, it
-      refuses the edit and the text is offered back (rule 24).
-    - A rollback is not a change the editor can adjust to. When a rollback
-      reaches a browser in which a person is typing in a cell, a formula or
-      not, the editor closes without committing, nothing is written, and
-      the typed text is offered back in a notice (rule 24). The person
-      types it again against the restored grid.
-15. **Copying formulas.** When a formula is copied by paste, by fill or by a
-    sort moving its row, each reference without `$` shifts by the distance
-    the formula moved. A shifted reference that would leave the grid limits
-    becomes `#REF!`. Cutting and pasting moves a formula without shifting
-    what it reads: pasted into another tab, a reference written without a
-    tab name gains the name of the tab the formula was cut from. Formulas
-    elsewhere that read the cut cells keep their addresses and read whatever
-    those addresses hold after the paste.
+    - A formula gives one value. A formula whose result would be several
+      values gives `#VALUE!`. Excel 365 spills such a result into the cells
+      next to it, and shows `#SPILL!` when they are not empty. S1 has no
+      spill, and the conformance criterion leaves such formulas out.
+      Inside a formula, a function such as `SUMPRODUCT` can still work on
+      whole ranges.
+    - `XLOOKUP` returns one cell: its return range has one row or one
+      column.
+    - A nearest match of `VLOOKUP`, `HLOOKUP` and `MATCH`, which is their
+      default, expects keys sorted in ascending order, or in descending
+      order for `MATCH` with -1, as Excel does. For keys that are not
+      sorted, the result can differ from Excel.
+    - `XLOOKUP` follows its own modes, as Excel does. Its default search
+      goes from the first key to the last and needs no sorted keys, also
+      for the next smaller or next larger item (match mode -1 or 1). Only
+      the binary search modes 2 and -2 expect sorted keys.
+    - Criteria of the conditional totals and `SEARCH` take the wildcards
+      `?`, `*` and `~`. So do `VLOOKUP`, `HLOOKUP` and `MATCH` in their
+      exact-match mode, and `XLOOKUP` in match mode 2 only.
+    - `TEXT` shows the format codes of rule 7 and gives `#VALUE!` for a
+      code that S1 cannot show. `VALUE` and `DATEVALUE` read the forms of
+      rule 6.
+    - `RAND`, `RANDBETWEEN`, `OFFSET` and `INDIRECT` are not in S1.
+    - `DATEDIF` with `"MD"` differs from Excel on purpose. It gives the days
+      after the last whole month. That month ends on the later of two dates.
+      One is the last date on or before the end date that has the day number
+      of the start date. The other, when there is one, is the latest last
+      day of a month that is too short for that day number and that is on
+      or before the end date. So 2026-01-31 to 2026-03-01 gives 1, and
+      2026-01-31 to 2026-03-30 gives 30.
+    - A start after the end gives `#NUM!` for `DATEDIF`, as in Excel. Excel
+      documents that its own result can be wrong for `"MD"`, so the
+      conformance criterion leaves that form out.
+    - Before 1900-03-01, `WEEKDAY` gives the day numbers of Excel, which
+      Microsoft documents as wrong for those dates, because serial 60 is a
+      day that never existed.
+16. **Compatibility rules.**
+    - **Error values.** `#NULL!`, `#DIV/0!`, `#VALUE!`, `#REF!`, `#NAME?`,
+      `#NUM!` and `#N/A`, the classic error values of Excel, and two that
+      only Flats shows:
+      `#CIRC!` for a circular reference (rule 20) and `#LIMIT!` for a
+      formula over its work limit (rule 21). An error value in an operand
+      or argument becomes the result, except in the functions that test
+      for one. With several, the first in reading order wins. `ISERROR` gives
+      `TRUE` for `#CIRC!` and `#LIMIT!`, `ISNA` and `IFNA` do not
+      treat them as `#N/A`, and `IFERROR` does not catch them. Excel 365
+      has more error values, such as `#SPILL!` and `#GETTING_DATA`. S1 never
+      gives them, and rule 25 says how an import reads them.
+    - **Numbers.** IEEE 754 doubles. Two numbers are equal in a comparison
+      when they agree to 15 significant digits. A result that is not
+      finite is `#NUM!`.
+    - **Dates.** In the 1900 date system, serial 1 is 1900-01-01 and serial
+      59 is 1900-02-28. Serial 60 is the day 1900-02-29, which never
+      existed, as in Excel. Serial 61 is therefore 1900-03-01, and every later
+      serial counts that day, so 2008-01-01 is 39448 and 9999-12-31 is
+      2,958,465. In a workbook with the 1904 date system, serial 0 is
+      1904-01-01 and 9999-12-31 is 2,957,003. A time is a fraction of a
+      day.
+    - **Text.** Comparison has no regard to letter case. `EXACT` and `FIND`
+      do. The operators `<`, `<=`, `>` and `>=` use the text order of rule
+      12, so `"ab"<"a-b"` and `"ab"<"a'b"` are `TRUE`. `=` is `TRUE` only for
+      texts that are equal after case folding, so `"ab"="a-b"` is `FALSE`.
+      Text criteria of the conditional totals, such as `"<b"`, use the same
+      order.
+    - **Empty cells.** An empty cell is 0 in arithmetic, empty text in text
+      operations, and `FALSE` where a function needs one logical value,
+      such as `IF` and `NOT`. In a comparison it equals 0, `""` and `FALSE`.
+      `AND`, `OR` and `XOR` skip empty cells and text in a range or
+      reference, and give `#VALUE!` when no logical value is left. A
+      formula whose result is an empty cell shows 0. Functions that count
+      or average skip empty cells.
+    - **Conversion.** Text that rule 6 reads as a number, a date or a time
+      is that number in arithmetic. Other text gives `#VALUE!`. `TRUE` is 1
+      and `FALSE` is 0 in arithmetic.
+    - **Order between kinds.** In a comparison, any number is less than any
+      text, and any text is less than `FALSE`, which is less than `TRUE`.
+17. **References follow cells.** A formula stores which rows and columns it
+    reads, not their addresses, and shows A1 text made from their current
+    positions.
+    - Inserting, deleting or moving rows or columns never rewrites a
+      formula. An insert and a cell edit at the same moment both apply.
+    - A range grows when rows or columns are inserted between its ends,
+      and shrinks when rows or columns inside it are deleted. A deleted
+      end row or column leaves the range reaching to the nearest row or
+      column inside it that remains. A range that loses all its rows or
+      columns becomes `#REF!`. A moved end row or column moves the end of
+      the range with it, and a range whose ends are in the wrong order is
+      read with the ends swapped.
+    - A reference to a deleted cell, row, column or worksheet shows and
+      gives `#REF!`. If the deletion is undone, or the item comes back
+      with its id through a rollback, the reference works again.
+    - A whole column or row reference includes rows or columns added
+      later. It covers the whole grid of the worksheet, as in Excel:
+      `ROWS(A:A)` is 1,048,576, `COLUMNS(1:1)` is 16,384, `COUNTBLANK(A:A)`
+      counts the blank cells of the whole column, and a row that does not
+      exist yet reads as empty. A function that reads the reference directly,
+      such as `SUM` or `COUNTIF`, reads only the rows that the worksheet has.
+      An array expression over a whole column, such as `A:A=""` inside
+      `SUMPRODUCT`, holds a value for each of the 1,048,576 positions and
+      costs the time of them, as in Excel. `COUNTIF` and `COUNTIFS` with a
+      criterion that matches blank cells count the blank positions of the
+      grid, as `COUNTBLANK` does. With several criteria, the count is over
+      the grid positions that match all of them, computed from the rows that
+      exist. An array of more than 4,194,304 values gives `#LIMIT!`, which
+      differs from Excel.
+    - Copying or filling a formula moves its relative parts by the same
+      distance and keeps its absolute parts. A relative part that would
+      leave the worksheet becomes `#REF!`.
+18. **Results.** A formula cell has a result that is either **current** or
+    **pending**. A pending cell shows its last result, marked as not
+    current, or nothing if it has none.
+    - An edit makes pending every formula that reads the edited cell,
+      directly or through other formulas. It changes no other result.
+    - The host calculates a pending cell when a reader asks for it. The
+      readers are the visible range of a Private editor, an agent read and
+      an export. It also calculates pending cells in the background until
+      none is left.
+    - A reader never gets a result as current that an earlier confirmed
+      edit made stale. While the host is still marking after an edit of a
+      cell with many dependents, a window shows the results that the host
+      can recalculate at once, and the other formulas as pending.
+    - Results are not content (principle 3). After a rollback or an
+      import, every formula is pending until it is calculated. A formula
+      imported with a stored result shows that result as its last result
+      meanwhile.
+19. **Bounded reads.** One read calculates for a limited time and returns
+    the cells it did not reach as pending. The server sends results as
+    they become current, and the browser also asks again while pending
+    cells are on screen. Each read and each background step keeps
+    what it calculated, except a read that calculates a formula without a
+    `dirty` row while the host's marking work is open. Repeated reads get
+    further once that marking work is done.
+20. **Circular references.** A formula that reads itself, directly or
+    through other formulas, gives `#CIRC!`, and so does every formula of
+    the cycle and every formula that reads one. A cycle never makes the
+    sheet wait, and an edit that closes a cycle is not refused. When an
+    edit opens the cycle again, the cells calculate normally. An Excel
+    workbook can allow cycles with iterative calculation. S1 does not
+    iterate, so such a cycle gives `#CIRC!`, and the import report lists
+    the setting as dropped (rule 25).
+21. **Work limit of one formula.** A formula may read a limited number of
+    cells in one calculation: 50,000,000 as the S1 target. A range counts
+    the cells that exist in it, not its positions, so a sum over a whole
+    column of a large worksheet counts the cells that hold something. An array
+    that an expression builds from a whole column counts a value for each
+    position of the grid. A formula over
+    it gives `#LIMIT!`. The limit counts cells, not time, so the same
+    workbook gives the same result on every host. `IFERROR` does not
+    catch `#LIMIT!` or `#CIRC!`.
+22. **Formulas S1 cannot calculate.**
+    - A formula that names a function outside rule 15 keeps its text,
+      follows its cells (rule 17), and shows `#NAME?`. An imported
+      `_xlfn.SINGLE` is not such a function, because the import removes it
+      (rule 14).
+    - A formula from a file that uses syntax outside rule 14 is kept as the
+      text the file stores. It does not follow its cells, and a copy, fill
+      or sort moves its stored result as a plain input, not the formula.
+    - Either kind, when it comes from a file with a stored result, shows
+      that result marked as **not recalculated**. This stored result is
+      content: revisions, rollback and export keep it. Changing the input
+      of the cell removes it. A formula that reads such a cell uses the
+      stored result as if it were an input of that kind, so `=B1*100` over
+      a cell `B1` with an unsupported function and the stored result 0.84
+      gives 84. Without a stored result the cell gives `#NAME?`.
+    - Export writes a formula of the first kind with its text, unless the
+      text names a part that the import dropped (a table, a link to
+      another workbook, or a name that rule 10 does not write back). It writes every
+      other formula that S1 does not calculate, and every one that names a
+      dropped part, as its stored result alone, so Excel never meets a
+      reference that the file lacks. The import report and the export
+      report count them.
+23. **Time functions.** `TODAY` and `NOW` give the date and time of the
+    calculation in the time zone of the workbook. They are the only functions
+    whose result changes without an edit.
+    - The host looks at the formulas that use them once a minute while a
+      Private editor has the sheet open, and at most once an hour while only
+      Public viewers have it open. A formula is pending only if its result
+      changed at such a look. A look waits for the host's marking work. A formula that uses
+      these functions can lag by the length of one pass of the step, which
+      under a stream of edits can be many minutes.
+    - An export, or an agent read that comes more than a minute after the
+      last look, asks for a look first. The export waits for it, and the agent
+      read waits for a limited time that the read states.
+
+## Files
+
+24. **xlsx import.** An import reads one `.xlsx` file into a workbook.
+    - Into a new slug it creates the sheet. Into an existing sheet it
+      replaces the whole workbook as one revision, so the content before
+      it stays in history.
+    - The same file always gives the same workbook and the same report.
+    - An import that is refused, cancelled or interrupted changes nothing.
+25. **What an import keeps.** Worksheets with their names, order and hidden
+    flags; cell inputs and formulas; the stored results of formulas; the
+    rule 7 formats and the style table (rule 8); row heights, column
+    widths and hidden rows and columns; frozen rows and columns; merged
+    ranges; and names.
+    - Everything else is dropped and listed in the **import report** by
+      kind and place (worksheet, and range where one exists): charts,
+      images and drawings, pivot tables, macros, comments and notes,
+      conditional formats, data validation, filters, tables, hyperlinks,
+      links to other workbooks, embedded objects, protection, outline
+      groups, print settings, the iterative calculation setting and rich
+      text runs. Cells of a dropped table
+      or pivot table stay as cells. Text with runs stays as plain text.
+    - View state of the file, such as the selected cell, zoom and scroll
+      position, is not imported and not reported.
+    - The import keeps a worksheet that Excel marks as very hidden as a
+      hidden worksheet with that mark, and export writes the mark back.
+      Showing the worksheet in Flats removes the mark.
+    - The import reads an error value that rule 16 does not have, such as
+      `#SPILL!` or `#GETTING_DATA`, as `#N/A`, and the report counts the
+      cells.
+    - The import gives a worksheet named `History`, which rule 3 refuses,
+      the name `History (2)`, and the report lists it.
+    - The report has a second list of the formulas that follow rule 22,
+      with their number. These are formulas kept, not parts dropped. It
+      also counts the formulas that lost an `@` (rule 14).
+    - The report stays with the revision of the import, and people with
+      write access open it from History.
+26. **Import safety.** A file is a zip of XML from an untrusted source.
+    - The host refuses a file larger than `system.upload_max_bytes` before
+      any write, and the refusal names the setting.
+    - While it reads, it enforces limits on the number of zip entries, the
+      unpacked size of each entry and of all entries, the ratio of
+      unpacked to packed size, the length of one XML tag and one text, the nesting depth of every
+      part it parses, and the limits of rule 13. A file over a limit is refused with the name
+      of the limit.
+    - It refuses an encrypted or password-protected file, a legacy `.xls`
+      file and a file that is not a zip, and says which.
+    - It never requests a resource that a file names, and never runs
+      anything a file holds.
+    - Memory use of an import does not grow with the number of rows. An
+      import through MCP also holds the base64 body of the call, at most
+      2.4 times the file plus 2 MiB, counting the decoded file. The reader looks at the size and count
+      of the zip directory before it builds the list of entries.
+27. **xlsx export.** An export writes the current workbook as `.xlsx`:
+    inputs, formulas, results, formats and the style table, sizes, hidden
+    flags, frozen rows and columns, merged ranges and names.
+    - Pending formulas are calculated before or during the export, so a
+      program that does not recalculate still shows results. A result of
+      `#CIRC!` or `#LIMIT!` is written as `#N/A`, and the export report
+      counts those cells.
+    - A text cell stays a text cell in the file, also when it begins with
+      `=`, `+`, `-` or `@`, so an export cannot put a formula into another
+      program.
+    - The file comes from one state of the workbook, also when people edit
+      during the export.
+    - Memory use of an export does not grow with the number of rows.
+28. **CSV.** CSV works for one worksheet at a time.
+    - **Import** adds a new worksheet to a sheet, or creates a sheet with
+      one worksheet. It reads UTF-8 with or without a byte order mark,
+      fields in double quotes as in RFC 4180, and a comma between fields,
+      or a tab for a `.tsv` file. Each field becomes an input by rule 6,
+      except that a field is never a formula. A field that starts with `=`
+      becomes text.
+    - **Export** writes the results of one worksheet: numbers in full
+      precision, dates and times in ISO 8601 form, booleans as `TRUE` and
+      `FALSE`, and error values as their text. It writes UTF-8 with a byte
+      order mark and CRLF line ends, so Excel reads Korean text. The export
+      puts an apostrophe in front of a text cell that begins with `=`, `+`,
+      `-`, `@`, a tab, a carriage return, a line feed, or the full-width
+      form of one of the first four (U+FF1D, U+FF0B, U+FF0D, U+FF20), so
+      that a program that opens the file does not read it as a formula
+      ([OWASP, CSV injection](https://owasp.org/www-community/attacks/CSV_Injection)). The line feed and the
+      full-width forms are a proposal (open question 5). The apostrophe does
+      not protect a file that Excel saves again, because Excel can drop it
+      then, as OWASP notes.
+    - A CSV file does not keep the kind of every cell. A text cell that rule
+      6 reads as something else comes back as that after an import, so
+      `42` comes back as a number and `'abc` as `abc`. Only xlsx keeps them.
+    - The separator is a comma in every region. Excel reads a CSV file by the
+      list separator and the date order of its own region settings.
+29. **Round trip.** Importing an xlsx file, exporting the sheet and
+    importing that export gives the same workbook: the same worksheets,
+    cells, formats, style table entries, sizes, hidden flags, frozen rows
+    and columns, merged ranges and names. Ids, and empty rows and columns
+    after the last one in use, are not part of the comparison. A formula
+    that the export wrote as its stored result alone (rule 22) compares as a
+    plain value equal to that result. The second
+    import report has no dropped part and lists the formulas of rule 22 that
+    the export wrote as formulas. The first report names the formulas that
+    became plain values, so nothing is lost without notice.
+30. **Jobs.** An import and an export of a large workbook take longer than
+    one request, so each runs as a job.
+    - A job shows progress within 1 second of the host receiving the first
+      bytes of the file, and until it ends. While the file is received,
+      progress is the bytes received. A person or agent with write access can
+      cancel it.
+    - S1 shows no rows of an import before it is complete. People keep
+      seeing and editing the earlier workbook until the import replaces
+      it.
+    - A sheet runs one import, rollback, large duplication or large sort
+      at a time. A second one is refused while the first runs.
+    - A host restart cancels a running job. The sheet is as it was before
+      the job, and the job's record says that it was interrupted.
 
 ## Viewing
 
-16. **Grid.** The browser shows one tab at a time: column letters across the
-    top, row numbers down the left, gridlines, and each cell with its shown
-    value and format. Text longer than its cell runs on over blank cells to
-    its right unless the cell wraps; numbers, dates and booleans never run
-    on. Only the cells in view are drawn, so a tab at its limits scrolls as
-    a small one does.
-17. **Tab bar.** A bar under the grid lists the tabs in order. Selecting one
-    shows it. Which tab a person has open, where they have scrolled and what
-    they have selected is theirs alone and is not saved.
-18. **Formula bar.** A bar above the grid shows the address of the active
-    cell and what it holds: the formula text for a formula, and otherwise
-    the content as it would be typed.
-19. **Status.** Selecting two or more cells that hold numbers shows their
-    sum, average and count. The sheet shows whether every edit is saved
-    (rule 38).
-20. **Themes and sizes.** The sheet follows the light or dark theme of the
-    system. On a phone-width screen a person scrolls, selects a cell, reads
-    the formula bar, edits one cell at a time and switches tabs; the
-    remaining editing of rule 21 may need a wider screen.
-20a. **Find.** Ctrl or Cmd+F opens a find field for the open tab. It matches
-    text in what cells show, capitals ignored, counts the matches, and moves
-    the selection to the next or previous one. It works the same on a Public
-    route. Replacing is [not in S1](#not-in-s1).
-20b. **Screen readers.** The grid is exposed as a grid, although only the
-    cells in view are drawn.
-    - It states the tab's row and column counts, and each cell its row
-      number and column letter.
-    - Moving to a cell reads its address and what it shows, says when it
-      holds a formula or an error, and says when it is part of the
-      selection. The formula bar is a labeled field that reads the content
-      of the active cell.
-    - The tab bar is a list of tabs with the open one marked. Menus and
-      dialogs are named, take focus when they open and give it back when
-      they close.
-    - Tab moves between cells inside the grid, as in other spreadsheet
-      programs. F6 and Shift+F6 move between the top bar, the toolbar, the
-      formula bar, the grid and the tab bar, and Escape returns to the
-      grid. The grid's description names these keys.
-    - Save status, notices of refused, ignored and overwritten edits, agent
-      activity and the find count are announced without moving focus.
+31. **Layout.** The screen has a row of worksheet tabs, a formula bar with
+    the address or name of the selected cell and its input, and the grid
+    with row numbers and column letters. Frozen rows and columns stay in
+    place while the rest scrolls.
+32. **Only what is visible.** The browser reads the visible range and a
+    margin from the host, and never a whole worksheet. A jump to any row
+    of a worksheet of 1,000,000 rows shows its cells without loading the
+    rows before it. The scrollbar stands for row numbers, not pixels.
+33. **Live.** An open sheet shows every change without a reload, whoever
+    made it: cells in view, the worksheet list, sizes and names. Results
+    that become current appear without a reload.
+34. **Pending results.** A pending cell is drawn in a muted style that does
+    not depend on color alone, and a screen reader says "calculating".
+    While the workbook has pending cells, the screen says how many.
+35. **Connection state.** The screen always shows whether the sheet is
+    saving, saved or disconnected
+    ([Disconnection and reconnection](#disconnection-and-reconnection)).
+36. **Theme and phone width.** The sheet follows the light or dark theme.
+    At about 400 px the tab row and the formula bar stay usable and only
+    the grid scrolls.
+37. **Accessibility.**
+    - With the keyboard alone, people move between cells, select ranges,
+      edit, use every menu and dialog, and switch worksheets.
+    - A screen reader reads the grid as a grid: the address, the value
+      and, for a formula cell, that it holds a formula.
+    - Color is never the only way to convey meaning.
 
 ## Editing in the browser
 
-21. **Editing.** A person with write access can do all of the following
-    without leaving the grid.
+Editing is available on Private routes only.
 
-    | Action | How |
-    |---|---|
-    | Select | Click a cell; drag or Shift-click for a range; click a column letter or row number for whole columns or rows; the corner selects the tab. Arrow keys, Home, End, Page Up and Page Down move, with Shift to extend and with Ctrl or Cmd to jump to the edge of the data. Tab moves one cell right and Shift+Tab one cell left. |
-    | Type into a cell | Typing replaces the content; Enter or F2 or a double click edits it in place. While editing, Enter commits and moves down, Tab commits and moves right, each with Shift for the opposite direction, and Escape cancels. Alt+Enter or Option+Enter adds a line break. |
-    | Enter a formula | After `=`, clicking a cell or dragging a range inserts its reference at the caret. Typing a function name offers the matching functions with their arguments. |
-    | Clear | Delete or Backspace clears the content of the selection and keeps its formats. |
-    | Copy, cut, paste | To and from the system clipboard as tab-separated text, so a range moves to and from other spreadsheet programs with its shown values. A paste inside the same sheet also carries formulas (rule 15) and formats. Paste values only is a separate command. |
-    | Fill | Dragging the handle at the selection's corner, or Ctrl+D and Ctrl+R, copies the first cells over the rest, shifting formulas by rule 15. |
-    | Format | A toolbar sets the formats of rule 6 on the selection, with Ctrl or Cmd+B, I and U for the marks. |
-    | Resize a column | Drag the edge of its letter; a double click fits it to its content. |
-    | Insert and delete rows and columns | From the menu of a row number or column letter: insert above, below, left or right, as many as are selected, and delete the selected ones. |
-    | Sort | Sort the selected rows, or all rows under the frozen rows, by one column, ascending or descending (rule 22). |
-    | Freeze | Freeze rows down to, or columns up to, the selection, or unfreeze. |
-    | Tabs | Add, rename, reorder by dragging, and delete with the confirmation of rule 2. |
-    | Export | Download the open tab as a CSV file of its shown values. |
-
-    - Composition input (IME) works in a cell and in the formula bar: text
-      under composition is never committed or cancelled by the keys that
-      belong to the composition.
-    - Every action has a keyboard path, and focus returns to the grid after
-      a menu or a dialog closes.
-22. **Sort.** A sort reorders whole rows of the tab: the rows of the
-    selection, or every row under the frozen rows when one cell is selected.
-    Each sorted row moves with its identity, so every cell of the row, in
-    every column, moves with it. Sorting only some columns of a row is
-    [not in S1](#not-in-s1).
-    - Order ascending: numbers and dates from the smallest, then text from
-      A with capitals ignored, then `FALSE`, then `TRUE`, then errors.
-      Descending reverses that. Blank cells come last either way. A formula
-      counts as its value. Rows that tie keep their order.
-    - Formulas inside the moved rows shift by rule 15. Formulas in other
-      rows keep their addresses and read whatever the sort put there.
-    - Frozen rows never move.
-23. **Undo and redo.** Each person can undo and redo their own last 100
-    actions of rule 21, in order, with Ctrl or Cmd+Z and Shift+Ctrl or
-    Cmd+Z, for as long as the tab stays open.
-    - An undo changes only what that action changed and applies as a new
-      edit by the [concurrency rules](#concurrency-rules). Where someone
-      else has changed the same value since, the undo leaves their value and
-      says so.
-    - Undoing a deletion of rows, columns or a tab brings them back with
-      their cells and identities, where they were among the rows, columns
-      or tabs that remain. A tab whose name was taken meanwhile comes back
-      as "<name> (restored)". Formulas are repaired as rule 14 says.
-    - An undo never deletes another writer's work. Undoing an insertion of
-      rows or columns, the creation of a tab or a tab recovery removes them
-      only if no other writer has since changed content or a format in
-      them. Otherwise the undo is skipped with a notice and they stay.
-    - Undoing a sort puts the rows it moved back in their earlier order
-      among themselves. Rows inserted since stay where they are and rows
-      deleted since stay deleted. If another writer has sorted any of those
-      rows since, the undo is skipped with a notice.
-    - A rollback of the sheet clears everyone's undo history, and so does a
-      restart of the host. A browser tab that was disconnected for more than
-      10 minutes may also find its undo history cleared when it reconnects,
-      and so may one that was disconnected while many other tabs opened the
-      sheet.
-    - The host keeps undo history within fixed limits of memory, disk space
-      and work, which the technical design gives. An action that no longer
-      fits them can no longer be undone or redone. It is skipped with a
-      notice that says so, nothing in the sheet changes, and the person's
-      other actions stay available. Where the host could keep only part of
-      what an action needs, its undo skips that part with the same notice
-      and applies the rest. Some of these limits are shared by everyone
-      who edits the sheet, so heavy undo history of others can make a
-      person's largest or oldest actions leave their undo history earlier.
-24. **Refusals.** When the host refuses an edit, the grid returns to the
-    host's state, a notice says why, and typed text is offered back so it
-    can be copied.
+38. **Cells.** People type into a cell or into the formula bar. Enter or
+    Tab stores the input, and Escape leaves the cell as it was.
+    - The typed text shows at once. The host turns it into an input by
+      rule 6 and answers with what the cell now shows.
+    - A formula that does not parse is refused. The editor stays open with
+      the text and says where the problem is.
+    - While a formula is being typed, clicking a cell or dragging over a
+      range puts its reference into the text. The editor suggests function
+      names and shows the arguments of the current function.
+    - While an input method (IME, for example for Korean) is composing,
+      remote changes do not break the composition. They apply after the
+      composition ends.
+39. **Selection and keys.** Arrow keys, Tab, Enter, Home, End, Page Up and
+    Page Down move as in a spreadsheet, and with Ctrl they jump to the
+    edge of the data. Shift extends the selection. Clicking a row number
+    or column letter selects the whole row or column.
+40. **Copy, paste, fill and clear.**
+    - Copying puts plain text with tabs and an HTML table on the
+      clipboard, so other spreadsheet programs can paste it. Pasting from
+      another program reads the same two forms: each value becomes an
+      input by rule 6.
+    - A paste inside the same sheet also carries formulas and formats.
+      Relative references move as in rule 17. Paste values only carries
+      results as plain inputs.
+    - The fill handle fills the range it is dragged across. In the cases
+      that Microsoft documents, it does what Excel does:
+      - One cell with a date continues day by day.
+      - One cell with an English weekday or month name in full, such as
+        `Monday` or `January`, continues with the next name.
+      - One cell with text that ends in a number continues the number, as
+        in `Item1`, `Item2`, `Item3`.
+      - The fill copies one cell with a plain number.
+      - Two or more numbers continue the linear best-fit trend of their
+        values, as the `TREND` function gives it. The trend is the
+        least-squares line through the values at positions 1 to n. So
+        `1, 2` gives `3, 4, 5`, `100, 95` gives `90, 85`, and `1, 2, 4` gives
+        16/3 and 41/6, which show as 5.33 and 6.83 when rounded for display.
+      - A drag up or left gives the values before them, so `1, 2` dragged
+        up over two cells gives `0` and then `-1`.
+    - For other cases S1 makes these choices, and a check in Excel confirms
+      or changes them before release
+      ([technical design, section 25.4](sheet-technical-design.md#254-file-corpora)).
+      Short weekday and month names, such as `Mon` and `Jan`, continue like
+      full ones, and weekday names include Saturday and Sunday. One time
+      continues hour by hour. S1 does not round the values of a trend. Two
+      or more dates continue their trend as
+      numbers do. A number at the end of a text keeps at least its number
+      of digits, so `Item09` gives `Item10`. Two or more texts with the same
+      text before a final number continue the trend of those numbers. A
+      drag up or left continues a date, a name or a text backward. The fill
+      copies one cell with any other input, and a formula moves its
+      relative references. S1 repeats any other selection in order.
+    - A menu after the fill switches between the sequence and a copy.
+    - S1 has no cut and no drag that moves cells. In Excel a moved formula
+      keeps its references. In S1 a copy moves its relative references
+      instead (rule 17), and a delete clears the inputs.
+    - A paste or fill that goes past the last row or column adds rows or
+      columns, within the limits.
+    - Delete clears the inputs of the selection and keeps formats.
+41. **Large actions.** One action changes at most the cell limit of rule 13
+    and creates, deletes or moves at most the row and column limit of rule
+    13. It applies whole or not at all. The host checks the limits and the
+    disk quota before it applies an action, and a refusal changes nothing.
+    A paste or fill of 100,000 cells of ordinary size, with at most 80 bytes
+    of text in each, is one action. A paste with more text is a series. Deleting a whole worksheet is one
+    action, and a deletion of more rows than the limit is a series.
+    - The browser sends a paste, fill, clear or format change of more
+      cells as a series of actions, row range by row range. It shows
+      progress and a way to stop. Stopping leaves the ranges already done. A part that the host refuses
+      (a limit or the disk quota) stops the series in the same way, and the
+      screen says which rows were done. One undo reverses what was done.
+    - A sort cannot be split. A sort of more cells than the cell limit of
+      one action, and at most the large-sort limit of rule 13, is a **large
+      sort**. It runs as a job (rule 30) after the person confirms it, and
+      the confirmation says that writes to the sheet pause. A sort of more
+      cells than the large-sort limit is refused.
+    - A large sort plans on one state of the worksheet while people keep
+      editing, and then applies in one step. The apply pauses every write to
+      the sheet, for about 5 seconds for each 1,000,000 cells, or about 20
+      seconds for each 1,000,000 cells that hold formulas. These are
+      estimates that the measurement of the technical design confirms.
+    - If a key of the sort, or the structure of the worksheet, changed
+      after the plan, or the range now holds a merged range or part of one, or the
+      worksheet was deleted, the job ends as `conflict` and changes no
+      content. A formula key that the host is still calculating can cause
+      this, because its stored result changes. An edit of another column
+      does not stop the sort, because the apply moves the current content of
+      each row. The person starts the sort again.
+    - A large sort closes the open edit group just before it applies, so
+      the workbook before the sort is a revision (rule 55). The host can
+      close the group once while it waits for the encoder, and a sort that
+      does not apply leaves that revision in the history. A large sort has
+      no undo entry. The way back is a rollback to the revision before the
+      sort (rule 71).
+    - An agent starts a large sort with the `sort` operation and the option
+      `large`, as the only operation of its call (rule 63).
+42. **Structure and formats.** Menus and keys insert, delete, move, resize,
+    hide and show rows and columns; set the rule 7 formats; merge and
+    unmerge; freeze rows and columns; sort a range; and manage worksheets
+    and names.
+43. **Find.** People search the open worksheet or the whole workbook for a
+    text. Find looks in text inputs and in the text results of formulas,
+    without regard to letter case. It does not look in numbers, which
+    differs from Excel, because a walk over every number cell of a large
+    workbook takes too long
+    ([technical design, section 20](sheet-technical-design.md#20-find)). It
+    goes to the next or the previous match from the selected cell.
+    - On a large workbook a find that must look at many cells shows that
+      it is searching and how far it is, and can be stopped.
+    - Replace is not in S1.
+44. **Personal undo and redo.** As in a notebook: undo reverses only the
+    person's own edits, never other people's or agents'.
+    - The unit is one stored cell input, or one action such as a paste, a
+      fill, a clear, a format change, a structure edit, a sort, a merge or
+      a name change. A series of rule 41 is one unit.
+    - If someone else later changed a cell the person had changed, undo
+      leaves that cell and says "Changes other people made later were not
+      undone". Undo of a sort is applied only if no cell of the sorted
+      range changed after the sort, and otherwise it is refused whole with
+      the same notice.
+    - Undoing a person's own deletion restores the row, column or
+      worksheet with its original id, so references to it work again.
+    - Each tab has its own history, limited in entries and in bytes. An
+      action too large to keep says that it cannot be undone before it
+      applies. A reload, a rollback or an import clears the history.
 
 ## Collaboration
 
-25. **Presence.** Private editors see who else has the sheet open, which tab
-    each person is on, and each person's active cell or selected range,
-    outlined in their color with their name. A cell someone else is editing
-    is marked. The mark is not a lock.
-26. **Identity.** On Tailscale routes the sheet shows the trusted Tailscale
+45. **Presence.** Private editors see who else has the sheet open, which
+    worksheet each person is on and the cell or range each person has
+    selected, marked with their name. This mark is not a lock.
+46. **Identity.** On Tailscale routes the sheet shows the trusted Tailscale
     identity as verified. On Local and NetBird routes it uses the name
-    entered on first opening and shows it as unverified. A value the client
-    sends can never earn the verified mark.
-27. **Agent activity.** An agent's write appears as a short notice, such as
-    "The agent wrote 42 cells in Budget", with a brief highlight of the
-    cells that changed. Presence is never exposed to agents.
+    entered on first opening and shows it as unverified. A value the
+    client sends can never earn the verified mark.
+47. **Agent activity.** An agent's write appears as a short notice, such as
+    "The agent changed 240 cells in Costs", with a brief highlight of what
+    changed. Presence is never exposed to agents.
 
 ## Concurrency rules
 
-A **value group** is a set of values that only make sense together. They
+A **value group** is a set of values that only make sense together: they
 change together and are overwritten together.
 
-28. **Value groups.**
+48. **Value groups.**
 
     | Group | Contains |
     |---|---|
-    | Cell content | what one cell holds: its value or its formula |
-    | Cell format property | one of a cell's format properties of rule 6: each mark, the text color, the fill color, the alignment, wrap, the number format with its settings |
-    | Column width | one column's width |
-    | Row order | the order of the rows of one tab |
-    | Column order | the order of the columns of one tab |
-    | Tab name | one tab's name |
-    | Tab settings | one tab's frozen rows and columns |
-    | Tab order | the order of the tabs |
+    | Cell input | the input of one cell, and its stored result of rule 22 |
+    | Cell format | the format of one cell |
+    | Row place | the position of one row |
+    | Row look | the height, hidden flag and format of one row |
+    | Column place | the position of one column |
+    | Column look | the width, hidden flag and format of one column |
+    | Worksheet name | the name of one worksheet |
+    | Worksheet place | the position of one worksheet |
+    | Worksheet view | the hidden flag, frozen rows and columns, and default sizes of one worksheet |
+    | Merged range | one merged range |
+    | Name | the word, scope and definition of one name |
+    | Workbook settings | the time zone |
 
-29. **Different values all apply.** Two people typing in different cells
-    both keep their text. One person making a cell bold while another
-    colors it, or changes its content, all stay.
-30. **In the same group, the last write stays.** When two writers change the
-    same group, the value the server received later stays. Text inside one
-    cell is not merged character by character.
-    - The person whose content was overwritten gets a notice with their
-      text, which they can copy while that tab remembers it.
+49. **Different values all apply.** If one person types into a cell while
+    another formats it, both stay. A write that names some fields of a
+    group, such as the bold flag of a format, changes those fields of the
+    current value, so two writers who change different fields of one
+    format both stay. Two people editing different cells of
+    one row both stay. An insert of rows and a cell edit at the same
+    moment both apply, and the edit lands in the cell it was made in.
+50. **In the same group, the last write stays.** When two writers change
+    the same group, the value the server received later stays.
+    - The person whose cell input was overwritten gets a notice with their
+      text and a **Put my value back** action. The text can be put back
+      only while that tab remembers it, and the host sends the notice only
+      when the overwritten input was written less than five minutes before.
     - An overwritten value can be recovered from history only when a
       retained revision records it.
-31. **Edits follow identities.** A person's edit names its cell by the row's
-    and the column's identity, not by an address. If rows or columns were
-    inserted, deleted or sorted before the server received it, it applies to
-    that same cell at its new address (principle 4). A sort moves whole
-    rows, so every cell of a row has one destination. A formula in such an
-    edit is adjusted by rule 14.
-32. **Deletion wins.** An edit to a cell of a deleted row, column or tab
-    does not apply and is reported as ignored, with the text offered back.
-    A paste or a fill that covers both deleted and remaining cells applies
-    to the remaining ones. A cut cell whose destination was deleted stays
-    where it was, and the same cut writes nothing over it, so a cut cell
-    whose destination is such a cell does not move either.
-33. **Order of structure edits.** Inserts, deletes and sorts apply in the
-    order the server receives them. An insert names the row or column it is
-    beside by identity; if that one was deleted meanwhile, the insert goes
-    where it was. A person's sort names its rows by identity: it reorders
-    those of them that still exist, in the places they occupy when the
-    server receives it, and rows inserted among them meanwhile stay where
-    they are. Two sorts that share rows leave those rows in the order of
-    the later one.
-34. **Restored rows, columns and tabs.** When these reappear through undo,
-    tab recovery or a rollback, edits prepared before that do not apply to
-    them.
-35. **Whole-sheet rollback** follows the rollback rule of the shared
-    Revision model. Edits that arrive after the rollback apply on top of the
-    restored sheet by the rules on this page, except that edits prepared
-    before the rollback to rows, columns and tabs it removed or brought back
-    are ignored. An edit to a cell whose row and column both exist before
-    and after the rollback applies to that cell by identity, wherever the
-    rollback put it, except that a formula committed before the rollback is
-    refused (rule 14). Open browser tabs resync, text being typed in a cell
-    when the rollback arrives is not committed and is offered back
-    (rule 14), and everyone's undo history is cleared.
-36. **Agent writes.**
+51. **Deletion wins.** An edit of a person to a deleted row, column,
+    worksheet, merged range or name does not apply and is reported as
+    ignored, and the text of an ignored cell input is offered back to the
+    person. An agent call that targets a deleted item is refused whole
+    (rule 56). Edits to other values in the same action still apply. An
+    action that only makes sense whole, such as a paste, a fill or a sort,
+    does not apply at all if any part of it is ignored or refused.
+52. **Restored items.** A row, column or worksheet that comes back through
+    undo or a rollback has its original id, and edits that arrive after
+    that apply to it. An edit that was ignored while the item was deleted
+    stays ignored. This differs from the notebook (rule 33), which ignores
+    edits prepared before a restore. A sheet gives an item no incarnation,
+    so it cannot tell such an edit apart.
+53. **Structure stays valid.** The server checks every structure edit
+    against the current workbook, not against what the writer saw. An edit
+    that would pass a size limit, cut a merged range, overlap two merged
+    ranges, repeat a worksheet name or a name, or delete the last
+    worksheet is refused, and the writer's screen returns to the server's
+    state.
+54. **Formulas under concurrent edits.**
+    - One person deletes a column that another person's formula reads.
+      Both apply, and the formula shows `#REF!`.
+    - A formula edit closes a cycle through a cell that someone else
+      changed a moment before. Both apply, and the cells of the cycle show
+      `#CIRC!`.
+    - A long chain of formulas recalculates while other people edit. The
+      cells of the chain show as pending until their results arrive, edits
+      are confirmed meanwhile, and a new edit to an input of the chain
+      makes its cells pending again.
+55. **Whole-workbook replacement.** A rollback and an import into an
+    existing sheet follow the rollback rule of the shared Revision model.
+    Edits that arrive before the replacement are kept in the revision
+    closed just before it. Edits that arrive after it apply on top of the
+    new workbook by the rules on this page, except that edits prepared
+    before it to items it removed are ignored (rule 51). Open tabs resync
+    and everyone's personal undo history is cleared.
+56. **Agent writes.**
     - One agent write call applies whole or not at all. If validation, a
-      limit, the disk quota or a guard fails, nothing changes.
-    - Agents name tabs by name and cells by address. Every write call to an
-      existing sheet names the state the agent read (rule 43). The host
-      refuses the whole call, and the agent reads again and resends, if
-      since that state a tab the call names was renamed, deleted or replaced
-      by another tab of the same name, or if the call names an address in a
-      tab whose rows or columns were inserted, deleted or sorted since that
-      state, or if the sheet was rolled back since that state, which can
-      move rows and columns that exist before and after it. Rows and columns
-      added at the end of a tab do not count, because no address that
-      existed changes its meaning. A name therefore always means the tab the
-      agent read, and an address the cell it read. This covers calls that only rename, move or
-      delete a tab or change its settings. A call that only adds tabs, or
-      that creates the sheet, needs no state.
-    - Changes other writers made since that state to cell content, formats,
-      widths and settings do not refuse the call. They are merged by the
-      same group rules as a person's edits.
-    - An agent can give a guard: refuse if the sheet is no longer in the
-      state it read, or refuse if the content of any cell of named ranges
-      changed since then. The first guard fails after any change of state, a
-      change of the calculation date included. The second compares what the
-      cells hold, not what their formulas calculate. A guard checks the
-      current state, including people's edits that are not yet part of a
-      revision.
-37. **Reported results.** For a person's action, the result tells apart what
-    was applied, what was ignored (a deleted target) and what was refused
-    (validation, limit, quota). An agent's call either applies whole or is
-    refused with its reason.
+      limit, the disk quota, a guard or a deleted target fails, nothing
+      changes, as for a notebook (notebook rule 36).
+    - An agent names cells by address. An address is a position, and a
+      position is valid only for the rows and columns the agent read. A
+      call that names cells by address therefore says which state of the
+      worksheet structure it read, and the host refuses the whole call if
+      rows or columns of that worksheet were inserted, deleted or moved
+      since. The agent reads again and resends.
+    - An agent can give a stronger guard: refuse if the workbook changed
+      since the read, or refuse if cells of ranges that the call names
+      changed since then. A
+      guard checks the current state, including people's edits that are
+      not yet part of a revision.
+    - An agent's change that passes its guards is merged by the same group
+      rules as a person's.
+57. **Reported results.** For a person's action, the result tells apart
+    what was applied, what was ignored (a deleted target) and what was
+    refused (validation, structure, limit, quota). An agent's call either
+    applies whole or is refused with its reason, and a deleted target is a
+    reason.
 
 ## Disconnection and reconnection
 
 S1 does not support offline editing, but people do not lose edits through
-ordinary disconnections. These rules match the board's and the notebook's.
+ordinary disconnections. These rules match the notebook's.
 
-38. The sheet shows **Saved** only after the server confirms that it
+58. The sheet shows **Saved** only after the server confirms that it
     recorded the edit durably. Edits shown as saved stay even if the host
     restarts right after.
-39. A person's own unconfirmed edits stay on screen and are sent again on
+59. A person's own unconfirmed edits stay on screen and are sent again on
     reconnection. A resent edit never applies twice.
-40. On reconnection the browser receives other people's changes made in the
-    meantime and merges its own unconfirmed edits by the
+60. On reconnection the browser receives the current state of what it
+    shows and merges its own unconfirmed edits by the
     [concurrency rules](#concurrency-rules). If the server can no longer
     accept them, editing stops and the sheet explains why; the person can
-    copy their unconfirmed text out of the notice. Closing or reloading a
-    browser tab with unconfirmed edits warns first.
+    copy their unconfirmed inputs out of the notice. Closing or reloading
+    a tab with unconfirmed edits warns first.
 
 ## Agents
 
-41. **Create.** `create_flat {type: "sheet"}` creates a sheet with one empty
-    tab. `update_sheet` also creates a sheet on a slug that does not exist
-    yet.
-42. **Read.** `get_sheet` reads the sheet as structured data.
-    - Without a tab, it returns the tabs in order (id, name, row and column
-      counts, the smallest range that holds every filled cell, frozen rows
-      and columns) and an identifier of the current state.
-    - With a tab and a range, it returns the cells of that range, row by
-      row, with blank rows and columns at the end left out. A cell reads as
-      its value: a number, text, a boolean, or an object for a date, a time
-      or a date with time. Text that starts with `=` or an apostrophe reads
-      with a leading apostrophe. A formula reads as an object of its text
-      and its calculated value or error. Every value a read returns can be
-      written back unchanged (rule 43). Asked for, the read also returns what each
-      cell shows under its number format, and the formats and column widths
-      of the range, grouped into ranges that share a format.
-    - `format: "csv"` returns the range as CSV text of the shown values.
-    - One read returns at most 10,000 cells and 4 MiB; a larger range is
-      read in pages, and a page that would pass the byte limit ends early
-      and says where the next one starts. Every page of one read comes from the same state, even when
-      people edit meanwhile. The host keeps that state for a limited time;
-      when it has expired, the read says so and the agent reads again.
-43. **Write.** `update_sheet` sends a list of operations in one call, with
-    the atomicity, the state and the guards of rule 36. The operations:
-
-    | Operation | Does |
-    |---|---|
-    | write cells | Writes a rectangle of content from a top-left address. |
-    | clear cells | Clears the content of ranges, and their formats when asked. |
-    | format cells | Sets format properties of rule 6 on ranges; properties it does not name stay. |
-    | set column widths | Sets the width of columns. |
-    | insert or delete rows or columns | By address and count. |
-    | sort rows | Sorts a run of rows by one column (rule 22). |
-    | add, rename, move or delete a tab | A tab is named by its name. |
-    | set tab settings | Frozen rows and columns. |
-    | import csv | Writes CSV text from a top-left address, each field read by rule 5. |
-
-    - Operations apply in order, each on what the ones before it left, so
-      an address after an insert in the same call counts from that insert.
-    - In `write cells`, the JSON type decides what a cell holds: a number is
-      a number, a boolean a boolean, `null` clears the cell, an object names
-      a date, a time or a date with time, or is a formula object as a read
-      returns it, of which only the formula text is written, and a string is
-      text, except that
-      a string of `=` and at least one more character is a formula and a
-      string starting with an apostrophe is the text after it. A string is never turned into a
-      number or a date. `import csv` is the operation that reads text as
-      typed.
-    - One call writes at most 50,000 cells and 8 MiB. Cells the call does
-      not name stay as they are.
-    - The result returns the identifier of the new state, how many cells
-      and formulas the call wrote, how many of those formulas have an error
-      as their value, and the address and error of the first 100 of them, so
-      the agent sees a wrong formula without another read. It returns no
-      other values.
-44. **Revisions.** Agents use the existing revision tools (`list_revisions`,
+61. **Create.** `create_flat {type: "sheet"}` creates a Private sheet with
+    one empty worksheet. `update_sheet` and `import_sheet` also create a
+    sheet on a slug that does not exist yet.
+62. **Read.** `get_sheet` reads the workbook as structured data.
+    - Without a range, it returns the summary: worksheets with their ids,
+      names, sizes and the range in use, the names, the settings, how many
+      formulas are pending, and an identifier of the current state.
+    - With a range, it returns the cells of that range: for each, the
+      input as a typed value or formula text, the result of a formula with
+      a pending mark where it is not current, and the text the cell shows.
+      Formats are returned on request.
+    - The host calculates pending cells of the range for a limited time
+      before it answers. The answer says how many are still pending, so
+      the agent can read again.
+    - A range comes back in pages. Every page of one read comes from the
+      same state, even when people edit meanwhile. The host keeps that
+      state for a limited time; when it has expired, the read says so and
+      the agent reads again.
+    - With a text, it finds cells as rule 43 does and returns their
+      addresses in pages.
+63. **Write.** `update_sheet` sends a list of operations in one call, with
+    the atomicity and guards of rule 56: set and clear cell inputs, set
+    formats, fill a range by the rules of rule 40 or as a copy, copy a range, insert, delete,
+    move, resize, hide and show rows and columns, sort a range, merge and
+    unmerge, manage worksheets and names, and change the settings.
+    - A cell input is typed text (rule 6) or an explicit number, text,
+      boolean, error value, date or formula, so an agent can store text
+      that looks like a number.
+    - An `op_id` makes a repeated call return its first result and apply
+      nothing again.
+    - Operations may refer to worksheets created earlier in the same call
+      by a temporary name, and the result returns the new ids.
+64. **Import and export.**
+    - `import_sheet` takes an xlsx or CSV file in base64, of at most
+      `system.upload_max_bytes`, as `import_board` takes an archive. It
+      starts the job and returns its state, and `get_sheet` reads the
+      progress and the report. A call that would replace the workbook of
+      an existing sheet must say so, or it is refused.
+    - `flats sheet import` and `flats sheet export` do the same from a
+      file on disk, and the management API takes and returns the file
+      body. No MCP tool returns a file. An agent reads ranges with
+      `get_sheet`.
+65. **Revisions.** Agents use the existing revision tools (`list_revisions`,
     `get_revision`, `rollback_revision`, `pin_revision`) without approval.
-    `get_revision` reads an earlier revision as `get_sheet` does.
-45. **No versions.** Draft, version, preview, deployment and version
-    rollback tools refuse a sheet and point to the sheet and revision tools.
-    Version-model tools cannot write sheet content.
-46. **Guidance.** The guide gets `topic.sheet` when the feature ships: when
-    to choose a sheet over a notebook database or a table in a document,
-    the cell and address model, the formula syntax and function list, the
-    state and guard rules, and how to build a table (headers first, formulas
-    for anything derived, formats last). The guide index routes to it.
+    `get_revision` reads the summary or a range of an earlier revision as
+    `get_sheet` does.
+66. **No versions.** Draft, version, preview, deployment and version
+    rollback tools refuse a sheet and point to the sheet and revision
+    tools. Version-model tools cannot write sheet content. A sheet tool on
+    a flat of another type is refused as `not_sheet`, a version tool that
+    meets a sheet as `invalid`, and a call over a limit or over the disk
+    quota as `sheet_capacity`.
+67. **Guidance.** The guide gets `topic.sheet` when the feature ships: when
+    to choose a sheet over a notebook database, the cell and formula
+    model, addresses and guards, pending results, and import and export.
+    The guide index routes to it. Guide topics describe implemented
+    behavior only.
 
 ## Revisions
 
 A sheet follows the Revision model of [content-models.md](content-models.md)
 unchanged.
 
-47. **Revision unit.** One agent write call is one revision. A person's edits
-    are grouped per person and close after 30 seconds idle or 5 minutes from
-    the group's start. One rollback is one revision. Before an agent write or
-    a rollback applies, open groups close as one revision crediting everyone
+68. **Revision unit.** One agent write call is one revision. A person's
+    edits are grouped per person and close after 30 seconds idle or 5
+    minutes from the group's start. One import is one revision. One
+    rollback is one revision. Before an agent write, an import or a
+    rollback applies, open groups close as one revision crediting everyone
     who edited.
-48. **Whole sheet.** A revision holds the whole sheet: every tab, cell,
-    format, width and setting. Calculated values are not part of a revision;
-    they follow from its content. Unchanged parts share storage.
-49. **Quotas and pins** follow the existing rules: defaults of 100 revisions
+69. **Whole workbook.** A revision holds the whole workbook: every
+    worksheet, row, column, cell input, format, merged range and name, the
+    style table assets and the settings. It holds no formula results,
+    except the stored results of rule 22. Unchanged parts share storage,
+    and closing a revision costs in proportion to what changed.
+70. **Quotas and pins** follow the existing rules: defaults of 100 revisions
     and 20 pins, changeable per flat, 0 means unlimited.
-50. **Rollback.** Rolling back to revision R creates a new revision equal to
-    R's whole sheet: every tab, cell, formula text, format, width and
-    setting exactly as R has them, whatever was edited since. It adds only
-    metadata, is never refused for disk quota, and may leave the sheet over
-    its quota (rule 57).
-51. **History panel.** People with write access open History from the sheet
-    to list revisions (kind, author, time, message and which tabs changed),
-    open an earlier revision read-only with its calculated values, pin and
-    unpin, and roll back the whole sheet.
-52. **Tab recovery.** With an earlier revision R open, a person picks a tab
-    and restores it. Unlike a rollback, recovery adds one tab to the current
-    sheet and leaves the rest as it is.
-    - The tab comes back at the end of the tab bar with R's rows, columns,
-      cells, formats, widths and settings. It keeps its name if no tab has
-      that name now. Otherwise it is named "<name> (restored)", numbered if
-      that is taken too. A tab that still exists is recovered the same way,
-      as a copy.
-    - Formulas in the recovered tab keep the text they have in R, with one
-      exception: when the tab comes back under another name, a reference in
-      its own formulas that names the tab by its name in R is rewritten to
-      the new name, as a rename does (rule 14). A reference to the tab's own
-      cells, written with or without the tab's name, therefore reads the
-      recovered tab, and stays with it through later renames.
-    - A reference to another tab reads the tab of that name as it is now,
-      at the same address, and shows `#REF!` if there is none. Recovery does
-      not adjust these references for rows or columns inserted, deleted or
-      sorted in other tabs since R.
-    - No formula text in another tab changes. A formula elsewhere that
-      names the recovered tab's name reads it again (rule 14) at the
-      address it names, whether or not R holds anything there. A formula in
-      which a deleted row or column had already become `#REF!` stays so.
-    - Recovery is an ordinary edit: it is part of the person's edit group,
-      it can be undone (rule 23), and it changes no content of other tabs.
+71. **Rollback.** Rolling back to revision R creates a new revision equal to
+    R's whole workbook. It is never refused for disk quota and may leave
+    the sheet over its quota (rule 79). On a large workbook a rollback
+    runs as a job with progress.
+72. **History panel.** People with write access open History from the sheet
+    to list revisions (kind, author, time, message and which worksheets
+    changed), open an earlier revision read-only, read the import report
+    of an import revision, pin and unpin, and roll back the whole
+    workbook.
+73. **Earlier revisions calculate on demand.** An earlier revision opens
+    read-only with its inputs. While other earlier revisions are being opened
+    and the host has no room for one more, the open is refused with a retry
+    hint. The host calculates the results of the
+    range someone looks at, with the same limits as a live read. `TODAY`
+    and `NOW` give the present time there too. Opening a large earlier
+    revision can take time and shows progress.
 
 ## Lifecycle and access
 
-53. **Runs at once.** Creating or writing a sheet applies at once without
-    approval. A new sheet is Private. While
-    [public instance mode](public-instance.md) is on, a sheet is created as
-    that page sets for every type, through `create_flat` and through a first
-    `update_sheet` alike: Public on the host's default public network,
-    without a visibility approval, with its Public address returned and no
-    private link handed out or served. If that creation cannot be made
-    Public, it fails as that page says and no Private sheet is left behind
-    in its place.
-54. **Visibility and deletion need approval.** Making a sheet Public, making
+74. **Runs at once.** Creating or writing a sheet applies at once without
+    approval. A new sheet is Private.
+75. **Visibility and deletion need approval.** Making a sheet Public, making
     it Private again, and deleting it each need operator approval, as for
-    every flat. A Public approval does not pin a revision, and the sheet as
-    it is when the approval applies becomes Public.
-55. **Write access.** Only Private routes (Local, Tailscale and NetBird) and
-    MCP can write. The sheet trusts only the Flats core's route decision for
-    the access level and treats a missing or unknown decision as Public. It
-    accepts browser write requests only from the same origin.
-56. **Public boundary.** A Public route receives only the current sheet
-    content: tabs, cells with their formulas and calculated values, formats,
-    widths and settings.
-    - Viewers scroll, switch tabs, select and copy cells and download a tab
-      as CSV. None of this is saved.
-    - There is no editing, undo, presence or History. The revision list and
-      earlier revisions are not reachable.
+    every flat. A Public approval does not pin a revision, and the sheet
+    as it is when the approval applies becomes Public.
+76. **Write access.** Only Private routes (Local, Tailscale and NetBird) and
+    MCP can write. The sheet trusts only the Flats core's route decision
+    for the access level and treats a missing or unknown decision as
+    Public. It accepts browser write requests only from the same origin.
+77. **Public boundary.** A Public route receives only the current workbook:
+    inputs, formulas, results, formats, merged ranges, sizes, frozen panes,
+    names, the date system and the time zone, and the worksheet list without
+    hidden worksheets.
+    - Hidden worksheets, and the cells of hidden rows and columns, are not
+      sent. Hiding is not access control: the formula or result of a
+      visible cell can show a value that came from a hidden one, and a
+      formula can name a hidden worksheet.
+    - Viewers scroll, switch worksheets, select and copy cells, and find.
+      None of this is saved.
+    - There is no editing, undo, presence, History, import, export or
+      import report. The revision list and earlier revisions are not
+      reachable.
+    - A Public read never starts a calculation. A viewer sees pending
+      cells as pending until the background calculation, which only edits
+      and the steps of rule 23 start, reaches them. While any
+      record of the host's marking work is open, a Public viewer sees every
+      formula as pending. A Public find
+      looks only as far as a fixed limit allows.
     - When the sheet returns to Private, its route stops, or it is renamed
       or deleted, open Public connections close at once.
-57. **Disk quota.** A sheet follows the existing
+78. **No outside requests.** The sheet screen requests no outside resources
+    and runs no content script or HTML. Cell text is drawn as text.
+79. **Disk quota.** A sheet follows the existing
     [quota rules](content-models.md#quotas) unchanged. A person's edit is
     checked before it applies, including the space its revision will need,
-    and refused if it does not fit; the optimistic display is undone. Agent
-    writes get the same check. While a sheet is over its quota, every edit
-    is refused, a deletion included, until the quota is raised or space is
-    freed.
-58. **Console.** The console lists sheets with their own label and icon and
+    and refused if it does not fit; the optimistic display is undone.
+    Agent writes get the same check. An import checks the space it needs
+    before it starts and while it runs, counts the uploaded file, and
+    leaves nothing when it is refused. While a sheet is over its quota,
+    every edit is refused, a deletion included, until the quota is raised
+    or space is freed.
+80. **Console.** The console lists sheets with their own label and icon and
     links to the sheet. It shows no versions, previews, database or server
     settings for a sheet.
-59. **No outside requests.** The sheet screen requests no outside resources
-    and runs no content script or HTML. Cell text that looks like a web
-    address is shown as text; S1 has no links in cells.
-60. **Exports are plain data.** A CSV export, in the browser and through
-    `get_sheet`, writes one field per cell: what the cell shows.
-    - Fields follow RFC 4180: a field that holds a comma, a quotation mark
-      or a line break is quoted, and a quotation mark inside it is doubled.
-      Lines end with a carriage return and a line feed. The export covers
-      the tab's rows and columns up to the last filled cell. The text is
-      UTF-8. A file, downloaded in the browser or written by the CLI,
-      starts with a byte order mark, so that a program opening it directly
-      reads it as UTF-8; `get_sheet` returns the text without the mark.
-    - Fields are separated by commas. A field that holds a comma, a
-      semicolon, a tab, a quotation mark or a line break is quoted.
-    - The apostrophe check is made on the field as it will be written,
-      whatever the cell holds. A field whose first character, after any
-      leading spaces, is `=`, `+`, `@`, a tab, a carriage return or a line
-      feed is written with a leading apostrophe.
-    - A field that starts with `-` is written with a leading apostrophe
-      unless the whole field reads as a number by rule 5: a minus sign, then
-      at most one of the currency signs `$`, `€`, `£`, `¥` and `₩`, then
-      digits with optional commas and decimals, then an optional exponent
-      or an optional `%`. Only the space character counts as a leading
-      space. A
-      negative amount under a currency symbol made of letters, such as
-      `-CHF5`, therefore gets the apostrophe and arrives as text.
-    - Supported ways of opening the file are those that read it as
-      comma-delimited UTF-8 and leave text as text: LibreOffice Calc and
-      Apple Numbers opening the file, import into Google Sheets, and
-      Microsoft Excel opening the file on a system whose list separator is
-      a comma, or importing it with the comma delimiter chosen. In each of
-      them every field of an export shows as text or as a number, date or
-      boolean, and none is calculated. The apostrophe may show as part of
-      the text.
-    - Outside that, Flats promises nothing: a program set to another
-      delimiter, such as Excel on a system whose list separator is a
-      semicolon, splits fields at that character, and an import option that
-      turns text into formulas calculates it.
+81. **No server runtime needed.** A sheet runs inside the host. It works on
+    a host whose server runtime is disabled.
+82. **Backup.** [`flats backup`](host-backup.md) copies a sheet while the
+    host runs and people edit, as it copies a notebook. The copy holds
+    `sheet.db` as a snapshot that fits the revisions in `flats.db`, and the
+    revision contents. It leaves out `sheet/import/`, which holds the uploads
+    of running imports. A job that runs during the copy ends as interrupted
+    in the restored sheet, as after a restart, and the live workbook is the
+    one from before the job. To finish such an import, a person imports the
+    file again. `flats backup --verify` checks the outbox
+    of a sheet against `flats.db`, and the blobs that its revisions, its
+    import reports and its unimported outbox entries need
+    ([technical design, section 12.5](sheet-technical-design.md#125-backup)).
 
 ## Success criteria
 
 These are the release criteria for S1. The technical design fixes the
-reference data generator and the measurement scripts.
+reference data generators and the measurement scripts.
 
 **Reference environment**
 
@@ -851,95 +1162,180 @@ reference data generator and the measurement scripts.
   1440×900 window. Phone: an iPhone of the last three generations, latest
   Safari.
 - Network: tailnet RTT of 50 ms or less, bandwidth of 50 Mbps or more.
-- Data "reference sheet": 10 tabs. The large tab has 20,001 rows by 20
-  columns: a frozen header row and 20,000 filled rows, in which 2 columns
-  are formulas that read their own row (40,000 formulas). A second tab holds
-  20 totals, each a `SUM` of one whole column of the large tab, with their
-  expected values known from the generator.
+
+**Reference data**
+
+- **Reference workbook.** 10 worksheets, 200,000 cells with an input, and
+  40,000 formulas that include lookups and conditional totals.
+- **Large workbook A.** An xlsx file of 20 MiB, the largest that the
+  default limits accept, with text, numbers, dates and 5 percent formulas.
+- **Large workbook B.** A worksheet of 1,000,000 rows and about 20 columns,
+  imported with a raised `system.upload_max_bytes`. The S0 file of that shape
+  had 18.4 million cells and 121 MiB as xlsx. B adds one column of 1,000,000
+  distinct texts, one column of 1,000,000 formulas that read one shared cell
+  and a cell of their own row, one column of 1,000,000 formulas that divide by
+  the total of a whole column, and one column of 1,000,000 running balances
+  that form a chain. The technical design measures its size.
 
 | Criterion | Target |
 |---|---|
-| Open | Warm cache: the reference sheet's large tab is interactive in 1.5 seconds or less; cold cache: 3 seconds or less. |
-| Scrolling | On the large tab, scrolling keeps p95 frame time of 16.7 ms or less. |
-| Typing | p95 of 16.7 ms or less from a key press to the character on screen in the cell editor. |
-| Recalculation | Changing one input cell of the large tab updates its row's formulas on the editor's own screen, and the column total on another screen showing the totals tab, in p95 of 150 ms or less after Enter. Both screens show the edit and the values that follow from it together, never one without the other. |
-| Structure | Inserting a row at the top of the large tab completes on the editor's screen in 1 second or less. |
-| Remote display | p95 of 200 ms or less from the server receiving an edit to it showing on another editor's screen, while 5 people each edit a cell twice per second. |
-| Concurrent editing | Under that load, with one of them inserting a row every 5 seconds and another sorting the rows every 10 seconds, every edit the concurrency rules say must apply stays in the cell it was made in, with the same result on every screen. |
-| Structure cases | A fixed list of cases, set by the technical design, each gives the result this page states: a formula committed while a row is inserted above what it reads (rule 14); references after insert, delete and sort, with `$` and other tabs; undo of an insert after someone else typed in the new row, and undo of a sort after someone else sorted (rule 23); a stale agent call that names a renamed, deleted or replaced tab (rule 36); tab recovery in each case of rule 52, with a formula that names its own tab recovered under another name; a rollback after formulas were edited (rule 50); a stale agent write across a rollback that only reorders rows (rule 36); a formula committed just before such a rollback, and a formula still being typed when it arrives (rules 14 and 35). |
-| Formulas | Every row of the function reference table (rule 12) gives its expected result, in the browser, through `get_sheet` and in a CSV export. |
-| Calculation date | With the host's date moved forward: on a small sheet (the offsite budget of the typical flow with one `TODAY` formula) an open screen shows the new value within a minute; on the reference sheet the recalculation starts within a minute and the new values appear together when it has ended; a read begun before the change returns the old date on every page; and a revision closed before it still shows the old value. |
-| Limits | Each limit of rule 9 has its stated outcome. A write over a stored limit (tabs, rows, columns, filled cells, formulas, characters of a cell or a formula, nesting, cells read by one formula and by all formulas, typed text, bytes of a call) is refused whole with the limit's name. A text value inside a calculation that would pass 32,767 characters gives `#VALUE!` and the write is accepted. A state whose formulas calculate more text than it may hold is accepted and calculated in limited mode, with `#LIMIT!` exactly where rule 9 puts it, the same on every screen and through `get_sheet`; this is checked for a write that causes it and for a sheet that passes the limit only from a new calculation date on, and every result shows again after an edit brings the total back under the limit. While the host refuses a write, runs the longest recalculation the limits allow, with or without an edit starting it, or produces the largest CSV download, it answers other flats' requests within 1 second, and no reader of the sheet gets partly calculated values. |
-| Durability | An edit shown as Saved is present, with the values that follow from it, after the host process is killed and restarted. |
-| Export | A fixed list of cells, set by the technical design, covers every case of rule 60: each dangerous first character with and without leading spaces, text typed and text calculated by a formula, negative numbers in every number format, with a currency sign and with a currency symbol made of letters, text that holds a semicolon followed by `=`, quotes, commas and line breaks. It exports to the exact expected CSV bytes, and that file, opened in each supported way of rule 60, shows no calculated field. |
-| Accessibility | With VoiceOver on Safari and on Chrome, a person moves through the large tab, hears each cell's address and content, edits a formula, switches tabs and hears a refused edit and the save status (rule 20b). |
+| Open | The first worksheet of the reference workbook is interactive in 1.5 seconds with a warm cache and 3 seconds with a cold cache. |
+| Edit to result | On the reference workbook, p95 of 200 ms or less from storing a cell input to its dependent results on the editor's own screen. |
+| Scrolling | p95 frame time of 16.7 ms or less, on the reference workbook and on large workbook B. |
+| Remote display | p95 of 200 ms or less from the server receiving an edit to it showing on another editor's screen, while 5 people each edit twice per second. The formulas on that screen that the edit made pending show as pending or with their new results in a p95 of 500 ms or less. |
+| Concurrent editing | Under that load, every edit the concurrency rules say must apply stays, with the same result on every screen. |
+| Formula conformance | For a fixed corpus of xlsx files that Excel calculated and saved, every formula that uses only rule 14 syntax and rule 15 functions, does not rely on implicit intersection or `@`, does not spill in Excel, does not use `DATEDIF` with `"MD"`, and does not give `#LIMIT!` from an array over whole columns (rule 21), gets the result the file stores: equal text, booleans and error values, and numbers equal to 12 significant digits. The technical design fixes the generator of the corpus. |
+| Round trip | For a fixed corpus, rule 29 holds, and the first import report lists exactly the dropped parts and the formulas of rule 22, and counts exactly the formulas that lost an `@` (rule 14). |
+| Import safety | A hostile corpus (zip bombs, oversized entries and texts, deep XML, encrypted files, a legacy file) is refused inside a fixed memory bound and changes nothing. |
+| Large import | Progress shows within 1 second of the host receiving the first bytes of the file. Large workbooks A and B import inside a fixed memory bound that does not depend on the row count. |
+| Large open and scroll | On large workbook B, a jump to any row shows its cells in a p95 of 200 ms or less. |
+| Large edit | On large workbook B, the host confirms an edit to the cell that 1,000,000 formulas read in a p95 of 200 ms or less. Formulas on screen that read it show new results in a p95 of 200 ms or less after that. Other people's edits are confirmed in a p95 of 200 ms or less while the host works on the rest. |
+| Large recalculation | After that edit, with no other load, every one of the 1,000,000 results is current within 120 seconds. Each of those formulas reads the edited cell and one cell of its own row. |
+| Long chain | On large workbook B, a column of 1,000,000 running balances forms a chain. After an edit of its first cell, every result is current within 600 seconds, and other people's edits are confirmed in a p95 of 200 ms or less meanwhile. |
+| Large sort | On large workbook B, a sort of 2,000,000 cells ends as `done` within 180 seconds, and its apply pauses the writes of other people for at most 60 seconds. A large sort that is refused, cancelled or interrupted, or that ends as `conflict`, changes no content. The criteria Remote display and Large edit exclude the pause of a large sort. |
+| Large export | Large workbooks A and B export inside the same memory bound. An export that starts while an edit is being marked waits for the marker and then runs. Importing each export again gives the same values in every cell, and Excel opens each file without a repair prompt and shows the same values for a fixed sample of ranges that the technical design names. |
+| Find | On large workbook B, the next match of two fixed texts, one rare and one common, shows in a p95 of 1 second or less. |
 | Reconnection | After disconnecting and reconnecting, each unconfirmed edit applies exactly once. |
-| Recovery | Every tab of a retained revision can be viewed and restored. Rollback succeeds with the disk quota full. |
-| Refusal | On a Public route, writes, presence and history access are all refused. An edit over the disk quota is refused before other participants see it. |
-| Agent | From `topic.sheet` and the tools alone, an agent builds the offsite budget of the typical flow, then changes two inputs after a person inserted a row and added a column: the first write after the insert is refused by rule 36, the resent write applies, and the person's row and column are unchanged. |
-| Dependencies | Runs from the single Flats binary, with no outside service, account or separate server. |
+| Recovery | Every worksheet and cell of a retained revision can be viewed and restored. Rollback succeeds with the disk quota full. |
+| Backup | While 5 people each edit the reference workbook twice per second, and an import and a large sort run in two other sheets, at least 4 of 5 runs of `flats backup` make a copy. Each copy passes `flats backup --verify`, and each run that fails leaves nothing at its output path. A restore of a copy starts all three sheets. The edited sheet holds every edit that the host confirmed before the run that made the copy began, accepts new edits and makes new revisions. Each job ends as the copy recorded it, as `interrupted` or as `done`. The technical design fixes the schedule. |
+| Refusal | On a Public route, writes, presence, history access, import and export are all refused, and a read starts no calculation. An edit over the disk quota is refused before other participants see it. |
+| Dependencies | Runs from the single Flats binary with the server runtime disabled, with no outside service, account or separate server. |
 
 ## Not in S1
 
-Charts, conditional formats, dropdowns and checkboxes in cells, merged
-cells, borders, cell comments and notes, links and images in cells, rich
-text inside one cell, named ranges, arrays in braces, formulas whose result
-fills several cells (such as `FILTER`, `SORT` and `UNIQUE`), random numbers
-and the current time, pivot tables, filters and filter views, replacing
-found text, sorting only some columns of a row, sorting by more than one
-column, moving rows or columns by dragging, hiding and grouping rows or
-columns, protected ranges, number and date entry by locale, a time zone per
-sheet, custom number format patterns, import and export of `.xlsx` files,
-printing, anonymous guest editing, offline editing, and character-level
-merging of text inside one cell.
-
-A sheet leaves S1 only as CSV, one tab at a time, so formulas, formats and
-the other tabs do not travel with the file. Workbook files (`.xlsx`) are the
-first candidate for the release after S1
-([Open question 2](#open-questions)).
+Charts, pivot tables, macros and VBA, conditional formatting, data
+validation, cell comments, images and drawings, hyperlinks, rich text
+inside a cell, borders and font choices as editable formats, text that
+runs over into empty neighbor cells, saved filter
+views and filters, tables with table references, array formulas and
+results that fill several cells, `RAND`, `RANDBETWEEN`, `OFFSET` and
+`INDIRECT`, links to other workbooks, encrypted or password-protected
+files, the legacy `.xls` format, print layout and PDF, replace, find in numbers, cut and move of cells, iterative calculation, a sort of
+more cells than the large-sort limit, showing rows of an import before it is
+complete, an upload in parts for a file over `system.upload_max_bytes`,
+offline editing, anonymous guest editing, per-range permissions, notebook
+links (S2, S3) and custom functions (S4).
 
 Also outside S1, as for every type: accounts and per-person permissions,
-model calls inside the sheet, plugins and arbitrary HTML, replication across
-hosts, and Version-model features.
+model calls inside the sheet, plugins and arbitrary HTML, replication
+across hosts, and Version-model features.
 
 ## Current state
 
-The `sheet` type, the server that calculates and stores it, the tools
-`get_sheet` and `update_sheet`, the management routes, the `flats sheet` CLI
-commands, revisions with rollback, the read-only Public route, the console
-entries and `topic.sheet` are implemented but not released. Host tests cover
-creation, writes, reads in pages and as CSV, revisions and rollback, import
-after a crash, refusals between types, public instance mode and the unloading
-of idle sheets. The
-[technical design](sheet-technical-design.md#appendix-b-implementation-notes)
-lists where the implementation differs from its text.
+Nothing of the `sheet` type is implemented. No type registration, tool,
+route, CLI command, browser client or guide topic exists.
 
-Not done yet:
-
-- No success criterion is measured against the reference sheet on a host
-  through the browser, MCP and CSV.
-- The measurement scripts and manual protocols that section 22.4 of the
-  technical design names (`scripts/sheet-perf/*`, `scripts/sheet-e2e/*`,
-  `scripts/sheet-agent-eval`) are not written, and no command loads the
-  reference sheet into a host. Until they exist, Open, Scrolling, Typing,
-  Remote display, Accessibility and Agent cannot be measured, and
-  Recalculation, Structure, Concurrent editing, Formulas, Limits, Export and
-  Reconnection have only their engine half.
-- Safari, a phone, touch and VoiceOver are unchecked, and nothing has run
-  over a real tailnet.
-- Exported CSV has not been opened in the spreadsheet programs the success
-  criteria name.
-- The lifecycle authority census (`scripts/lifecycle-gate.sh`) has sheet
-  cases, and they have never run. The census cannot run at present, because
-  the script does not build against its pinned historical source, on `main`
-  as well.
-- The limits of [Open question 1](#open-questions) are the planned values.
+The S0 prototype was a server flat outside this repository. It is not the
+product and none of its code is in the host. Its reports on
+[issue 233](https://github.com/gosuda/flats/issues/233) and the probes of the
+technical design's section 2 are the evidence for the decisions here. S0
+stopped after its third step. Its fourth step, find and export, was not
+built, and section 2 says which of its questions the design stage answered
+instead.
 
 ## Open questions
 
-1. **Limit numbers.** The limits in rule 9 and the read and write sizes in
-   rules 42 and 43 are planned values, fixed after measurement with the
-   reference sheet.
-2. **Workbook files.** Whether importing and exporting `.xlsx` files belongs
-   in the release after S1 or later, and which parts of a workbook an import
-   keeps.
+The design made the choices of questions 3 to 17 inside what the plan left
+to it. The requester decided them on 2026-11-14. Questions 3, 6 to 13 and
+15 to 17 stand as written, and questions 14 and 16 changed as written
+below. Questions 4 and 5 changed on 2026-11-16.
+The questions stay listed so that the reasons stay with the rules.
+Questions 1 and 2 are still open. On 2026-11-16 a check against the
+documentation of Excel, and against OWASP for CSV, corrected rules 3, 5, 6,
+9, 10, 12, 14 to 16, 20, 22, 25, 28, 40 and 43, and rule 63 changed to match
+rule 40. The requester decided three points. The fill cases of rule 40 that
+Microsoft documents follow Excel, and a time and short weekday and month
+names also start a sequence. The text order of rule 12 follows the order
+that Microsoft documents, with Hangul by code point. The typed forms of rule
+6 stay as they are, which question 4 now says. These choices of the design
+wait for the requester: the hour step of a time, the form of short names,
+the weekend days of weekday names, the other fill cases of rule 40, the
+order of apostrophes and of characters outside ASCII other than Hangul in
+rule 12, and the apostrophe set of question 5.
+
+1. **Limit numbers.** The limits of rule 13 that are not the grid size or
+   the cell total, the work limit of rule 21 and the 120 seconds of the
+   large recalculation criterion are planned values, fixed after
+   measurement with the reference workbooks.
+2. **Later phases.** Whether anonymous guest editing, as in
+   [board-public-edit.md](board-public-edit.md), and an upload in parts
+   for larger files become phases. Neither changes S1.
+3. **Error values and exports.** `#CIRC!` and `#LIMIT!` exist beside the
+   Excel error values (rule 16), and an export writes them as `#N/A`
+   (rule 27).
+4. **Numbers and formats.** A whole number of more than 15 digits stays text,
+   and a fraction, a date without a year and a number typed into a percent
+   cell differ from Excel on purpose (rule 6). Rule 7 lists which formats
+   the grid shows and which it only keeps.
+5. **CSV.** The details of rule 28: a field is never a formula, output
+   has a byte order mark and CRLF line ends, and a leading `=`, `+`,
+   `-`, `@`, tab, carriage return or line feed, or a full-width form of
+   one of the first four, gets an apostrophe. The line feed and the
+   full-width forms are a proposal of 2026-11-16, from the OWASP list of
+   formula characters, and wait for the requester.
+6. **No rows before an import is complete.** People see the earlier
+   workbook until the import replaces it (rule 30). Showing rows while it
+   runs is not in S1.
+7. **Find.** The find target of 1 second on large workbook B, checked for
+   one rare and one common text, and no full-text index in S1
+   (technical design section 20).
+8. **Public viewers.** What a Public route receives and does not receive
+   (rule 77), and the hourly step for time functions (rule 23).
+9. **Agent addresses.** An agent write that names cells by address is
+   refused when rows or columns of that worksheet were inserted, deleted or
+   moved since its read, also far from the cells it names (rule 56).
+10. **Overwritten notice.** The five-minute limit of rule 50, and that a
+    restored item takes edits that arrive after the restore (rule 52).
+11. **Counts.** 111 functions in rule 15, against "about 100" in the
+    requester's decision. The plan named 28 functions, not the 31 that the
+    question to the requester said. The per-action limit of 100,000 cells
+    and the work limit of rule 21.
+12. **Moving a range end.** A range follows its end rows (rule 11), and a
+    row inserted where a dead end row of a range lies stays outside a range
+    that ends there and inside one that starts there. The design has not
+    checked in Excel that Excel does the same, and the conformance files of
+    the requester can settle it.
+13. **Names and volatile functions.** A formula keeps the name it was bound
+    to, so adding a name of one worksheet with the word of a workbook name
+    does not rebind the formulas that use the word, while Excel does after a
+    round trip. Rule 10 calculates only names that
+    point at one cell, one range or a constant, and keeps every other name
+    as text. Rule 15 leaves out `RAND` and `RANDBETWEEN`, because their
+    results change without an edit and without a seed.
+14. **Long chain and large sort.** The 600 seconds of the long chain
+    criterion. The requester asked on 2026-11-14 that a sort may pass the
+    cell limit of one action. A sort of 100,001 to 2,000,000 cells is a large
+    sort, a job whose apply pauses every write to the sheet for seconds
+    (rule 41). A sort of more cells is refused, so a sort of large workbook
+    B (about 20,000,000 cells) is still not possible. A larger limit needs an
+    apply that does not pause writes, which S1 does not have.
+15. **Pending while marking.** After an edit of a cell with many
+    dependents, formulas that the host cannot recalculate at once show as
+    pending, and Public viewers see every formula as pending, while the host
+    marks. This lasts seconds for 1,000,000 dependents. Under a stream of
+    such edits an episode of pending formulas lasts 60 seconds plus the
+    marking that has started. The host then refuses edits of every editor
+    until its marking work is done, and leaves a short gap in which
+    exports and background calculation advance. The episodes recur while the
+    stream lasts. A single edit whose marking takes longer than 60 seconds
+    also causes the refusal. The alternative is to confirm the edit only
+    after the marking, which fails the 200 ms criterion.
+16. **Whole columns and find.** The requester asked on 2026-11-14 that a
+    whole-column reference cover the whole grid, as in Excel. `ROWS(A:A)` is
+    1,048,576, `COLUMNS(1:1)` is 16,384, and a row that does not exist yet
+    reads as empty. A function that reads a whole column directly costs only
+    the rows that exist. An array expression over a whole column, such as
+    `SUMPRODUCT(--(A:A=""))`, holds all 1,048,576 positions and costs their
+    time, as in Excel. A lazy array that skips the empty positions would
+    remove that cost and is a new mechanism. Formulas that give `#LIMIT!`
+    from such an array, or from an array of more than 4,194,304 values, are
+    left out of the conformance criterion. Find does not look in numbers.
+    Formulas that rely on implicit intersection give `#VALUE!`, and the
+    conformance criterion leaves them out.
+17. **Many ranges in one column.** An edit that leaves a slice with more
+    than 2,000 ranges to read, counting ranges that do not overlap the edit,
+    makes the host mark every range formula of the worksheet. An example is
+    an edit in a column that has 1,000,000 cumulative sums. That takes about
+    4 seconds for each 1,000,000 formulas, and repeated edits bring the
+    refusal of question 15. A two-dimensional index removes the cost and is
+    more work. The design leaves it out of S1 unless the requester wants it.

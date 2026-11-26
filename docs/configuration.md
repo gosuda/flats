@@ -100,7 +100,7 @@ recent row, column and tab edits, and the stamps of cleared cells that
 someone can still undo. These bytes are in no flat's disk quota and in no
 backup. Each open sheet has its own bounds: 32 MiB for the cleared cells'
 stamps, and twice that while the store writes; for the rest see
-[the technical design](spec/sheet-technical-design.md#14-undo-and-redo). A
+[the technical design](spec/sheet-as-built-technical-design.md#14-undo-and-redo). A
 sheet's files go when it has been unused for 10 minutes and when the host
 stops.
 
