@@ -1,18 +1,23 @@
 """Additional actual-binary lifecycle populations; no product interfaces or mocks."""
+from __future__ import annotations
 import hashlib
 import json
 import re
 from pathlib import Path
 import sqlite3
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from gate import Host
 
 
-def helpers():
+def helpers() -> tuple[Any, ...]:
     # Lazy import avoids a gate/populations import cycle when gate is executable.
     from gate import Host, archive, require, server, static
     return Host, archive, require, server, static
 
 
-def durable_server(version):
+def durable_server(version: int) -> dict[str, str]:
     _, _, _, server, _ = helpers()
     files = server(version)
     files['server.js'] = files['server.js'].replace(
@@ -23,7 +28,7 @@ def durable_server(version):
     return files
 
 
-def seed_mixed(h):
+def seed_mixed(h: Host) -> dict[str, Any]:
     Host, _, require, _, static = helpers()
     require(h.legacy_binary and h.legacy_adapter_binary, 'mixed seed needs archived real binary and archived-core provider fixture')
     h.stop()
@@ -79,7 +84,7 @@ def seed_mixed(h):
     return manifest
 
 
-def mixed_migration(h):
+def mixed_migration(h: Host) -> None:
     _, _, require, _, static = helpers()
     seed = seed_mixed(h)
     h.start()
@@ -186,7 +191,7 @@ def mixed_migration(h):
                 'refused historical delete corrupted migrated flat')
 
 
-def restore_success(h):
+def restore_success(h: Host) -> None:
     _, _, require, server, _ = helpers()
     h.activate('restore', durable_server(1))
     h.traffic('restore', '/hit')
@@ -229,7 +234,7 @@ def restore_success(h):
     require(h.traffic('restore') == expected, 'retry/restart restored twice or lost data')
 
 
-def startup_server(broken=False):
+def startup_server(broken: bool = False) -> dict[str, str]:
     # env is passed to fetch, not normally exported at module scope. Probe only
     # public JS globals; do not reach into the runtime's private host ABI.
     return {'flats.json': '{"kind":"server","health":"/health"}', 'server.js': '''
@@ -253,7 +258,7 @@ export default {fetch(request, env) {
 '''.replace('BROKEN', 'throw new Error("GATE-MODULE-INITIALIZATION-FAILURE");' if broken else '')}
 
 
-def probe_runtime(h):
+def probe_runtime(h: Host) -> None:
     _, _, require, _, _ = helpers()
     h.save('startup', startup_server())
     h.ok('POST', '/api/flats/startup/deploy', {'version': 1})
@@ -268,7 +273,7 @@ def probe_runtime(h):
     require(len(restarted['stages']) > len(observed['stages']), 'instance initialization probe did not persist')
 
 
-def runtime_initialization(h):
+def runtime_initialization(h: Host) -> None:
     _, _, require, _, _ = helpers()
     h.activate('startup', startup_server())
     before = h.traffic('startup')
@@ -311,7 +316,7 @@ def runtime_initialization(h):
     require(h.flat('startup')['live_version'] == 3, 'startup restart lost code identity')
 
 
-def current_live_drift(h):
+def current_live_drift(h: Host) -> None:
     _, _, require, _, static = helpers()
     h.activate('live-drift', static('LIVE-ONE'))
     h.activate('live-drift', static('LIVE-TWO'))
@@ -342,7 +347,7 @@ def current_live_drift(h):
     require('PENDING-THREE' in h.traffic('live-drift'), 'fresh live policy did not publish expected bytes')
 
 
-def visibility_drift(h):
+def visibility_drift(h: Host) -> None:
     _, _, require, _, static = helpers()
     h.ok('POST', '/__gate/host-permission', {'permitted': ['portal']})
     h.activate('visibility-drift', static('CURRENT'))

@@ -177,20 +177,9 @@ class CacheReaderTests(unittest.TestCase):
         ci = workflow_job("ci.yml", "race")
         cache = setup_input(ci, "cache-key")
         scope = setup_input(ci, "module-scope")
-        excluded = required_match(
-            r"^\$\{\{ !endsWith\(matrix.lane, '([^']+)'\) \}\}$",
-            setup_input(ci, "save-build"),
-        )
-        writers = {
-            (
-                matrix_value(cache, {"lane": lane, "cache": cohort}),
-                scope,
-            ): race_packages(lane)
-            for lane, cohort in re.findall(
-                r"^ +- \{lane: ([\w-]+), cache: ([\w-]+)\}$", ci, re.MULTILINE
-            )
-            if not lane.endswith(excluded.group(1))
-        }
+        lanes = required_match(r"^ +for lane in (.+); do$", ci).group(1).split()
+        self.assertEqual(setup_input(ci, "save-build"), "true")
+        writers = {(cache, scope): set().union(*(race_packages(lane) for lane in lanes))}
         self.assertTrue(writers)
 
         scheduled = workflow_job("notebook-memory-race.yml", "race")

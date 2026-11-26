@@ -1,0 +1,38 @@
+name: Verify collected notebook memory oracle
+
+on:
+  push:
+    branches: [ci/validate-memory-oracle-20261126]
+
+permissions:
+  contents: read
+
+jobs:
+  memory:
+    runs-on: depot-ubuntu-24.04-4
+    timeout-minutes: 60
+    env:
+      GOENV: 'off'
+      GOCACHEPROG: ''
+      GOMAXPROCS: '4'
+      NOTEBOOK_LARGE_MEMORY_TESTS: '0'
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        with:
+          enable-cache: false
+      - name: Test the candidate and disposable faults
+        run: uv run --no-project --offline python .github/scripts/validate-memory-oracle.py
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: ${{ !cancelled() }}
+        with:
+          name: memory-oracle-${{ github.sha }}
+          path: memory-oracle-evidence
+          if-no-files-found: error
+          retention-days: 7

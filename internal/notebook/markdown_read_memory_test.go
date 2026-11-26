@@ -27,8 +27,24 @@ func TestMarkdownRetainedMemory(t *testing.T) {
 			}
 			// Whole-read heap samples and the growth comparison must stay sequential.
 			schemaPeaks := map[int]uint64{}
+			type memoryCase struct {
+				size      int
+				collected bool
+			}
+			cases := make([]memoryCase, 0, len(sizes)+2)
 			for _, size := range sizes {
-				t.Run(fmt.Sprintf("%gMiB", float64(size)/(1<<20)), func(t *testing.T) {
+				cases = append(cases, memoryCase{size: size})
+			}
+			if kind == "option_schema" && !large {
+				cases = append(cases, memoryCase{size: 1 << 20, collected: true}, memoryCase{size: 16 << 20, collected: true})
+			}
+			for _, test := range cases {
+				size := test.size
+				name := fmt.Sprintf("%gMiB", float64(size)/(1<<20))
+				if test.collected {
+					name += "_live"
+				}
+				t.Run(name, func(t *testing.T) {
 					started := time.Now()
 					f, created := readerQueryFixture(t)
 					database := created.Refs["db"].Ref
@@ -140,15 +156,22 @@ func TestMarkdownRetainedMemory(t *testing.T) {
 					}
 					fixtureElapsed := time.Since(started)
 					readStart := time.Now()
-					body, peak, retained, err := measureReaderHeap(t, f.in, raw)
-					t.Logf("retained=%d sampled whole-read heap growth=%d retained-heap=%d response=%d fixture=%s read=%s", size, peak, retained, len(body), fixtureElapsed, time.Since(readStart))
+					var body []byte
+					if test.collected {
+						var peak uint64
+						body, peak, err = measureReaderLiveHeap(t, f.in, raw)
+						schemaPeaks[size] = peak
+						t.Logf("retained=%d sampled collected live-heap growth=%d response=%d fixture=%s read=%s", size, peak, len(body), fixtureElapsed, time.Since(readStart))
+					} else {
+						var peak, retained uint64
+						body, peak, retained, err = measureReaderHeap(t, f.in, raw)
+						t.Logf("retained=%d sampled whole-read heap growth=%d retained-heap=%d response=%d fixture=%s read=%s", size, peak, retained, len(body), fixtureElapsed, time.Since(readStart))
+						if peak > readerHeapCeiling {
+							t.Errorf("Markdown read materialized retained %s: %d bytes exceeds 4 MiB", kind, peak)
+						}
+					}
 					if err != nil {
 						t.Fatal(err)
-					}
-					if peak > readerHeapCeiling {
-						t.Errorf("Markdown read materialized retained %s: %d bytes exceeds 4 MiB", kind, peak)
-					} else if kind == "option_schema" && !large && (size == 1<<20 || size == 16<<20) {
-						schemaPeaks[size] = retained
 					}
 					// Delivery and its assertions are outside the whole-entry heap sample.
 					text, refs, warnings := continueMarkdownRead(t, f.in, body)
@@ -190,12 +213,12 @@ func TestMarkdownRetainedMemory(t *testing.T) {
 				t.Run("bounded_growth", func(t *testing.T) {
 					for _, size := range []int{1 << 20, 16 << 20} {
 						if _, ok := schemaPeaks[size]; !ok {
-							t.Fatalf("option-schema heap sample unavailable for %d MiB; run both size cases with this comparison", size>>20)
+							t.Fatalf("option-schema live-heap sample unavailable for %d MiB; run both live cases with this comparison", size>>20)
 						}
 					}
 					small, large := schemaPeaks[1<<20], schemaPeaks[16<<20]
 					delta := int64(large) - int64(small)
-					t.Logf("option-schema heap growth: 1 MiB=%d 16 MiB=%d delta=%d", small, large, delta)
+					t.Logf("option-schema collected live-heap growth: 1 MiB=%d 16 MiB=%d delta=%d", small, large, delta)
 					if delta > 1<<20 {
 						t.Errorf("Markdown read materialized retained option schema: heap growth increased by %d bytes from 1 to 16 MiB, exceeds 1 MiB", delta)
 					}

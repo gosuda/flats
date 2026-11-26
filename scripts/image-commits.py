@@ -6,13 +6,14 @@ import os
 import re
 import subprocess
 import sys
+from typing import Any
 
 
-def git(*args):
+def git(*args: str) -> str:
     return subprocess.check_output(["git", *args], text=True).strip()
 
 
-def commit(value):
+def commit(value: str) -> str:
     if not re.fullmatch(r"[0-9a-f]{40}", value):
         raise ValueError("commit must be a full, lowercase 40-character SHA")
     if git("rev-parse", f"{value}^{{commit}}") != value:
@@ -20,7 +21,7 @@ def commit(value):
     return value
 
 
-def select(event_name, event, requested):
+def select(event_name: str, event: dict[str, Any], requested: str) -> list[str]:
     if event_name == "workflow_dispatch":
         sha = commit(requested)
         if subprocess.run(["git", "merge-base", "--is-ancestor", sha, "origin/main"],
@@ -45,7 +46,7 @@ def select(event_name, event, requested):
     return git("rev-list", "--first-parent", "--reverse", after, f"^{before}").splitlines()
 
 
-def exact_tip(event_name, event, value, workflow_sha):
+def exact_tip(event_name: str, event: dict[str, Any], value: str, workflow_sha: str) -> str:
     """Return value only if it names this exact main push tip.
 
     The local reusable workflow is invoked after CI's complete test matrix,
@@ -59,12 +60,12 @@ def exact_tip(event_name, event, value, workflow_sha):
     return ""
 
 
-def verified_commit(event_name, event, verified, workflow_sha):
+def verified_commit(event_name: str, event: dict[str, Any], verified: str, workflow_sha: str) -> str:
     """Trust only the caller's successful matrix for this exact main push tip."""
     return exact_tip(event_name, event, verified, workflow_sha)
 
 
-def failed_commit(event_name, event, failed, workflow_sha, verified):
+def failed_commit(event_name: str, event: dict[str, Any], failed: str, workflow_sha: str, verified: str) -> str:
     """The exact main push tip whose own CI test matrix failed.
 
     Verifying it again would only repeat the failure, so its image is skipped
@@ -75,7 +76,7 @@ def failed_commit(event_name, event, failed, workflow_sha, verified):
     return exact_tip(event_name, event, failed, workflow_sha)
 
 
-def matrix(commits):
+def matrix(commits: list[str]) -> dict[str, Any]:
     # The Actions matrix has a 256-job limit. Four serial lanes retain every
     # commit even for a large push, without truncating the event commit list.
     # Execution still has the workflow's 360-minute per-lane time limit.
