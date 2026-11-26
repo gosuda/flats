@@ -1,4 +1,4 @@
-name: Verify collected notebook memory oracle
+name: Verify integrated notebook memory change
 
 on:
   push:
@@ -6,6 +6,10 @@ on:
 
 permissions:
   contents: read
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
   memory:
@@ -24,15 +28,30 @@ jobs:
         with:
           go-version-file: go.mod
           cache: false
-      - uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
-        with:
-          enable-cache: false
-      - name: Test the candidate and disposable faults
-        run: uv run --no-project --offline python .github/scripts/validate-memory-oracle.py
+      - name: Record source
+        run: |
+          mkdir integrated-memory-evidence
+          git rev-parse HEAD > integrated-memory-evidence/source.txt
+          sha256sum docs/gates.md internal/notebook/reader_entry_test.go internal/notebook/markdown_read_memory_test.go > integrated-memory-evidence/sources.sha256
+          go version
+      - name: Verify documentation
+        run: make docs-verify 2>&1 | tee integrated-memory-evidence/docs-verify.log
+      - name: Audit documentation reachability
+        if: ${{ !cancelled() }}
+        run: make docs-audit 2>&1 | tee integrated-memory-evidence/docs-audit.log
+      - name: Run the normal CI shard
+        if: ${{ !cancelled() }}
+        run: scripts/ci-test.sh other -count=1 2>&1 | tee integrated-memory-evidence/other.log
+      - name: Run the first notebook race lane
+        if: ${{ !cancelled() }}
+        run: scripts/ci-race.sh notebook-1 -count=1 2>&1 | tee integrated-memory-evidence/notebook-1.log
+      - name: Run the second notebook race lane
+        if: ${{ !cancelled() }}
+        run: scripts/ci-race.sh notebook-2 -count=1 2>&1 | tee integrated-memory-evidence/notebook-2.log
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         if: ${{ !cancelled() }}
         with:
-          name: memory-oracle-${{ github.sha }}
-          path: memory-oracle-evidence
+          name: integrated-memory-${{ github.sha }}
+          path: integrated-memory-evidence
           if-no-files-found: error
           retention-days: 7

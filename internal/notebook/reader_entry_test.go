@@ -70,8 +70,8 @@ func measureReaderHeap(t *testing.T, in *Instance, query []byte) ([]byte, uint64
 	sample()
 	close(stop)
 	<-joined
-	// Collect once more so every fixture in a growth comparison reports what
-	// the read retains instead of what garbage it happened to hold.
+	// Collect once more for the post-return retention diagnostic, excluding
+	// garbage the read no longer holds.
 	runtime.GC()
 	var after runtime.MemStats
 	runtime.ReadMemStats(&after)
