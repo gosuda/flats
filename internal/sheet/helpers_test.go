@@ -302,6 +302,15 @@ func (e *env) open() {
 	}
 }
 
+// setFault sets the hook that fails the commit of sheet.db. The writer reads it
+// in every commit, also in the commit of a maintenance tick that no call of
+// the test orders, so the test sets it with the instance's lock held.
+func (e *env) setFault(f func() error) {
+	e.in.mu.Lock()
+	defer e.in.mu.Unlock()
+	e.in.fault = f
+}
+
 // restart stops the instance and opens its directory again.
 func (e *env) restart() {
 	e.t.Helper()

@@ -51,11 +51,11 @@ func TestFirstCommitKeepsAFormatUnderAReusedStyleID(t *testing.T) {
 		return 0
 	}
 	before := e.dump()
-	e.in.fault = func() error { return fmt.Errorf("injected commit failure") }
+	e.setFault(func() error { return fmt.Errorf("injected commit failure") })
 	if _, err := e.agent(bold); err == nil {
 		t.Fatal("the first commit was acknowledged over a failed commit")
 	}
-	e.in.fault = nil
+	e.setFault(nil)
 	if after := e.dump(); after != before {
 		t.Fatalf("the failed first commit changed the sheet:\n%s", dumpDiff(before, after))
 	}
