@@ -82,10 +82,6 @@ func (a Atom) ToValue() *Value {
 	return a.context.Call("JS_AtomToValue", a.context.Raw(), a.Raw())
 }
 
-func (v *Value) Handle() *Handle {
-	return v.handle
-}
-
 func (v *Value) Raw() uint64 {
 	if v == nil || v.handle == nil {
 		return 0
