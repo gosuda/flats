@@ -287,29 +287,70 @@ class ChangeSelectionTests(unittest.TestCase):
 
 
 class WindowsPackageTests(unittest.TestCase):
-    def test_windows_runs_only_the_site_package(self) -> None:
+    def test_windows_keeps_native_regressions_and_running_host_backup(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         job = workflow.split("\n  windows:\n", 1)[1].split("\n  install-macos:\n", 1)[0]
         self.assertIn("go test -v -count=1 ./internal/site", job)
+        self.assertIn("go test -v -count=1 ./internal/config", job)
+        commands = dict(re.findall(
+            r"go test -v -count=1 \./internal/(\w+) -run '([^']+)'", job
+        ))
+        for package in ("core", "backup"):
+            functions = {
+                name
+                for path in (ROOT / "internal" / package).glob("*_windows_test.go")
+                for name in re.findall(r"^func (Test\w+)\(", path.read_text(), re.M)
+            }
+            self.assertTrue(functions, package)
+            for name in functions:
+                with self.subTest(package=package, test=name):
+                    self.assertIsNotNone(re.fullmatch(commands[package], name))
+        self.assertIsNotNone(re.fullmatch(
+            commands["app"], "TestBackupOfARunningHostRestoresToAWorkingHost"
+        ))
         self.assertNotIn("scripts/ci-test.sh", job)
         self.assertNotIn("go list ./...", job)
 
-    def test_windows_archive_comes_from_the_container_build(self) -> None:
+    def test_windows_builds_its_archive_in_the_same_attempt(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         container = workflow.split("\n  container:\n", 1)[1].split("\n  commit-images:\n", 1)[0]
         windows = workflow.split("\n  windows:\n", 1)[1].split("\n  install-macos:\n", 1)[0]
-        self.assertIn("windows/amd64", container)
-        upload = re.search(r"^ *name: (flats-windows-archive-.+)$", container, re.M)
-        self.assertIsNotNone(upload)
-        assert upload is not None
-        self.assertIn(f"name: {upload.group(1)}", windows)
-        self.assertIn("if-no-files-found: error", container)
+        self.assertNotIn("windows/amd64", container)
+        self.assertIn('FLATS_RELEASE_TARGETS="windows/amd64"', windows)
+        self.assertIn('scripts/build-release.sh v0.0.0-ci "$RUNNER_TEMP/dist"', windows)
+        self.assertNotIn("download-artifact", windows)
+        self.assertNotIn("github.run_attempt", windows)
 
-    def test_windows_waits_for_the_container_build(self) -> None:
+    def test_windows_results_do_not_depend_on_linux_or_each_other(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         windows = workflow.split("\n  windows:\n", 1)[1].split("\n  install-macos:\n", 1)[0]
-        self.assertIn("needs: [changes, container]", windows)
-        self.assertIn("needs.container.result == 'success'", windows)
+        self.assertIn("needs: changes", windows)
+        self.assertNotIn("needs.container", windows)
+        self.assertNotIn("needs.netbird", windows)
+        self.assertEqual(windows.count("!cancelled() && steps.setup.outcome == 'success'"), 5)
+        self.assertIn("!cancelled() && steps.archive.outcome == 'success'", windows)
+
+    def test_only_successful_explicit_prose_selection_skips_full_pr_ci(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        for job_name in ("legacy-build", "docs-web", "test", "netbird", "windows", "install-macos", "container"):
+            match = re.search(rf"(?ms)^  {job_name}:\n.*?(?=^  [\w-]+:\n|\Z)", workflow)
+            assert match is not None
+            condition = re.search(r"^    if: (.+)$", match.group(), re.M)
+            assert condition is not None
+            self.assertIn("!cancelled()", condition.group())
+            self.assertIn("needs.changes.result != 'success'", condition.group())
+            self.assertIn("needs.changes.outputs.full != 'false'", condition.group())
+        docs = workflow.split("\n  docs:\n", 1)[1].split("\n  docs-web:\n", 1)[0]
+        self.assertIn("needs.changes.result == 'success'", docs)
+        self.assertIn("needs.changes.outputs.full == 'false'", docs)
+
+    def test_main_and_manual_runs_never_replace_each_others_publication(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        group = re.search(r"^  group: (.+)$", workflow, re.M)
+        assert group is not None
+        self.assertIn("github.event_name == 'pull_request'", group.group())
+        self.assertIn("format('pr-{0}', github.event.pull_request.number)", group.group())
+        self.assertIn("format('{0}-{1}', github.event_name, github.run_id)", group.group())
 
 
 if __name__ == "__main__":

@@ -4,13 +4,14 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 # A newer push to the same pull request replaces its running checks.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.sha }}
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('{0}-{1}', github.event_name, github.run_id) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -45,7 +46,7 @@ jobs:
   # pull request that the changes job selects as full. Not a required check.
   legacy-build:
     needs: changes
-    if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.full == 'true' }}
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && (needs.changes.result != 'success' || needs.changes.outputs.full != 'false') }}
     runs-on: depot-ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -86,7 +87,7 @@ jobs:
 
   docs:
     needs: changes
-    if: needs.changes.outputs.full == 'false'
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.full == 'false' }}
     runs-on: depot-ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -102,7 +103,7 @@ jobs:
   # Job-level conditions keep CI visible for spec/research-only pull requests.
   docs-web:
     needs: changes
-    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') }}
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.result != 'success' || needs.changes.outputs.full != 'false') }}
     runs-on: depot-ubuntu-24.04
     timeout-minutes: 10
     defaults:
@@ -124,7 +125,7 @@ jobs:
   test:
     name: test (${{ matrix.lane }})
     needs: changes
-    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') }}
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.result != 'success' || needs.changes.outputs.full != 'false') }}
     strategy:
       fail-fast: false
       matrix:
@@ -186,7 +187,7 @@ jobs:
   # directives; go test ./... above does not reach it.
   netbird:
     needs: changes
-    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') }}
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.result != 'success' || needs.changes.outputs.full != 'false') }}
     runs-on: depot-ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -225,41 +226,29 @@ jobs:
             exit 1
           fi
 
-  # The race tests in parallel lanes; see scripts/ci-race.sh.
+  # Main/manual verification retains every race lane on one runner.
   race:
-    name: race (${{ matrix.lane }})
     needs: changes
-    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') }}
-    strategy:
-      fail-fast: false
-      matrix:
-        lane: [core-1, core-2, services, notebook-1, notebook-2, board-1, board-2]
-        # The two lanes of a package compile it alike: one cache per package,
-        # written only by its -1 lane.
-        include:
-          - {lane: core-1, cache: core}
-          - {lane: core-2, cache: core}
-          - {lane: services, cache: services}
-          - {lane: notebook-1, cache: notebook}
-          - {lane: notebook-2, cache: notebook}
-          - {lane: board-1, cache: board}
-          - {lane: board-2, cache: board}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     runs-on: depot-ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 150
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/setup-go
         with:
-          cache-key: race-${{ matrix.cache }}
-          save-build: ${{ !endsWith(matrix.lane, '-2') }}
-          # The lanes used to share one race job.
+          cache-key: race-all
           restore-fallback: race
       - name: Races
-        run: scripts/ci-race.sh "${{ matrix.lane }}"
+        run: |
+          failed=0
+          for lane in core-1 core-2 services notebook-1 notebook-2 board-1 board-2; do
+            scripts/ci-race.sh "$lane" || failed=1
+          done
+          exit "$failed"
 
   notebook-memory:
     needs: changes
-    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     runs-on: depot-ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -276,26 +265,11 @@ jobs:
           done
           exit "$failed"
 
-  # Native Windows: the Windows-only path proof and the service install
-  # smoke over its release archive. The archive is built once on Linux in
-  # the container job (the same CGO-free cross-build the release workflow
-  # uses) and downloaded here; a missing artifact fails the download step.
-  # The full test shards run on the Linux lanes instead of here: the
-  # runtime-soak, runtime-codec, runtime, docs-soak, docs and board shards
-  # run the same scripts/ci-test.sh shards on depot-ubuntu, and test
-  # (other) covers every package the old sweep listed, internal/site
-  # included. Windows keeps only what needs Windows: the site package with
-  # the default temp directory (its tests need the short (8.3) names of
-  # the system drive, which the temporary drive keeps none of), the Windows
-  # build, and the install, crash, stop and uninstall smoke. The job runs
-  # as an administrator, so it cannot show that the install needs no
-  # administrator rights: docs/release.md has that manual check.
+  # Native Windows builds its own archive. Tests and service smoke remain
+  # independent, and Linux failures cannot suppress the native regressions.
   windows:
-    # The archive comes from the container job, so this job waits for it;
-    # a failed or skipped container build skips this job instead of failing
-    # the download.
-    needs: [changes, container]
-    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') && needs.container.result == 'success' }}
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.result != 'success' || needs.changes.outputs.full != 'false') }}
     runs-on: depot-windows-2025
     timeout-minutes: 20
     defaults:
@@ -309,33 +283,36 @@ jobs:
           cache-key: windows
           module-scope: netbird
           save-modules: "true"
-      - name: Download Windows release archive
-        id: download
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: flats-windows-archive-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ runner.temp }}/dist
-      - name: Tests
+      - name: Build this attempt's Windows release archive
+        id: archive
+        run: FLATS_RELEASE_TARGETS="windows/amd64" scripts/build-release.sh v0.0.0-ci "$RUNNER_TEMP/dist"
+      - name: Native path regressions on the system drive
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
-        # Verbose: the log keeps the timing lines of this job. It runs with
-        # -count=1, so that the test runs on this runner and is not a result
-        # from the test cache.
+        # Short-name tests require the system drive's default temp directory.
         run: go test -v -count=1 ./internal/site
-      # Runs after a failed test step too: the two answer different questions.
+      - name: Native configuration regressions
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: go test -v -count=1 ./internal/config
+      - name: Native open-file storage regressions
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: go test -v -count=1 ./internal/core -run '^(TestDeleteWithAnOpenFileKeepsItsSlugReserved|TestRenameWithAnOpenFileRestartsTheStoppedWorker)$'
+      - name: Native backup junction regression
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: go test -v -count=1 ./internal/backup -run '^TestAJunctionIsSkippedAndNotEntered$'
+      - name: Back up and restore a running Windows host
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        run: go test -v -count=1 ./internal/app -run '^TestBackupOfARunningHostRestoresToAWorkingHost$'
       - name: Install, crash, stop and uninstall the service
-        if: ${{ !cancelled() && steps.download.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.archive.outcome == 'success' }}
         shell: pwsh
         run: scripts/install-smoke.ps1 "$env:RUNNER_TEMP\dist"
 
   # Native macOS: launchd service install smoke and its release archive.
   # The Linux install smoke runs in the container job, on its archives.
-  # Runs on a Depot macOS runner: GitHub-hosted macos-latest queued this job
-  # for 21 hours once, while Depot started portal-tunnel's macOS cell in
-  # 0.1 minutes with identical steps and proof. Apple silicon, so the
-  # GOOS/GOARCH-driven archive below stays darwin/arm64.
+  # Apple silicon supplies the darwin/arm64 service proof.
   install-macos:
     needs: changes
-    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') }}
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.result != 'success' || needs.changes.outputs.full != 'false') }}
     runs-on: depot-macos-latest
     timeout-minutes: 20
     steps:
@@ -365,7 +342,7 @@ jobs:
 
   container:
     needs: changes
-    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') }}
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.result != 'success' || needs.changes.outputs.full != 'false') }}
     runs-on: depot-ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -375,20 +352,7 @@ jobs:
           cache-key: container
           module-scope: netbird
       - name: Build release archives
-        run: FLATS_RELEASE_TARGETS="linux/amd64 linux/arm64 windows/amd64" scripts/build-release.sh v0.0.0-ci dist
-      # The Windows job installs this archive; it builds nothing itself.
-      # A missing file fails the upload, so the download can never use
-      # nothing.
-      - name: Upload Windows release archive
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: flats-windows-archive-${{ github.run_id }}-${{ github.run_attempt }}
-          path: |
-            dist/flats_windows_amd64.zip
-            dist/checksums.txt
-          if-no-files-found: error
-          compression-level: 0
-          retention-days: 1
+        run: FLATS_RELEASE_TARGETS="linux/amd64 linux/arm64" scripts/build-release.sh v0.0.0-ci dist
       - name: Lint
         run: |
           shellcheck -s sh install.sh scripts/ci-test.sh scripts/ci-race.sh scripts/ci-memory.sh scripts/build-release.sh scripts/install-smoke.sh scripts/container-smoke.sh scripts/build-commit-image.sh scripts/build-commit-images.sh scripts/lib-gate.sh

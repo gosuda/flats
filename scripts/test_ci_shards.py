@@ -47,21 +47,22 @@ class ShardListTests(unittest.TestCase):
     def test_routine_and_scheduled_race_lanes_cover_every_lane_once(self):
         ci = ROOT / ".github/workflows/ci.yml"
         scheduled = ROOT / ".github/workflows/notebook-memory-race.yml"
-        routine = one_line(r"^ +lane: \[(.+)\]$", ci).split(", ")
+        routine = one_line(r"^ +for lane in (.+); do$", ci).split()
         large = one_line(r"^ +lane: \[(.+)\]$", scheduled).split(", ")
         self.assertEqual(routine, ["core-1", "core-2", "services", "notebook-1", "notebook-2", "board-1", "board-2"])
         groups = case_labels(SCRIPTS / "ci-memory.sh")
         self.assertEqual(large, ["notebook-large-" + group for group in groups])
         self.assertEqual(sorted(routine + large), sorted(case_labels(SCRIPTS / "ci-race.sh")))
 
-    def test_large_memory_groups_run_on_prs_without_race(self):
+    def test_large_memory_groups_run_on_main_and_manual_without_race(self):
         ci = (ROOT / ".github/workflows/ci.yml").read_text()
-        job = ci.split("\n  notebook-memory:\n", 1)[1].split("\n  # Native macOS:", 1)[0]
+        job = ci.split("\n  notebook-memory:\n", 1)[1].split("\n  # Native Windows", 1)[0]
         groups = re.search(r"for group in (.+); do", job).group(1).split()
         self.assertEqual(groups, case_labels(SCRIPTS / "ci-memory.sh"))
         self.assertIn('scripts/ci-memory.sh "$group" || failed=1', job)
         self.assertIn('exit "$failed"', job)
         self.assertNotIn("-race", job)
+        self.assertIn("github.event_name != 'pull_request'", job)
         self.assertIn("timeout-minutes: 20", job)
         self.assertIn("scripts/ci-memory.sh", ci.split("      - name: Lint\n", 1)[1])
 
@@ -225,7 +226,7 @@ esac
 
     def test_memory_job_runs_every_group_after_a_failure(self):
         ci = (ROOT / ".github/workflows/ci.yml").read_text()
-        job = ci.split("\n  notebook-memory:\n", 1)[1].split("\n  # Native macOS:", 1)[0]
+        job = ci.split("\n  notebook-memory:\n", 1)[1].split("\n  # Native Windows", 1)[0]
         command = job.split("        run: |\n", 1)[1]
         with tempfile.TemporaryDirectory() as directory:
             work = Path(directory)
@@ -239,6 +240,27 @@ esac
                                         capture_output=True, text=True)
                 self.assertEqual(result.stdout.splitlines(), ["reader", "markdown", "source"])
                 self.assertEqual(result.returncode, 0 if failed_group == "none" else 1)
+
+    def test_race_job_runs_every_lane_after_a_failure(self) -> None:
+        ci = (ROOT / ".github/workflows/ci.yml").read_text()
+        job = ci.split("\n  race:\n", 1)[1].split("\n  notebook-memory:\n", 1)[0]
+        command = job.split("        run: |\n", 1)[1]
+        lanes = ["core-1", "core-2", "services", "notebook-1", "notebook-2", "board-1", "board-2"]
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            stub = work / "scripts/ci-race.sh"
+            stub.parent.mkdir()
+            stub.write_text('#!/bin/sh\necho "$1"\n[ "$1" != "$FAIL_LANE" ]\n')
+            stub.chmod(0o755)
+            for failed_lane in (*lanes, "none"):
+                with self.subTest(failed_lane=failed_lane):
+                    result = subprocess.run(
+                        ["sh", "-e", "-c", command], cwd=work,
+                        env={**os.environ, "FAIL_LANE": failed_lane},
+                        capture_output=True, text=True,
+                    )
+                    self.assertEqual(result.stdout.splitlines(), lanes)
+                    self.assertEqual(result.returncode, 0 if failed_lane == "none" else 1)
 
     def test_layout_without_board(self):
         packages = [p for p in self.CURRENT if not p.startswith("internal/board/") and p != "internal/board"]
