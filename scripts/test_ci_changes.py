@@ -1,10 +1,12 @@
 """Exercise CI selection against real Git merge trees and Windows packages."""
 
+import ast
 import os
 import re
 import subprocess
 import sys
 import tempfile
+import textwrap
 import unittest
 from collections.abc import Generator, Mapping
 from contextlib import contextmanager
@@ -13,6 +15,40 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts/ci-changes.py"
+
+
+def condition_result(expression: str, values: Mapping[str, str | bool]) -> bool:
+    """Evaluate only the boolean operations used by these workflow guards."""
+    expression = expression.removeprefix("$" + "{{").removesuffix("}}").strip()
+    for name, value in values.items():
+        expression = expression.replace(name, repr(value))
+    expression = expression.replace("&&", " and ").replace("||", " or ")
+    expression = re.sub(r"!(?!=)", "not ", expression).strip()
+
+    def evaluate(node: ast.AST) -> str | bool:
+        if isinstance(node, ast.Constant) and type(node.value) in (str, bool):
+            return node.value
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
+            return not evaluate(node.operand)
+        if isinstance(node, ast.BoolOp):
+            if isinstance(node.op, ast.And):
+                return all(evaluate(item) for item in node.values)
+            if isinstance(node.op, ast.Or):
+                return any(evaluate(item) for item in node.values)
+        if isinstance(node, ast.Compare) and len(node.ops) == 1:
+            left, right = evaluate(node.left), evaluate(node.comparators[0])
+            if type(left) is not type(right):
+                raise AssertionError("mixed-type comparison in a workflow guard")
+            # GitHub compares strings without case; selector output is normalized.
+            if isinstance(left, str) and isinstance(right, str):
+                left, right = left.casefold(), right.casefold()
+            if isinstance(node.ops[0], ast.Eq):
+                return left == right
+            if isinstance(node.ops[0], ast.NotEq):
+                return left != right
+        raise AssertionError(f"unsupported workflow guard: {ast.dump(node)}")
+
+    return bool(evaluate(ast.parse(expression, mode="eval").body))
 
 
 @dataclass(frozen=True)
@@ -286,64 +322,180 @@ class ChangeSelectionTests(unittest.TestCase):
                     self.assertEqual(output, "full=true\n")
 
 
-class JobSelectionTests(unittest.TestCase):
-    def test_every_full_suite_job_follows_the_documentation_selection(self) -> None:
-        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
-        jobs = workflow.split("\njobs:\n", 1)[1]
-        names = re.findall(r"^  ([a-z][a-z0-9-]*):$", jobs, re.M)
-        # The selector itself, the documentation-only check, and the image
-        # publication of main, which follows the test jobs.
-        own_condition = {"changes", "docs", "commit-images"}
-        self.assertTrue(own_condition <= set(names))
-        full = "if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') }}"
-        for name, body in zip(names, re.split(r"^  [a-z][a-z0-9-]*:$", jobs, flags=re.M)[1:]):
-            if name in own_condition:
-                continue
-            with self.subTest(job=name):
-                header = body.split("\n    steps:\n", 1)[0]
-                self.assertIn("\n    needs: changes\n", header)
-                self.assertIn("\n    " + full + "\n", header)
-
-
 class WindowsPackageTests(unittest.TestCase):
-    def test_pretested_packages_are_excluded_without_losing_siblings(self) -> None:
+    def test_windows_keeps_native_regressions_and_running_host_backup(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         job = workflow.split("\n  windows:\n", 1)[1].split("\n  install-macos:\n", 1)[0]
-        self.assertIn("go test -v -count=1 ./internal/site || failed=1", job)
-        match = re.search(r"go list ./\.\.\. \| grep -v -E '([^']+)'", job)
-        self.assertIsNotNone(match)
-        assert match is not None
-        excluded = (
-            "runtime",
-            "apps/docs",
-            "site",
-            "board",
-            "board/engine",
-            "devreview",
-            "devreview/cmd/devreview",
-        )
-        retained = (
-            "runtimex",
-            "runtime/child",
-            "apps/docsx",
-            "apps/docs/child",
-            "sitex",
-            "site/child",
-            "boardx",
-            "devreviewx",
-            "core",
-        )
-        prefix = "github.com/gosuda/flats/internal/"
-        result = subprocess.run(
-            ["grep", "-v", "-E", match.group(1)],
-            input="\n".join(prefix + path for path in (*excluded, *retained)) + "\n",
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        self.assertEqual(
-            result.stdout.splitlines(), [prefix + path for path in retained]
-        )
+        self.assertIn("go test -v -count=1 ./internal/site", job)
+        self.assertIn("go test -v -count=1 ./internal/config", job)
+        self.assertIn("go test -v -count=1 -timeout=30m ./internal/sheet/...", job)
+        self.assertIn("timeout-minutes: 75", job)
+        commands = dict(re.findall(
+            r"go test -v -count=1 \./internal/(\w+) -run '([^']+)'", job
+        ))
+        for package in ("core", "backup"):
+            functions = {
+                name
+                for path in (ROOT / "internal" / package).glob("*_windows_test.go")
+                for name in re.findall(r"^func (Test\w+)\(", path.read_text(), re.M)
+            }
+            self.assertTrue(functions, package)
+            for name in functions:
+                with self.subTest(package=package, test=name):
+                    self.assertIsNotNone(re.fullmatch(commands[package], name))
+        self.assertIsNotNone(re.fullmatch(
+            commands["app"], "TestBackupOfARunningHostRestoresToAWorkingHost"
+        ))
+        self.assertNotIn("scripts/ci-test.sh", job)
+        self.assertNotIn("go list ./...", job)
+
+    def test_windows_builds_its_archive_in_the_same_attempt(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        container = workflow.split("\n  container:\n", 1)[1].split("\n  commit-images:\n", 1)[0]
+        windows = workflow.split("\n  windows:\n", 1)[1].split("\n  install-macos:\n", 1)[0]
+        self.assertNotIn("windows/amd64", container)
+        self.assertIn('FLATS_RELEASE_TARGETS="windows/amd64"', windows)
+        self.assertIn('scripts/build-release.sh v0.0.0-ci "$RUNNER_TEMP/dist"', windows)
+        self.assertNotIn("download-artifact", windows)
+        self.assertNotIn("github.run_attempt", windows)
+
+    def test_windows_results_do_not_depend_on_linux_or_each_other(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        windows = workflow.split("\n  windows:\n", 1)[1].split("\n  install-macos:\n", 1)[0]
+        self.assertIn("needs: changes", windows)
+        self.assertNotIn("needs.container", windows)
+        self.assertNotIn("needs.netbird", windows)
+        self.assertEqual(windows.count("!cancelled() && steps.setup.outcome == 'success'"), 6)
+        self.assertIn("!cancelled() && steps.archive.outcome == 'success'", windows)
+
+    def test_only_successful_explicit_prose_selection_skips_full_pr_ci(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        for job_name in ("legacy-build", "docs-web", "test", "netbird", "sheet-browser", "windows", "install-macos", "container"):
+            match = re.search(rf"(?ms)^  {job_name}:\n.*?(?=^  [\w-]+:\n|\Z)", workflow)
+            assert match is not None
+            condition = re.search(r"^    if: (.+)$", match.group(), re.M)
+            assert condition is not None
+            self.assertIn("!cancelled()", condition.group())
+            self.assertIn("needs.changes.result != 'success'", condition.group())
+            self.assertIn("needs.changes.outputs.full != 'false'", condition.group())
+        docs = workflow.split("\n  docs:\n", 1)[1].split("\n  docs-web:\n", 1)[0]
+        self.assertIn("needs.changes.result == 'success'", docs)
+        self.assertIn("needs.changes.outputs.full == 'false'", docs)
+
+    def test_main_and_manual_runs_never_replace_each_others_publication(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        group = re.search(r"^  group: (.+)$", workflow, re.M)
+        assert group is not None
+        self.assertIn("github.event_name == 'pull_request'", group.group())
+        self.assertIn("format('pr-{0}', github.event.pull_request.number)", group.group())
+        self.assertIn("format('{0}-{1}', github.event_name, github.run_id)", group.group())
+
+
+class JobSelectionTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        self.jobs = {
+            match.group(1): match.group()
+            for match in re.finditer(
+                r"(?ms)^  ([\w-]+):\n.*?(?=^  [\w-]+:\n|\Z)",
+                self.workflow.split("\njobs:\n", 1)[1],
+            )
+        }
+
+    def test_validation_job_sets_cover_events_and_selector_failures(self) -> None:
+        full = {"legacy-build", "docs-web", "test", "netbird", "sheet-browser",
+                "windows", "install-macos", "container"}
+        heavy = {"race", "notebook-memory"}
+        validation = set(self.jobs) - {"changes", "commit-images"}
+        self.assertEqual(validation, full | heavy | {"docs"})
+        cases = [
+            ("pull_request", result, output,
+             {"docs"} if result == "success" and output == "false" else full)
+            for result in ("success", "failure", "skipped", "cancelled")
+            for output in ("true", "false", "", "invalid")
+        ]
+        cases += [
+            (event, "skipped", "", (full - {"legacy-build"}) | heavy)
+            for event in ("push", "workflow_dispatch")
+        ]
+        for event, result, output, expected in cases:
+            for cancelled in (False, True):
+                with self.subTest(event=event, result=result, output=output, cancelled=cancelled):
+                    values = {
+                        "github.event_name": event,
+                        "needs.changes.result": result,
+                        "needs.changes.outputs.full": output,
+                        "cancelled()": cancelled,
+                    }
+                    selected = {
+                        name for name in validation
+                        if condition_result(
+                            re.search(r"^    if: (.+)$", self.jobs[name], re.M).group(1), values
+                        )
+                    }
+                    self.assertEqual(selected, set() if cancelled else expected)
+        triggers = self.workflow.split("\non:\n", 1)[1].split("\npermissions:", 1)[0]
+        self.assertIn("  workflow_dispatch:\n", triggers)
+        self.assertIn("if: github.event_name == 'pull_request'", self.jobs["changes"])
+        self.assertIn("cancel-in-progress: " + "$" + "{{ github.event_name == 'pull_request' }}",
+                      self.workflow)
+
+    def test_selector_reduces_coverage_only_after_exact_success(self) -> None:
+        command = textwrap.dedent(self.jobs["changes"].split("        run: |\n", 1)[1])
+        cases = [
+            ("full=false\n", 0, "full=false\n"),
+            ("full=true\n", 0, "full=true\n"),
+            ("full=FALSE\n", 0, "full=true\n"),
+            ("full=invalid\n", 0, "full=true\n"),
+            ("", 0, "full=true\n"),
+            ("full=false\nfull=true\n", 0, "full=true\n"),
+            ("full=false\n", 7, "full=true\n"),
+            ("", 7, "full=true\n"),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            work = Path(directory)
+            stub = work / "python3"
+            stub.write_text(
+                '#!/bin/sh\nprintf "%s" "$SELECTOR_OUTPUT" >"$GITHUB_OUTPUT"\n'
+                'exit "$SELECTOR_EXIT"\n'
+            )
+            stub.chmod(0o755)
+            output = work / "output"
+            for raw, code, expected in cases:
+                with self.subTest(raw=raw, code=code):
+                    output.write_text("")
+                    result = subprocess.run(
+                        ["sh", "-e", "-c", command], cwd=work,
+                        env={**os.environ, "PATH": f"{work}:{os.environ['PATH']}",
+                             "TMPDIR": str(work), "GITHUB_OUTPUT": str(output),
+                             "SELECTOR_OUTPUT": raw, "SELECTOR_EXIT": str(code)},
+                        capture_output=True, text=True,
+                    )
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(output.read_text(), expected)
+                    self.assertEqual(sorted(p.name for p in work.iterdir()), ["output", "python3"])
+
+    def test_native_test_and_service_guards_are_independent(self) -> None:
+        steps = self.jobs["windows"].split("      - name: ")[1:]
+        tests = [step for step in steps if "run: go test " in step]
+        service = next(step for step in steps if step.startswith("Install, crash, stop"))
+        self.assertEqual(len(tests), 6)
+        for setup in ("success", "failure"):
+            for archive in ("success", "failure"):
+                for cancelled in (False, True):
+                    with self.subTest(setup=setup, archive=archive, cancelled=cancelled):
+                        values = {
+                            "steps.setup.outcome": setup,
+                            "steps.archive.outcome": archive,
+                            "cancelled()": cancelled,
+                        }
+                        for step in tests:
+                            condition = re.search(r"^        if: (.+)$", step, re.M).group(1)
+                            self.assertEqual(condition_result(condition, values),
+                                             not cancelled and setup == "success")
+                        condition = re.search(r"^        if: (.+)$", service, re.M).group(1)
+                        self.assertEqual(condition_result(condition, values),
+                                         not cancelled and archive == "success")
 
 
 if __name__ == "__main__":

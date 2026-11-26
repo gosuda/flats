@@ -14,8 +14,12 @@ was not available.
 
 ## Pull-request baseline
 
-`.github/workflows/ci.yml` runs on every PR and push to main, with read-only
-repository permission and no secrets. Every main push runs the full suite.
+`.github/workflows/ci.yml` runs on every PR, push to main, and manual dispatch,
+with read-only repository permission and no secrets. Main pushes and manual
+dispatches run the full suite. Full PRs retain all eleven regular test shards,
+the nested module, browser tests, native service smoke, and container checks.
+The twelve routine race lanes and large notebook memory job run on main and
+manual dispatch rather than on each PR update.
 Pull requests first compare the tested merge with its base parent. A PR that
 changes only regular Markdown files directly in `docs/spec/` or
 `docs/research/` runs `make docs-verify`: uncached links and anchors, root
@@ -30,21 +34,23 @@ device names and lowercase `readme.md`. Both old and new modes must be
 non-executable regular files or absent. Renames include both paths. Empty
 diffs, nested paths, other filenames and every other changed file run the full
 suite, including `docs/agent/`, generated references, plugin skills and CI
-files. Invalid merge context or a failed comparison fails the changes job.
+files. Invalid merge context or a failed comparison selects the full suite.
+A failed selector checkout or job, missing output, or any value other than
+an explicit `full=false` from a successful selector also runs full PR coverage.
 No workflow-level path filter hides its result. Main skips the changes job
 and starts its full suite without waiting for a classifier runner. The
 `legacy-build` job runs `scripts/lifecycle-gate.sh --prepare-only` on every pull
 request that the changes job selects as full.
 
-The full suite uses the Go version from `go.mod` and runs these checks in
-parallel jobs:
+The full suite uses the Go version from `go.mod`. Regular tests stay in
+parallel jobs; main/manual race lanes run sequentially in one job:
 
 ```sh
 go mod tidy                         # CI requires no go.mod/go.sum diff
 go vet ./...
 make docs-check                     # Markdown links and anchors, uncached
 go test ./...                       # as eleven shards: scripts/ci-test.sh <shard>
-scripts/ci-race.sh core-1           # go test -race, in twelve routine lanes
+scripts/ci-race.sh core-1           # go test -race, in twelve routine lanes on main/manual
 scripts/ci-race.sh core-2
 scripts/ci-race.sh services
 scripts/ci-race.sh notebook-1
@@ -90,8 +96,8 @@ CGO-free somewhere: darwin/arm64 by the `install-macos` job, darwin/amd64 by
 the `netbird` job on Linux, and linux/amd64 and linux/arm64 by the
 `container` job.
 
-`scripts/ci-race.sh` runs twelve race lanes on each full-suite pull request and
-main push: the core service in two lanes; the API, app, MCP, store, Portal and
+`scripts/ci-race.sh` runs twelve race lanes sequentially on each main push and
+manual dispatch: the core service in two lanes; the API, app, MCP, store, Portal and
 WebSocket packages with the runtime's FILES, WASI and WebSocket limit tests
 and the board engine; the whole notebook package with its default model seed
 count in two lanes; the board server in two lanes; and the sheet engine with
@@ -114,15 +120,19 @@ Go test timeout. Each two-lane package
 is split by test name like the runtime and docs shards: the first lane runs
 a `-run` pattern, the second `-skip`s the same pattern. The sheet's first
 four lanes run `-run` patterns (the second with `-skip` on the first's),
-and the fifth `-skip`s all of them. These jobs retain
-their 20-minute limit. The `notebook-1` and `notebook-2` lanes set an
+and the fifth `-skip`s all of them. The combined job has a 210-minute bound
+and keeps every lane's own test timeout. It runs every lane after a failure
+and fails if any lane fails. A completed cold Depot run must establish that
+all twelve lanes finish within that bound. The `notebook-1` and `notebook-2`
+lanes set an
 18-minute test timeout; the whole package took about nine minutes in one
 lane, close to `go test`'s default of 10 minutes. The five sheet lanes set
 a 15-minute test timeout for the same reason: under the race detector they
 took 6.0, 6.2, 7.2, 6.6 and 7.2 minutes on a developer machine at a
 load average of 15 to 33 (measured on 17 November 2026), the slowest under
 half of the timeout. With three lanes the third had reached its timeout
-there. All five sheet race jobs passed in a hosted run. The `sheet-4` and
+there. Before consolidation, all five sheet race jobs passed in a hosted
+run. The `sheet-4` and
 `sheet-5` jobs took 12 minutes 44 seconds and 14 minutes 11 seconds from
 setup through cleanup, respectively. `notebook-1` runs the
 `TestMarkdown` and `TestReader` tests, about half of the package's race time; `notebook-2`
@@ -143,7 +153,8 @@ forced collection. Under host CPU contention the Go GC CPU limiter can turn
 off mutator assists, and the heap then outgrows the pacer's goal with garbage
 that the read no longer holds.
 
-The `notebook-memory` CI job runs `scripts/ci-memory.sh` for `reader`,
+On main pushes and manual dispatch, the `notebook-memory` CI job runs
+`scripts/ci-memory.sh` for `reader`,
 `markdown` and `source` sequentially, without race instrumentation. Every
 group runs even if an earlier group fails, and any failure fails the job.
 The groups set `NOTEBOOK_LARGE_MEMORY_TESTS=1`, preserving the smaller
@@ -161,10 +172,10 @@ manual dispatch. Its three independent 30-minute jobs call the existing
 `notebook-large-reader`, `notebook-large-markdown` and
 `notebook-large-source` lanes of `scripts/ci-race.sh`. The large-input race
 checks run weekly or manually; the default notebook and core race checks
-remain on every full-suite PR. Both modes share selectors in
-`scripts/ci-memory.sh`. The weekly jobs restore the regular `race-notebook`
-cache for reader/Markdown and `race-core` for source. Main CI writes those
-package caches; the weekly jobs never write them and still force the large
+run on main pushes and manual dispatch. Both modes share selectors in
+`scripts/ci-memory.sh`. The weekly jobs restore the combined `race-all`
+cache. Main CI writes that cache; the weekly jobs never write it and still
+force the large
 fixtures to execute with `-count=1`.
 
 The weekly [Lifecycle gate](../.github/workflows/lifecycle-gate.yml) workflow runs
@@ -214,22 +225,24 @@ gates share; it never starts Flats or a provider) and run
 that archive, a rerun restarts it, it recovers from a crash, a stopped
 service stays stopped on upgrade, and uninstall removes it.
 
-The `windows` job runs the test shards on `windows-latest`, without the
-`docs-budget` shard, whose wall-clock budgets belong to the Linux job, and
-without `internal/devreview`, whose run command is Unix only. Its tests keep
-their data below `RUNNER_TEMP`, on the runner's temporary drive. About 11
-minutes after a hosted runner boots, its system drive is read for about 45 s,
-and a flush there takes seconds. A document test met that as a guest call at
-the request limit ([Current state](spec/windows-support.md#current-state)).
-The step prints the boot time of the runner, so that a later stall can be
-compared with it. The package `internal/site` runs first, with the default
-temp directory: one of its tests needs the short (8.3) names of the system
-drive, and the temporary drive keeps none. The final package list excludes
-that exact package so it runs only once, and keeps any site subpackages.
-After the tests the job runs
-`scripts/install-smoke.ps1` on the Windows release archive. The job runs as an
-administrator, so the check that the install needs no administrator rights
-stays manual in [Releases](release.md).
+The `windows` job uses `depot-windows-2025` and builds its Windows archive
+within the same attempt. It does not wait for Linux checks or download an
+archive from another attempt. It runs the full site and configuration
+packages, the two Windows-only open-file storage regressions, the backup
+junction regression, `TestBackupOfARunningHostRestoresToAWorkingHost`, and
+the entire `internal/sheet/...` package tree. Every native test command uses
+`-count=1`; the Sheet command keeps its 30-minute test timeout. The site
+package keeps the default system-drive temporary directory because its
+short-name tests require it. Each other test step sets `TMP` and `TEMP` to
+`RUNNER_TEMP` without changing the site step's environment.
+
+Each native test step runs after successful toolchain setup even if archive
+building or an earlier test fails. Service smoke runs when archive building
+succeeds regardless of test failures. The job retains its 75-minute bound;
+a completed cold Depot run must establish the actual duration. The job runs
+as an administrator, so the check that installation needs no administrator
+rights stays manual in [Releases](release.md). All macOS allocations use
+`depot-macos-latest`.
 
 A `container` job builds the image for `linux/amd64` and `linux/arm64` from
 the Linux release archives and runs `scripts/container-smoke.sh` on the
@@ -288,7 +301,7 @@ there, and when a manual row has no command below.
 | `FLATS_SHEET_UNDO_CYCLES` | More undo and redo cycles in `TestUndoStampLinksStayBounded` than its 40 at full size and 10 otherwise. | Manual: a longer cycle run. |
 
 The `sheet-browser` job runs the browser suites with the Google Chrome of
-the hosted Ubuntu image. It fails when the image has none, because the
+the Depot Ubuntu 24.04 image. It fails when the image has none, because the
 suites would skip. The limits fixture took 5 s and 470 MB of memory at its
 peak, and the two browser suites 19 s, on a developer machine (Apple
 Silicon, macOS, 2026-11-15); the browser suites have not run on Linux

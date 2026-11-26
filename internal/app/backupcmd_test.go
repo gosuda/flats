@@ -384,8 +384,12 @@ func TestBackupOfARunningHostRestoresToAWorkingHost(t *testing.T) {
 	if err != nil {
 		t.Fatalf("backup: %v\n%s", err, text)
 	}
+	canonicalOut, err := filepath.EvalSymlinks(out)
+	if err != nil {
+		t.Fatal(err)
+	}
 	checkSheetsInTheCopy(t, out)
-	for _, want := range []string{"backed up ", " files, ", " bytes", "secret.key is in the copy", " retries, ", "attempt(s)", "Keep it as protected", "flats backup --verify " + out} {
+	for _, want := range []string{"backed up ", " files, ", " bytes", "secret.key is in the copy", " retries, ", "attempt(s)", "Keep it as protected", "flats backup --verify " + canonicalOut} {
 		if !strings.Contains(text, want) {
 			t.Errorf("the output lacks %q:\n%s", want, text)
 		}

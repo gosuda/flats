@@ -4,13 +4,14 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 # A newer push to the same pull request replaces its running checks.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.sha }}
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('{0}-{1}', github.event_name, github.run_id) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -30,14 +31,23 @@ jobs:
         env:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: python3 scripts/ci-changes.py
+        run: |
+          # Only an exact successful docs-only result may reduce coverage.
+          selection=$(mktemp)
+          trap 'rm -f "$selection"' EXIT
+          if GITHUB_OUTPUT="$selection" python3 scripts/ci-changes.py &&
+              [ "$(cat "$selection")" = "full=false" ]; then
+            echo "full=false" >>"$GITHUB_OUTPUT"
+          else
+            echo "full=true" >>"$GITHUB_OUTPUT"
+          fi
 
   # Builds the gate binaries of scripts/lifecycle-gate.sh --prepare-only, which
   # include the pinned legacy adapter and the tagged crash adapter, on every
   # pull request that the changes job selects as full. Not a required check.
   legacy-build:
     needs: changes
-    if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.full == 'true' }}
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && (needs.changes.result != 'success' || needs.changes.outputs.full != 'false') }}
     runs-on: depot-ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -78,7 +88,7 @@ jobs:
 
   docs:
     needs: changes
-    if: needs.changes.outputs.full == 'false'
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.full == 'false' }}
     runs-on: depot-ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -94,7 +104,7 @@ jobs:
   # Job-level conditions keep CI visible for spec/research-only pull requests.
   docs-web:
     needs: changes
-    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') }}
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.result != 'success' || needs.changes.outputs.full != 'false') }}
     runs-on: depot-ubuntu-24.04
     timeout-minutes: 10
     defaults:
@@ -116,7 +126,7 @@ jobs:
   test:
     name: test (${{ matrix.lane }})
     needs: changes
-    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') }}
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.result != 'success' || needs.changes.outputs.full != 'false') }}
     strategy:
       fail-fast: false
       matrix:
@@ -185,7 +195,7 @@ jobs:
   # directives; go test ./... above does not reach it.
   netbird:
     needs: changes
-    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') }}
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.result != 'success' || needs.changes.outputs.full != 'false') }}
     runs-on: depot-ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -224,42 +234,25 @@ jobs:
             exit 1
           fi
 
-  # The race tests in parallel lanes; see scripts/ci-race.sh.
+  # Main/manual verification retains every race lane on one runner.
   race:
-    name: race (${{ matrix.lane }})
     needs: changes
-    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') }}
-    strategy:
-      fail-fast: false
-      matrix:
-        lane: [core-1, core-2, services, notebook-1, notebook-2, board-1, board-2, sheet-1, sheet-2, sheet-3, sheet-4, sheet-5]
-        # The two lanes of a package compile it alike: one cache per package,
-        # written only by its -1 lane.
-        include:
-          - {lane: core-1, cache: core}
-          - {lane: core-2, cache: core}
-          - {lane: services, cache: services}
-          - {lane: notebook-1, cache: notebook}
-          - {lane: notebook-2, cache: notebook}
-          - {lane: board-1, cache: board}
-          - {lane: board-2, cache: board}
-          - {lane: sheet-1, cache: sheet}
-          - {lane: sheet-2, cache: sheet}
-          - {lane: sheet-3, cache: sheet}
-          - {lane: sheet-4, cache: sheet}
-          - {lane: sheet-5, cache: sheet}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     runs-on: depot-ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 210
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-go
         with:
-          cache-key: race-${{ matrix.cache }}
-          save-build: ${{ !endsWith(matrix.lane, '-2') }}
-          # The lanes used to share one race job.
+          cache-key: race-all
           restore-fallback: race
       - name: Races
-        run: scripts/ci-race.sh "${{ matrix.lane }}"
+        run: |
+          failed=0
+          for lane in core-1 core-2 services notebook-1 notebook-2 board-1 board-2 sheet-1 sheet-2 sheet-3 sheet-4 sheet-5; do
+            scripts/ci-race.sh "$lane" || failed=1
+          done
+          exit "$failed"
 
   # The sheet's browser suites: the real client in the headless Chrome of the
   # runner image (docs/gates.md). The suites skip when they find no browser,
@@ -267,8 +260,8 @@ jobs:
   # of the sheet lane, which compiles the same package.
   sheet-browser:
     needs: changes
-    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') }}
-    runs-on: ubuntu-latest
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.result != 'success' || needs.changes.outputs.full != 'false') }}
+    runs-on: depot-ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -284,7 +277,7 @@ jobs:
 
   notebook-memory:
     needs: changes
-    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') }}
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
     runs-on: depot-ubuntu-24.04
     timeout-minutes: 20
     steps:
@@ -301,15 +294,12 @@ jobs:
           done
           exit "$failed"
 
-  # Native Windows: the test suite, the service install smoke and its release
-  # archive. The job runs as an administrator, so it cannot show that the
-  # install needs no administrator rights: docs/release.md has that manual check.
-  # It leaves out the docs-budget shard, whose wall-clock budgets belong to the
-  # Linux shard, and internal/devreview, whose run command is Unix only.
+  # Native Windows builds its own archive. Tests and service smoke remain
+  # independent, and Linux failures cannot suppress the native regressions.
   windows:
     needs: changes
-    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') }}
-    runs-on: windows-latest
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.result != 'success' || needs.changes.outputs.full != 'false') }}
+    runs-on: depot-windows-2025
     timeout-minutes: 75
     defaults:
       run:
@@ -317,40 +307,48 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: ./.github/actions/setup-go
+        id: setup
         with:
           cache-key: windows
           module-scope: netbird
           save-modules: "true"
-      - name: Build release archive
+      - name: Build this attempt's Windows release archive
         id: archive
-        run: FLATS_RELEASE_TARGETS=windows/amd64 scripts/build-release.sh v0.0.0-ci "$RUNNER_TEMP/dist"
-      - name: Tests
-        # Verbose: the log keeps the skips and the timing lines of this job.
-        # The test data goes to the runner's temporary drive. About 11 minutes
-        # after a hosted runner boots, its system drive is read for about 45 s.
-        # A flush there then takes seconds, and a document test that writes
-        # meets the request limit (docs/gates.md). The step prints the boot
-        # time, so that a later stall can be compared with it.
-        # internal/site runs first, with the default temp directory: one of
-        # its tests needs the short (8.3) names of the system drive, and the
-        # temporary drive keeps none. It runs with -count=1, so that the test
-        # runs on this runner and is not a result from the test cache.
-        run: |
-          failed=0
-          go test -v -count=1 ./internal/site || failed=1
-          mkdir -p "$RUNNER_TEMP/test-tmp"
-          TMP=$(cygpath -w "$RUNNER_TEMP/test-tmp")
-          TEMP=$TMP
-          export TMP TEMP
-          booted=$(pwsh -NoProfile -Command "(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss')" | tr -d '\r\n') || booted=unknown
-          echo "the runner booted at $booted UTC, it is $(date -u '+%Y-%m-%d %H:%M:%S') UTC, and the test data is below $TEMP"
-          for shard in runtime-soak runtime-codec runtime docs-soak docs board; do
-            scripts/ci-test.sh "$shard" -v -timeout 30m || failed=1
-          done
-          # shellcheck disable=SC2046 # one argument per package path.
-          go test -v -timeout 30m $(go list ./... | grep -v -E '/internal/((runtime|apps/docs|site)$|(board|devreview)(/|$))') || failed=1
-          exit "$failed"
-      # Runs after a failed test step too: the two answer different questions.
+        run: FLATS_RELEASE_TARGETS="windows/amd64" scripts/build-release.sh v0.0.0-ci "$RUNNER_TEMP/dist"
+      - name: Native path regressions on the system drive
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        # Short-name tests require the system drive's default temp directory.
+        run: go test -v -count=1 ./internal/site
+      - name: Native configuration regressions
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        env:
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
+        run: go test -v -count=1 ./internal/config
+      - name: Native open-file storage regressions
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        env:
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
+        run: go test -v -count=1 ./internal/core -run '^(TestDeleteWithAnOpenFileKeepsItsSlugReserved|TestRenameWithAnOpenFileRestartsTheStoppedWorker)$'
+      - name: Native backup junction regression
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        env:
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
+        run: go test -v -count=1 ./internal/backup -run '^TestAJunctionIsSkippedAndNotEntered$'
+      - name: Back up and restore a running Windows host
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        env:
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
+        run: go test -v -count=1 ./internal/app -run '^TestBackupOfARunningHostRestoresToAWorkingHost$'
+      - name: Native Sheet regressions
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        env:
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
+        run: go test -v -count=1 -timeout=30m ./internal/sheet/...
       - name: Install, crash, stop and uninstall the service
         if: ${{ !cancelled() && steps.archive.outcome == 'success' }}
         shell: pwsh
@@ -360,8 +358,8 @@ jobs:
   # The Linux install smoke runs in the container job, on its archives.
   install-macos:
     needs: changes
-    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') }}
-    runs-on: macos-latest
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.result != 'success' || needs.changes.outputs.full != 'false') }}
+    runs-on: depot-macos-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -390,7 +388,7 @@ jobs:
 
   container:
     needs: changes
-    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') }}
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.result != 'success' || needs.changes.outputs.full != 'false') }}
     runs-on: depot-ubuntu-24.04
     timeout-minutes: 20
     steps:

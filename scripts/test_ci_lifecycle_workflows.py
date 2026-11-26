@@ -108,7 +108,8 @@ class LifecycleGateWorkflowTests(unittest.TestCase):
     def test_legacy_build_runs_on_full_pull_requests_and_runs_the_prepare_step(self):
         condition = re.search(r"(?m)^    if: (.+)$", self.legacy_job).group(1)
         self.assertIn("github.event_name == 'pull_request'", condition)
-        self.assertIn("needs.changes.outputs.full == 'true'", condition)
+        self.assertIn("needs.changes.result != 'success'", condition)
+        self.assertIn("needs.changes.outputs.full != 'false'", condition)
         self.assertIn("needs: changes", self.legacy_job)
         self.assertIn("scripts/lifecycle-gate.sh --prepare-only", self.legacy_job)
 

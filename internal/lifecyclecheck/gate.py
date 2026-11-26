@@ -771,14 +771,17 @@ def sheet_writes_need_no_approval(h, pending):
     h.mcp('create_flat', slug='boundary-sheet', type='sheet')
     require(h.flat('boundary-sheet')['type'] == 'sheet', 'MCP create_flat did not create a sheet')
     state = h.mcp('get_sheet', slug='boundary-sheet')['state']
+    before = version_rows(h, 'boundary-sheet')
+    approvals_before = approval_states(h)
+    require([row[0] for row in before['versions']] == [1] and before['version_numbers'] == [(1,)],
+            f"sheet snapshot must hold only its creation row and reservation: {before}")
     written = h.mcp('update_sheet', slug='boundary-sheet', state=state, op_id='lc-3', ops=[SHEET_WRITE])
     require(not written.get('approval') and not written.get('deploy') and written.get('revision') == 2,
             f"sheet write requested an approval or recorded no revision: {written}")
     total = h.mcp('get_sheet', slug='boundary-sheet', tab='Sheet1', range='B2')['rows'][0][0]
     require(total == {"formula": "=SUM(B1:B1)", "value": 0}, f"sheet write did not calculate: {total}")
-    flat = h.flat('boundary-sheet')
-    require(not flat.get('live_version') and not flat.get('version_count') and not flat.get('draft'),
-            'sheet write allocated a website version or Draft')
+    require(version_rows(h, 'boundary-sheet') == before, 'sheet write changed the version rows')
+    require(approval_states(h) == approvals_before, 'sheet write changed the approval list')
     require(h.ok('GET', f'/api/approvals/{pending}')['status'] == 'pending', 'sheet write decided existing approval')
 
 
