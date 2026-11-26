@@ -91,6 +91,10 @@ func TestMarkdownCaptureReleasesOptions(t *testing.T) {
 	}
 	sample()
 	stop, joined := make(chan struct{}), make(chan struct{})
+	t.Cleanup(func() {
+		close(stop)
+		<-joined
+	})
 	go func() {
 		defer close(joined)
 		ticker := time.NewTicker(2 * time.Millisecond)
@@ -107,9 +111,6 @@ func TestMarkdownCaptureReleasesOptions(t *testing.T) {
 	body, _ := liveReadQuery(t, f.in, map[string]any{"page": f.page.ID, "format": "markdown", "limit": 500}, false)
 	continueMarkdownRead(t, f.in, body)
 	sample()
-	close(stop)
-	<-joined
-
 	heldQuota := peakUsed.Load() - baseUsed
 	t.Logf("capture quota: baseline=%d peak=%d held=%d", baseUsed, peakUsed.Load(), heldQuota)
 	t.Logf("rank index files: baseline=%d peak=%d", baseRanks, peakRanks.Load())
