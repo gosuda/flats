@@ -13,6 +13,17 @@ import (
 	"unicode/utf8"
 )
 
+// collectedAttempts is the number of collected live-heap samples per payload
+// size: one cold read to warm allocator and page caches, then two warmed
+// samples whose steadier reading feeds the growth comparison.
+// collectedGrowthBudget bounds both the cross-size growth comparison and the
+// per-size post-GC baseline shift: one yardstick for transient growth and
+// retained heap alike.
+const (
+	collectedAttempts     = 3
+	collectedGrowthBudget = 1 << 20
+)
+
 func TestMarkdownRetainedMemory(t *testing.T) {
 	for _, kind := range []string{"database_title", "row_text", "block_code", "block_rich_text", "option_name", "option_schema"} {
 		t.Run(kind, func(t *testing.T) {
@@ -162,24 +173,43 @@ func TestMarkdownRetainedMemory(t *testing.T) {
 						// retained schema: the 16 MiB read issues tens of
 						// thousands of stop-the-world collections, so GC timing
 						// under host load alone can swing a single peak by
-						// hundreds of kilobytes. Sample the same read three
-						// times — the first warms allocator and page caches for
-						// the rest — and keep the minimum. A leak that scales
-						// with payload raises the floor of every sample, so the
-						// minimum still fails while transient inflation cannot
-						// fail all three.
+						// hundreds of kilobytes. Read once cold to warm
+						// allocator and page caches, then sample the warmed
+						// path twice and keep the steadier reading. A minimum
+						// over re-baselined samples alone could still pass
+						// while the first read retained more than the gate
+						// permits: later baselines sit above the retained heap,
+						// so the growth above them stays small. The post-GC
+						// baseline shift is gated separately below instead: it
+						// counts only what the reads still hold, after
+						// collections, so allocator noise cannot move it while
+						// any retained buffer raises it.
 						var peak uint64
-						for attempt := 0; attempt < 3; attempt++ {
-							var sample uint64
+						var firstBaseline, lastBaseline uint64
+						for attempt := 0; attempt < collectedAttempts; attempt++ {
+							var sample, baseline uint64
 							var sampleBody []byte
-							sampleBody, sample, err = measureReaderLiveHeap(t, f.in, raw)
+							sampleBody, sample, baseline, err = measureReaderLiveHeap(t, f.in, raw)
 							if err != nil {
 								t.Fatal(err)
 							}
-							t.Logf("retained=%d collected live-heap sample %d/3 growth=%d", size, attempt+1, sample)
+							t.Logf("retained=%d collected live-heap sample %d/%d growth=%d baseline=%d", size, attempt+1, collectedAttempts, sample, baseline)
 							if attempt == 0 || sample < peak {
 								peak, body = sample, sampleBody
 							}
+							if attempt == 0 {
+								firstBaseline = baseline
+							}
+							lastBaseline = baseline
+						}
+						// Cold-read retention escapes the growth comparison, so
+						// judge it on its own: the shift from the first to the
+						// last post-collection baseline is heap the collected
+						// reads still hold. Same yardstick as the growth gate.
+						shift := collectedRetentionShift(firstBaseline, lastBaseline)
+						t.Logf("retained=%d collected live-heap baseline shift=%d first=%d last=%d", size, shift, firstBaseline, lastBaseline)
+						if shift > collectedGrowthBudget {
+							t.Errorf("Markdown read retained %s for %d MiB payload: post-GC live heap rose %d bytes across %d collected reads, exceeds 1 MiB", kind, size>>20, shift, collectedAttempts)
 						}
 						schemaPeaks[size] = peak
 						t.Logf("retained=%d sampled collected live-heap growth=%d response=%d fixture=%s read=%s", size, peak, len(body), fixtureElapsed, time.Since(readStart))
@@ -240,10 +270,45 @@ func TestMarkdownRetainedMemory(t *testing.T) {
 					small, large := schemaPeaks[1<<20], schemaPeaks[16<<20]
 					delta := int64(large) - int64(small)
 					t.Logf("option-schema collected live-heap growth: 1 MiB=%d 16 MiB=%d delta=%d", small, large, delta)
-					if delta > 1<<20 {
+					if delta > collectedGrowthBudget {
 						t.Errorf("Markdown read materialized retained option schema: heap growth increased by %d bytes from 1 to 16 MiB, exceeds 1 MiB", delta)
 					}
 				})
+			}
+		})
+	}
+}
+
+// collectedRetentionShift reports how much post-GC live heap the collected
+// reads still hold: the last sample baseline minus the first. Baselines are
+// single full-collection readings, so allocator noise cannot inflate the
+// shift the way GC timing inflates in-read peaks; only genuinely retained
+// buffers raise it. Saturates instead of underflowing if a later baseline
+// ever reads lower.
+func collectedRetentionShift(first, last uint64) uint64 {
+	if last < first {
+		return 0
+	}
+	return last - first
+}
+
+func TestCollectedRetentionShift(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		first, last uint64
+		want        uint64
+		overBudget  bool
+	}{
+		{"steady", 3000000, 3000000, 0, false},
+		{"released", 3000000, 2900000, 0, false},
+		{"small drift", 3000000, 3100000, 100000, false},
+		{"retained over budget", 3000000, 3000000 + 2<<20, 2 << 20, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if shift := collectedRetentionShift(test.first, test.last); shift != test.want {
+				t.Fatalf("shift(%d, %d) = %d, want %d", test.first, test.last, shift, test.want)
+			} else if over := shift > collectedGrowthBudget; over != test.overBudget {
+				t.Fatalf("shift %d over budget = %t, want %t", shift, over, test.overBudget)
 			}
 		})
 	}

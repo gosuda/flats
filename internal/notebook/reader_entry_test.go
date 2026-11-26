@@ -84,7 +84,10 @@ func measureReaderHeap(t *testing.T, in *Instance, query []byte) ([]byte, uint64
 
 // measureReaderLiveHeap samples collected live heap throughout a fresh read.
 // The ticker covers preparation before output; writes add bounded checkpoints.
-func measureReaderLiveHeap(t *testing.T, in *Instance, query []byte) ([]byte, uint64, error) {
+// It also reports the post-collection baseline the growth is measured from,
+// so callers can tell retained heap (baseline shift across reads) apart from
+// transient in-read peaks.
+func measureReaderLiveHeap(t *testing.T, in *Instance, query []byte) ([]byte, uint64, uint64, error) {
 	t.Helper()
 	oldGC := debug.SetGCPercent(20)
 	defer debug.SetGCPercent(oldGC)
@@ -137,7 +140,7 @@ func measureReaderLiveHeap(t *testing.T, in *Instance, query []byte) ([]byte, ui
 	close(stop)
 	<-joined
 	t.Logf("collected live-heap periodic samples=%d", periodic)
-	return body, peak - before.HeapAlloc, err
+	return body, peak - before.HeapAlloc, before.HeapAlloc, err
 }
 
 func readerQueryFixture(t *testing.T) (writerFixture, WriteResult) {
