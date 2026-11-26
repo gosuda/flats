@@ -276,58 +276,51 @@ jobs:
           done
           exit "$failed"
 
-  # Native Windows: the test suite, the service install smoke and its release
-  # archive. The job runs as an administrator, so it cannot show that the
-  # install needs no administrator rights: docs/release.md has that manual check.
-  # It leaves out the docs-budget shard, whose wall-clock budgets belong to the
-  # Linux shard, and internal/devreview, whose run command is Unix only.
+  # Native Windows: the Windows-only path proof and the service install
+  # smoke over its release archive. The archive is built once on Linux in
+  # the container job (the same CGO-free cross-build the release workflow
+  # uses) and downloaded here; a missing artifact fails the download step.
+  # The full test shards run on the Linux lanes instead of here: the
+  # runtime-soak, runtime-codec, runtime, docs-soak, docs and board shards
+  # run the same scripts/ci-test.sh shards on depot-ubuntu, and test
+  # (other) covers every package the old sweep listed, internal/site
+  # included. Windows keeps only what needs Windows: the site package with
+  # the default temp directory (its tests need the short (8.3) names of
+  # the system drive, which the temporary drive keeps none of), the Windows
+  # build, and the install, crash, stop and uninstall smoke. The job runs
+  # as an administrator, so it cannot show that the install needs no
+  # administrator rights: docs/release.md has that manual check.
   windows:
     needs: changes
     if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') }}
-    runs-on: windows-latest
-    timeout-minutes: 75
+    runs-on: depot-windows-2025
+    timeout-minutes: 20
     defaults:
       run:
         shell: bash
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/setup-go
+        id: setup
         with:
           cache-key: windows
           module-scope: netbird
           save-modules: "true"
-      - name: Build release archive
-        id: archive
-        run: FLATS_RELEASE_TARGETS=windows/amd64 scripts/build-release.sh v0.0.0-ci "$RUNNER_TEMP/dist"
+      - name: Download Windows release archive
+        id: download
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: flats-windows-archive-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/dist
       - name: Tests
-        # Verbose: the log keeps the skips and the timing lines of this job.
-        # The test data goes to the runner's temporary drive. About 11 minutes
-        # after a hosted runner boots, its system drive is read for about 45 s.
-        # A flush there then takes seconds, and a document test that writes
-        # meets the request limit (docs/gates.md). The step prints the boot
-        # time, so that a later stall can be compared with it.
-        # internal/site runs first, with the default temp directory: one of
-        # its tests needs the short (8.3) names of the system drive, and the
-        # temporary drive keeps none. It runs with -count=1, so that the test
-        # runs on this runner and is not a result from the test cache.
-        run: |
-          failed=0
-          go test -v -count=1 ./internal/site || failed=1
-          mkdir -p "$RUNNER_TEMP/test-tmp"
-          TMP=$(cygpath -w "$RUNNER_TEMP/test-tmp")
-          TEMP=$TMP
-          export TMP TEMP
-          booted=$(pwsh -NoProfile -Command "(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss')" | tr -d '\r\n') || booted=unknown
-          echo "the runner booted at $booted UTC, it is $(date -u '+%Y-%m-%d %H:%M:%S') UTC, and the test data is below $TEMP"
-          for shard in runtime-soak runtime-codec runtime docs-soak docs board; do
-            scripts/ci-test.sh "$shard" -v -timeout 30m || failed=1
-          done
-          # shellcheck disable=SC2046 # one argument per package path.
-          go test -v -timeout 30m $(go list ./... | grep -v -E '/internal/((runtime|apps/docs|site)$|(board|devreview)(/|$))') || failed=1
-          exit "$failed"
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        # Verbose: the log keeps the timing lines of this job. It runs with
+        # -count=1, so that the test runs on this runner and is not a result
+        # from the test cache.
+        run: go test -v -count=1 ./internal/site
       # Runs after a failed test step too: the two answer different questions.
       - name: Install, crash, stop and uninstall the service
-        if: ${{ !cancelled() && steps.archive.outcome == 'success' }}
+        if: ${{ !cancelled() && steps.download.outcome == 'success' }}
         shell: pwsh
         run: scripts/install-smoke.ps1 "$env:RUNNER_TEMP\dist"
 
@@ -378,8 +371,21 @@ jobs:
         with:
           cache-key: container
           module-scope: netbird
-      - name: Build Linux release archives
-        run: FLATS_RELEASE_TARGETS="linux/amd64 linux/arm64" scripts/build-release.sh v0.0.0-ci dist
+      - name: Build release archives
+        run: FLATS_RELEASE_TARGETS="linux/amd64 linux/arm64 windows/amd64" scripts/build-release.sh v0.0.0-ci dist
+      # The Windows job installs this archive; it builds nothing itself.
+      # A missing file fails the upload, so the download can never use
+      # nothing.
+      - name: Upload Windows release archive
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: flats-windows-archive-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            dist/flats_windows_amd64.zip
+            dist/checksums.txt
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 1
       - name: Lint
         run: |
           shellcheck -s sh install.sh scripts/ci-test.sh scripts/ci-race.sh scripts/ci-memory.sh scripts/build-release.sh scripts/install-smoke.sh scripts/container-smoke.sh scripts/build-commit-image.sh scripts/build-commit-images.sh scripts/lib-gate.sh
