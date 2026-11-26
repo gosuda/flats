@@ -58,8 +58,10 @@ class LifecycleGateWorkflowTests(unittest.TestCase):
     def test_each_new_job_restores_caches_and_disables_setup_go_cache(self):
         for name, job in self.jobs.items():
             with self.subTest(job=name):
-                self.assertGreaterEqual(job.count("uses: actions/cache/restore@v4"), 2)
-                self.assertIn("cache: false", step_text(job, "uses: actions/setup-go@v5"))
+                self.assertGreaterEqual(
+                    len(re.findall(r"uses: actions/cache/restore@(?:v\d+|[0-9a-f]{40})", job)), 2
+                )
+                self.assertIn("cache: false", step_text(job, "uses: actions/setup-go@"))
 
     def test_permissions_are_read_only(self):
         block = re.search(r"^permissions:\n((?:  .*\n)+)", self.gate_workflow, re.M)
@@ -102,7 +104,8 @@ class LifecycleGateWorkflowTests(unittest.TestCase):
         for name, job in self.jobs.items():
             with self.subTest(job=name):
                 self.assertRegex(
-                    job, r"uses: actions/checkout@v4\n\s+with:\n\s+persist-credentials: false"
+                    job,
+                    r"uses: actions/checkout@(?:v4|[0-9a-f]{40})(?: # v\d+)?\n\s+with:\n\s+persist-credentials: false",
                 )
 
     def test_legacy_build_runs_on_full_pull_requests_and_runs_the_prepare_step(self):
