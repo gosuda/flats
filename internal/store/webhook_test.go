@@ -90,7 +90,7 @@ func TestMigrationFromVersion25AddsTheWebhookSupport(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if info, err := Inspect(path); err != nil || info.Version != latestVersion() {
+	if info, err := Inspect(path); err != nil || info.Version != 30 || info.Version != latestVersion() {
 		t.Fatalf("after: %+v, %v", info, err)
 	}
 	// The migration writes no row for what happened before it (rule 30): the grant and the origins of the old database

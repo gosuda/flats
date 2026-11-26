@@ -471,7 +471,7 @@ func TestTheVisibilityAuditTimeIsTakenAtTheWrite(t *testing.T) {
 	t.Fatal("no visibility.set row")
 }
 
-// The changes that rule 1 leaves out send nothing: the creation of a flat, a secret, and a rename.
+// The changes that rule 1 leaves out send nothing: the creation of a flat, a secret (also an injected one), and a rename.
 func TestExcludedChangesSendNoEvent(t *testing.T) {
 	t.Parallel()
 	s, _, rec := webhookService(t)
@@ -483,6 +483,13 @@ func TestExcludedChangesSendNoEvent(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := s.DeleteSecret(ctx, "app", "API_KEY", ViaConsole); err != nil {
+		t.Fatal(err)
+	}
+	// An injected secret is a secret too (docs/spec/injected-fetch-secrets.md, rule 30).
+	if _, err := s.SetSecretBinding(ctx, "app", "TOKEN", "Bearer a-secret-value", &SecretInject{Origin: "https://api.example.com", Header: "Authorization"}, ViaCLI); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DeleteSecret(ctx, "app", "TOKEN", ViaCLI); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.RenameSlug(ctx, "app", "renamed", ViaAPI); err != nil {

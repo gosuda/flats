@@ -2,7 +2,7 @@
 // copyable snippets.
 'use strict';
 
-import { h, clear, icon, linkTargets } from './dom.js';
+import { h, clear, icon, linkTargets, signInOf } from './dom.js';
 
 // confirmDialog opens a modal <dialog> and resolves true when confirmed.
 // opts: title, body (string | Node | array), confirmLabel, danger,
@@ -576,6 +576,11 @@ export async function busy(btn, fn) {
   }
 }
 
+// publicNote says who can open the public address of f, for the accessible
+// name of its open shortcut: anyone, or with Portal sign-in on only the
+// visitors that it allows (docs/spec/portal-sign-in.md, rule 61).
+const publicNote = (f) => (signInOf(f) ? ' (only the visitors that its sign-in allows can open the flat)' : ' (anyone with the URL can open the flat)');
+
 // openLinks is a flat's open shortcuts: a private button (lock icon) and,
 // while the flat is public, a public one (globe icon) to its left. Without a
 // public button an empty slot of the same size takes its place, so the
@@ -592,7 +597,7 @@ export function openLinks(f) {
     let ts = isPublic ? targets.public : targets.private;
     const kind = isPublic ? 'public' : 'private';
     const glyph = isPublic ? 'globe' : 'lock';
-    const note = isPublic ? ' (anyone with the URL can open the flat)' : '';
+    const note = isPublic ? publicNote(f) : '';
     if (!ts.length) {
       if (isPublic || !targets.local) return null;
       ts = [targets.local];
@@ -621,7 +626,7 @@ export function openPrimary(f) {
   const targets = openTargets(f);
   const t = [...targets.public, ...targets.private][0] || targets.local;
   if (!t) return null;
-  const note = t.public ? ' (anyone with the URL can open the flat)' : '';
+  const note = t.public ? publicNote(f) : '';
   return extLink(t.url, icon('external', `Open ${name} ${t.public ? 'public' : 'private'}ly through ${t.label}${note}`), 'icon-btn open-primary');
 }
 

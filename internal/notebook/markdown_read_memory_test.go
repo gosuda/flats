@@ -145,7 +145,7 @@ func TestMarkdownRetainedMemory(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
-					if peak > 4<<20 {
+					if peak > readerHeapCeiling {
 						t.Errorf("Markdown read materialized retained %s: %d bytes exceeds 4 MiB", kind, peak)
 					} else if kind == "option_schema" && !large && (size == 1<<20 || size == 16<<20) {
 						schemaPeaks[size] = peak

@@ -16,7 +16,7 @@ concurrency:
 jobs:
   changes:
     if: github.event_name == 'pull_request'
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04
     timeout-minutes: 5
     outputs:
       full: ${{ steps.select.outputs.full }}
@@ -32,10 +32,54 @@ jobs:
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: python3 scripts/ci-changes.py
 
+  # Builds the gate binaries of scripts/lifecycle-gate.sh --prepare-only, which
+  # include the pinned legacy adapter and the tagged crash adapter, on every
+  # pull request that the changes job selects as full. Not a required check.
+  legacy-build:
+    needs: changes
+    if: ${{ github.event_name == 'pull_request' && needs.changes.outputs.full == 'true' }}
+    runs-on: depot-ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Fetch the pinned legacy revision
+        run: |
+          git fetch --no-tags --depth=1 origin 29edc2a6e13e27867603a23ff5b1b5a8d1b84df0
+          test "$(git cat-file -t 29edc2a6e13e27867603a23ff5b1b5a8d1b84df0)" = commit
+      - uses: actions/setup-go@v5
+        id: go
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Locate Go caches
+        id: cache-paths
+        run: |
+          echo "mod=$(go env GOMODCACHE)" >>"$GITHUB_OUTPUT"
+          echo "build=$(go env GOCACHE)" >>"$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.cache-paths.outputs.mod }}
+          key: go-mod-v2-${{ runner.os }}-root-${{ hashFiles('go.mod', 'go.sum') }}
+          restore-keys: |
+            go-mod-v2-${{ runner.os }}-root-
+      - uses: actions/cache/restore@v4
+        with:
+          path: ${{ steps.cache-paths.outputs.build }}
+          key: go-build-v2-${{ runner.os }}-${{ runner.arch }}-go${{ steps.go.outputs.go-version }}-test-other-root--${{ hashFiles('go.mod', 'go.sum') }}--read-only
+          restore-keys: |
+            go-build-v2-${{ runner.os }}-${{ runner.arch }}-go${{ steps.go.outputs.go-version }}-test-other-root--${{ hashFiles('go.mod', 'go.sum') }}--
+            go-build-v2-${{ runner.os }}-${{ runner.arch }}-go${{ steps.go.outputs.go-version }}-test-other-root--
+      - name: Build the gate binaries
+        run: |
+          mkdir -p "$HOME/lcg"
+          TMPDIR="$HOME/lcg" scripts/lifecycle-gate.sh --prepare-only
+
   docs:
     needs: changes
     if: needs.changes.outputs.full == 'false'
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -51,7 +95,7 @@ jobs:
   docs-web:
     needs: changes
     if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') }}
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04
     timeout-minutes: 10
     defaults:
       run:
@@ -60,7 +104,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 26
           cache: npm
           cache-dependency-path: internal/apps/docs/_web/package-lock.json
       - run: npm ci
@@ -96,7 +140,7 @@ jobs:
             shards: sheet
           - lane: other
             shards: other
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -120,6 +164,8 @@ jobs:
         run: |
           python3 -B -m unittest discover -s scripts -p 'test_ci_*.py'
           python3 -B -m unittest discover -s scripts -p test_image_commits.py
+          git fetch --no-tags --depth=1 origin 29edc2a6e13e27867603a23ff5b1b5a8d1b84df0
+          python3 -B -m unittest discover -s internal/lifecyclecheck -p test_harness.py
       # Uncached, unlike TestRepositoryDocs: go test cannot see every Git
       # index change that adds or removes a link target.
       - name: Documentation links
@@ -140,7 +186,7 @@ jobs:
   netbird:
     needs: changes
     if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') }}
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -202,7 +248,7 @@ jobs:
           - {lane: sheet-3, cache: sheet}
           - {lane: sheet-4, cache: sheet}
           - {lane: sheet-5, cache: sheet}
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -222,7 +268,7 @@ jobs:
   sheet-browser:
     needs: changes
     if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') }}
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
@@ -239,7 +285,7 @@ jobs:
   notebook-memory:
     needs: changes
     if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') }}
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -263,7 +309,7 @@ jobs:
   windows:
     needs: changes
     if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') }}
-    runs-on: windows-latest
+    runs-on: depot-windows-2025
     timeout-minutes: 75
     defaults:
       run:
@@ -315,7 +361,7 @@ jobs:
   install-macos:
     needs: changes
     if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') }}
-    runs-on: macos-latest
+    runs-on: depot-macos-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
@@ -345,7 +391,7 @@ jobs:
   container:
     needs: changes
     if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') }}
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4

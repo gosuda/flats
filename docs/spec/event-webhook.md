@@ -8,7 +8,7 @@ An operator learns about a pending approval only when they open the console or w
 the decisions can leave the host. This spec adds two things. The host sends a signed HTTP POST to a URL that the operator
 stored when an approval is created or decided, when the visibility of a flat changes, and when a grant of a flat's network
 access changes. `flats audit export` writes the audit log and the approval records as JSON lines, so that the operator can
-ship them off the host.
+ship them off the host. [Portal sign-in](portal-sign-in.md) adds a fifth type, `signin.changed`.
 
 The request is issue #225. It builds on the audit log of [audit events](audit-events.md) (item 4 of #224). Approval
 records stay when a flat is deleted, and the export contains them.
@@ -54,7 +54,7 @@ records stay when a flat is deleted, and the export contains them.
 
 ## Scope
 
-In scope: the four webhook events and their body, the two operator keys that configure the webhook, the signature, the
+In scope: the webhook events and their body, the two operator keys that configure the webhook, the signature, the
 delivery rules, the audit kinds of rule 21, the command `flats audit export`, the migration to schema version 26, the
 docs.
 
@@ -62,10 +62,11 @@ Out of scope:
 
 - A console view, a route or an MCP tool for the webhook, and a test button. The operator sets the keys with `flats key`
   while the host is stopped. A console form is a later change.
-- Webhook events for the host-wide `network.permitted` list, for the creation of a flat, for the public instance mode, for
+- Webhook events for the host-wide `network.permitted` list and `portal.require_auth` setting, for the creation of a flat, for the public instance mode, for
   the downgrade of a stored public access level when guest editing is off, for the grant that `PreserveLegacyTailscale`
-  inserts, for the statuses that `resumeApplying` and `AdoptLegacyDraft` write, and for secrets and operator keys. The
-  audit log records the secrets and the operator keys.
+  inserts, for the statuses that `resumeApplying` and `AdoptLegacyDraft` write, and for secrets and operator keys. A
+  set or a removal of the client secret of [Portal sign-in](portal-sign-in.md) sends nothing either, as every secret
+  change. The audit log records the secrets and the operator keys.
 - A durable queue. An event that the host cannot deliver before it stops is lost (rule 19).
 - A webhook for each flat, several URLs, a filter by event type, and a payload that an operator edits.
 - A flat-deletion record. A delete from the console makes no approval row and writes no audit row of its own. Such a flat
@@ -98,7 +99,7 @@ proposed it. The author decided 4, 5 and 6, and a reviewer can challenge them. E
 
 ## The events
 
-1. The webhook sends four types of event.
+1. The webhook sends five types of event.
 
    | Type | When |
    | --- | --- |
@@ -106,6 +107,7 @@ proposed it. The author decided 4, 5 and 6, and a reviewer can challenge them. E
    | `approval.decided` | An approval gets the final status `approved`, `rejected` or `failed` through `decide` (an operator or an Autopilot decision), through `finishApplying`, or through the flat deletion that fails the other pending approvals of the flat. The event follows the commit of that status. `resumeApplying` and `AdoptLegacyDraft` send nothing: they run inside `core.New`, before the host holds the sender (rule 17). |
    | `visibility.changed` | `CommitVisibility` commits a change of the visibility or of the public access level of a flat that an approval applied. |
    | `network.changed` | A provider permission or the origin grants of a flat change in the store. |
+   | `signin.changed` | An approval applied a change of the Portal sign-in of a flat, the console issued an access link, or the operator ended the sign-in sessions and the access links of a flat ([Portal sign-in](portal-sign-in.md), rule 68). A rename and a deletion send none, and `resumeApplying` sends none for the approval that it finishes. |
 
 2. An operation that changes nothing sends nothing. A set of the origin grants to the list that the flat has, a provider
    permission to the value it has (a provider with no row counts as not permitted), and a visibility to the value it has
@@ -118,22 +120,23 @@ proposed it. The author decided 4, 5 and 6, and a reviewer can challenge them. E
    | Field | Content |
    | --- | --- |
    | `id` | `evt_` and 26 random characters. The same for every attempt to deliver the event. |
-   | `type` | One of the four types. |
+   | `type` | One of the five types. |
    | `at` | The time of the event on the clock of the host, an RFC 3339 time in UTC with milliseconds. |
    | `flat` | `{"slug": ..., "id": ...}`. `id` is the ID of the flat (`store.Flat.ID`) and is empty when none is known. |
-   | `operation` | The action of the approval (`delete`, `set_visibility`, `publish`, `create_version`, `delete_version`, `activate`, `rollback` or `restore_data`) for the approval types. `set_visibility` for `visibility.changed`. `set_network_origins` or `set_provider_permission` for `network.changed`. |
-   | `state` | `pending` for `approval.created`. `approved`, `rejected` or `failed` for `approval.decided`. `applied` for the other two. |
-   | `approval_id` | The approval, for the approval types and for a `visibility.changed` that an approval applied. Absent otherwise. |
+   | `operation` | The action of the approval (`delete`, `set_visibility`, `publish`, `create_version`, `delete_version`, `activate`, `rollback`, `restore_data` or `set_signin`) for the approval types. `set_visibility` for `visibility.changed`. `set_network_origins` or `set_provider_permission` for `network.changed`. `set_signin`, `issue_signin_link` or `revoke_signin` for `signin.changed`. |
+   | `state` | `pending` for `approval.created`. `approved`, `rejected` or `failed` for `approval.decided`. `applied` for the other three. |
+   | `approval_id` | The approval, for the approval types, for a `visibility.changed` that an approval applied, and for a `signin.changed` with the operation `set_signin`. Absent otherwise. |
    | `via` | For `approval.created` the channel that requested the approval, as the row records it. Absent for the others. |
-   | `decided_by` | For `approval.decided` and for `visibility.changed`: `operator` for a decision of the operator and `autopilot` for a decision of an agent. Absent when the row has no `decided_by` (a pending approval that a flat deletion failed) and for the other types. |
-   | `change` | For `visibility.changed` `{"from": {"visibility": ..., "access": ...}, "to": {...}}`. For `network.changed` `{"grant": "origins", "count": N, "origins": [...]}` with the count and the list after the change, or `{"grant": "provider", "provider": ..., "permitted": true or false}`. The host accepts a list of origins whose JSON text is larger than a body. When that text has more than 3000 bytes, `origins` holds the first origins that fit and the object has `"truncated": true`. Absent for the approval types. |
+   | `decided_by` | For `approval.decided`, for `visibility.changed` and for a `signin.changed` with the operation `set_signin`: `operator` for a decision of the operator and `autopilot` for a decision of an agent. Absent when the row has no `decided_by` (a pending approval that a flat deletion failed) and for the other types and operations. |
+   | `change` | For `visibility.changed` `{"from": {"visibility": ..., "access": ...}, "to": {...}}`. For `network.changed` `{"grant": "origins", "count": N, "origins": [...]}` with the count and the list after the change, or `{"grant": "provider", "provider": ..., "permitted": true or false}`. The host accepts a list of origins whose JSON text is larger than a body. When that text has more than 3000 bytes, `origins` holds the first origins that fit and the object has `"truncated": true`. For `signin.changed` `{"from": {"provider": ..., "count": N}, "to": {"provider": ..., "count": M}}` for `set_signin`, `{"expires_at": ...}` for `issue_signin_link` and `{}` for `revoke_signin`. Absent for the approval types. |
    | `console_url` | `<console>/approvals/<id>` for the approval types and `<console>/flats/<slug>` for the others. The console address is the one of the request that caused the event, or, without a request, the one of `Host.ConsoleURL` (the preferred console, else the first console domain that is served, else the loopback address). The address is chosen when the event is made. |
 
 5. The body holds no flat content and no secret value. It holds none of the fields `params`, `reason`, `result` and
    `result_data` of an approval, none of the content, secret names, environment names, file names, version numbers or
    document text of a flat, and no key. The values of `operation`, `state`, `type`, `decided_by` and `grant` come from fixed
    lists. The slug, the origins and the provider name are the operator's own settings. The body names no login and no
-   address of a person or an agent.
+   address of a person or an agent. A `signin.changed` body names no entry of the allowlist, no subject, no client
+   secret, no credential and no access link ([Portal sign-in](portal-sign-in.md), rule 68).
 
 ## The webhook keys
 
@@ -326,7 +329,8 @@ registry up to version 25. The export reads its clock through a function variabl
 - Signature. The vector of rule 12 gives the signature that rule 12 states, computed by a test with `crypto/hmac` from the
   documented recipe and not by the code under test. A body or a timestamp that changes by one byte gives another value.
   An attempt carries the headers of rule 12 and the timestamp of its own attempt, and a retry keeps the event ID.
-- Events. Each of the four types is sent for the change that rule 1 names and for no other: a repeated open request, a no-op
+- Events. Each of the first four types is sent for the change that rule 1 names and for no other (the criteria of
+  [Portal sign-in](portal-sign-in.md) cover `signin.changed`): a repeated open request, a no-op
   set (rule 2), the public instance mode, a creation, a migration, the legacy Tailscale grant, the downgrade of a stored
   public access level, a secret change, a host-wide grant, `resumeApplying` and `AdoptLegacyDraft` send nothing. A
   visibility approval sends `approval.decided` and `visibility.changed`. A flat deletion that fails the other pending

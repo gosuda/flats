@@ -125,7 +125,9 @@ in the console.
    action is not in this table, whose frozen parameters cannot be read, or a
    `set_visibility` approval without its frozen starting visibility (as
    approvals from older Flats versions lack), needs an operation no switch
-   allows: agents can neither approve nor reject it. Whether the frozen
+   allows: agents can neither approve nor reject it. A `set_signin` approval
+   of [Portal sign-in](portal-sign-in.md) is such an approval: it has no
+   switch, and only the operator decides it (its rule 17). Whether the frozen
    state still matches the flat is checked later, when the approval is
    applied, exactly as today.
 7. **Operation guide**: free text for agents, at most 4,000 characters,

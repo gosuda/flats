@@ -192,7 +192,7 @@ rendered in the client; assets in `content.assets` are still the host's responsi
 * The editor keeps up with remote changes (spec rule 21b,
   [technical design 3.11](../spec/docs-public-edit-technical-design.md#311-editor-parse-cost)):
   * Its Markdown language (`_web/src/markdown-inline.js`,
-    `editorMarkdown()`) is `@lezer/markdown` 1.7.2 GFM with linear-time
+    `editorMarkdown()`) is `@lezer/markdown` 1.8.1 GFM with linear-time
     replacements for link closing, emphasis resolution, unclosed inline HTML
     and link destination/title scans; its trees equal the stock parser's.
   * A paragraph whose text (without container markers, with line breaks) is

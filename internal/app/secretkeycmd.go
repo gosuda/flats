@@ -348,8 +348,19 @@ func (k *secretKeyCmd) reset(args []string) error {
 		return err
 	}
 	var values []core.SealedName
+	bound := map[core.SealedName]store.Binding{}
+	// The client secret of Portal sign-in is set again with `flats signin secret set`, not `flats secret set`
+	// (docs/spec/portal-sign-in.md, rule 25).
+	signIn := map[core.SealedName]store.SignInBinding{}
 	for _, s := range secrets {
-		values = append(values, core.SealedName{Flat: s.Flat, Name: s.Name})
+		name := core.SealedName{Flat: s.Flat, Name: s.Name}
+		values = append(values, name)
+		if s.Inject.Injected() {
+			bound[name] = s.Inject
+		}
+		if s.Use == store.SecretUseSignIn {
+			signIn[name] = s.SignIn
+		}
 	}
 	for _, r := range records {
 		if r.HasValue() {
@@ -372,6 +383,14 @@ func (k *secretKeyCmd) reset(args []string) error {
 	}
 	k.printf("This deletes:\n")
 	for _, v := range values {
+		if b, ok := bound[v]; ok {
+			k.printf("  %s (injected: sent as %s to %s)\n", v, b.Header, b.Origin)
+			continue
+		}
+		if b, ok := signIn[v]; ok {
+			k.printf("  %s (sign-in client secret for issuer %s and client ID %s)\n", v, b.Issuer, b.ClientID)
+			continue
+		}
 		k.printf("  %s\n", v)
 	}
 	if !*yes {
@@ -421,6 +440,12 @@ func (k *secretKeyCmd) reset(args []string) error {
 		k.printf("The next start creates a new %s. Run `flats secret backup-key` after it %s.\n", keyPath, why)
 	}
 	k.printf("Set the secrets again with `flats secret set` and redeploy, and the operator keys with `flats key set`.\n")
+	if len(bound) > 0 {
+		k.printf("Set each injected secret again with `flats secret set <slug> <NAME> --origin <origin> --header <header>`, with the origin and the header listed above, so that it stays out of env.\n")
+	}
+	if len(signIn) > 0 {
+		k.printf("Set each sign-in client secret again with `flats signin secret set <slug> --issuer <issuer> --client-id <id>`, with the issuer and the client ID listed above; until then the Portal route of a flat with oidc sign-in stays stopped.\n")
+	}
 	if synced != nil {
 		return fmt.Errorf("the values are deleted, but %w", synced)
 	}

@@ -1,7 +1,7 @@
 // Landing page: every flat, with search, a list/grid toggle and row actions.
 'use strict';
 
-import { h, clear, icon, timeEl, relTime, visibilityBadge } from './dom.js';
+import { h, clear, icon, timeEl, relTime, flatBadge } from './dom.js';
 import { api, thumbnail } from './api.js';
 import { menu, errorPanel, loading, busy, openLinks, openPrimary, openMenuItems } from './ui.js';
 import { saveVersion, publishVersion, nextVersion, deleteInPlace } from './actions.js';
@@ -325,8 +325,8 @@ export function mount(main, _params, ctx) {
       typeIcon(f),
       h('div', { class: 'flat-main' },
         h('a', { class: 'flat-name', href, 'data-nav': true, text: f.name || f.slug }),
-        h('div', { class: 'flat-sub' }, h('span', { class: 'flat-sub-vis' }, visibilityBadge(f.visibility, f.public_access)), h('span', null, timeEl(f.updated_at), ` · ${status}`))),
-      h('div', { class: 'flat-vis' }, visibilityBadge(f.visibility, f.public_access)),
+        h('div', { class: 'flat-sub' }, h('span', { class: 'flat-sub-vis' }, flatBadge(f)), h('span', null, timeEl(f.updated_at), ` · ${status}`))),
+      h('div', { class: 'flat-vis' }, flatBadge(f)),
       actions);
   }
 

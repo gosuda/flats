@@ -70,8 +70,12 @@ the data directory is.
                               being removed, and orphans/ (see below)
   tsnet/                      tailnet node state: one node per flat, preview
                               and console domain
-  portal/                     Portal identities (<slug>.json), the pinned relay
-                              (<slug>.relay) and remembered aliases (<slug>.alias)
+  portal/                     Portal identities (<slug>.json, whose token secret
+                              signs the sessions and links of Portal sign-in),
+                              the pinned relay
+                              (<slug>.relay) and remembered aliases (<slug>.alias);
+                              on Windows each identity file has the Portal SDK's own
+                              access list (Windows support spec, rule 18)
   netbird/peers/<name>/       one NetBird peer per flat and console domain:
                               identity (mode 0600) and state (builds with NetBird only)
   zrok/                       zrok names this host reserved, until released
@@ -196,7 +200,11 @@ Required:
   revision contents and snapshots, and `flats/.lifecycle/` and
   `network-retirements/` when present;
 - `tsnet/` and `portal/`: without them new node names and certificates are
-  issued;
+  issued. The token secret in each `portal/<slug>.json` also signs the
+  sessions and the access links of [Portal sign-in](networking.md#portal-sign-in),
+  and the host key does not seal it, so keep the copy as private as
+  `flats.db`. A restore of an older copy brings back the access links that a
+  later `flats signin revoke` ended;
 - `zrok/` and `zrok-environment/`: without them a deleted flat no longer
   releases its zrok name, and the zrok account must be connected again;
 - `netbird/`: without it every NetBird peer registers again with the stored
@@ -456,6 +464,7 @@ written; `flats config unset KEY` removes it.
 | `portal.discovery` | `true`; `false` needs relays | restart |
 | `portal.max_active_relays` | `3` | restart |
 | `portal.hide` | `false` (public flats appear in relay listings) | immediately; relays follow at their next lease renewal |
+| `portal.require_auth` | `false` (Portal serves every Public flat that allows it) | immediately; a Public flat without sign-in stops being served on Portal |
 | `zrok.environment` | none (Flats manages `zrok-environment/` in the data directory) | restart, or when zrok is turned on from the console |
 | `zrok.namespace` | `public` | restart, or when zrok is turned on from the console |
 | `netbird.management_url` | `https://api.netbird.io:443` (NetBird Cloud); an https URL | restart, or when NetBird is turned on from the console; applies to peers started afterwards |
@@ -523,6 +532,41 @@ what Flats asks the relays for: a served route's lease metadata changes at
 once, and relays apply it at their next lease renewal (up to about 90
 seconds). If that update fails, the choice stays saved, the flat logs the
 error and the next activation of the route retries it.
+
+`portal.require_auth: true` makes Portal serve a flat only when the flat has
+[sign-in](networking.md#portal-sign-in). While it is on, a flat without
+sign-in gets no Portal route, and a Portal route that already serves such a
+flat stops when you turn the setting on. The flat stays Public on its other
+public providers and keeps its private routes. The Portal endpoint of a
+refused flat has the state `unavailable` and a detail that names the next
+step. The detail shows in the console and in the flat view, and
+`flats status` lists the refused flats. Turning the setting off
+opens the stopped Portal routes again. The setting covers Portal only:
+`network.permitted` is the switch of every other public provider, and a flat
+can still be Public on one of them without sign-in. Only the operator changes
+the setting, from the console (Settings), by editing `config.json` and
+sending SIGHUP, or offline with `flats config set`. It needs no approval,
+agents cannot change it, and a change writes no audit row and sends no
+webhook event; the log of each affected flat records the effect.
+
+When the setting turns on, the host ends the open public connections of each
+refused flat and serves its other public routes again, so a visitor on
+another provider reconnects. When the host cannot read a flat at that moment,
+it ends the public connections of that flat and stops its Portal route, and
+the other public routes of the flat answer 503 until a deploy, a grant or a
+restart. When the host cannot list the flats, it stops the Portal route of
+every flat that has one, with sign-in on or off, and ends no connection: a
+Portal connection that is open stays until it closes or the host restarts. A
+grant or a key change that runs between the change and the visit of a flat
+stops its Portal route in the same way, without ending its open connections and
+without the event of this setting. A route whose unregistration the relay refused
+opens again only after the lease of the relay has expired (2 minutes). A
+deploy, a grant, a restart, a sign-in change, or turning the setting off,
+opens a stopped Portal route again. An older release refuses a `config.json`
+that holds `portal.require_auth`, as it refuses any key it does not know, so
+run `flats config unset portal.require_auth` before you start one. `flats
+backup` copies `config.json`, so a restore brings back the value of the time
+of the backup.
 
 zrok keeps the connected account's token and identity in `zrok-environment/`
 (mode 0600), never in `config.json`, unless `zrok.environment` names an
@@ -1273,7 +1317,9 @@ flats secret reset [--yes] [--config PATH | --data DIR]
   the values, it lists the flat secrets and operator keys it will delete,
   asks you to type `reset` (or takes `--yes`), deletes them and leaves an
   event on each flat. The next start creates a new key: run `backup-key`
-  after it, set the secrets again with `flats secret set` and redeploy, and
+  after it, set the secrets again with `flats secret set` and redeploy, set
+  the client secret of Portal sign-in again with `flats signin secret set`
+  (the list names its issuer and client ID), and
   register the operator keys again with `flats key set`. With
   `host.secret_key_path` the next start creates no key: put a key at that path
   before it, and run `backup-key` after it.
@@ -1598,8 +1644,9 @@ and the command refuse the file and say to move it away.
 ### Audit log
 
 Every change of a sealed value, every key backup, key restore, key rotation and reset, every change of the visibility
-of a flat that an approval applies, and every change of the origin grants or of a provider permission of a flat that
-the console or `flats network set` makes writes one event to the audit log in
+of a flat that an approval applies, every change of the origin grants or of a provider permission of a flat that
+the console or `flats network set` makes, and every applied change of the Portal sign-in of a flat, access link of it
+and end of its sessions writes one event to the audit log in
 `flats.db` (the table `audit_events`, schema version 25). It is separate from the log of a flat, which Flats
 trims to `system.events_keep` events and removes with the flat. The audit log is append-only, is never trimmed,
 and the deletion or rename of a flat does not change it. The grants that a new flat starts with, and the Tailscale grant
@@ -1609,8 +1656,8 @@ its name.
 
 | Kind | Written when | `data` |
 | --- | --- | --- |
-| `secret.set` | a flat secret is stored or replaced | `created`: true for a new name |
-| `secret.delete` | a secret is deleted, by `flats secret reset`, or with its flat | `approval`: the approval that deleted the flat, when there is one |
+| `secret.set` | a flat secret is stored or replaced | `created`: true for a new name; `origin` and `header` for an injected secret; `use` (`signin`), `issuer` and `client_id` for the client secret of [Portal sign-in](networking.md#portal-sign-in) |
+| `secret.delete` | a secret is deleted, by `flats secret reset`, or with its flat | `approval`: the approval that deleted the flat, when there is one; `use` (`signin`) for the client secret of Portal sign-in |
 | `key.set` | an operator key value is stored or replaced | `replaced`; `from` (`flag`, `env` or `config`) for a start input or a migration |
 | `key.delete` | an operator key value is removed, or a waiting zrok token is used up | `reason`: `removed` or `connected` |
 | `key.backup` | `flats secret backup-key` wrote the recovery copy, or `flats secret rotate-key` wrote it again for the new key | `key_id`, and `out` when `--out` wrote a second copy |
@@ -1620,16 +1667,23 @@ its name.
 | `visibility.set` | an approval applied a change of the visibility or of the public access level of a flat | `from` and `to`, each with `visibility` and `access`, and the `approval` |
 | `network.set` | the list of origins that the server code of a flat may fetch changed | `count` and `origins`: the list after the change. A list whose JSON text has more than 3000 bytes is cut to its first origins, with `truncated` |
 | `provider.set` | the permission of a flat to use a network provider changed (the provider is the name of the event) | `permitted` |
+| `signin.set` | an approval applied a change of the Portal sign-in of a flat | `from` and `to`, each with `provider`, `issuer`, `client_id` and the `count` of entries; the `added` and the `removed` entries; the `approval`. Entries that do not fit into 4 KiB are cut, with `truncated` |
+| `signin.link` | the console issued an access link of Portal sign-in | `subject`, `host` and `expires_at`, never the link |
+| `signin.revoke` | the sessions and the access links of a flat ended: by `flats signin revoke` or the console, or because a rename or a deletion gave its Portal identity a new token secret | none for a revocation; `cause` (`rename` or `delete`) otherwise |
 
 Each event has a time, the slug and the ID of the flat when it concerns one, the name of the secret or key, the
-channel (`via`) and the actor. The channel is `console`, `cli` (`flats secret set` or `rm`, or `flats network set`, through the loopback
-API), `command` (a command that you ran on the host), `start` (an input that the host read at start, or the zrok
-enrolment after it), `migration` (the import of a legacy key), `flat-delete`, or `autopilot` (an agent decided the approval of a visibility
-change under [Autopilot](#autopilot-settings); the actor is then the Autopilot record of that agent). The actor is the identity that the
+channel (`via`) and the actor. The channel is `console`, `cli` (`flats secret set` or `rm`, `flats network set`,
+`flats signin secret set` or `rm`, `flats signin revoke` or `flats rename`, through the loopback
+API), `api` (a call of the loopback API without the CLI header, for `signin.revoke` only), `mcp` (for
+`signin.revoke` only, when the host removes a new board or notebook because the first write that created it failed),
+`command` (a command that you ran on the host), `start` (an input that the host read at start, or the zrok
+enrolment after it), `migration` (the import of a legacy key), `flat-delete`, or `autopilot` (an agent decided, under [Autopilot](#autopilot-settings),
+the approval of a visibility change or of the deletion of a flat, which writes `signin.revoke`; the Autopilot record
+of that agent is the actor). The actor is the identity that the
 channel knows. For the console it is the text that the console records for approvals: a tailnet user or node, a
 NetBird peer, the external origin, or the address of the caller. For a command it is the name of the operating-system
-user, which is `root` under `sudo`. For `cli`, `start`, `migration` and `flat-delete` it is empty: the CLI header is
-a claim of the client and not an identity. The log holds these names for as long as the host keeps `flats.db`, so
+user, which is `root` under `sudo`. For `cli`, `api`, `mcp`, `start`, `migration` and `flat-delete` it is empty: the
+CLI header is a claim of the client and not an identity. The log holds these names for as long as the host keeps `flats.db`, so
 treat it as you treat the approval records.
 
 ```sh
@@ -1666,7 +1720,12 @@ the copy. Anyone who can write `flats.db` can change the log. To keep a record o
 
 The audit log is a schema change: an older Flats refuses a `flats.db` of schema 25. Schema 26 added the two webhook keys and the
 flat ID of an approval, and an older Flats refuses it too. Schema 27 added the key ID of each sealed value
-([Rotating the key](#rotating-the-key)), and an older Flats refuses it too. To go back to an older release,
+([Rotating the key](#rotating-the-key)), and an older Flats refuses it too. Schema 28 added the origin and the header of an
+injected secret ([Calling external APIs](external-api.md)), and an older Flats refuses it too. Schema 29 added the
+[Portal sign-in](networking.md#portal-sign-in) of each flat and the use and the binding of its client secret, and an
+older Flats refuses it too. Every flat starts with sign-in off. Make a copy with
+[`flats backup`](#what-to-back-up) before an upgrade, also before the upgrade to schema 29. To go back to an older
+release,
 restore a backup of the whole data directory that you took before the upgrade, as [flats.db](#flatsdb) says.
 
 ### Audit export
@@ -1724,7 +1783,8 @@ records that were written after the copy.
 ### Event webhook
 
 Flats can send a signed HTTP POST to one URL when an approval is created or decided, when the visibility of a flat
-changes, and when a grant of a flat's network access changes. The webhook is off until you store its two
+changes, when a grant of a flat's network access changes, and when the Portal sign-in of a flat changes. The webhook
+is off until you store its two
 [operator keys](#operator-keys) while the host is stopped:
 
 ```sh
@@ -1751,10 +1811,13 @@ The secret has at least 16 bytes.
 | `approval.decided` | an approval is approved, rejected or failed, also when the deletion of its flat fails it |
 | `visibility.changed` | an approved change of the visibility or of the public access level of a flat is applied |
 | `network.changed` | the provider permission of a flat, or the list of origins that its server code may fetch, changes |
+| `signin.changed` | an approval applied a change of the [Portal sign-in](networking.md#portal-sign-in) of a flat (`set_signin`), the console issued an access link (`issue_signin_link`), or the sessions and the links of a flat were ended (`revoke_signin`) |
 
-A change that alters nothing sends nothing. The host-wide `network.permitted` list, the creation of a flat, the public
-instance mode, the downgrade of "anyone can edit" when guest editing is off, an approval that a restart finishes, and
-secrets and operator keys send no event. The [audit log](#audit-log) records the changes of secrets and operator keys.
+A change that alters nothing sends nothing. The host-wide `network.permitted` list, the host-wide `portal.require_auth` setting, the creation of a flat, the public
+instance mode, the downgrade of "anyone can edit" when guest editing is off, an approval that a restart finishes, the
+new token secret that a rename or a deletion gives the Portal identity of a flat, and secrets and operator keys, also
+the client secret of Portal sign-in, send no event. The [audit log](#audit-log) records the changes of secrets and
+operator keys.
 
 The body is a JSON object of at most 4 KiB:
 
@@ -1777,16 +1840,17 @@ The body is a JSON object of at most 4 KiB:
 | `id` | the ID of the event, the same for every attempt to deliver it |
 | `type`, `at` | the event and its time on the clock of the host |
 | `flat` | the slug and the ID of the flat. The ID is empty when Flats does not know it |
-| `operation` | the action of the approval, or `set_visibility`, `set_network_origins` or `set_provider_permission` |
-| `state` | `pending`, then `approved`, `rejected` or `failed`; `applied` for a visibility or grant change |
+| `operation` | the action of the approval, which is `set_signin` for a change of Portal sign-in; `set_visibility`, `set_network_origins` or `set_provider_permission` for a visibility or grant change; `set_signin`, `issue_signin_link` or `revoke_signin` for `signin.changed` |
+| `state` | `pending`, then `approved`, `rejected` or `failed`; `applied` for a visibility, grant or sign-in change |
 | `approval_id` | the approval, when there is one |
 | `via` | for `approval.created`, the channel that asked (`mcp`, `cli`, `api` or `console`) |
 | `decided_by` | `operator` or `autopilot`. Absent for an approval that nobody decided |
-| `change` | for `visibility.changed`, `from` and `to`, each with `visibility` and `access`. For `network.changed`, `{"grant":"origins","count":2,"origins":[…]}` or `{"grant":"provider","provider":…,"permitted":true}`. A list of origins whose JSON text has more than 3000 bytes is cut to its first origins, with `"truncated":true`; `count` is the size of the whole list |
+| `change` | for `visibility.changed`, `from` and `to`, each with `visibility` and `access`. For `network.changed`, `{"grant":"origins","count":2,"origins":[…]}` or `{"grant":"provider","provider":…,"permitted":true}`. A list of origins whose JSON text has more than 3000 bytes is cut to its first origins, with `"truncated":true`; `count` is the size of the whole list. For `signin.changed`, `{"from":{"provider":"","count":0},"to":{"provider":"oidc","count":3}}` for `set_signin`, `{"expires_at":…}` for `issue_signin_link` and `{}` for `revoke_signin` |
 | `console_url` | the page of the approval or of the flat in the console |
 
 The body never holds the content of a flat, a secret or its name, the reason, parameters or result of an approval, a
-login or an address. The export carries the reason, the result and the stored record of who decided.
+login or an address, or an entry, a subject, a credential or a link of Portal sign-in. The export carries the reason,
+the result and the stored record of who decided.
 
 Each request has these headers:
 

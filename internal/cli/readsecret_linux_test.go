@@ -17,7 +17,7 @@ func TestReadSecretLeavesEchoOn(t *testing.T) {
 	cancel()
 	a := &app{env: Env{Stdin: pts}, ctx: early, out: io.Discard, errw: io.Discard}
 	for range 50 {
-		if _, err := a.readSecret("API_KEY"); !errors.Is(err, context.Canceled) {
+		if _, err := a.readSecret("API_KEY", "flats secret set blog API_KEY"); !errors.Is(err, context.Canceled) {
 			t.Fatalf("early interrupt: %v", err)
 		}
 		if !ostest.Echoing(t, pts) {
@@ -32,7 +32,7 @@ func TestReadSecretLeavesEchoOn(t *testing.T) {
 	a = &app{env: Env{Stdin: pts}, ctx: ctx, out: io.Discard, errw: shown}
 	done := make(chan error, 1)
 	go func() {
-		_, err := a.readSecret("API_KEY")
+		_, err := a.readSecret("API_KEY", "flats secret set blog API_KEY")
 		done <- err
 	}()
 	<-shown

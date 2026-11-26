@@ -193,7 +193,7 @@ func TestSheetMigrationFromSchema27(t *testing.T) {
 	boom := errors.New("sheet migration failed")
 	t.Run("failed migration", func(t *testing.T) {
 		broken := slices.Clone(migrations)
-		broken[slices.IndexFunc(broken, func(m migration) bool { return m.version == 28 })].up = func(ctx context.Context, x executor) error {
+		broken[slices.IndexFunc(broken, func(m migration) bool { return m.version == 30 })].up = func(ctx context.Context, x executor) error {
 			if err := addSheetRevisions(ctx, x); err != nil {
 				return err
 			}
@@ -204,7 +204,7 @@ func TestSheetMigrationFromSchema27(t *testing.T) {
 			t.Fatalf("migration error = %v", err)
 		}
 	})
-	if info, err := Inspect(path); err != nil || info.Version != 27 {
+	if info, err := Inspect(path); err != nil || info.Version != 29 {
 		t.Fatalf("schema after failure = %+v, %v", info, err)
 	}
 	queryRO(t, path, `SELECT COUNT(*) FROM sqlite_master WHERE name IN ('sheet_imports','sheet_imports_revision','sheet_rev_tabs')`, &tables)
@@ -216,7 +216,7 @@ func TestSheetMigrationFromSchema27(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if info, err := Inspect(path); err != nil || info.Version != 28 {
+	if info, err := Inspect(path); err != nil || info.Version != 30 {
 		t.Fatalf("migrated schema = %+v, %v", info, err)
 	}
 	if n, ok, err := s.NotebookImportRevision(ctx, "notes", "store", 1); err != nil || !ok || n != 1 {
