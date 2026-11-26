@@ -76,6 +76,21 @@ class ShardListTests(unittest.TestCase):
         self.assertIn("timeout-minutes: 30", workflow)
         self.assertIn('scripts/ci-race.sh "${{ matrix.lane }}"', workflow)
 
+    def test_windows_native_regressions_use_the_required_temp_directories(self) -> None:
+        ci = (ROOT / ".github/workflows/ci.yml").read_text()
+        windows = ci.split("\n  windows:\n", 1)[1].split("\n  # Native macOS", 1)[0]
+        steps = windows.split("      - name: ")[1:]
+        regressions = [step for step in steps if "run: go test " in step]
+        self.assertEqual(len(regressions), 5)
+        self.assertTrue(regressions[0].startswith("Native path regressions on the system drive\n"))
+        self.assertIn("./internal/site\n", regressions[0])
+        self.assertNotIn("env:", regressions[0])
+        self.assertNotIn("    env:\n", windows.split("    steps:\n", 1)[0])
+        for step in regressions[1:]:
+            with self.subTest(step=step.splitlines()[0]):
+                self.assertIn("          TMP: ${{ runner.temp }}\n", step)
+                self.assertIn("          TEMP: ${{ runner.temp }}\n", step)
+
     def test_large_reader_lane_includes_directly_flagged_tests(self):
         script = (SCRIPTS / "ci-memory.sh").read_text()
         patterns = re.findall(r"^\s*pattern='(.+)'$", script, re.M)[:2]

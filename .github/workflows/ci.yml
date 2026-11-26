@@ -292,15 +292,27 @@ jobs:
         run: go test -v -count=1 ./internal/site
       - name: Native configuration regressions
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        env:
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
         run: go test -v -count=1 ./internal/config
       - name: Native open-file storage regressions
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        env:
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
         run: go test -v -count=1 ./internal/core -run '^(TestDeleteWithAnOpenFileKeepsItsSlugReserved|TestRenameWithAnOpenFileRestartsTheStoppedWorker)$'
       - name: Native backup junction regression
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        env:
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
         run: go test -v -count=1 ./internal/backup -run '^TestAJunctionIsSkippedAndNotEntered$'
       - name: Back up and restore a running Windows host
         if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        env:
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
         run: go test -v -count=1 ./internal/app -run '^TestBackupOfARunningHostRestoresToAWorkingHost$'
       - name: Install, crash, stop and uninstall the service
         if: ${{ !cancelled() && steps.archive.outcome == 'success' }}
