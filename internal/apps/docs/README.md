@@ -15,7 +15,7 @@ npm run build --prefix internal/apps/docs/_web
 go test ./internal/apps/docs/... ./internal/runtime/...
 ```
 
-Use Node 22.22.1 or newer (CI runs the latest Node 22). On earlier 22.x
+Use Node 22.22.1 or newer (CI runs Node 26). On earlier 22.x
 releases `npm test` fails in the revisions tests: 22.12 has no `node:sqlite`,
 and every release from 22.13 to 22.22.0 that was tried fails one test. The
 diagram viewer tests also import `internal/design/web/wheel.js`, which has no

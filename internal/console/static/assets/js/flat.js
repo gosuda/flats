@@ -410,11 +410,15 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
         : p.id === 'portal' && signInOf(flat) ? 'Visitors that its sign-in allows, through Portal relays' : p.hint }));
     // A reverse proxy row shows its address: Flats cannot see whether the
     // proxy reaches it, and says so next to it (rule 6).
-    const route = allowed && (p.id === 'proxy' || p.id === 'proxy-public') ? proxyRoute(flat, p.id) : null;
-    if (!route || (!route.url && route.state !== 'error')) return h('li', null, box, label);
-    const state = route.state === 'error' ? [h('span', { class: 'badge badge-error', text: 'error' }), ' '] : null;
+    const route = allowed && (p.id === 'proxy' || p.id === 'proxy-public' || p.id === 'portal') ? proxyRoute(flat, p.id) : null;
+    // The Portal row shows the reason of a route that is not ready, such as one that portal.require_auth refuses
+    // (docs/spec/portal-require-auth.md, rule 24). It shows no address: the Portal address is in the share dialog.
+    const shown = p.id === 'portal' ? !!(route && route.detail && !route.ready) : !!(route && (route.url || route.state === 'error'));
+    if (!shown) return h('li', null, box, label);
+    const showUrl = p.id !== 'portal' && route.url;
+    const state = p.id === 'portal' || route.state === 'error' ? [h('span', { class: 'badge badge-' + route.state, text: route.state }), ' '] : null;
     return h('li', null, box, h('div', { class: 'network-main' }, label,
-      h('div', { class: 'network-route small' }, state, route.url ? [extLink(route.url), ' '] : null,
+      h('div', { class: 'network-route small' }, state, showUrl ? [extLink(route.url), ' '] : null,
         route.detail ? h('span', { class: 'muted', text: route.detail }) : null)));
   }
 

@@ -36,6 +36,7 @@ const LIMIT_GROUPS = [
 // LABELS names every setting in messages.
 const LABELS = Object.fromEntries([...FIELDS.map((f) => [f.key, f.label]),
   ['portal_relays', 'Relay list'], ['portal_discovery', 'Discover more relays'], ['portal_hide', 'Hide public flats from relay listings'],
+  ['portal_require_auth', 'Serve flats on Portal only with sign-in'],
   ['default_private_provider', 'Private network for new flats'], ['default_public_provider', 'Public network for new flats'],
   ['external_origins', 'External origins'], ['preferred', 'Address for links'], ['proxy_url_template', 'Address template']]);
 
@@ -781,6 +782,9 @@ function portalForm(data, saved, reload, notice, page) {
       { key: 'portal_hide', kind: 'toggle', label: 'Hide public flats from relay listings', initial: String((data.settings || {}).portal_hide ?? 'false') === 'true',
         help: 'Keeps addresses out of the relays’ public lists. It is not access control: anyone with a URL can still open a flat.',
         meta: ['Applies within about 90 seconds', 'Each flat can override it'] },
+      { key: 'portal_require_auth', kind: 'toggle', label: 'Serve flats on Portal only with sign-in', initial: String((data.settings || {}).portal_require_auth ?? 'false') === 'true',
+        help: 'While on, Portal serves a flat only when the flat has sign-in. Other public providers are not covered: turn them off with their own switch under Networks.',
+        meta: ['Applies at once', 'Stops the Portal address of each Public flat without sign-in'] },
     ]]],
   });
 }

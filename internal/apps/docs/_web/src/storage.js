@@ -1,8 +1,8 @@
 'use strict';
 
 import * as Y from "yjs";
-import { sha256 } from "@noble/hashes/sha256";
-import { bytesToHex } from "@noble/hashes/utils";
+import { sha256 } from "@noble/hashes/sha2.js";
+import { bytesToHex } from "@noble/hashes/utils.js";
 import { encodeUtf8 } from "lib0/string";
 import { base64, unbase64, utf8Bytes, LIMITS, GUEST } from "./protocol.js";
 import { mergeText, applyText } from "./merge.js";

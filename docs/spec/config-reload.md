@@ -70,6 +70,10 @@ table; a key's bucket follows the table's Applies column.
    - `system.disk_quota_bytes` pushes document budgets and re-measures
      boards.
    - `portal.hide` re-applies host listings.
+   - `portal.require_auth` visits every flat: turning it on stops the Portal
+     route of each Public flat without sign-in, and turning it off opens the
+     stopped routes again ([Portal require_auth](portal-require-auth.md),
+     rules 16 to 18).
    - `proxy.url_template` and `console.external_origins` affect new
      requests.
    - `console.preferred_host` enters the adopted document; a preference

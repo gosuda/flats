@@ -954,9 +954,25 @@ func (s *Server) getApproval(w http.ResponseWriter, r *http.Request, via core.Vi
 		return
 	}
 	if via != core.ViaConsole {
-		a = core.WithoutSignInEntries(a)
+		writeJSON(w, 200, core.WithoutSignInEntries(a))
+		return
 	}
-	writeJSON(w, 200, a)
+	writeJSON(w, 200, s.forConsole(a))
+}
+
+// consoleApproval is an approval as the console reads it. A set_signin approval also says that portal.require_auth is
+// on, because the title and the warning of its page tell the operator what turning sign-in off does
+// (docs/spec/portal-require-auth.md, rule 21).
+type consoleApproval struct {
+	store.Approval
+	PortalRequireAuth bool `json:"portal_require_auth,omitempty"`
+}
+
+func (s *Server) forConsole(a store.Approval) any {
+	if a.Action != "set_signin" || !s.Svc.PortalRequireAuth() {
+		return a
+	}
+	return consoleApproval{Approval: a, PortalRequireAuth: true}
 }
 
 func (s *Server) listApprovals(w http.ResponseWriter, r *http.Request, via core.Via) {
@@ -969,8 +985,14 @@ func (s *Server) listApprovals(w http.ResponseWriter, r *http.Request, via core.
 		for i := range as {
 			as[i] = core.WithoutSignInEntries(as[i])
 		}
+		writeJSON(w, 200, map[string]any{"approvals": as})
+		return
 	}
-	writeJSON(w, 200, map[string]any{"approvals": as})
+	out := make([]any, len(as))
+	for i := range as {
+		out[i] = s.forConsole(as[i])
+	}
+	writeJSON(w, 200, map[string]any{"approvals": out})
 }
 
 func (s *Server) decide(approve bool) func(w http.ResponseWriter, r *http.Request, via core.Via) {

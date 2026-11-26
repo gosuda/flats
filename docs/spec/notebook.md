@@ -659,7 +659,10 @@ revisions, the read-only Public route and `topic.notebook` are implemented but
 not released. Desktop Chrome was driven against a disposable host over
 loopback for editing, undo and redo, table and kanban views, Markdown and
 image paste, history, Korean IME composition, reconnection after a host
-restart, and the read-only Public route and its withdrawal.
+restart, and the read-only Public route and its withdrawal. The lifecycle gate
+census checks notebook writes against the store and the approval list, so that
+`update_notebook` leaves the notebook's `versions` and `version_numbers` rows and
+the approval list unchanged.
 
 Not done yet:
 
@@ -667,9 +670,6 @@ Not done yet:
   scripts of the technical design's section 22.5 do not exist yet.
 - Safari, the iPhone, touch, VoiceOver and Korean IME on Safari are
   unchecked, and nothing has run over a real tailnet.
-- The lifecycle authority census (`scripts/lifecycle-gate.sh`) has not run
-  with notebook cases: its pinned legacy adapter no longer builds
-  (`rt.Close` is undefined), on main as well.
 - No fault-injection test checks that a content read still answers when the
   catch-up revision import before it fails.
 - The limits of [Open question 1](#open-questions) are the planned values.
