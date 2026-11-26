@@ -78,8 +78,15 @@ try {
     { name: "character at end", input: "alphabeta", caret: 9, expected: "alphabet" },
     { name: "character within line", input: "alpha\nbeta", caret: 8, expected: "alpha\nbta" },
     { name: "Unicode line", input: "alpha\nβeta", caret: 6, expected: "alphaβeta" },
+    {
+      name: "trailing diagram widget",
+      input: "```mermaid\nflowchart TD\nA --> B\n````",
+      caret: 36,
+      expected: "```mermaid\nflowchart TD\nA --> B\n```",
+      diagramWidget: true,
+    },
   ];
-  for (const { name, input, caret, expected } of lineJoins) {
+  for (const { name, input, caret, expected, diagramWidget } of lineJoins) {
     for (const operation of ["keyboard", "native"]) {
       await a.locator(".cm-content").evaluate((el, { input, caret }) => {
         const view = el.cmTile.root.view;
@@ -96,6 +103,25 @@ try {
           (await b.locator("#status").innerText()) === "Saved",
         name + ": initial text did not converge",
       );
+      if (diagramWidget) {
+        await wait(
+          async () => a.locator(".cm-content").evaluate((el) => {
+            const view = el.cmTile.root.view;
+            const finalLine = view.state.doc.line(view.state.doc.lines);
+            const line = [...el.children].find((child) =>
+              child.classList.contains("cm-line") &&
+              view.posAtDOM(child, 0) === finalLine.from,
+            );
+            const widget = line?.nextSibling;
+            return line?.textContent === finalLine.text &&
+              widget instanceof HTMLElement &&
+              widget.matches('.cm-diagram-widget[data-active="true"]') &&
+              widget.querySelector("svg") !== null;
+          }),
+          name + ": rendered widget did not follow the final source line",
+        );
+        console.log("PASS: trailing diagram widget", operation);
+      }
       if (operation === "keyboard") {
         await a.keyboard.press("Backspace");
       } else {
