@@ -129,6 +129,10 @@ func TestValidation(t *testing.T) {
 		{"portal", `"relays": ["https://relay.example.com", "relay.example.com"]`, "portal.relays[1]"},
 		{"portal", `"discovery": true`, ""},
 		{"portal", `"discovery": false`, "portal.discovery"},
+		{"portal", `"require_auth": true`, ""},
+		{"portal", `"require_auth": false`, ""},
+		{"portal", `"require_auth": "true"`, "portal.require_auth"},
+		{"portal", `"require_auth": 1`, "portal.require_auth"},
 		{"portal", `"max_active_relays": 1`, ""},
 		{"portal", `"max_active_relays": 2147483647`, ""},
 		{"portal", `"max_active_relays": 0`, "portal.max_active_relays"},
@@ -364,6 +368,35 @@ func TestOverrides(t *testing.T) {
 		if errPath(err) != r.path {
 			t.Errorf("override %s=%s: err = %v, want path %s", r.key, r.value, err, r.path)
 		}
+	}
+}
+
+// docs/spec/portal-require-auth.md, rules 1 and 2: portal.require_auth is a boolean that is off by default, and the
+// offline commands store and remove it.
+func TestPortalRequireAuth(t *testing.T) {
+	doc, err := New(testID, "/var/lib/flats")
+	if err != nil {
+		t.Fatal(err)
+	}
+	enabled := func() bool {
+		t.Helper()
+		c, err := doc.Effective(nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return c.Portal.RequireAuth
+	}
+	if v, ok := Default("portal.require_auth"); !ok || v != false || enabled() {
+		t.Fatalf("the default is %v %t, effective %t, want off", v, ok, enabled())
+	}
+	if err := doc.Set("portal.require_auth", "true"); err != nil || !enabled() {
+		t.Fatalf("Set true = %v, effective %t", err, enabled())
+	}
+	if err := doc.Set("portal.require_auth", "maybe"); err == nil || !strings.Contains(err.Error(), "use true or false") || !enabled() {
+		t.Fatalf("Set maybe = %v, effective %t: a value that is not a boolean must be refused and change nothing", err, enabled())
+	}
+	if err := doc.Unset("portal.require_auth"); err != nil || enabled() {
+		t.Fatalf("Unset = %v, effective %t", err, enabled())
 	}
 }
 

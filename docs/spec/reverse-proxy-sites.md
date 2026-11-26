@@ -59,13 +59,18 @@ where a rename redirect sends a visitor.
    handler: the same content, access level and public-access notice as Portal
    or Funnel. It never serves a Private flat, a Draft, a preview or the
    Private handler. A rename redirect of a Public flat is served on it like on
-   the other public providers.
+   the other public providers. It never serves a flat with
+   [Portal sign-in](portal-sign-in.md) on: such a flat is Public through
+   Portal alone, and the host refuses a grant of `proxy-public` to it (its
+   rules 8 and 10).
 5. **Visitors through `proxy` have Private access.** Whoever the proxy lets
    through can open Drafts through previews and edit documents, designs and
    boards, exactly as on Local or Tailscale. Flats does not check who the
    visitor is. The proxy's own authentication or network restrictions are
-   the only access control. Settings and the docs say this where the operator
-   turns `proxy` on.
+   the only access control. The Portal sign-in of a flat does not cover
+   `proxy`, which is a private route ([Portal sign-in](portal-sign-in.md),
+   rule 12). Settings and the docs say this where the operator turns `proxy`
+   on.
 6. **Reachability is the proxy's.** Flats cannot see whether the proxy,
    its DNS or its certificate work. A registered proxy route reports `ready`
    with the detail "Served through your reverse proxy. Flats cannot check
@@ -286,7 +291,9 @@ remove the response rewriting.
 
 ## Out of scope
 
-- Authentication of visitors. Built-in authentication is
+- Authentication of visitors. [Portal sign-in](portal-sign-in.md) signs in
+  the visitors of the Portal route of a flat, and no route of this spec.
+  The authentication of operators is
   [gosuda/flats#139](https://github.com/gosuda/flats/issues/139).
 - A per-flat address that is not derived from the route host, such as
   `blog.example.com` for one flat. It would fit later as a per-flat setting

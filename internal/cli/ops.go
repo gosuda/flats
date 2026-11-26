@@ -476,7 +476,10 @@ func (a *app) status(args []string) error {
 				fmt.Fprintf(w, "  %s: %s\n", k, indentJSON(body[k], "  "))
 			}
 			if hasPublicHosts(body["system"]) {
-				fmt.Fprintf(w, "  note: the public hosts above serve public flats. %s\n", publicURLNotice)
+				fmt.Fprintf(w, "  note: the public hosts above serve public flats. %s %s\n", publicURLNotice, signInHostsNote)
+			}
+			if note := requireAuthNote(body["system"]); note != "" {
+				fmt.Fprintf(w, "  note: %s\n", note)
 			}
 		}
 	}
@@ -517,6 +520,34 @@ func (a *app) status(args []string) error {
 	}
 	return nil
 }
+
+// requireAuthNote is the note of `flats status` for portal.require_auth (docs/spec/portal-require-auth.md, rule 11). It
+// is empty with the setting off, and for a host that does not send the members.
+func requireAuthNote(raw json.RawMessage) string {
+	var sys struct {
+		On      bool      `json:"portal_require_auth"`
+		Refused *[]string `json:"portal_refused"`
+	}
+	if json.Unmarshal(raw, &sys) != nil || !sys.On {
+		return ""
+	}
+	note := "portal.require_auth is on, so Portal serves only flats that have sign-in."
+	switch {
+	case sys.Refused == nil:
+		note += " The refused flats cannot be read now."
+	case len(*sys.Refused) > 0:
+		names := *sys.Refused
+		list := strings.Join(names[:min(len(names), requireAuthNoteMax)], ", ")
+		if len(names) > requireAuthNoteMax {
+			list += fmt.Sprintf(", and %d more", len(names)-requireAuthNoteMax)
+		}
+		note += " Portal does not serve these flats: " + list + ". The Networks section of each flat in the console says what to do, or turn the setting off in the console."
+	}
+	return note
+}
+
+// requireAuthNoteMax is how many refused flats the note of `flats status` names.
+const requireAuthNoteMax = 10
 
 // hasPublicHosts reports whether a status "system" object lists public
 // (Portal) hosts with URLs.

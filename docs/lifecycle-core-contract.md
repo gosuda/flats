@@ -201,6 +201,13 @@ frozen value:
   Requests stored before flat IDs froze a document's live version and keep
   that rule; an identical new request on the same slug reuses one while that
   version still runs, never one a rename moved to another slug.
+- `set_signin` freezes the flat ID, the Portal sign-in sequence of the flat,
+  the stored and the requested sign-in setting and the sorted public
+  providers that the flat is granted
+  ([Portal sign-in](spec/portal-sign-in.md), rule 16). `set_visibility`,
+  `activate`, `rollback`, `restore_data` and `create_version` also freeze the
+  sign-in sequence, so an applied sign-in change makes them stale (rule 23).
+  An approval stored before sign-in froze no sequence and is not checked.
 
 Pending requests deduplicate across caller surfaces by canonical
 action/params. Decisions serialize by approval ID and atomically claim pending

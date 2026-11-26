@@ -203,7 +203,7 @@ running host needs its own data directory and ports; see
 
 #### From source
 
-Requires Go 1.27.1 or newer:
+Requires Go 1.27.3 or newer:
 
 ```sh
 go install github.com/gosuda/flats/cmd/flats@latest
@@ -305,7 +305,7 @@ operator-granted HTTP(S) origins; see [Calling external APIs](docs/external-api.
 
 A `.wasm` server is a WASI preview1 command instantiated afresh per request:
 request JSON on stdin, response JSON on stdout, only the flat's configured
-environment variables and secrets, with no inherited host environment, plus
+environment variables and readable secrets, with no inherited host environment, plus
 clocks and randomness. It has **no SQLite/FILES host ABI, filesystem mounts,
 outbound network or WebSocket API**. See the
 [capability table and response format](docs/design.md#server-flats-handler-abi).
@@ -315,8 +315,11 @@ code; `--restore-data` requests a separately approved restore of the
 pre-deploy DB and FILES snapshot. Preview data is isolated from live data.
 
 Ordinary environment variables (`flats env set hello GREETING 'Hello'`) and
-encrypted secrets reach server code as `env.NAME`, or as environment variables
-for WASI. Saving a value leaves running workers on their snapshot. The live
+encrypted readable secrets reach server code as `env.NAME`, or as environment variables
+for WASI. An injected secret (`flats secret set hello API_TOKEN --origin
+https://api.example.com --header Authorization`) never reaches server code: the
+host adds it as that header to each JavaScript `fetch` to that origin
+([Calling external APIs](docs/external-api.md)). Saving a value leaves running workers on their snapshot. The live
 worker picks up current values at the next approved deployment, redeployment,
 rollback or data restore, or when the Flats host restarts; a newly created
 preview also loads them. See
@@ -352,6 +355,11 @@ Configuration alone never publishes or changes visibility. Wait for a route to r
 its endpoint before sharing it: relay availability and network connectivity
 are external dependencies.
 
+Public is not access control, with one exception: [Portal sign-in](docs/networking.md#portal-sign-in)
+puts the Portal URL of a flat behind a sign-in at your OpenID Connect provider or behind
+access links, for an allowlist that you approve. It protects the Portal URL only, not the
+private routes, previews, the console or MCP.
+
 See [Private and public access](docs/networking.md) for provider setup,
 tailnet consoles, [serving flats behind your own reverse proxy](docs/networking.md#serving-flats-behind-a-reverse-proxy)
 and upgrades from older hosts.
@@ -371,8 +379,10 @@ and upgrades from older hosts.
   also lets agents decide approvals of the operations the operator allows, over
   MCP ([Autopilot](docs/spec/autopilot.md)).
 - **Local secrets.** Secrets are encrypted with the local `secret.key`; secret
-  APIs expose names only. A flat can read and return its own secrets, so
-  deploy code you trust with them. Anyone who can read the data directory
+  APIs expose names only. A flat can read and return its own readable secrets, so
+  deploy code you trust with them. It cannot read an injected secret, which the
+  host adds as one header to the `fetch` calls to one HTTPS origin, unless that
+  origin returns request headers. Anyone who can read the data directory
   can recover those secrets, unless `host.secret_key_path` keeps the key
   elsewhere.
 - **Back up your data.** Immutable code versions are not data backups. Back up
@@ -413,4 +423,6 @@ including targets that are not fully implemented yet.
   <a href="LICENSE">MIT licensed</a> ·
   <a href="https://github.com/gosuda/flats/releases">Releases</a> ·
   <a href="https://github.com/gosuda/flats/issues">Issues</a>
+
+  [![Built with Depot](https://depot.dev/badges/built-with-depot.svg)](https://depot.dev?utm_source=gosuda)
 </p>

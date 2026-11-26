@@ -23,6 +23,8 @@ import (
 	"unicode/utf8"
 
 	"github.com/gosuda/flats/internal/cli"
+	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/expose/local"
 	"github.com/gosuda/flats/internal/ostest"
 	"github.com/gosuda/flats/internal/store"
 )
@@ -1155,5 +1157,67 @@ func TestAuditExportLinesPassTheFilterOfTheCommandLineUnchanged(t *testing.T) {
 	}
 	if summary.String() != stderr {
 		t.Errorf("the summary through the command line = %q, want %q", summary.String(), stderr)
+	}
+}
+
+// docs/spec/portal-sign-in.md, rule 30: no line of `flats audit export` holds the value of the sign-in client secret.
+// The host sets, sets again and removes it, and applies a sign-in change, so the export has the secret.set and
+// secret.delete rows of the client secret and the lines of the approval.
+func TestAuditExportHoldsNoSignInClientSecret(t *testing.T) {
+	dir, config, st := exportData(t)
+	ctx := context.Background()
+	priv, err := local.Listen("127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { priv.Close() })
+	svc, err := core.New(ctx, core.Config{DataDir: dir, Store: st, Private: priv, Logf: t.Logf})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { svc.Close() })
+	if _, err := svc.CreateFlat(ctx, "app", "", core.ViaCLI); err != nil {
+		t.Fatal(err)
+	}
+	const value = "cs-export-distinct-5Mq"
+	for _, issuer := range []string{"https://idp.example.com", "https://other.example.com"} {
+		if _, err := svc.SetSignInSecret(ctx, "app", value, issuer, "flats-app", core.ViaCLI); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r, err := svc.RequestSignIn(ctx, "app", core.SignInRequest{Provider: "oidc", Issuer: "https://idp.example.com", ClientID: "flats-app", Allow: []string{"ann@example.com"}}, core.ViaCLI)
+	if err != nil || r.Approval == nil {
+		t.Fatalf("request = %+v, %v", r, err)
+	}
+	if a, err := svc.Decide(ctx, r.Approval.ID, true); err != nil || a.Status != "approved" {
+		t.Fatalf("decide = %+v, %v", a, err)
+	}
+	if _, err := svc.DeleteSignInSecret(ctx, "app", core.ViaCLI); err != nil {
+		t.Fatal(err)
+	}
+
+	// The rows have the time of the machine; a clock an hour later has each of them before its cutoff.
+	now := time.Now().Add(time.Hour)
+	stdout, stderr, err := runExport(t, config, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines, _ := checkExport(t, stdout, stderr, now)
+	if strings.Contains(stdout+stderr, value) {
+		t.Fatalf("the export holds the client secret:\n%s", stdout)
+	}
+	var got []string
+	for _, l := range lines {
+		switch {
+		case l["record"] == "audit" && l["name"] == store.SignInSecretName:
+			got = append(got, l["kind"].(string))
+		case l["record"] == "approval" && l["action"] == "set_signin":
+			got = append(got, "approval "+l["event"].(string))
+		}
+	}
+	// Lines of one millisecond keep the order of rule 24, which the tests above check; here only the lines count.
+	slices.Sort(got)
+	if want := []string{"approval created", "approval decided", "secret.delete", "secret.set", "secret.set"}; !slices.Equal(got, want) {
+		t.Fatalf("the lines of the client secret and the approval = %q, want %q:\n%s", got, want, stdout)
 	}
 }

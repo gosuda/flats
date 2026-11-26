@@ -3756,7 +3756,7 @@ without an edit refuses the acknowledgement as `calculating` (section
 error, the instance keeps the snapshots, and the first step of a later
 import acknowledges the cursor again, as after a crash between the two.
 
-Host migration 28 adds two tables after migration 27:
+Host migration 30 adds two tables after migration 29:
 
 ```sql
 CREATE TABLE sheet_imports (
@@ -4687,7 +4687,7 @@ type across the host, not only two tools.
 | `internal/core/metrics.go`, `usage_contract.go` | In-process classification and a `Sheet` metrics field. |
 | `internal/core/settings.go`, `route_epoch.go`, `publicedit.go`, `docsrev.go` | Remeasure on quota changes, Public withdrawal on route revoke, the access epoch header for sheets, the `ErrNoRevisions` wording. Sheets stay out of anonymous editing. |
 | `internal/core/publicinstance.go`, `publicinstance_save.go` | Public instance creation for `create_flat` and a first `update_sheet` (rule 53). |
-| `internal/store/migrate.go`, new `internal/store/sheet.go`, `content.go` | Migration 28 with the tables of section 16.2, their accessors, and `SheetTabs` on the revision row. |
+| `internal/store/migrate.go`, new `internal/store/sheet.go`, `content.go` | Migration 30 with the tables of section 16.2, their accessors, and `SheetTabs` on the revision row. |
 | `internal/mcpx/tools.go`, new `sheet.go`, `sheet_schema.go` | Register `get_sheet` and `update_sheet`, the `create_flat` type enum and texts, running state text, error category and hints. |
 | `internal/mcpx/design.go` | Revision tool descriptions and the `get_revision` sheet selectors and result. |
 | `internal/mcpx/mcpx.go`, `public_instance.go`, `guide.go`, `llms.go` | Body limit for an 8 MiB call, `update_sheet` in the creation-note list, the topic list, the llms texts and CLI lines. |

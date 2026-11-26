@@ -1,0 +1,46 @@
+name: Regenerate merged sheet baselines
+
+on:
+  push:
+    branches: [ci/validate-sheet-baselines-20261126]
+
+permissions:
+  contents: read
+
+jobs:
+  baseline:
+    runs-on: depot-ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      GOENV: 'off'
+      GOCACHEPROG: ''
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Generate baselines from the combined source
+        run: UPDATE_PUBLIC_INSTANCE_BASELINE=1 go test -count=1 ./internal/mcpx -run '^TestPublicInstanceOffBaseline$'
+      - name: Verify the generated baselines and public-instance contracts
+        run: go test -count=1 ./internal/mcpx -run '^TestPublicInstance'
+      - name: Record the exact source and generated values
+        run: |
+          printf '%s\n' "$GITHUB_SHA" > baseline-source.txt
+          sha256sum internal/mcpx/testdata/public-instance-off-{false,true}.json
+          for mode in false true; do
+            printf 'BEGIN_BASELINE_%s\n' "$mode"
+            cat "internal/mcpx/testdata/public-instance-off-$mode.json"
+            printf 'END_BASELINE_%s\n' "$mode"
+          done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: sheet-baselines-${{ github.sha }}
+          path: |
+            internal/mcpx/testdata/public-instance-off-false.json
+            internal/mcpx/testdata/public-instance-off-true.json
+            baseline-source.txt
+          if-no-files-found: error
+          retention-days: 7

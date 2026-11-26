@@ -51,7 +51,10 @@ type docsDocument struct {
 
 // withRouteHeaders clones the request and replaces access and strips all
 // spellings of the host-only health signal, public access level and access
-// epoch.
+// epoch, and of the visitor and Portal identity headers of
+// docs/spec/portal-sign-in.md, rule 46. Every route that runs flat code goes
+// through it, so a client copy of those never reaches flat code; the public
+// site sets the visitor headers afterwards.
 func withRouteHeaders(r *http.Request, public bool) *http.Request {
 	r = r.Clone(r.Context())
 	for key := range r.Header {
@@ -60,6 +63,7 @@ func withRouteHeaders(r *http.Request, public bool) *http.Request {
 			delete(r.Header, key)
 		}
 	}
+	dropVisitorHeaders(r.Header)
 	access := "private"
 	if public {
 		access = "public"

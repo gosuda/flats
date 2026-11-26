@@ -174,6 +174,29 @@ func TestChangeShapes(t *testing.T) {
 			Change{Grant: "provider", Provider: "zrok", Origins: []string{"x"}, From: &Access{"a", "b"}},
 			`{"grant":"provider","provider":"zrok","permitted":false}`,
 		},
+		{
+			// docs/spec/portal-sign-in.md, rule 68: a provider and a count, also 0 for off.
+			"sign-in",
+			Change{SignInFrom: &SignIn{Provider: ""}, SignInTo: &SignIn{Provider: "oidc", Count: 3}},
+			`{"from":{"provider":"","count":0},"to":{"provider":"oidc","count":3}}`,
+		},
+		{
+			"sign-in with stray fields",
+			Change{SignInFrom: &SignIn{Provider: "credential", Count: 2}, SignInTo: &SignIn{}, From: &Access{"a", "b"}, Count: 9},
+			`{"from":{"provider":"credential","count":2},"to":{"provider":"","count":0}}`,
+		},
+		{
+			// Rule 68: issue_signin_link names only the expiry of the link.
+			"access link",
+			Change{ExpiresAt: "2026-11-26T08:00:00Z", SignInTo: &SignIn{Provider: "credential", Count: 1}, Count: 2},
+			`{"expires_at":"2026-11-26T08:00:00Z"}`,
+		},
+		{
+			// Rule 68: revoke_signin changes nothing that the body may name.
+			"revocation",
+			Change{Empty: true, ExpiresAt: "2026-11-26T08:00:00Z", From: &Access{"a", "b"}},
+			`{}`,
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

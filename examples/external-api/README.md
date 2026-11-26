@@ -3,7 +3,10 @@
 See [setup, permissions and limits](../../docs/external-api.md).
 
 - `server.js` and `flats.json`: deploy this directory as a server flat; needs an operator-granted origin,
-  ordinary `API_BASE` and secret `API_TOKEN`. `/healthz` stays local.
+  ordinary `API_BASE` and the injected secret `API_TOKEN`, bound to that origin and the `Authorization` header
+  (`flats secret set hello API_TOKEN --origin https://api.example.com --header Authorization`, with the value
+  `Bearer <token>`). The code never holds the token: the host adds the header to each fetch to the origin.
+  `/healthz` stays local.
 - `browser.html`: copy to a separate directory as `index.html`, then deploy that
   directory as a static flat; calls a public CORS-enabled JSON
   endpoint. No server secret or environment variable goes into this file.

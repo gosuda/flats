@@ -64,6 +64,19 @@ A body must keep arriving at 16 KiB/s on average after its first 30 seconds
 (else 408). One flat buffers at most 80 MiB of request bodies at once; a body
 beyond that gets 503 with Retry-After. Requests without a body are not limited.
 
+A flat whose Portal URL is behind Portal sign-in (`sign_in` in `get_flat`)
+gets the visitor who signed in on that URL as three request headers:
+`x-flats-visitor-provider` (`oidc` or `credential`), `x-flats-visitor-subject`
+(the principal that the allowlist let in: the verified email, also for an
+`@domain` entry, `sub:<subject>`, or the subject of an access link) and
+`x-flats-visitor-email` (the verified email, only when the provider vouched
+for one). Without a sign-in, on the private routes and in previews, the three
+are absent. The host removes every client copy of them, and of
+`x-portal-user`, `x-portal-auth`, `x-portal-proof` and
+`x-portal-access-credential`, on every route, so a value is always the
+host's. A visitor who signed in is still a Public visitor
+(`x-flats-access: public`). The operator sets up sign-in; flat code cannot.
+
 Return `new Response(body, {status, headers})`, `Response.json(value, init)`,
 `Response.redirect(url, status = 302)`, a string, or `{status, headers, body}`.
 Strings use UTF-8; Response string bodies default to text/plain;charset=UTF-8;
@@ -109,7 +122,7 @@ closed with code 1001. Redeploy closes connections.
 WASI `.wasm` is a fresh preview1 command per request: stdin JSON
 `{method,url,headers,body}`; stdout JSON `{status,headers,body}`, optional
 `body_base64: true` for base64-encoded binary response. Environment receives
-only the flat's configured environment variables and secrets; clocks and CSPRNG
+only the flat's configured environment variables and readable secrets; clocks and CSPRNG
 are available separately. There is no inherited host environment.
 It has **no DB/FILES host ABI**,
 filesystem mounts, outbound network, JS Web Crypto or WebSocket callbacks.
