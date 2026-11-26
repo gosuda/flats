@@ -333,10 +333,14 @@ jobs:
 
   # Native macOS: launchd service install smoke and its release archive.
   # The Linux install smoke runs in the container job, on its archives.
+  # Runs on a Depot macOS runner: GitHub-hosted macos-latest queued this job
+  # for 21 hours once, while Depot started portal-tunnel's macOS cell in
+  # 0.1 minutes with identical steps and proof. Apple silicon, so the
+  # GOOS/GOARCH-driven archive below stays darwin/arm64.
   install-macos:
     needs: changes
     if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') }}
-    runs-on: macos-latest
+    runs-on: depot-macos-latest
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
