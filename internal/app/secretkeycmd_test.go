@@ -87,7 +87,7 @@ func hostWithSecrets(t *testing.T, dir string) (string, []byte, *Host) {
 	if err := h.Svc.SetSecret(ctx, "app", "API_KEY", "hunter2-value", core.ViaCLI); err != nil {
 		t.Fatal(err)
 	}
-	if err := core.PutHostKeyValue(ctx, core.NewKeyFile(dir, ""), h.Store, core.HostKeyZrok, "zrok-token", core.KeySourceCLI, time.Now()); err != nil {
+	if err := core.PutHostKeyValue(ctx, core.NewKeyFile(dir, ""), h.Store, core.HostKeyZrok, "zrok-token", core.KeySourceCLI, time.Now(), store.Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	key, err := os.ReadFile(filepath.Join(dir, core.SecretKeyFile))
@@ -320,7 +320,7 @@ func TestSecretReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	// A connected account keeps a record without a value.
-	if err := h.Store.PutHostKey(ctx, store.HostKey{ID: core.HostKeyNetbird, Source: core.KeySourceCLI, UpdatedAt: time.Now()}); err != nil {
+	if err := h.Store.PutHostKey(ctx, store.HostKey{ID: core.HostKeyNetbird, Source: core.KeySourceCLI, UpdatedAt: time.Now()}, store.Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	// reset refuses while the host runs, also with nothing at secret.key,
@@ -367,7 +367,7 @@ func TestSecretReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	bogus := store.SealedSecret{Name: "BOGUS", Nonce: make([]byte, 12), Ciphertext: make([]byte, 20), UpdatedAt: time.Now()}
-	if err := st.PutSecret(ctx, "app", bogus); err != nil {
+	if err := st.PutSecret(ctx, "app", bogus, store.Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	st.Close()
@@ -379,7 +379,7 @@ func TestSecretReset(t *testing.T) {
 		t.Fatal(err)
 	}
 	// An operator key that does not open comes first, while stopped.
-	if err := st.PutHostKey(ctx, store.HostKey{ID: core.HostKeyTailscale, Nonce: make([]byte, 12), Ciphertext: make([]byte, 20), Source: core.KeySourceCLI, UpdatedAt: time.Now()}); err != nil {
+	if err := st.PutHostKey(ctx, store.HostKey{ID: core.HostKeyTailscale, Nonce: make([]byte, 12), Ciphertext: make([]byte, 20), Source: core.KeySourceCLI, UpdatedAt: time.Now()}, store.Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	st.Close()
@@ -391,10 +391,10 @@ func TestSecretReset(t *testing.T) {
 	if st, err = store.Open(filepath.Join(dir, "flats.db")); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.DeleteSecret(ctx, "app", "BOGUS"); err != nil {
+	if err := st.DeleteSecret(ctx, "app", "BOGUS", store.Audit{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.DeleteHostKey(ctx, core.HostKeyTailscale); err != nil {
+	if err := st.DeleteHostKey(ctx, core.HostKeyTailscale, store.Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	st.Close()
@@ -589,6 +589,40 @@ func TestSecretResetOverAnotherKey(t *testing.T) {
 	}
 	if out, err := runSecretKey(t, path, "reset", "--yes"); err != nil || !strings.Contains(out, "deleted 1 value.") {
 		t.Fatalf("one value: %q %v", out, err)
+	}
+}
+
+// reset lists the sign-in client secret under its flat and removes it, and no output holds its value
+// (docs/spec/portal-sign-in.md, rule 32).
+func TestSecretResetRemovesTheSignInSecret(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path, _, h := hostWithSecrets(t, dir)
+	const value = "cs-reset-distinct-5Rv"
+	if _, err := h.Svc.SetSignInSecret(ctx, "app", value, "https://idp.example.com", "flats-app", core.ViaCLI); err != nil {
+		t.Fatal(err)
+	}
+	h.Close()
+	if err := os.Remove(filepath.Join(dir, core.SecretKeyFile)); err != nil {
+		t.Fatal(err)
+	}
+	out, err := runSecretKey(t, path, "reset", "--yes")
+	listed := "\n  secret " + store.SignInSecretName + " of app (sign-in client secret for issuer https://idp.example.com and client ID flats-app)\n"
+	// The sign-in client secret is set again with its own command, which the guidance names (rule 25).
+	again := "`flats signin secret set <slug> --issuer <issuer> --client-id <id>`"
+	if err != nil || !strings.Contains(out, listed) || !strings.Contains(out, again) || !strings.Contains(out, "deleted 3 values.") || strings.Contains(out, value) {
+		t.Fatalf("reset: %q %v", out, err)
+	}
+	st, err := store.Open(filepath.Join(dir, "flats.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer st.Close()
+	if _, ok, err := st.SignInSecret(ctx, "app"); ok || err != nil {
+		t.Fatalf("the sign-in client secret after reset: %v %v", ok, err)
+	}
+	if secs, err := st.ListAllSecrets(ctx); err != nil || len(secs) != 0 {
+		t.Fatalf("secrets after reset: %+v %v", secs, err)
 	}
 }
 

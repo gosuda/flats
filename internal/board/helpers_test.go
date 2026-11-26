@@ -402,8 +402,12 @@ func newTB(t *testing.T) *tb {
 			b.in.ServeHTTP(w, r.WithContext(ctx))
 		})
 	}
-	b.priv = httptest.NewServer(route("private"))
-	b.pub = httptest.NewServer(route("public"))
+	b.priv = httptest.NewUnstartedServer(route("private"))
+	b.priv.Listener = cappedSendListener{Listener: b.priv.Listener}
+	b.priv.Start()
+	b.pub = httptest.NewUnstartedServer(route("public"))
+	b.pub.Listener = cappedSendListener{Listener: b.pub.Listener}
+	b.pub.Start()
 	t.Cleanup(func() {
 		b.in.Stop()
 		b.priv.Close()
@@ -504,6 +508,12 @@ func dial(t *testing.T, srv *httptest.Server, headers map[string]string) (*clien
 		c, err := net.Dial("tcp", host)
 		if err != nil {
 			return nil, err
+		}
+		if tc, ok := c.(*net.TCPConn); ok {
+			// A small receive buffer keeps a gated client from absorbing
+			// the whole snapshot into kernel autotuning, wherever the test
+			// host's tcp_rmem allows.
+			_ = tc.SetReadBuffer(32 << 10)
 		}
 		return &headerConn{Conn: c, extra: extra}, nil
 	}, host, "/_board/ws")
@@ -777,4 +787,22 @@ func readAll(r *bufio.Reader) string {
 func fileExists(p string) bool {
 	_, err := os.Stat(p)
 	return err == nil
+}
+
+// cappedSendListener bounds each accepted socket's send buffer, so a test
+// client that stops reading stalls the server inside a small kernel buffer
+// instead of the host's autotuned tcp_wmem maximum.
+type cappedSendListener struct {
+	net.Listener
+}
+
+func (l cappedSendListener) Accept() (net.Conn, error) {
+	c, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	if tc, ok := c.(*net.TCPConn); ok {
+		_ = tc.SetWriteBuffer(256 << 10)
+	}
+	return c, nil
 }

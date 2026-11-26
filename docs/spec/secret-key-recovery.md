@@ -45,13 +45,18 @@ warning, the start-time refusal message, and the docs.
 
 Out of scope:
 
-- Key rotation (#224 item 2). When rotation ships, it must keep the recovery
-  copy and its key ID current. The key path setting (#224 item 1) is
-  implemented: the commands find the key through the location that
-  [secret key path](secret-key-path.md) adds, and rules 19, 23 and 31 below apply
-  to that location. The recovery copy and its key ID stay in the data directory.
-- Audit records (#224 item 4). `reset` leaves an event on each flat whose
-  secrets it deletes, as `flats secret rm` does today.
+- Key rotation (#224 item 2) is implemented by
+  [secret key rotation](secret-key-rotation.md). `flats secret rotate-key`
+  keeps the recovery copy and its key ID current: it asks for the recovery
+  password and writes the copy again for the new key (rule 20 there). Rules 6,
+  12, 27 and 32 below name what that spec adds to them. The key path setting
+  (#224 item 1) is implemented: the commands find the key through the location
+  that [secret key path](secret-key-path.md) adds, and rules 19, 23 and 31 below
+  apply to that location. The recovery copy and its key ID stay in the data
+  directory.
+- Audit records (#224 item 4) are implemented by [audit events](audit-events.md). `reset` still leaves an event on each
+  flat whose secrets it deletes, as `flats secret rm` does, and also writes audit events (rule 30 below). `backup-key`
+  and the refusals of the commands change in rules 11 and 12 below.
 - The console and MCP. No agent tool or API route reaches these commands.
 
 ## The recovery copy
@@ -85,7 +90,8 @@ Out of scope:
    the ID file before the new one is in place and warn once; the next start
    is quiet.
 6. Bootstrapping a new host treats both files as Flats data, like
-   `secret.key`.
+   `secret.key`. It treats `secret.key.next`, the pending key of a rotation, in
+   the same way ([secret key rotation](secret-key-rotation.md), rule 27).
 
 ## Shared rules
 
@@ -107,7 +113,8 @@ Out of scope:
     sealed values. `restore-key` and `reset` open `flats.db` as `flats key`
     and the next start do, which may migrate a database from an older release,
     writing the `backups/flats.v<N>.<time>.db` copy a migration takes, and
-    switch it to WAL. Those are the only writes a refused command can leave.
+    switch it to WAL. Those are the only writes a refused command can leave. A command that has done its work
+    appends an audit event (rules 17 to 19 of [audit events](audit-events.md)); a refusal appends none.
     An interrupt (Ctrl-C or SIGTERM) that arrives before a command starts to
     write, also after the password or the confirmation was entered, writes
     none of these either. A write that has begun completes.
@@ -119,8 +126,24 @@ flats secret backup-key [--out PATH] [--password-file PATH] [--config PATH | --d
 ```
 
 12. The command works whether or not the host runs. It reads `secret.key`,
-    writes files, and does not open `flats.db`. The key does not change while
+    writes files, and, once the copy is written, appends the audit event `key.backup` to `flats.db` with a write of
+    its own that takes no host lock and does not migrate (rule 18 of [audit events](audit-events.md)). It opens
+    `flats.db` for nothing else but the check below. The key does not change while
     a host runs, so a copy taken from a running host is current.
+    The command refuses in the two states of rule 22 of
+    [secret key rotation](secret-key-rotation.md), with the message of that
+    rule: a pending key of a rotation waits, or the key path holds a valid key
+    and every sealed value carries the key ID of another key. A copy of a key
+    that sealed none of the values restores nothing, and after a rotation with
+    `--out` it would replace the copy of the new key. The command reads the key
+    IDs for that check without the host lock and without a migration. It makes
+    no check of the key IDs when `flats.db` is missing or is not of the schema
+    of the binary, or when the read of the key IDs fails for any cause, and then
+    writes the copy (rule 25 there). Because the command takes no host lock, it can run at the same time
+    as `flats secret rotate-key`. The data directory can then end with a copy of
+    the old key and the ID of the new key, and the start does not report it.
+    This is a limit, and the docs say to run one key command at a time (rule 20
+    there).
 13. `secret.key` must be a regular file of 32 bytes, the check the host makes
     at start. When nothing is at the path, not even a link, the command
     refuses and says to start the host once, which creates the key, or to run
@@ -222,6 +245,14 @@ flats secret reset [--yes] [--config PATH | --data DIR]
       says to move it away first, because the next start would stop on it.
     - Reading `secret.key` fails for another reason, such as permissions: the
       command stops with that error, status 1.
+
+    Two cases come from [secret key rotation](secret-key-rotation.md), rule 24.
+    When a pending key of a rotation waits, the command refuses and names
+    `flats secret rotate-key`: that key opens the values, so nothing is lost.
+    When every collected value carries one key ID, and the key path holds
+    nothing or a key with another ID, the command names that ID before it asks
+    for the confirmation. It says that a key file with that ID opens the
+    values, for example the file that `rotate-key --out` wrote.
 28. It lists what it will delete: each secret's flat and name, and each
     operator key's name. It never shows a value.
 29. On a terminal it asks the operator to type `reset`. Any other answer
@@ -230,7 +261,8 @@ flats secret reset [--yes] [--config PATH | --data DIR]
     nothing. `--yes` also skips the question on a terminal.
 30. One transaction deletes the collected values and adds an event to each
     affected flat that names the deleted secret, and the command then makes
-    the transaction durable. Operator key records without a stored value stay,
+    the transaction durable. The same transaction writes the audit events of rule 14 of
+    [audit events](audit-events.md): one for each deleted value and one `key.reset`. Operator key records without a stored value stay,
     such as the record of a connected zrok account.
 31. The command does not touch `secret.key`, the recovery copy or its key ID.
     With `host.secret_key_path` the next start creates no key, and the output
@@ -250,7 +282,16 @@ flats secret reset [--yes] [--config PATH | --data DIR]
     `flats key rm` instead, as today. `flats key set` refuses with the same
     message. When a stored operator key does not open with the key that is
     there, the start's refusal names `flats secret restore-key` and
-    `flats key rm`.
+    `flats key rm`. [Secret key rotation](secret-key-rotation.md) adds two
+    refusals of the start, which come with the first check of the key (rule 22
+    there). When a pending key of a rotation waits, the refusal names
+    `flats secret rotate-key`, whatever the key path holds, also when nothing
+    is there. When no pending key waits, the key path holds a valid key, and
+    every sealed value carries the key ID of another key, the refusal names the
+    ID of the key and the key IDs of the values. `flats key set` refuses in both states with the
+    same message. When `secret.key` is missing, no pending key waits, and every
+    sealed value carries one key ID, the refusal of the missing key names that
+    ID (rule 23 there).
 
 ## Compatibility
 

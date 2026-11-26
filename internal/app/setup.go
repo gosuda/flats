@@ -323,8 +323,9 @@ func (p *prepared) bootstrap(ctx context.Context, s setup, info store.Info, dbPa
 	return nil
 }
 
-// leftoverNames are entries only a Flats host creates in its data directory.
-var leftoverNames = []string{"flats", "secret.key", "secret.key.recovery", "secret.key.recovery.id", "tsnet", "portal", "zrok", "zrok-environment", "cloudflare-quick", "netbird", "backups", "network-retirements", provider.FileName}
+// leftoverNames are entries only a Flats host creates in its data directory. The pending key of a rotation is one
+// of them, like secret.key (docs/spec/secret-key-rotation.md, rule 27).
+var leftoverNames = []string{"flats", "secret.key", core.PendingKeyFile, "secret.key.recovery", "secret.key.recovery.id", "tsnet", "portal", "zrok", "zrok-environment", "cloudflare-quick", "netbird", "backups", "network-retirements", provider.FileName}
 
 // flatsLeftovers lists the Flats entries in dir. Other entries, such as a
 // new volume's lost+found, do not stop a bootstrap.
@@ -952,5 +953,5 @@ func importLegacyKey(ctx context.Context, dataDir string, st *store.Store, plan 
 	if err != nil || stored != "" {
 		return err
 	}
-	return core.PutHostKeyValue(ctx, keyFile, st, core.HostKeyTailscale, v, core.KeySourceFlag, time.Now())
+	return core.PutHostKeyValue(ctx, keyFile, st, core.HostKeyTailscale, v, core.KeySourceFlag, time.Now(), store.Audit{Via: store.AuditViaMigration, From: core.KeySourceFlag})
 }

@@ -14,7 +14,12 @@ references and the `llms.txt` documents while this mode is on. Read
   Creation needs no visibility approval and grants no private network.
 * Documents, designs and boards run at once. Everyone on the internet can
   see their content and subsequent saves as soon as their public link is
-  ready. Repeat `public_notice` whenever you give a public URL.
+  ready. Repeat `public_notice` whenever you give a public URL. If the host
+  setting `portal.require_auth` is on and the default public network is
+  Portal, a new flat has no sign-in, so Portal refuses it: its Portal
+  endpoint is `unavailable` with a `detail` that names the setting, and it has
+  no public link, because the mode also turns private links off. Do not tell
+  the user that it is available.
 * Each save of a Public website or page created by this mode publishes the
   saved Draft as the next numbered version and deploys it without approval.
   This includes `save_draft`, `save_draft_from_dir` and `save_page`, and does
@@ -80,7 +85,8 @@ edit", explicit version creation and deployment, version deletion, rollback,
 data restore and deletion keep approvals. Autopilot is independent:
 if enabled it decides only the approvals its operation guide allows.
 Public is NOT access control. Anyone on the internet can open a ready
-Public route. Console, MCP and approval addresses are unchanged.
+Public route, except the Portal URL of a flat with Portal sign-in on
+(`topic.approvals`). Console, MCP and approval addresses are unchanged.
 
 ## public_instance_on
 

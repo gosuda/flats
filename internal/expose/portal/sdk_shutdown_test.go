@@ -15,7 +15,7 @@ import (
 	"github.com/gosuda/portal-tunnel/v2/types"
 )
 
-// sdkBoundExposure models SDK v2.6.0 sdk/expose.go:267,312-315,988:
+// sdkBoundExposure models SDK v2.7.4 sdk/expose.go:370-373,1104-1106:
 // cancellation invokes Close, and only the first caller receives its error.
 type sdkBoundExposure struct {
 	*fakeExposure

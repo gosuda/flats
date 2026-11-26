@@ -2,7 +2,7 @@
 //
 // CodeMirror reparses the edited paragraph after every change, so the cost of
 // parsing one paragraph is paid on every keystroke, local or remote. In
-// @lezer/markdown 1.7.2 several inline steps cost time proportional to
+// @lezer/markdown 1.8.1 several inline steps cost time proportional to
 // everything before (or after) them in the paragraph, so a paragraph of n
 // such items costs O(n^2): a guest typing one froze every editor showing the
 // document. This module replaces those steps with versions that give the
@@ -41,7 +41,7 @@
 'use strict';
 
 import { markdown, markdownLanguage } from "@codemirror/lang-markdown";
-import { Element, InlineContext, parser } from "@lezer/markdown";
+import { Element, InlineContext } from "@lezer/markdown";
 
 const LinkStart = InlineContext.linkStart,
   ImageStart = InlineContext.imageStart,
@@ -154,11 +154,12 @@ const space = (ch) => ch === 32 || ch === 9 || ch === 10 || ch === 13;
 function parseURL(cx, text, start, offset) {
   const next = text.charCodeAt(start);
   if (next === 60 /* '<' */) {
-    for (let pos = start + 1; pos < text.length; pos++) {
+    for (let pos = start + 1, esc = false; pos < text.length; pos++) {
       const ch = text.charCodeAt(pos);
-      if (ch === 62 /* '>' */)
+      if (ch === 62 /* '>' */ && !esc)
         return cx.elt("URL", start + offset, pos + 1 + offset);
-      if (ch === 60 || ch === 10 /* '<\n' */) return false;
+      if ((ch === 60 && !esc) || ch === 10 /* '<\n' */) return false;
+      esc = ch === 92 /* '\\' */;
     }
     return null;
   }
@@ -273,17 +274,9 @@ function parseLinkLabel(cx, text, start, offset) {
   return null;
 }
 
-// The delimiter kinds lezer's emphasis rules apply to ("*" and "_"). They
-// are private; take them from delimiters the stock Emphasis parser makes.
-const [asterisk, underscore] = (() => {
-  const cx = new InlineContext(parser, "*a_", 0),
-    emphasis = parser.inlineParsers[parser.inlineNames.indexOf("Emphasis")];
-  emphasis(cx, 42, 0);
-  emphasis(cx, 95, 2);
-  return cx.parts.map((p) => p.type);
-})();
-if (!asterisk || !underscore || asterisk === underscore)
-  throw new Error("unexpected @lezer/markdown emphasis delimiters");
+// The delimiter kinds lezer's emphasis rules apply to ("*" and "_").
+const asterisk = InlineContext.emphasisAsterisk,
+  underscore = InlineContext.emphasisUnderscore;
 
 // resolveMarkers replaces InlineContext.resolveMarkers on the editor's inline
 // contexts. Like lezer's, it pairs each closing delimiter, left to right,
@@ -309,7 +302,7 @@ function resolveMarkers(from) {
       p.type.resolve &&
       p.side & 3
     ) {
-      item = { type: p.type, from: p.from, to: p.to, side: p.side };
+      item = { type: p.type, from: p.from, to: p.to, side: p.side, size: p.size };
       item.dprev = dlast;
       if (dlast) dlast.dnext = item;
       else dfirst = item;
@@ -331,9 +324,11 @@ function resolveMarkers(from) {
     else dlast = item.dprev;
   };
   // floors.get(kind)[key]: delimiters starting before it cannot open for a
-  // closer of that kind and key (whether it can also open, its size mod 3).
+  // closer of that kind and key (whether it can also open, its full run
+  // length mod 3, which is what the rule of three reads since lezer 1.8).
   // Only a failed look-back raises a floor; an opener that shrinks lowers
-  // every floor to itself, since its size enters the rule of three.
+  // every floor to itself, which keeps a floor raised before the shrink
+  // from hiding the shrunk opener (lezer rescans instead).
   const floors = new Map();
   for (let close = dfirst; close; ) {
     if (!((close.side & 2) /* close */)) {
@@ -342,20 +337,19 @@ function resolveMarkers(from) {
     }
     const emp = close.type === asterisk || close.type === underscore,
       closeSize = close.to - close.from,
-      key = (close.side & 1 ? 3 : 0) + (closeSize % 3);
+      key = (close.side & 1 ? 3 : 0) + (close.size % 3);
     let floor = floors.get(close.type);
     if (!floor) floors.set(close.type, (floor = [-1, -1, -1, -1, -1, -1]));
     let open = close.dprev;
     for (; open && open.from >= floor[key]; open = open.dprev) {
-      const openSize = open.to - open.from;
       if (
         open.side & 1 /* open */ &&
         open.type === close.type &&
         !(
           emp &&
           (close.side & 1 || open.side & 2) &&
-          (openSize + closeSize) % 3 === 0 &&
-          (openSize % 3 || closeSize % 3)
+          (open.size + close.size) % 3 === 0 &&
+          (open.size % 3 || close.size % 3)
         )
       )
         break;
@@ -426,14 +420,15 @@ const found = Symbol("found");
 
 const urlTag =
     /^(?:[a-z][-\w+.]+:[^\s>]+|[a-z\d.!#$%&'*+/=?^_`{|}~-]+@[a-z\d](?:[a-z\d-]{0,61}[a-z\d])?(?:\.[a-z\d](?:[a-z\d-]{0,61}[a-z\d])?)*)>/i,
-  commentTag = /^!--[^>](?:-[^-]|[^-])*?-->/i,
-  // lezer's tag pattern without its first two alternatives ("<!X...>" and
-  // "<![CDATA[...]]>"), which htmlTag finds with find.
+  // lezer's tag pattern without its first three alternatives ("<!--...-->",
+  // "<?...?>" and "<!X...>", "<![CDATA[...]]>"), which htmlTag answers with
+  // find or the literal comment forms.
   otherTag =
-    /^(?:\/\s*[a-zA-Z][\w-]*\s*>|\s*[a-zA-Z][\w-]*(\s+[a-zA-Z:_][\w-.:]*(?:\s*=\s*(?:[^\s"'=<>`]+|'[^']*'|"[^"]*"))?)*\s*(\/\s*)?>)/;
+    /^(?:\/[a-zA-Z][\w-]*\s*>|[a-zA-Z][\w-]*(\s+[a-zA-Z:_][\w-.:]*(?:\s*=\s*(?:[^\s"'=<>`]+|'[^']*'|"[^"]*"))?)*\s*\/?>)/;
 
 // htmlTag is lezer's HTMLTag parser with the unbounded lazy searches
-// ("<?...?>", "<!X...>", "<![CDATA[...]]>") answered by find.
+// ("<!--...-->", "<?...?>", "<!X...>", "<![CDATA[...]]>") answered by the
+// literal short comment forms or find.
 function htmlTag(cx, next, start) {
   if (next !== 60 /* '<' */ || start === cx.end - 1) return -1;
   const after = cx.slice(start + 1, cx.end);
@@ -446,9 +441,17 @@ function htmlTag(cx, next, start) {
         cx.elt("LinkMark", start + url[0].length, start + 1 + url[0].length),
       ]),
     );
-  const comment = commentTag.exec(after);
-  if (comment)
-    return cx.append(cx.elt("Comment", start, start + 1 + comment[0].length));
+  if (after.startsWith("!--")) {
+    // lezer matches ^!--(?:-?>|[^]*?-->): the two one-character comments
+    // the spec now allows, then the first "-->".
+    const c3 = after.charCodeAt(3);
+    if (c3 === 62 /* '>' */)
+      return cx.append(cx.elt("Comment", start, start + 5));
+    if (c3 === 45 /* '-' */ && after.charCodeAt(4) === 62)
+      return cx.append(cx.elt("Comment", start, start + 6));
+    const at = find(cx, "-->", start + 3);
+    return at < 0 ? -1 : cx.append(cx.elt("Comment", start, at + 3));
+  }
   const c1 = after.charCodeAt(0),
     c2 = after.charCodeAt(1);
   if (c1 === 63 /* '?' */) {

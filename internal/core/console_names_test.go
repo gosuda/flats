@@ -114,7 +114,7 @@ func TestHostKeySealing(t *testing.T) {
 	}
 	defer st.Close()
 	const key = "tskey-auth-k123-abcdef"
-	if err := PutHostKeyValue(ctx, NewKeyFile(dir, ""), st, HostKeyTailscale, key, KeySourceCLI, time.Now()); err != nil {
+	if err := PutHostKeyValue(ctx, NewKeyFile(dir, ""), st, HostKeyTailscale, key, KeySourceCLI, time.Now(), store.Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	k, err := st.GetHostKey(ctx, HostKeyTailscale)
@@ -141,10 +141,10 @@ func TestHostKeySealing(t *testing.T) {
 		t.Fatalf("CheckSecretKey = %v", err)
 	}
 	// A connection record without a value does not count.
-	if err := st.DeleteHostKey(ctx, HostKeyTailscale); err != nil {
+	if err := st.DeleteHostKey(ctx, HostKeyTailscale, store.Audit{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := st.PutHostKey(ctx, store.HostKey{ID: HostKeyZrok, Source: KeySourceConsole, UpdatedAt: time.Now()}); err != nil {
+	if err := st.PutHostKey(ctx, store.HostKey{ID: HostKeyZrok, Source: KeySourceConsole, UpdatedAt: time.Now()}, store.Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := CheckSecretKey(ctx, NewKeyFile(t.TempDir(), ""), st); err != nil {

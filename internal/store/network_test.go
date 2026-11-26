@@ -34,7 +34,7 @@ func TestNetworkPolicyMigrationLifecycle(t *testing.T) {
 		t.Fatalf("migration default: %+v %v", p, err)
 	}
 	origins := []string{"https://api.example.com"}
-	if err := s.SetNetworkPolicy(t.Context(), "app", NetworkPolicy{Origins: origins, UpdatedAt: now}); err != nil {
+	if _, err := s.SetNetworkPolicy(t.Context(), "app", NetworkPolicy{Origins: origins, UpdatedAt: now}, Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	vars, _, snapshot, err := s.RuntimeSettingsSnapshot(t.Context(), "app")
@@ -48,7 +48,7 @@ func TestNetworkPolicyMigrationLifecycle(t *testing.T) {
 	if err != nil || !slices.Equal(p.Origins, origins) || !p.UpdatedAt.Equal(now) {
 		t.Fatalf("rename: %+v %v", p, err)
 	}
-	if err := s.DeleteFlat(t.Context(), "renamed"); err != nil {
+	if err := s.DeleteFlat(t.Context(), "renamed", Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	p, err = s.NetworkPolicy(t.Context(), "renamed")

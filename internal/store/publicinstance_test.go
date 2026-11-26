@@ -70,7 +70,7 @@ func TestMigrationPublicInstance(t *testing.T) {
 			} else if len(changes) != 0 {
 				t.Fatalf("new changes %+v", changes)
 			}
-			if info, err := Inspect(path); err != nil || info.Version != 24 {
+			if info, err := Inspect(path); err != nil || info.Version != latestVersion() {
 				t.Fatalf("migrated %+v %v", info, err)
 			}
 		})

@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/egress"
 	"github.com/gosuda/flats/internal/privatedir"
 )
 
@@ -172,7 +173,8 @@ func (m *Manager) startChild(ctx context.Context, spec core.RuntimeSpec) (*insta
 		spec: spec,
 		sock: sock,
 		ws: workerSpec{Flat: spec.Flat, Version: spec.Version, Generation: spec.Generation, Dir: spec.Dir, Entry: spec.Entry,
-			DataDir: spec.DataDir, Env: spec.Env, NetworkOrigins: append([]string(nil), spec.NetworkOrigins...), CacheDir: m.cacheDir(), TimeoutMS: m.Timeout.Milliseconds(),
+			DataDir: spec.DataDir, Env: spec.Env, NetworkOrigins: append([]string(nil), spec.NetworkOrigins...),
+			FetchHeaders: append([]egress.Header(nil), spec.FetchHeaders...), CacheDir: m.cacheDir(), TimeoutMS: m.Timeout.Milliseconds(),
 			ImagePath: spec.ImagePath, Socket: specSocket(sock), UsageIntervalMS: m.UsageInterval.Milliseconds()},
 	}
 	if in.ws.Env == nil {

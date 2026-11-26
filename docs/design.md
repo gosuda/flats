@@ -430,8 +430,9 @@ List. Local always registers the Private route on loopback. Tailscale, NetBird
 and the Private reverse proxy (`proxy`) add Private routes only for flats that
 hold their grant. A Public flat is also served by its permitted public
 providers (Tailscale Funnel, Portal, zrok, a Cloudflare quick tunnel, NetBird
-Expose or the public reverse proxy); Public is never access control, and every
-response that returns a public URL carries that notice. Draft and version
+Expose or the public reverse proxy). Public is never access control, except on
+the Portal URL of a flat with Portal sign-in on (below), and every response
+that returns a public URL carries a notice that says who can open it. Draft and version
 previews (`open_preview`; version 0 is the Draft) are Private only, on Local
 and, when the flat holds the grant, Tailscale and the Private reverse proxy;
 they get an isolated copy of server data, close on the flat's next activation
@@ -489,6 +490,20 @@ Implementation notes that the provider docs do not repeat:
   `portal_hidden` on the flat view is the requested listing, not the relays'
   observed state. Hiding is not access control. Rename redirect aliases are
   always hidden.
+* **Portal require_auth.** The host setting `portal.require_auth` (off by
+  default) makes Portal serve a flat only when the flat has sign-in
+  ([spec](spec/portal-require-auth.md)). Every open of a Portal route carries
+  the setting with the stored sign-in, and the Portal route of a flat
+  without sign-in is refused: a new entry opens nothing, and a served one
+  stops. The endpoint is `unavailable` with a detail that names the next
+  step, and a refusal fails no other public provider of the flat. A change
+  of the setting visits every flat under its lock, as `portal.hide` does:
+  turning it on ends the open public connections of each refused flat and
+  serves its other public routes again, and a read that fails stops the
+  Portal route instead of leaving it open. The public site handler also
+  refuses each request that arrives on Portal for a flat without sign-in
+  while the setting is on. The setting covers Portal only, and the private
+  routes stay.
 * **Portal relays.** Relays come from the Portal defaults (discovery, up to 3
   active relays) unless `portal.relays` lists explicit ones;
   `portal.discovery: false` uses only the explicit relays and
@@ -507,6 +522,39 @@ Implementation notes that the provider docs do not repeat:
   detail and log warn that links to the alias can reach another service, until
   the alias returns or the file is deleted. A renamed flat starts without
   alias memory.
+* **Portal sign-in.** [Portal sign-in](networking.md#portal-sign-in) puts the
+  Portal URL of a flat behind the gate of the Portal SDK (`sdk/appauth`) and
+  protects nothing else: not the private routes, previews, the console, MCP
+  or the API. The setting is five columns of `flats`: the provider (`oidc`,
+  `credential` or empty for off), the issuer, the client ID, the allowlist
+  and a sequence that grows by 1 with each applied change. While it is on,
+  the host asks no public provider but Portal to serve the flat, and it
+  refuses the grants, the visibility changes and the sign-in changes that
+  would open another public route. The Portal provider builds the gate where
+  the identity is, around the handler box of the entry, so a redeploy or a
+  rollback replaces the handler inside the gate. Each open of the Portal
+  route carries the stored setting, read under the lock of the flat, or the
+  mark of a rename redirect, which serves the redirect without a gate. A gate
+  of a lower sequence never replaces one of a higher sequence. The gate marks
+  each request that it lets in with its sequence, and the public site handler
+  checks every request against the stored setting: a request without the
+  principal of a gate gets 403, and one that a gate of an older sequence let
+  in gets 503 with `Retry-After: 5`. An applied change ends the open
+  connections of the public routes of the flat through the route epoch, then
+  serves those routes again with a new handler, around which Portal builds
+  the new gate. A gate that cannot be built (an unreadable setting, a client
+  secret with another binding or one that does not open, an identity file
+  without a token secret that cannot be written, a refusal of the SDK) gives
+  the flat no Portal route: the endpoint is `error` with the detail
+  `sign-in gate: <reason>`, and the flat is never served on Portal without
+  the gate. After it builds an `oidc` gate, the provider runs `appauth.Check`
+  in the background and shows a failure in the detail. The token secret of
+  the identity in `portal/<slug>.json` signs every session and every access
+  link. `flats signin revoke`, a rename and a deletion write a new one, which
+  ends them, and the provider writes one into an identity file that has
+  none, because the SDK would make a new one at each load. A flat with
+  sign-in on has no relay cache, so the TLS of its visitors ends in the
+  Flats process.
 
 ## Node key expiry
 
@@ -573,17 +621,93 @@ Values are sealed with AES-256-GCM (random nonce, AAD = secret name) under
 keeps the key out of the data directory and of a copy of it (the host only reads
 that file; see [Keeping the key outside the data directory](configuration.md#keeping-the-key-outside-the-data-directory)).
 Only the console and the local CLI (`flats secret set`,
-loopback only) can set or delete values; APIs and MCP return names and update
-times only. The CLI is recognized by its `X-Flats-Client: cli` header on the
+loopback only) can set or delete values; APIs and MCP return names, update
+times and the binding of an injected secret, never a value. The CLI is recognized by its `X-Flats-Client: cli` header on the
 loopback listener, so this stops MCP and remote API clients, not a process
-with a shell on the Flats host (see Approvals). Values reach JavaScript as
+with a shell on the Flats host (see Approvals). The values of readable secrets reach JavaScript as
 `env.NAME` and WASI as environment variables from the captured activation
-snapshot. Changes apply on the next approved deployment, redeployment, rollback or standalone data snapshot restoration,
+snapshot. An injected secret is bound to one exact HTTPS origin and one header
+name when it is set (`flats secret set <slug> <NAME> --origin URL --header NAME`),
+and the binding stays until the secret is removed. Its value is never in `env`:
+the worker gets it in a field of its spec apart from `env`, and the outbound
+client adds the header to each `fetch` to that origin and refuses a call that
+supplies the header itself. A WASI worker gets no injected secret. The redactor
+knows the values of both kinds
+([Injected fetch secrets](spec/injected-fetch-secrets.md)). Changes apply on the next approved deployment, redeployment, rollback or standalone data snapshot restoration,
 or Flats host restart; automatic worker restarts reuse the captured settings.
+The OIDC client secret of [Portal sign-in](networking.md#portal-sign-in) is a third kind: a flat
+secret with the use `signin`, bound to the issuer and the client ID that the
+operator names when it is set. Only `flats signin secret set` and `rm`, from
+the CLI on loopback, change it, without an approval; the console cannot. No
+activation reads it, so no worker gets it, and the secret lists of the API,
+MCP, the CLI and the console leave it out. Only a sign-in gate whose setting
+has the issuer and the client ID of the binding sends it, to that issuer.
+The key commands and `flats backup` treat it as every other sealed value.
+Every change of a sealed value, and every key backup, restore, rotation and reset, writes an event to the audit log in
+`flats.db`. A change of a sealed value, a rotation and a reset write it in the transaction of the change; a key backup
+and a key restore change no row and append it after their work. An applied change of the visibility, of the origin
+grants or of a provider permission of a flat writes its event in the transaction of the change too, and so do an
+applied change of the Portal sign-in of a flat and the new token secret that a rename or a deletion gives its Portal
+identity. An access link and a revocation of the sign-in sessions append theirs after their work. The log is
+append-only and outlives the flat; no agent surface reads it ([Audit log](configuration.md#audit-log)).
 `flats secret backup-key` keeps a copy of the key, encrypted under a recovery
 password the operator chooses, beside it, and `restore-key` and `reset` bring
 back a host whose key is lost; see
 [Recovering a lost secret.key](configuration.md#recovering-a-lost-secretkey).
+
+The key has this life. The host creates the first key, 32 random bytes, only at
+`<data>/secret.key` and only when no file is there: at a start, when
+`flats key set` stores the first operator key, and when the import of a legacy
+host stores a key. At a configured path the operator makes the first key. A
+rotation makes each later key, at either kind of path (see below). Each sealed
+value carries a key ID, which is the ID of the key that sealed it. The ID is a
+label. It is not part of the associated data, and the host never uses it to
+decide whether it tries to open a value. It tries the key. The start and the
+key commands read the labels to tell which key file belongs to the values. A
+value that was sealed before key IDs existed has an empty ID until it is sealed
+again.
+
+`flats secret rotate-key` replaces the key while the host is stopped
+([Rotating the key](configuration.md#rotating-the-key),
+[secret key rotation](spec/secret-key-rotation.md)). It makes a new key and
+seals every flat secret and operator key value again under it. No value
+changes, so no flat needs a new deployment. The command does not keep the old
+key. It works in four steps, and each step is durable before the next one
+starts, so after a stop at any point one file on the host holds the key that
+opens every value:
+
+1. The command writes the new key to a pending key file beside the key file
+   (`secret.key.next` in the data directory), or to the file that `--out`
+   names, and syncs it. The next step starts only when that file is complete,
+   so the new key is on the disk before a value depends on it.
+2. One transaction seals every value again, sets its key ID and writes the
+   `key.rotate` audit event. A complete checkpoint then makes the commit
+   durable. A loss of power can take back a commit that no checkpoint made
+   durable, and the key file must still hold the old key then.
+3. The command writes the new key into the key file, reads it again and
+   compares, and removes the pending key. The file keeps its owner, its mode
+   and its access list. With `--out` the command does not write the key path,
+   and the operator puts the key of the new file there.
+4. When a recovery copy exists, the command writes it again under the same
+   recovery password, so that the password opens the new key. Until then the
+   start warns that the copy holds another key.
+
+The start refuses while a rotation waits for its finish, and while a valid key
+is at the key path and every sealed value carries the ID of another key. A host
+in one of these states would seal new values under a key that does not open the
+others. The start never writes a key file for a rotation. A second run of
+`flats secret rotate-key` finishes a rotation that stopped.
+
+Back up `flats.db` together with the key of the same moment. A copy of
+`flats.db` from before a rotation opens only with the old key. The operator
+stores three things apart: the recovery password, away from the host and its
+backups; a recovery copy that `backup-key --out` wrote, away from the host; and
+a key at a configured path, which no copy of the data directory holds. After a
+rotation the copy from `backup-key --out` still holds the old key, so the
+operator writes it again and takes a new backup. `flats secret reset` is for a
+host that has lost both the key and the recovery password. It deletes the
+sealed values, and the operator sets them again. To replace a key that still
+opens the values, the operator rotates it.
 
 ## Approvals
 
@@ -601,6 +725,18 @@ console request for these actions also creates an approval, except two
 destructive ones that apply directly after their confirm dialog: deleting a
 flat and deleting a non-live version. Saves of documents and designs, and all
 revision operations, need no approval (see [Model and flows](#model-and-flows)).
+
+A change of the [Portal sign-in](networking.md#portal-sign-in) of a flat
+(`flats signin set` and `off`, from the CLI or the loopback API) is a
+`set_signin` approval. Only the operator decides it, in the console:
+Autopilot has no switch for it, and MCP cannot request it. It freezes the flat
+ID, the sign-in sequence, the stored and the requested setting and the public
+providers that the flat is granted. An approval that freezes the visibility
+(`set_visibility`, `activate`, `rollback`, `restore_data` and
+`create_version`) also freezes the sign-in sequence, so a sign-in change makes
+it stale. Only the console issues an access link of sign-in. Ending the
+sessions and links of a flat (`flats signin revoke`) and setting its client
+secret narrow access or decide the access of nobody, and need no approval.
 
 There are no accounts, so operator authority rests on where a request comes
 from and what it carries. Enforced:
@@ -631,6 +767,16 @@ from and what it carries. Enforced:
   headers are dropped first), on a NetBird console domain `netbird:<peer
   name>` of the requesting peer. Decisions on the loopback listener are
   recorded without an identity.
+* An operator can be told about approvals and keep their record off the host.
+  The [event webhook](configuration.md#event-webhook) sends a signed POST when
+  an approval is created or decided, when a visibility change is applied and
+  when a grant of a flat changes. Its body names the flat, the operation and
+  the state, and holds no content, secret, login or address. A delivery never
+  delays the operation and ends after 4 attempts.
+  [`flats audit export`](configuration.md#audit-export) writes the approval
+  records and the audit log as JSON lines, and an approved delete stays in it
+  after the flat is gone. Only `flats key`, on the stopped host, sets the URL
+  and the signing secret, and no agent surface reads them.
 
 Not enforced: all of the console checks are request headers. A process that
 can send arbitrary HTTP from one of the operator's devices (for example an
@@ -689,7 +835,8 @@ false. For `set_visibility`:
   to Private needs Make Private. Public to Public needs Public editing when
   the frozen starting level is known and differs.
 
-Any other approval is unclassified: an unknown action, unreadable parameters,
+Any other approval is unclassified: an unknown action (such as `set_signin`
+of Portal sign-in), unreadable parameters,
 an unknown level, a missing starting level for Public to Public, or a request
 for no change. No switch allows an unclassified approval, so agents can
 neither approve nor reject it.
@@ -964,13 +1111,27 @@ export default {
 }
 ```
 
-* `env` holds the flat's ordinary environment variables and secrets plus `env.DB` (`query(sql, ...params)` →
+* `env` holds the flat's ordinary environment variables and readable secrets (an injected secret is not in it) plus `env.DB` (`query(sql, ...params)` →
   rows, `exec(sql, ...params)` → `{changes, last_insert_id}`) backed by
   `data/db.sqlite`, and `env.FILES` (`get(key)`, `put(key, data)`,
   `delete(key)`, `list(prefix)`) backed by `data/files/`, and
   `crypto.getRandomValues` / `crypto.randomUUID` backed by the host CSPRNG.
 * WebSocket: `export default { websocket: { open(ws), message(ws, data), close(ws) } }`
   for requests with `Upgrade: websocket`; `ws.send(text)`.
+* Visitor headers: on the Portal route of a flat with
+  [Portal sign-in](networking.md#portal-sign-in) on, the host sets
+  `X-Flats-Visitor-Provider` (`oidc` or `credential`),
+  `X-Flats-Visitor-Subject` (the principal that the allowlist let in: the
+  verified email, also for an `@domain` entry, `sub:<subject>`, or the
+  credential subject) and, when the provider vouched for one,
+  `X-Flats-Visitor-Email` (the verified email). Without a
+  sign-in the three are absent. On every route that runs flat code (the
+  public site, the private site and previews, also for a flat without
+  sign-in), the host first removes each spelling of those three headers and
+  of `X-Portal-User`, `X-Portal-Auth`, `X-Portal-Proof` and
+  `X-Portal-Access-Credential` from the request of the client, so flat code
+  never sees a client copy. A visitor who signed in is a Public visitor:
+  `X-Flats-Access` stays `public`.
 * Limits per request: 64 MiB wasm memory and 10 s wall-clock time (sleeps,
   timers and database waits count); a runtime that hits a limit is discarded
   and replaced. ATTACH, VACUUM INTO and extension loading are blocked;
@@ -982,7 +1143,7 @@ export default {
   over quota. JS has no general filesystem or socket access; outbound `fetch` is host-mediated and requires exact operator-granted origins.
 * `.wasm` entries: a WASI preview1 module reading the request as JSON on stdin
   and writing response JSON on stdout. Each request creates a fresh instance.
-  Environment includes only the flat's configured environment variables and secrets, with no inherited host process environment. Clocks, cancellable
+  Environment includes only the flat's configured environment variables and readable secrets, with no inherited host process environment. Clocks, cancellable
   sleeps and CSPRNG are available. There are no preopened directories, filesystem/network
   mounts, SQLite/FILES host imports or WebSocket connection API. The worker's
   host-side data directory is **not** mounted into the WASI guest.
@@ -995,7 +1156,7 @@ export default {
 | WebSocket | `websocket.open` / `message` / `close`, `ws.send` | Unavailable; Upgrade remains an ordinary HTTP request |
 | Outbound network | Bounded HTTP(S) `fetch` to exact operator-granted origins; no sockets | Unavailable |
 | Filesystem | Read-only bundled modules; no arbitrary host filesystem; persistence via DB/FILES | No mounts or preopened directories |
-| App environment variables and secrets | `env.NAME` (strings) | Only the flat's configured variables and secrets as environment variables |
+| App environment variables and secrets | `env.NAME` (strings) for variables and readable secrets; an injected secret goes only into its header of `fetch` to its origin | Only the flat's configured variables and readable secrets as environment variables |
 | Clocks/randomness | timers, `Date`, Web Crypto CSPRNG | WASI clocks, cancellable sleeps and CSPRNG |
 
 WASI request JSON is `{method, url, headers, body}` (body is a string or null).

@@ -1,0 +1,61 @@
+name: Lifecycle gate
+
+# Full run of scripts/lifecycle-gate.sh through scripts/ci-lifecycle-gate.py.
+# A green run means every case passed and only human approval is missing.
+# It is not acceptance. See docs/lifecycle-verification.md, "Scheduled and
+# pull-request checks".
+on:
+  schedule:
+    - cron: '23 5 * * 3'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: lifecycle-gate-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  gate:
+    if: ${{ github.repository == 'gosuda/flats' }}
+    runs-on: depot-ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Fetch the pinned legacy revision
+        run: |
+          git fetch --no-tags --depth=1 origin 29edc2a6e13e27867603a23ff5b1b5a8d1b84df0
+          test "$(git cat-file -t 29edc2a6e13e27867603a23ff5b1b5a8d1b84df0)" = commit
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        id: go
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Locate Go caches
+        id: cache-paths
+        run: |
+          echo "mod=$(go env GOMODCACHE)" >>"$GITHUB_OUTPUT"
+          echo "build=$(go env GOCACHE)" >>"$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ steps.cache-paths.outputs.mod }}
+          key: go-mod-v2-${{ runner.os }}-root-${{ hashFiles('go.mod', 'go.sum') }}
+          restore-keys: |
+            go-mod-v2-${{ runner.os }}-root-
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ steps.cache-paths.outputs.build }}
+          key: go-build-v2-${{ runner.os }}-${{ runner.arch }}-go${{ steps.go.outputs.go-version }}-test-other-root--${{ hashFiles('go.mod', 'go.sum') }}--read-only
+          restore-keys: |
+            go-build-v2-${{ runner.os }}-${{ runner.arch }}-go${{ steps.go.outputs.go-version }}-test-other-root--${{ hashFiles('go.mod', 'go.sum') }}--
+            go-build-v2-${{ runner.os }}-${{ runner.arch }}-go${{ steps.go.outputs.go-version }}-test-other-root--
+      - name: Set the canary
+        run: echo "LIFECYCLE_GATE_SENTINEL=$(openssl rand -hex 16)" >> "$GITHUB_ENV"
+      - name: Run the full lifecycle gate
+        # The gate directory stays short: the debugging playbook requires it.
+        run: |
+          mkdir -p "$HOME/lcg"
+          TMPDIR="$HOME/lcg" python3 -B scripts/ci-lifecycle-gate.py

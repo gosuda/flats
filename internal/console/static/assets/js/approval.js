@@ -1,9 +1,10 @@
 // Approval page: what an agent asked for and who decided it.
 'use strict';
 
-import { h, clear, dateTime, timeEl, visibilityOf, accessKey, accessOf, accessLabel, editWords, visibilityBadge, becomingNoticeFor } from './dom.js';
+import { h, clear, dateTime, timeEl, visibilityOf, accessKey, accessOf, accessLabel, editWords, visibilityBadge, becomingNoticeFor, signInOf, guestsOf, SIGN_IN_EDIT_NOTICE } from './dom.js';
 import { api } from './api.js';
 import { confirmDialog, errorPanel, loading, toast, busy } from './ui.js';
+import { describeSignIn, signInFacts, signInNotes, signInConfirmNotice, signInExpired } from './signin.js';
 
 function params(a) {
   if (!a.params) return {};
@@ -26,11 +27,12 @@ export function cleanupPending(a) {
 // means view only when Public (wire contract).
 const requested = (p) => ({ vis: p.visibility, access: visibilityOf(p.visibility) === 'public' ? p.access || 'view' : '' });
 const fromState = (p) => ({ vis: p.from, access: visibilityOf(p.from) === 'public' ? p.from_access || '' : '' });
-const badgeOf = (s) => visibilityBadge(s.vis, s.access);
+// A visibility badge of a flat with Portal sign-in on reads "Public · Sign-in".
+const badgeOf = (s, flat) => visibilityBadge(s.vis, s.access, signInOf(flat));
 
 const visibilityNotice = (vis, flat) => visibilityOf(vis) === 'private' && flat?.private_links_off
   ? 'The public address goes offline. While public instance mode is on, the flat will have no working link.'
-  : becomingNoticeFor(vis);
+  : becomingNoticeFor(vis, flat);
 
 // describeApproval is a one-line summary for lists.
 export function describeApproval(a) {
@@ -46,6 +48,7 @@ export function describeApproval(a) {
   if (a.action === 'activate') return `Publish version ${p.version} of ${a.flat} (put it live)`;
   if (a.action === 'rollback') return `Roll back ${a.flat} to version ${p.version}` + (p.restore_data ? ' and restore its data' : '');
   if (a.action === 'restore_data') return `Restore the data of ${a.flat}`;
+  if (a.action === 'set_signin') return describeSignIn(a.flat, p, a.portal_require_auth);
   return `${a.action} on ${a.flat}`;
 }
 
@@ -115,10 +118,14 @@ export function mount(main, [id], ctx) {
     }
     let flat = null;
     try { flat = await api.flat(a.flat); } catch { /* deleted or renamed */ }
-    if (ctx.alive()) draw(a, flat);
+    // A sign-in request is compared with the sign-in of the flat now: its
+    // sequence and the binding of its client secret (rules 18 and 27).
+    let signIn = null;
+    if (a.action === 'set_signin' && flat) signIn = await api.signIn(a.flat).catch(() => null);
+    if (ctx.alive()) draw(a, flat, signIn);
   }
 
-  function draw(a, flat) {
+  function draw(a, flat, signIn) {
     const p = params(a);
     clear(body);
     const rows = [
@@ -128,13 +135,14 @@ export function mount(main, [id], ctx) {
       ['Reason', a.reason || h('span', { class: 'muted', text: 'none given' })],
       ['Requested', h('span', null, timeEl(a.requested_at), ` · ${dateTime(a.requested_at)}`)],
     ];
-    const stale = expired(a, p, flat);
+    const stale = expired(a, p, flat) || signInExpired(a, p, signIn);
     if (a.action === 'set_visibility') {
-      if (p.from) rows.push(['Visibility when requested', badgeOf(fromState(p))]);
-      if (flat) rows.push([a.status === 'pending' && !stale ? 'Current visibility' : 'Visibility now', visibilityBadge(flat.visibility, flat.public_access)]);
+      if (p.from) rows.push(['Visibility when requested', badgeOf(fromState(p), flat)]);
+      if (flat) rows.push([a.status === 'pending' && !stale ? 'Current visibility' : 'Visibility now', badgeOf({ vis: flat.visibility, access: flat.public_access }, flat)]);
       else if (!p.from) rows.push(['Current visibility', h('span', { text: 'unknown' })]);
-      rows.push(['Requested visibility', p.access ? badgeOf(requested(p)) : visibilityBadge(p.visibility)]);
+      rows.push(['Requested visibility', badgeOf(p.access ? requested(p) : { vis: p.visibility }, flat)]);
     }
+    if (a.action === 'set_signin') rows.push(...signInFacts(p));
     rows.push(['Status', statusBadge(a.status)]);
     if (a.decided_at) rows.push(['Decided', dateTime(a.decided_at)]);
     if (a.decided_by) rows.push(['Decided by', decidedByCell(a.decided_by)]);
@@ -146,9 +154,12 @@ export function mount(main, [id], ctx) {
     }
     if (stale) {
       body.appendChild(h('p', { class: 'alert alert-error', role: 'alert' }, h('strong', { text: "This request can't be approved." }),
-        ' The visibility changed after it was requested, so the approval no longer matches the flat. Nothing was changed.'));
+        ` The ${a.action === 'set_signin' ? 'sign-in' : 'visibility'} changed after it was requested, so the approval no longer matches the flat. Nothing was changed.`));
       body.appendChild(h('div', { class: 'actions' }, dismissButton(a)));
       return;
+    }
+    if (a.action === 'set_signin' && a.status === 'pending') {
+      for (const note of signInNotes(a.flat, p, signIn, a.portal_require_auth)) body.appendChild(note);
     }
     const grantsEdit = a.action === 'set_visibility' && p.access === 'edit';
     const notice = a.action === 'set_visibility' && !grantsEdit ? visibilityNotice(p.visibility, flat) : '';
@@ -170,7 +181,7 @@ export function mount(main, [id], ctx) {
     }
     const approve = h('button', { type: 'button', class: 'btn btn-primary', text: 'Approve…' });
     const reject = h('button', { type: 'button', class: 'btn', text: 'Reject…' });
-    approve.addEventListener('click', () => busy(approve, () => decide(a, true, flat)));
+    approve.addEventListener('click', () => busy(approve, () => decide(a, true, flat, signIn)));
     reject.addEventListener('click', () => busy(reject, () => decide(a, false)));
     body.appendChild(h('div', { class: 'actions' }, reject, approve));
   }
@@ -181,10 +192,13 @@ export function mount(main, [id], ctx) {
     return b;
   }
 
-  async function decide(a, yes, flat) {
+  async function decide(a, yes, flat, signIn) {
     const p = params(a);
-    const notice = !yes || a.action !== 'set_visibility' ? ''
-      : p.access === 'edit' ? `Anyone on the internet who has the link will be able to add, change and delete ${editWords(flat).everything}.` : visibilityNotice(p.visibility, flat);
+    const notice = !yes ? ''
+      : a.action === 'set_signin' ? signInConfirmNotice(a.flat, p, signIn, a.portal_require_auth)
+        : a.action !== 'set_visibility' ? ''
+          : p.access === 'edit' ? `${signInOf(flat) ? 'Anyone who passes its sign-in' : 'Anyone on the internet who has the link'} will be able to add, change and delete ${editWords(flat).everything}.`
+            : visibilityNotice(p.visibility, flat);
     const ok = await confirmDialog({
       title: yes ? `Approve: ${describeApproval(a)}?` : `Reject: ${describeApproval(a)}?`,
       body: [
@@ -228,7 +242,9 @@ function guestEditNotes(flat) {
   const words = editWords(flat);
   const li = (...text) => h('li', { class: 'check ok' }, h('span', { class: 'tick', 'aria-hidden': 'true', text: '✓' }), h('span', null, ...text));
   return h('div', null,
-    h('p', { class: 'alert alert-warn' }, h('strong', { text: 'If you approve,' }), ` anyone on the internet who has the link can add, change and delete ${words.everything}. Nobody checks who they are.`),
+    h('p', { class: 'alert alert-warn' }, h('strong', { text: 'If you approve,' }), signInOf(flat)
+      ? ` ${guestsOf(flat)} can add, change and delete ${words.everything}. ${SIGN_IN_EDIT_NOTICE} Nobody checks the names they type.`
+      : ` anyone on the internet who has the link can add, change and delete ${words.everything}. Nobody checks who they are.`),
     h('ul', { class: 'checks' },
       li(`A safe point of ${words.the} will be pinned first. It can't be unpinned while guests can edit.`),
       li('You can end guest editing at any time with ', h('strong', { text: 'Stop guest editing' }), '.'),

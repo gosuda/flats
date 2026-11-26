@@ -1,6 +1,6 @@
 # Phase gates: evidence
 
-This page lists the checks CI runs on every change and the recorded evidence
+This page lists the checks CI runs and the recorded evidence
 of the phase gates. The phase evidence names the tools of its time:
 `save_version`, `save_version_from_dir` and `publish` are removed. The current
 tools are `save_draft` / `save_draft_from_dir` for Draft content,
@@ -14,16 +14,43 @@ was not available.
 
 ## Pull-request baseline
 
-`.github/workflows/ci.yml` runs on every PR and push to main, with read-only
-repository permission and no secrets. It uses the Go version from `go.mod`
-and runs these checks in parallel jobs:
+`.github/workflows/ci.yml` runs on every PR, push to main, and manual dispatch,
+with read-only repository permission and no secrets. Every main push and manual
+dispatch runs the full suite. Full PRs keep all eight default test shards, the
+nested module, browser tests, native service smoke, and container checks. The
+seven root race lanes and large notebook memory job run on main and manual
+dispatch rather than on each PR update.
+Pull requests first compare the tested merge with its base parent. A PR that
+changes only regular Markdown files directly in `docs/spec/` or
+`docs/research/` runs `make docs-verify`: uncached links and anchors, root
+package compilation, documentation contract tests and runtime reference
+examples. These directories hold prose, not runtime inputs; keep any new
+embedded or executable content outside this exception. The docs job restores
+the `test-other` cache without writing it.
+
+`scripts/ci-changes.py` limits this exception to lowercase ASCII filenames
+containing letters, digits and hyphens, plus `README.md`, and excludes Windows
+device names and lowercase `readme.md`. Both old and new modes must be
+non-executable regular files or absent. Renames include both paths. Empty
+diffs, nested paths, other filenames and every other changed file run the full
+suite, including `docs/agent/`, generated references, plugin skills and CI
+files. Invalid merge context or a failed comparison selects the full suite. A failed
+selector checkout or job, missing output, or any value other than an explicit
+`full=false` from a successful selector also runs full PR coverage.
+No workflow-level path filter hides its result. Main skips the changes job
+and starts its full suite without waiting for a classifier runner. The
+`legacy-build` job runs `scripts/lifecycle-gate.sh --prepare-only` on every pull
+request that the changes job selects as full.
+
+The full suite uses the Go version from `go.mod`. Root tests stay in parallel
+lanes; main/manual race lanes run sequentially in one job:
 
 ```sh
 go mod tidy                         # CI requires no go.mod/go.sum diff
 go vet ./...
 make docs-check                     # Markdown links and anchors, uncached
 go test ./...                       # as eight shards: scripts/ci-test.sh <shard>
-scripts/ci-race.sh core-1           # go test -race, in seven routine lanes
+scripts/ci-race.sh core-1           # go test -race, in one main/manual job
 scripts/ci-race.sh core-2
 scripts/ci-race.sh services
 scripts/ci-race.sh notebook-1
@@ -59,14 +86,14 @@ CGO-free somewhere: darwin/arm64 by the `install-macos` job, darwin/amd64 by
 the `netbird` job on Linux, and linux/amd64 and linux/arm64 by the
 `container` job.
 
-`scripts/ci-race.sh` runs seven race lanes on each pull request and main
-push: the core service in two lanes; the API, app, MCP, store, Portal and
+`scripts/ci-race.sh` runs all seven race lanes sequentially on each main push
+and manual dispatch: the core service in two lanes; the API, app, MCP, store, Portal and
 WebSocket packages with the runtime's FILES, WASI and WebSocket limit tests
 and the board engine; the whole notebook package with its default model seed
 count in two lanes; and the board server in two lanes. Each two-lane package
 is split by test name like the runtime and docs shards: the first lane runs
-a `-run` pattern, the second `-skip`s the same pattern. These jobs retain
-their 20-minute limit. The `notebook-1` and `notebook-2` lanes set an
+a `-run` pattern, the second `-skip`s the same pattern. The combined job has a 150-minute bound and keeps every lane's own test
+timeout. It continues after a lane fails and fails if any lane failed. The `notebook-1` and `notebook-2` lanes set an
 18-minute test timeout; the whole package took about nine minutes in one
 lane, close to `go test`'s default of 10 minutes. `notebook-1` runs the
 `TestMarkdown` and `TestReader` tests, about half of the package's race time; `notebook-2`
@@ -81,8 +108,13 @@ even when the absolute ceiling alone would pass. Run the full
 `option_schema` parent to include both measurements and their comparison;
 individual size subtests still run independently. The
 `notebook-large-markdown` lane keeps 1, 1.5, 8 and 32 MiB for every kind.
+In the reader and Markdown tests that sample through `measureReaderHeap`, a
+whole-read heap sample above the 4 MiB ceiling counts only what survives a
+forced collection. Under host CPU contention the Go GC CPU limiter can turn
+off mutator assists, and the heap then outgrows the pacer's goal with garbage
+that the read no longer holds.
 
-The `notebook-memory` CI job runs `scripts/ci-memory.sh` for `reader`,
+On main pushes and manual dispatch, the `notebook-memory` CI job runs `scripts/ci-memory.sh` for `reader`,
 `markdown` and `source` sequentially, without race instrumentation. Every
 group runs even if an earlier group fails, and any failure fails the job.
 The groups set `NOTEBOOK_LARGE_MEMORY_TESTS=1`, preserving the smaller
@@ -100,7 +132,16 @@ manual dispatch. Its three independent 30-minute jobs call the existing
 `notebook-large-reader`, `notebook-large-markdown` and
 `notebook-large-source` lanes of `scripts/ci-race.sh`. The large-input race
 checks run weekly or manually; the default notebook and core race checks
-remain on every PR. Both modes share selectors in `scripts/ci-memory.sh`.
+run on main pushes and manual dispatch. Both modes share selectors in
+`scripts/ci-memory.sh`. The weekly jobs restore the combined `race-all`
+cache. Main CI writes that cache; the weekly jobs never write them and still force the large
+fixtures to execute with `-count=1`.
+
+The weekly [Lifecycle gate](../.github/workflows/lifecycle-gate.yml) workflow runs
+the full lifecycle gate, through `scripts/ci-lifecycle-gate.py`, on Wednesdays at
+05:23 UTC and on manual dispatch. The census coverage test runs in the `other`
+shard. [Scheduled and pull-request checks](lifecycle-verification.md#scheduled-and-pull-request-checks)
+describes what each run publishes and what a green run means.
 
 The many-option Markdown fixture keeps all 5,000 options
 and 100 rows in the default run, batching schema-only continuations rather
@@ -143,20 +184,22 @@ gates share; it never starts Flats or a provider) and run
 that archive, a rerun restarts it, it recovers from a crash, a stopped
 service stays stopped on upgrade, and uninstall removes it.
 
-The `windows` job runs the test shards on `windows-latest`, without the
-`docs-budget` shard, whose wall-clock budgets belong to the Linux job, and
-without `internal/devreview`, whose run command is Unix only. Its tests keep
-their data below `RUNNER_TEMP`, on the runner's temporary drive. About 11
-minutes after a hosted runner boots, its system drive is read for about 45 s,
-and a flush there takes seconds. A document test met that as a guest call at
-the request limit ([Current state](spec/windows-support.md#current-state)).
-The step prints the boot time of the runner, so that a later stall can be
-compared with it. The package `internal/site` runs first, with the default
-temp directory: one of its tests needs the short (8.3) names of the system
-drive, and the temporary drive keeps none. After the tests the job runs
-`scripts/install-smoke.ps1` on the Windows release archive. The job runs as an
-administrator, so the check that the install needs no administrator rights
-stays manual in [Releases](release.md).
+The `windows` job uses `depot-windows-2025` and builds its Windows archive
+within the same job attempt. It neither waits for Linux/container checks nor
+downloads an archive produced by another attempt. It runs the full site and
+configuration packages, the two Windows-only open-file storage regressions,
+the backup junction regression, and
+`TestBackupOfARunningHostRestoresToAWorkingHost`. Every native test command
+uses `-count=1`. The site package keeps the default system-drive temp location
+because its short-name tests require it.
+
+The native tests run after successful toolchain setup even if archive building
+fails. Service smoke runs when archive building succeeds even if tests fail.
+Neither verdict hides the other. The job retains its 20-minute bound;
+the new native build/test path needs a completed cold Depot run to establish
+its timing. The job runs as an administrator, so the check that the install
+needs no administrator rights stays manual in [Releases](release.md).
+All macOS allocations use `depot-macos-latest`.
 
 A `container` job builds the image for `linux/amd64` and `linux/arm64` from
 the Linux release archives and runs `scripts/container-smoke.sh` on the
@@ -168,6 +211,10 @@ console API), a built-in docs flat saved without any approval request with its
 generated modules under `/data`, restart persistence of config, flats and data
 without a second bootstrap, and a clean SIGTERM exit, all with a read-only
 root, no capabilities and `no-new-privileges`.
+
+Release tests retain all eight shards and restore the caches written by the
+six main CI lanes. In particular, `runtime-codec` reads `test-runtime-soak`
+and `docs-soak` reads `test-docs-budget`. Release checkouts remain restore-only.
 
 Tests use disposable hosts/data and local test-control infrastructure. Portal
 relay E2E remains opt-in (`FLATS_PORTAL_E2E=1`); ordinary CI never enables it.

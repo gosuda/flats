@@ -9,10 +9,12 @@ import (
 	"errors"
 	"fmt"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
 	"github.com/gosuda/flats/internal/store"
+	"github.com/gosuda/flats/internal/webhook"
 )
 
 // Operator key ids (store.HostKey.ID).
@@ -20,10 +22,17 @@ const (
 	HostKeyTailscale = "tailscale"
 	HostKeyZrok      = "zrok"
 	HostKeyNetbird   = "netbird"
+
+	// The two keys of the event webhook (docs/spec/event-webhook.md, rule 6). Only `flats key` sets them.
+	HostKeyWebhookURL    = "webhook-url"
+	HostKeyWebhookSecret = "webhook-secret"
 )
 
-// HostKeyIDs lists the operator keys in display order.
-var HostKeyIDs = []string{HostKeyTailscale, HostKeyNetbird, HostKeyZrok}
+// ProviderKeyIDs lists the keys of the network providers in display order. The console shows and sets these.
+var ProviderKeyIDs = []string{HostKeyTailscale, HostKeyNetbird, HostKeyZrok}
+
+// HostKeyIDs lists every operator key that `flats key` accepts: the provider keys and the two webhook keys.
+var HostKeyIDs = slices.Concat(ProviderKeyIDs, []string{HostKeyWebhookURL, HostKeyWebhookSecret})
 
 // Where a stored key came from (store.HostKey.Source).
 const (
@@ -48,6 +57,18 @@ func CheckHostKeyValue(id, v string) error {
 		return invalidf("the %s key is longer than %d bytes", id, maxHostKeyLen)
 	case strings.ContainsAny(v, " \t\r\n"):
 		return invalidf("the %s key contains white space", id)
+	}
+	switch id {
+	case HostKeyWebhookURL:
+		if err := webhook.CheckURL(v); err != nil {
+			return invalidf("the webhook URL is refused: %v", err)
+		}
+		return nil
+	case HostKeyWebhookSecret:
+		if err := webhook.CheckSecret(v); err != nil {
+			return invalidf("the webhook secret is refused: %v", err)
+		}
+		return nil
 	}
 	if id == HostKeyNetbird {
 		if !setupKeyRE.MatchString(v) {
@@ -84,7 +105,7 @@ func hostKeyAEAD(key []byte) (cipher.AEAD, error) {
 }
 
 // SealHostKey encrypts value for id under the host key, creating the key file when there is none
-// yet. A configured key is never created.
+// yet. A configured key is never created. The record carries the key ID of the key that sealed it.
 func SealHostKey(keyFile KeyFile, id, value string, source string, now time.Time) (store.HostKey, error) {
 	key, err := keyFile.LoadOrCreate()
 	if err != nil {
@@ -99,10 +120,11 @@ func SealHostKey(keyFile KeyFile, id, value string, source string, now time.Time
 		return store.HostKey{}, err
 	}
 	return store.HostKey{ID: id, Nonce: nonce, Ciphertext: g.Seal(nil, nonce, []byte(value), hostKeyAAD(id)),
-		Source: source, UpdatedAt: now}, nil
+		KeyID: KeyID(key), Source: source, UpdatedAt: now}, nil
 }
 
-// OpenHostKey decrypts a stored key value.
+// OpenHostKey decrypts a stored key value. It always tries the key: the key ID of the record is a label, and it only
+// adds to the error of a value that did not open.
 func OpenHostKey(keyFile KeyFile, k store.HostKey) (string, error) {
 	if !k.HasValue() {
 		return "", errors.New("the key record holds no value")
@@ -117,7 +139,7 @@ func OpenHostKey(keyFile KeyFile, k store.HostKey) (string, error) {
 	}
 	pt, err := g.Open(nil, k.Nonce, k.Ciphertext, hostKeyAAD(k.ID))
 	if err != nil {
-		return "", fmt.Errorf("decrypt the stored %s key: %w; the key at %s does not match flats.db: put back the matching key, which `flats secret restore-key` restores from its recovery copy, or remove this key with `flats key rm` while the host is stopped and register it again", k.ID, err, keyFile.Path())
+		return "", fmt.Errorf("decrypt the stored %s key: %w%s; the key at %s does not match flats.db: put back the matching key, which `flats secret restore-key` restores from its recovery copy, or remove this key with `flats key rm` while the host is stopped and register it again", k.ID, err, sealedByAnotherKey(k.KeyID, KeyID(key)), keyFile.Path())
 	}
 	return string(pt), nil
 }
@@ -138,13 +160,13 @@ func StoredHostKey(ctx context.Context, keyFile KeyFile, st *store.Store, id str
 	return v, k, err
 }
 
-// PutHostKeyValue seals and stores value for id.
-func PutHostKeyValue(ctx context.Context, keyFile KeyFile, st *store.Store, id, value, source string, now time.Time) error {
+// PutHostKeyValue seals and stores value for id, and writes the key.set audit event of audit in the same transaction.
+func PutHostKeyValue(ctx context.Context, keyFile KeyFile, st *store.Store, id, value, source string, now time.Time, audit store.Audit) error {
 	k, err := SealHostKey(keyFile, id, value, source, now)
 	if err != nil {
 		return err
 	}
-	return st.PutHostKey(ctx, k)
+	return st.PutHostKey(ctx, k, audit)
 }
 
 // SameKey compares two key values in constant time.

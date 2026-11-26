@@ -193,8 +193,8 @@ func FlagBacktraceBarrier() EvalOptionFunc {
 	}
 }
 
-// Handle creates QuickJS evaluation option handle for WASM function calls.
-func (o *EvalOption) Handle() (handle uint64) {
+// CreateHandle creates QuickJS evaluation option handle for WASM function calls.
+func (o *EvalOption) CreateHandle() (handle uint64) {
 	codeHandle := uint64(0)
 	byteCodeHandle := uint64(0)
 	o.fileValue = o.c.NewStringHandle(o.file)
@@ -222,8 +222,8 @@ func (o *EvalOption) Handle() (handle uint64) {
 	return option.Raw()
 }
 
-// Free releases QuickJS value handles to prevent memory leaks.
-// Must be called after Handle() to clean up WASM memory.
+// Free releases the WASM handles allocated by [EvalOption.CreateHandle].
+// Call Free after the last use of the returned handle.
 func (o *EvalOption) Free() {
 	for _, value := range []*Value{o.fileValue, o.codeValue, o.byteCodeValue, o.optionValue} {
 		if value != nil && value.handle != nil {

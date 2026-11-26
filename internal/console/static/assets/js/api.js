@@ -72,6 +72,13 @@ export const api = {
   putSecret: (slug, name, value) => request('PUT', `/flats/${enc(slug)}/secrets/${enc(name)}`, { value }),
   deleteSecret: (slug, name) => request('DELETE', `/flats/${enc(slug)}/secrets/${enc(name)}`),
   snapshots: (slug) => get(`/flats/${enc(slug)}/snapshots`),
+  // Portal sign-in (docs/spec/portal-sign-in.md). A change is requested with
+  // flats signin set on the host, so the console only reads the setting,
+  // issues access links and ends the sessions. The answer of issueSignInLink
+  // holds the link: its caller shows it once and keeps no copy.
+  signIn: (slug) => get(`/flats/${enc(slug)}/signin`),
+  issueSignInLink: (slug, subject, expires) => post(`/flats/${enc(slug)}/signin/links`, { subject, expires }),
+  revokeSignIn: (slug) => post(`/flats/${enc(slug)}/signin/revoke`),
   stats: (slug, days) => get(`/flats/${enc(slug)}/stats?days=${days || 30}`),
   approvals: (status, signal) => request('GET', '/approvals' + (status ? '?status=' + enc(status) : ''), undefined, undefined, signal),
   approval: (id) => get(`/approvals/${enc(id)}`),

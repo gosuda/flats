@@ -603,6 +603,7 @@ func Start(ctx context.Context, o Options) (*Host, error) {
 		return nil, keyRefusal(err)
 	}
 	h.Svc = svc
+	h.startWebhook(ctx, keyFile, st, logf)
 	// The deprecated key file path goes once its key is in flats.db.
 	if cfg.Credentials.TailscaleAuthKeyFile != "" {
 		if err := svc.DropDeprecatedAuthKeyFile(); err != nil {
@@ -795,6 +796,11 @@ type SystemStatus struct {
 	Grants      []string                `json:"provider_grants,omitempty"`
 	Providers   []core.ExposureEndpoint `json:"providers"`
 	Redirects   map[string]string       `json:"redirects,omitempty"`
+	// PortalRequireAuth is portal.require_auth, and PortalRefused lists the flats that it refuses now, derived from the
+	// stored facts when the status is read (docs/spec/portal-require-auth.md, rule 10). PortalRefused is null when the
+	// store cannot be read; the status still answers, because the CLI uses it as its liveness check.
+	PortalRequireAuth bool     `json:"portal_require_auth"`
+	PortalRefused     []string `json:"portal_refused"`
 }
 
 // Status implements api.System.
@@ -815,6 +821,16 @@ func (h *Host) Status(ctx context.Context) any {
 	if h.Public != nil {
 		ps := h.Public.Status()
 		s.Public = &ps
+	}
+	s.PortalRequireAuth = h.Svc.PortalRequireAuth()
+	portalPermitted := h.Providers == nil && h.Public != nil
+	if h.Providers != nil {
+		for _, id := range h.Providers.File().Permitted {
+			portalPermitted = portalPermitted || string(id) == string(core.ProviderPortal)
+		}
+	}
+	if refused, err := h.Svc.PortalRefused(ctx, portalPermitted); err == nil {
+		s.PortalRefused = refused
 	}
 	return s
 }
@@ -949,10 +965,14 @@ func relayLimit(n int64) int {
 
 // keyRefusal makes a refusal of the host key an action error, which exits with status 78. A service manager
 // that does not restart on 78 does not loop on a key that is missing or cannot be used, whether the check
-// at the start or the one in core.New found it (docs/spec/secret-key-path.md, rules 5 and 8).
+// at the start or the one in core.New found it (docs/spec/secret-key-path.md, rules 5 and 8). The refusals of a
+// rotation that stopped are refusals of the key too: a pending key that waits, a key that sealed none of the
+// values, and a pending key file that cannot be classified (docs/spec/secret-key-rotation.md, rules 17 and 22).
 func keyRefusal(err error) error {
-	if errors.Is(err, core.ErrSecretKeyMissing) || errors.Is(err, core.ErrKeyLocation) {
-		return &ActionError{err}
+	for _, refusal := range []error{core.ErrSecretKeyMissing, core.ErrKeyLocation, core.ErrRotationStopped, core.ErrKeySealedNothing, core.ErrPendingKey} {
+		if errors.Is(err, refusal) {
+			return &ActionError{err}
+		}
 	}
 	return err
 }

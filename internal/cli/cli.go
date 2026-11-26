@@ -1,7 +1,7 @@
 // Package cli implements the `flats` command line. Every command is a thin
 // client of the HTTP API except serve, worker, install and uninstall, and
-// config, key and secret backup-key, restore-key and reset, which work on the
-// data directory itself.
+// config, key and secret backup-key, restore-key, rotate-key and reset, which
+// work on the data directory itself.
 package cli
 
 import (
@@ -39,13 +39,17 @@ var Config func(ctx context.Context, args []string, out io.Writer) error
 // Key runs `flats key`, wired like Serve.
 var Key func(ctx context.Context, args []string, in io.Reader, out io.Writer) error
 
-// SecretKey runs `flats secret backup-key`, `restore-key` and `reset`, which
-// work on the data directory's secret.key, wired like Serve.
+// SecretKey runs `flats secret backup-key`, `restore-key`, `rotate-key` and
+// `reset`, which work on the data directory's secret.key, wired like Serve.
 var SecretKey func(ctx context.Context, args []string, in io.Reader, out io.Writer) error
 
 // Backup runs `flats backup`, which copies the data directory or checks such a
 // copy without calling the host, wired like Serve.
 var Backup func(ctx context.Context, args []string, out io.Writer) error
+
+// Audit runs `flats audit ls` and `flats audit export`, which read flats.db without calling the host, wired like
+// Serve.
+var Audit func(ctx context.Context, args []string, out io.Writer) error
 
 // KeyUsage is the usage of `flats key`, wired like Serve.
 var KeyUsage = "key <subcommand> [args]"
@@ -139,7 +143,8 @@ func init() {
 		{"notebook", "read or atomically update a notebook", "notebook get <slug> [--page id|--database id] [--view id|--sort json --filter json] [--format structured|markdown] [--limit n] [--revision n]\n       flats notebook get <slug> --cursor cursor [--op-id id]\n       flats notebook apply <slug> <ops.json> [--message m] [--op-id id] [--max-input-bytes n]\n       get follows every continuation; --json returns an array of unchanged response pages\n       apply bounds input before decoding: default 8 MiB + 4 * ceil(20 MiB / 3) bytes\n       for larger host upload limits, set --max-input-bytes to 8 MiB + 4 * ceil(upload_max_bytes / 3)\n       this local limit does not raise the host's upload or operation limits", (*app).notebook},
 		{"env", "manage ordinary server environment variables", "env set <slug> <NAME> <VALUE>\n       flats env rm <slug> <NAME>\n       flats env ls <slug>", (*app).envVars},
 		{"network", "manage server HTTP(S) origin permissions", "network ls <slug>\n       flats network set <slug> <origin>...\n       flats network clear <slug>", (*app).network},
-		{"secret", "manage server-flat secrets", "secret set <slug> <NAME>   (value from stdin)\n       flats secret rm <slug> <NAME>\n       flats secret ls <slug>\n       flats secret backup-key [--out path] [--password-file path] [--config path | --data dir]\n       flats secret restore-key [--from path] [--password-file path] [--config path | --data dir]\n       flats secret reset [--yes] [--config path | --data dir]", (*app).secret},
+		{"secret", "manage server-flat secrets", "secret set <slug> <NAME> [--origin URL --header NAME]   (value from stdin; with --origin and --header the host sends the value as that header of each fetch to that https origin, and it is not in env)\n       flats secret rm <slug> <NAME>\n       flats secret ls <slug>\n       flats secret backup-key [--out path] [--password-file path] [--config path | --data dir]\n       flats secret restore-key [--from path] [--password-file path] [--config path | --data dir]\n       flats secret rotate-key [--out file] [--password-file path] [--yes] [--config path | --data dir]\n       flats secret reset [--yes] [--config path | --data dir]", (*app).secret},
+		{"signin", "manage the Portal sign-in of a flat (it protects the Portal URL only)", "signin show <slug> [--json]\n       flats signin set <slug> oidc --issuer URL --client-id ID --allow ENTRY [--allow ENTRY ...] [--reason TEXT]\n       flats signin set <slug> credential --allow SUBJECT [--allow SUBJECT ...] [--reason TEXT]\n       flats signin off <slug> [--reason TEXT]\n       flats signin secret set <slug> --issuer URL --client-id ID   (value from stdin)\n       flats signin secret rm <slug>\n       flats signin revoke <slug>", (*app).signin},
 		{"approvals", "list approval requests, or wait for one to be decided", "approvals [--status pending|approved|rejected|failed]\n       flats approvals wait <id> [--timeout seconds]", (*app).approvals},
 		{"status", "show server and service status", "status", (*app).status},
 		{"install", "run `flats serve` at login (launchd/systemd/scheduled task)", "install [--config path] [--data dir] [--executable path] [-- legacy serve flags...]", (*app).install},
@@ -148,9 +153,10 @@ func init() {
 		{"mcp", "relay the host's MCP tools over stdio (what the agent plugins run)", "mcp [--url url]", (*app).mcpBridge},
 		{"mcp-config", "print setup commands for Claude Code, Codex and Cursor", "mcp-config [--url url]", (*app).mcpConfig},
 		{"agent-setup", "make Flats your agents' document tool (opt-in, with a preview)", "agent-setup docs [--agent claude|codex|cursor|all] [--scope user|project] [--dry-run] [--yes] [--undo]", (*app).agentSetup},
+		{"audit", "list the audit log, or export it with the approval records as JSON lines", "audit ls [--since time] [--kind kind] [--flat slug] [--flat-id id] [--limit n] [--json] [--config path | --data dir]\n       flats audit export [--since time] [--config path | --data dir]", (*app).audit},
 		{"backup", "copy the host's data into a new folder while it runs, or check such a copy", "backup --out path [--exclude-secret-key] [--config path | --data dir]\n       flats backup --verify path", (*app).backup},
 		{"config", "manage the host configuration (config.json)", "", (*app).config},
-		{"key", "manage the host's Tailscale, zrok and NetBird keys while it is stopped", "", (*app).key},
+		{"key", "manage the host's operator keys (Tailscale, zrok, NetBird, the event webhook) while it is stopped", "", (*app).key},
 		{"client", "check local client compatibility", "client check [--skill-file path]", (*app).clientCommand},
 		{"update", "update this standalone CLI (never share with a running foreground/custom server)", "update [--version tag]\n       Do not share the client path with a running foreground/custom Flats server; new workers may use the replaced binary immediately.", (*app).updateCommand},
 		{"skill", "sync a standalone skill (managed plugins must use their plugin manager)", "skill sync --output SKILL.md [--expected-sha256 hash]\n       Standalone files only; managed plugins must use their plugin manager.", (*app).skillCommand},
@@ -194,6 +200,7 @@ var commandAbout = map[string]string{
 	"client": "Checks whether this CLI is compatible with the host and, with --skill-file, whether the named\n" +
 		"standalone skill file is current. The check changes nothing. `flats update` replaces a CLI that\n" +
 		"the check reports as incompatible.",
+	"signin": signInAbout,
 }
 
 // printCommandHelp prints the usage line, then the synopsis and the longer

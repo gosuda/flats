@@ -51,7 +51,7 @@ func (f *fixture) seal(dataDir, keyPath string) {
 		f.t.Fatal(err)
 	}
 	defer st.Close()
-	if err := st.PutHostKey(context.Background(), k); err != nil {
+	if err := st.PutHostKey(context.Background(), k, store.Audit{}); err != nil {
 		f.t.Fatal(err)
 	}
 	if err := st.Sync(context.Background()); err != nil {
@@ -92,7 +92,7 @@ func TestRunWithAnExternalKey(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := st.DeleteHostKey(context.Background(), core.HostKeyZrok); err != nil {
+	if err := st.DeleteHostKey(context.Background(), core.HostKeyZrok, store.Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	st.Close()
@@ -123,21 +123,46 @@ func TestRunWithAnExternalKey(t *testing.T) {
 	}
 }
 
-// A key that does not open the sealed values fails the backup, and a second run does not help (rule 17).
+// A key that does not open the sealed values fails the backup, and a second run does not help (rule 17). That is the
+// check of the copy. A database with a value that has no key ID reaches it, as every database did before the key IDs.
+// When every value carries a key ID and none carries the ID of the key, the preflight refuses first, with the message
+// of the start, and writes nothing (docs/spec/secret-key-rotation.md, rules 22 and 26).
 func TestRunFailsWhenTheExternalKeyDoesNotOpenTheSealedValues(t *testing.T) {
 	t.Parallel()
-	f := populated(t)
-	f.seal(f.data, "") // sealed under the old key, which is about to be replaced by another
-	keyPath, _ := f.externalKey()
-	o := f.options("c1")
-	o.SecretKeyPath = keyPath
-	_, err := f.run(o)
-	var rerun *RerunError
-	if err == nil || errors.As(err, &rerun) || !strings.Contains(err.Error(), "does not open with the key at host.secret_key_path") ||
-		!strings.Contains(err.Error(), "a second run does not clear this failure") {
-		t.Fatalf("err = %v, want a failure that says a second run does not clear it", err)
-	}
-	f.nothingLeft()
+	t.Run("a value without a key ID", func(t *testing.T) {
+		t.Parallel()
+		f := populated(t)
+		f.seal(f.data, "") // sealed under the old key, which is about to be replaced by another
+		f.sql(nameFlatsDB, `UPDATE host_keys SET key_id = ''`)
+		keyPath, _ := f.externalKey()
+		o := f.options("c1")
+		o.SecretKeyPath = keyPath
+		_, err := f.run(o)
+		var rerun *RerunError
+		if err == nil || errors.As(err, &rerun) || !strings.Contains(err.Error(), "does not open with the key at host.secret_key_path") ||
+			!strings.Contains(err.Error(), "a second run does not clear this failure") {
+			t.Fatalf("err = %v, want a failure that says a second run does not clear it", err)
+		}
+		f.nothingLeft()
+	})
+	t.Run("a value with the key ID of another key", func(t *testing.T) {
+		t.Parallel()
+		f := populated(t)
+		oldKey, err := os.ReadFile(filepath.Join(f.data, nameSecretKey))
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.seal(f.data, "")
+		keyPath, key := f.externalKey()
+		o := f.options("c1")
+		o.SecretKeyPath = keyPath
+		_, err = f.run(o)
+		var refused *RefusedError
+		if !errors.As(err, &refused) || !strings.Contains(err.Error(), core.KeyID(key)) || !strings.Contains(err.Error(), core.KeyID(oldKey)) {
+			t.Fatalf("err = %v, want the refusal of a key that sealed none of the values, with both key IDs", err)
+		}
+		f.nothingLeft()
+	})
 }
 
 // A hard link to the key under another name in the data directory escapes the checks of rule 3. The scan of the

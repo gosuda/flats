@@ -283,6 +283,10 @@ func printPending(w io.Writer, state, detail string) {
 // notice of its own (it always should; this keeps the warning unconditional).
 const publicURLNotice = "Anyone with a public URL can open it. Unlisted only hides a flat from Portal relay listings; it is NOT access control."
 
+// signInHostsNote follows publicURLNotice under the public hosts of `flats status`: the Portal URL of a flat with
+// sign-in on is the exception (docs/spec/portal-sign-in.md, rule 61).
+const signInHostsNote = "On the Portal URL of a flat with sign-in on, only the visitors that its sign-in allows can open it."
+
 // publicNotice returns what to print next to f's public URL.
 func publicNotice(f flatView) string {
 	if f.PublicNotice != "" {
@@ -529,7 +533,7 @@ func (a *app) preview(args []string) error {
 func (a *app) visibility(args []string) error {
 	fs := a.flags("visibility")
 	reason := fs.String("reason", "", "why (shown to the operator when approval is needed)")
-	access := fs.String("access", "", "public only: view (default) or edit (boards and documents: anyone on the internet can edit)")
+	access := fs.String("access", "", "public only: view (default) or edit (boards and documents: anyone on the internet can edit, or with Portal sign-in on anyone who passes it)")
 	pos, err := a.parse(fs, args, 2, 2)
 	if err != nil {
 		return err
@@ -602,7 +606,9 @@ func responseWithNotice(resp response, notice string) response {
 // action prints a result that may be waiting for approval (exit 3).
 func (a *app) action(resp response, res actionResult, requested string) error {
 	pending := res.Status == "pending_approval"
-	if pending && publicVisibility(requested) {
+	// A pending notice of the host says what approval would do, also for a flat with sign-in on
+	// (docs/spec/portal-sign-in.md, rule 61); an older host may send none or the notice of a flat that is Public now.
+	if pending && publicVisibility(requested) && !strings.HasPrefix(res.Notice, "If approved") {
 		res.Notice = pendingPublicNotice
 		resp = responseWithNotice(resp, res.Notice)
 	}
@@ -754,23 +760,40 @@ func (a *app) logs(args []string) error {
 
 func (a *app) secret(args []string) error {
 	if len(args) == 0 {
-		return usagef("missing subcommand (set, rm, ls, backup-key, restore-key or reset)")
+		return usagef("missing subcommand (set, rm, ls, backup-key, restore-key, rotate-key or reset)")
 	}
 	sub, args := args[0], args[1:]
 	fs := a.flags("secret")
 	switch sub {
-	case "backup-key", "restore-key", "reset":
+	case "backup-key", "restore-key", "rotate-key", "reset":
 		return a.secretKey(append([]string{sub}, args...))
 	case "set":
+		origin := fs.String("origin", "", "make an injected secret: the exact https origin that gets the value as a header")
+		header := fs.String("header", "", "make an injected secret: the header name that carries the value (with --origin)")
 		pos, err := a.parse(fs, args, 2, 2)
 		if err != nil {
 			return err
 		}
-		value, err := a.readSecret(pos[1])
+		if (*origin == "") != (*header == "") {
+			return usagef("--origin and --header go together: give both to make an injected secret, or neither")
+		}
+		// The example of an empty piped value keeps the flags: without them the same command makes a readable secret.
+		example := "flats secret set " + pos[0] + " " + pos[1]
+		if *origin != "" {
+			example += " --origin " + *origin + " --header " + *header
+		}
+		value, err := a.readSecret(pos[1], example)
 		if err != nil {
 			return err
 		}
-		resp, err := a.client().call(a.ctx, http.MethodPut, "/api/flats/"+pathEscape(pos[0])+"/secrets/"+pathEscape(pos[1]), nil, map[string]string{"value": value}, nil)
+		body := map[string]any{"value": value}
+		if *origin != "" {
+			body["inject"] = secretInject{Origin: *origin, Header: *header}
+		}
+		var out struct {
+			Inject *secretInject `json:"inject"`
+		}
+		resp, err := a.client().call(a.ctx, http.MethodPut, "/api/flats/"+pathEscape(pos[0])+"/secrets/"+pathEscape(pos[1]), nil, body, &out)
 		if err != nil {
 			return err
 		}
@@ -778,7 +801,13 @@ func (a *app) secret(args []string) error {
 			a.emitRaw(resp)
 			return nil
 		}
-		fmt.Fprintf(a.out, "Stored %s for %s. Changes apply to live on the next deploy/redeploy, rollback or data restoration (after any required approval), or Flats host restart. New previews capture current settings; automatic worker restarts reuse their captured settings.\n", pos[1], pos[0])
+		if out.Inject != nil {
+			fmt.Fprintf(a.out, "Stored %s for %s as an injected secret. The host sends its value as the %s header of each fetch to %s, and flat code cannot read it, because it is not in env. fetch reaches %s only when `flats network set %s` permits it.\n",
+				pos[1], pos[0], out.Inject.Header, out.Inject.Origin, out.Inject.Origin, pos[0])
+		} else {
+			fmt.Fprintf(a.out, "Stored %s for %s.\n", pos[1], pos[0])
+		}
+		fmt.Fprintln(a.out, "Changes apply to live on the next deploy/redeploy, rollback or data restoration (after any required approval), or Flats host restart. New previews capture current settings; automatic worker restarts reuse their captured settings.")
 		return nil
 	case "rm", "delete":
 		pos, err := a.parse(fs, args, 2, 2)
@@ -816,13 +845,17 @@ func (a *app) secret(args []string) error {
 			return nil
 		}
 		tw := tabwriter.NewWriter(a.out, 0, 4, 2, ' ', 0)
-		fmt.Fprintln(tw, "NAME\tUPDATED")
+		fmt.Fprintln(tw, "NAME\tUPDATED\tINJECTED")
 		for _, s := range out.Secrets {
-			fmt.Fprintf(tw, "%s\t%s\n", s.Name, s.UpdatedAt.Local().Format(timeFmt))
+			injected := "-"
+			if s.Inject != nil {
+				injected = s.Inject.Header + " to " + s.Inject.Origin
+			}
+			fmt.Fprintf(tw, "%s\t%s\t%s\n", s.Name, s.UpdatedAt.Local().Format(timeFmt), injected)
 		}
 		return tw.Flush()
 	}
-	return usagef("unknown secret subcommand %q (use set, rm, ls, backup-key, restore-key or reset)", sub)
+	return usagef("unknown secret subcommand %q (use set, rm, ls, backup-key, restore-key, rotate-key or reset)", sub)
 }
 
 // secretKey runs the subcommands that work on secret.key in the data
@@ -840,8 +873,9 @@ func (a *app) secretKey(args []string) error {
 }
 
 // readSecret reads a value from stdin: without echo from a terminal, or the
-// whole input (minus one trailing newline) from a pipe.
-func (a *app) readSecret(name string) (string, error) {
+// whole input (minus one trailing newline) from a pipe. example is the command
+// that the refusal of an empty piped value shows.
+func (a *app) readSecret(name, example string) (string, error) {
 	if f, ok := a.env.Stdin.(*os.File); ok && term.IsTerminal(int(f.Fd())) {
 		v, err := prompt.Hidden(a.ctx, f, a.errw, fmt.Sprintf("Value for %s (input hidden): ", name))
 		if err != nil {
@@ -858,7 +892,7 @@ func (a *app) readSecret(name string) (string, error) {
 	}
 	s := strings.TrimSuffix(strings.TrimSuffix(string(b), "\n"), "\r")
 	if s == "" {
-		return "", errors.New("empty value on stdin; pipe the value in, e.g. `printf %s \"$TOKEN\" | flats secret set <slug> <NAME>`")
+		return "", fmt.Errorf("empty value on stdin; pipe the value in, e.g. `printf %%s \"$TOKEN\" | %s`", example)
 	}
 	return s, nil
 }

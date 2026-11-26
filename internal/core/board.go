@@ -225,7 +225,7 @@ func (s *Service) createBoardLocked(ctx context.Context, slugName, name string, 
 	if _, err := s.createFlatLocked(ctx, slugName, title, via); err != nil {
 		return nil, err
 	}
-	return s.initBoardLocked(ctx, slugName, title, via, func() { _ = s.st.DeleteFlat(ctx, slugName) })
+	return s.initBoardLocked(ctx, slugName, title, via, func() { _ = s.st.DeleteFlat(ctx, slugName, store.Audit{}) })
 }
 
 // initBoardLocked marks an existing flat row as a board and starts it. When

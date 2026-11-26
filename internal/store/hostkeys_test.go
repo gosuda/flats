@@ -18,7 +18,7 @@ func TestHostKeys(t *testing.T) {
 	}
 	at := time.UnixMilli(1_700_000_000_000).UTC()
 	k := HostKey{ID: "tailscale", Nonce: []byte("n"), Ciphertext: []byte("c"), Source: "console", UpdatedAt: at}
-	if err := s.PutHostKey(ctx, k); err != nil {
+	if err := s.PutHostKey(ctx, k, Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	got, err := s.GetHostKey(ctx, "tailscale")
@@ -29,7 +29,7 @@ func TestHostKeys(t *testing.T) {
 		t.Fatal("sealed key not counted")
 	}
 	// A connection record without a value.
-	if err := s.PutHostKey(ctx, HostKey{ID: "zrok", Source: "env", UpdatedAt: at}); err != nil {
+	if err := s.PutHostKey(ctx, HostKey{ID: "zrok", Source: "env", UpdatedAt: at}, Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SetHostKeyError(ctx, "zrok", "refused"); err != nil {
@@ -44,17 +44,17 @@ func TestHostKeys(t *testing.T) {
 		"unknown source": {ID: "netbird", Source: "agent", UpdatedAt: at},
 		"nonce only":     {ID: "netbird", Nonce: []byte("n"), Source: "cli", UpdatedAt: at},
 	} {
-		if err := s.PutHostKey(ctx, bad); err == nil {
+		if err := s.PutHostKey(ctx, bad, Audit{}); err == nil {
 			t.Errorf("%s accepted", name)
 		}
 	}
-	if err := s.DeleteHostKey(ctx, "tailscale"); err != nil {
+	if err := s.DeleteHostKey(ctx, "tailscale", Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	if has, _ := s.HasSealedHostKeys(ctx); has {
 		t.Fatal("deleted key still counted")
 	}
-	if err := s.DeleteHostKey(ctx, "tailscale"); err != nil {
+	if err := s.DeleteHostKey(ctx, "tailscale", Audit{}); err != nil {
 		t.Fatalf("deleting a missing key: %v", err)
 	}
 }

@@ -10,7 +10,7 @@ The question "who decides this value?" picks the place:
 | Decided by | Stored in | Examples |
 | --- | --- | --- |
 | The operator | `config.json` | addresses, system policies, permitted networks, console domains, provider settings |
-| Flats while running | `flats.db` | flats, drafts, versions, deployments, revision metadata of documents, designs, boards and notebooks, approvals, per-flat provider permission, events, analytics (page views, and per-day usage in `usagedays`), ordinary app environment variables, encrypted secrets, encrypted operator keys, console node records, [Autopilot settings](#autopilot-settings), [public instance settings](#public-instance-settings) |
+| Flats while running | `flats.db` | flats, drafts, versions, deployments, revision metadata of documents, designs, boards and notebooks, approvals, per-flat provider permission, events, the [audit log](#audit-log) of secret, key, visibility and grant changes, analytics (page views, and per-day usage in `usagedays`), ordinary app environment variables, encrypted secrets, encrypted operator keys, console node records, [Autopilot settings](#autopilot-settings), [public instance settings](#public-instance-settings) |
 | The flat | `flats/<slug>/` | uploaded code, revision contents, the flat's SQLite database and FILES, a board's or notebook's current content |
 | Nobody may read it in plain text | separate files | `secret.key`, or the file that [`host.secret_key_path`](#keeping-the-key-outside-the-data-directory) names |
 | A client machine's user | `flats-client/connection.json` | which Flats host the CLI and `flats mcp` use, saved by `flats connect` |
@@ -40,6 +40,9 @@ the data directory is.
   flats.db                    metadata database (+ -wal, -shm)
   secret.key                  key for flat secrets and operator keys, 32 bytes, mode 0600
                               (not here when host.secret_key_path names another file)
+  secret.key.next             the pending key of a key rotation, removed when the
+                              rotation ends; flats backup never copies it
+                              (beside the key when host.secret_key_path names it)
   secret.key.recovery         that key encrypted under a recovery password (optional)
   secret.key.recovery.id      the ID of the key in that copy
   backups/                    flats.db copies taken before a schema migration
@@ -65,8 +68,12 @@ the data directory is.
                               being removed, and orphans/ (see below)
   tsnet/                      tailnet node state: one node per flat, preview
                               and console domain
-  portal/                     Portal identities (<slug>.json), the pinned relay
-                              (<slug>.relay) and remembered aliases (<slug>.alias)
+  portal/                     Portal identities (<slug>.json, whose token secret
+                              signs the sessions and links of Portal sign-in),
+                              the pinned relay
+                              (<slug>.relay) and remembered aliases (<slug>.alias);
+                              on Windows each identity file has the Portal SDK's own
+                              access list (Windows support spec, rule 18)
   netbird/peers/<name>/       one NetBird peer per flat and console domain:
                               identity (mode 0600) and state (builds with NetBird only)
   zrok/                       zrok names this host reserved, until released
@@ -81,8 +88,8 @@ Revision contents are content-addressed: a revision adds only the files that
 changed, and blobs no revision refers to any more are removed after
 retention deletes revisions.
 
-Operator keys (the Tailscale auth key, the NetBird setup key, and a zrok token
-waiting to be used) are kept in `flats.db`, encrypted with `secret.key`; see
+Operator keys (the Tailscale auth key, the NetBird setup key, a zrok token
+waiting to be used, and the URL and signing secret of the event webhook) are kept in `flats.db`, encrypted with `secret.key`; see
 [Operator keys](#operator-keys). `config.json` holds no key. It holds a path to
 the key file only when you set `host.secret_key_path`.
 
@@ -110,12 +117,19 @@ Required:
 - `flats.db`, together with `secret.key` from the same moment: the flat
   secrets and operator keys in `flats.db` need it. With
   [`host.secret_key_path`](#keeping-the-key-outside-the-data-directory) the key
-  is a file outside the data directory, and you keep it apart from the copy;
+  is a file outside the data directory, and you keep it apart from the copy.
+  A [key rotation](#rotating-the-key) replaces the key. A copy of `flats.db`
+  from before it opens only with the old key, so take a new backup after a
+  rotation;
 - `flats/<slug>/` except the temporary copies, with `restore-journal.json`,
   revision contents and snapshots, and `flats/.lifecycle/` and
   `network-retirements/` when present;
 - `tsnet/` and `portal/`: without them new node names and certificates are
-  issued;
+  issued. The token secret in each `portal/<slug>.json` also signs the
+  sessions and the access links of [Portal sign-in](networking.md#portal-sign-in),
+  and the host key does not seal it, so keep the copy as private as
+  `flats.db`. A restore of an older copy brings back the access links that a
+  later `flats signin revoke` ended;
 - `zrok/` and `zrok-environment/`: without them a deleted flat no longer
   releases its zrok name, and the zrok account must be connected again;
 - `netbird/`: without it every NetBird peer registers again with the stored
@@ -173,6 +187,20 @@ message names `--exclude-secret-key`; with the flag it does not read the key at
 all. It also scans every file of the copy for the 32 bytes of the key, under any
 name, and fails the backup when it finds them: run it again after you remove the
 second copy of the key from the data directory.
+
+The command never copies the pending key of a
+[key rotation](#rotating-the-key), `secret.key.next`, or a temporary key file
+`.secret-key-*`, and the manifest lists them in `excluded`. `flats backup --out`
+refuses, before it writes anything, in the two states in which the start refuses
+after a rotation that did not end
+([If the command stops](#if-the-command-stops)). With `--exclude-secret-key` it
+refuses only in the first of them, while a pending key waits. A rotation can
+leave a recovery copy that still holds the old key, for example when it could
+not write the new one. A backup from that time holds a recovery copy that does
+not open its `flats.db`. With its `secret.key` the backup is complete all the
+same. Made with `--exclude-secret-key`, it cannot be restored with the recovery
+password. The start warns about such a recovery copy, and `flats backup` does
+not.
 
 The command works only on a data directory that a host of this Flats release wrote.
 After an upgrade, start the host once so that it migrates `flats.db`. To back up a
@@ -360,6 +388,7 @@ written; `flats config unset KEY` removes it.
 | `portal.discovery` | `true`; `false` needs relays | restart |
 | `portal.max_active_relays` | `3` | restart |
 | `portal.hide` | `false` (public flats appear in relay listings) | immediately; relays follow at their next lease renewal |
+| `portal.require_auth` | `false` (Portal serves every Public flat that allows it) | immediately; a Public flat without sign-in stops being served on Portal |
 | `zrok.environment` | none (Flats manages `zrok-environment/` in the data directory) | restart, or when zrok is turned on from the console |
 | `zrok.namespace` | `public` | restart, or when zrok is turned on from the console |
 | `netbird.management_url` | `https://api.netbird.io:443` (NetBird Cloud); an https URL | restart, or when NetBird is turned on from the console; applies to peers started afterwards |
@@ -427,6 +456,41 @@ what Flats asks the relays for: a served route's lease metadata changes at
 once, and relays apply it at their next lease renewal (up to about 90
 seconds). If that update fails, the choice stays saved, the flat logs the
 error and the next activation of the route retries it.
+
+`portal.require_auth: true` makes Portal serve a flat only when the flat has
+[sign-in](networking.md#portal-sign-in). While it is on, a flat without
+sign-in gets no Portal route, and a Portal route that already serves such a
+flat stops when you turn the setting on. The flat stays Public on its other
+public providers and keeps its private routes. The Portal endpoint of a
+refused flat has the state `unavailable` and a detail that names the next
+step. The detail shows in the console and in the flat view, and
+`flats status` lists the refused flats. Turning the setting off
+opens the stopped Portal routes again. The setting covers Portal only:
+`network.permitted` is the switch of every other public provider, and a flat
+can still be Public on one of them without sign-in. Only the operator changes
+the setting, from the console (Settings), by editing `config.json` and
+sending SIGHUP, or offline with `flats config set`. It needs no approval,
+agents cannot change it, and a change writes no audit row and sends no
+webhook event; the log of each affected flat records the effect.
+
+When the setting turns on, the host ends the open public connections of each
+refused flat and serves its other public routes again, so a visitor on
+another provider reconnects. When the host cannot read a flat at that moment,
+it ends the public connections of that flat and stops its Portal route, and
+the other public routes of the flat answer 503 until a deploy, a grant or a
+restart. When the host cannot list the flats, it stops the Portal route of
+every flat that has one, with sign-in on or off, and ends no connection: a
+Portal connection that is open stays until it closes or the host restarts. A
+grant or a key change that runs between the change and the visit of a flat
+stops its Portal route in the same way, without ending its open connections and
+without the event of this setting. A route whose unregistration the relay refused
+opens again only after the lease of the relay has expired (2 minutes). A
+deploy, a grant, a restart, a sign-in change, or turning the setting off,
+opens a stopped Portal route again. An older release refuses a `config.json`
+that holds `portal.require_auth`, as it refuses any key it does not know, so
+run `flats config unset portal.require_auth` before you start one. `flats
+backup` copies `config.json`, so a restore brings back the value of the time
+of the backup.
 
 zrok keeps the connected account's token and identity in `zrok-environment/`
 (mode 0600), never in `config.json`, unless `zrok.environment` names an
@@ -706,6 +770,8 @@ events or API responses:
 | Tailscale auth key | logs in every new tailnet node | until removed |
 | NetBird setup key | registers every new NetBird peer (one per flat and console domain) | until removed |
 | zrok account token | connects the zrok account | until connected; the zrok environment in `zrok-environment/` then holds it |
+| Webhook URL (`webhook-url`) | the address that the [event webhook](#event-webhook) posts to | until removed |
+| Webhook signing secret (`webhook-secret`) | signs every event of the webhook | until removed |
 
 Each value is sealed with AES-256-GCM under `secret.key`, with
 `"host-key\x00"` followed by the key's name as additional data, so a stored
@@ -726,16 +792,21 @@ A key reaches Flats in one of these ways:
 - **`flats key`** while the host is stopped. It takes the host lock like
   `flats config set`, refuses while a host runs, and checks that `flats.db`
   belongs to the configuration (`--config PATH` or `--data DIR` select it):
-  - `flats key set tailscale|zrok|netbird` reads the key from standard input
+  - `flats key set tailscale|zrok|netbird|webhook-url|webhook-secret` reads the key from standard input
     (a prompt without echo on a terminal) or `--from-file PATH`, never from
     the command line, and replaces a stored one. A zrok token waits for the
     next start, which connects it when no account is connected. With
     `host.secret_key_path` it needs the key file there and never creates one.
+    It refuses in the two states in which the start refuses after a key
+    rotation that did not end ([If the command stops](#if-the-command-stops)).
   - `flats key ls` lists the keys with their state, source and time, never
     their values.
   - `flats key rm` removes a stored key or a waiting zrok token and needs no
     `secret.key`; `flats key ls` needs none either. Disconnecting a zrok
     account stays in the console.
+  - The two keys of the [event webhook](#event-webhook), `webhook-url` and
+    `webhook-secret`, have no console page and no start input. `flats key` is
+    the only way to set, list and remove them.
 - **At start**, in this order of priority:
   1. the flags `--tailscale-authkey-file` (`--authkey-file` for a legacy
      service), `--zrok-token-file` and `--netbird-setup-key-file`, each naming
@@ -774,6 +845,11 @@ seal or open a key, so a key file that you replace while the host runs changes
 what they open at once. With
 [`host.secret_key_path`](#keeping-the-key-outside-the-data-directory) they read
 the file that it names.
+
+`flats secret rotate-key` replaces the key while the host is stopped and seals
+every stored key value again under the new key
+([Rotating the key](#rotating-the-key)). No value changes, and `flats key ls`
+shows the same source and time as before.
 
 No MCP tool and no agent API route reads or sets a key. The console's routes
 are protected against cross-site requests, not authenticated: a program that
@@ -940,7 +1016,7 @@ written to the file.
 
 It refuses, writing nothing but the lock, when the directory already holds
 Flats data: a `flats.db` (convert a legacy one with `flats config migrate`),
-or any of `flats/`, `secret.key`, `secret.key.recovery`,
+or any of `flats/`, `secret.key`, `secret.key.next`, `secret.key.recovery`,
 `secret.key.recovery.id`, `tsnet/`, `portal/`, `zrok/`,
 `zrok-environment/`, `cloudflare-quick/`, `netbird/`, `backups/`,
 `network-retirements/` or `network-provider.json` without a database (restore
@@ -966,7 +1042,19 @@ missing, the host refuses to start instead of creating a new key. Restore the
 key with `flats secret restore-key` or from the same backup as `flats.db`, or,
 when only operator keys are stored, remove them with `flats key rm` and
 register them again. [Recovering a lost secret.key](#recovering-a-lost-secretkey)
-covers the commands.
+covers the commands. When every sealed value carries the same key ID, the
+refusal names that ID, which is the ID of the key that sealed them.
+
+The host also refuses to start in two states that a
+[key rotation](#rotating-the-key) can leave. In the first, a pending key of a
+rotation waits: the sealed values are under the new key, and the key file does
+not hold it yet. The refusal names `flats secret rotate-key`, which finishes
+the rotation. In the second, the key file holds a valid key, every sealed value
+carries a key ID, and none carries the ID of that key. The refusal names the ID
+of the key and the key IDs of the values. A host in one of these states would
+seal new values under a key that does not open the others.
+[If the command stops](#if-the-command-stops) says what to do. The start never
+writes, moves or removes a key file for a rotation.
 
 With `host.secret_key_path` the host never creates a key, with or without
 sealed values. Before any listener opens, it checks the file that the setting
@@ -996,7 +1084,11 @@ renames or deletes the file, and it makes no temporary file beside it, so a key
 on a read-only mount works. Flats does not check the mode or the owner of the
 file. The user that runs the host must be able to read it (uid `65532` in the
 container image). It must be a regular file of exactly 32 bytes, and the host
-refuses to start otherwise. Flats never creates a key at a configured path.
+refuses to start otherwise. The host never creates a key at a configured path.
+Two commands write a key there for you. `flats secret restore-key` writes the
+recovered key when nothing is at the path. `flats secret rotate-key` writes the
+new key into the file, and when it finishes a rotation that stopped and nothing
+is at the path, it creates the file ([Rotating the key](#rotating-the-key)).
 
 Make a key with 32 random bytes:
 
@@ -1039,9 +1131,14 @@ these cases. The message names the path and the setting, and it holds when
 - the key, after the system resolved every link, lies inside the data
   directory.
 
-`flats key set`, `flats secret backup-key`, `restore-key` and `reset` refuse in
-the last two cases too. `flats key ls` and `flats key rm` touch no key and still
-work. `flats backup` refuses in them before it writes anything.
+`flats key set`, `flats secret backup-key`, `restore-key`, `rotate-key` and
+`reset` refuse in the last two cases too. `flats key ls` and `flats key rm` touch
+no key and still work. `flats backup` refuses in them before it writes anything.
+
+With a key at the default path or at a configured path, the start also refuses
+in two states that a [key rotation](#rotating-the-key) can leave, and
+`flats key set`, `flats secret backup-key` and `flats backup --out` refuse in
+the same two states ([If the command stops](#if-the-command-stops)).
 
 `flats config set` and `unset` load the file first, so they cannot repair a
 file that the check refuses, for example a key path that lies inside
@@ -1072,6 +1169,9 @@ credential, and for a Docker secret that is mounted into the service container
 nothing at the path), and the other key commands cannot run unless you give them
 the same mount. A plain file that the service user can read, for example
 `/etc/flats/secret.key` with mode 0400, works for every command.
+`flats secret rotate-key` reads such a file and cannot write it, so it needs
+`--out FILE` there. [Rotating the key](#a-key-at-hostsecret_key_path) has the
+steps for each kind of key file.
 
 A systemd credential suits a system service that you wrote and that runs as its
 own user. `flats install` makes a user unit, `flats.service`, that runs as your
@@ -1116,7 +1216,10 @@ flats secret reset [--yes] [--config PATH | --data DIR]
   password twice without echo; `--password-file PATH` reads it from a file
   instead, without its trailing line ends. The password has at least 12
   characters and at most 1024 bytes. Run the command again to change it.
-  Flats keeps no copy of the password.
+  Flats keeps no copy of the password. The command refuses in the two states
+  in which the start refuses after a key rotation that did not end
+  ([If the command stops](#if-the-command-stops)), because a copy of a key that
+  sealed none of the values restores nothing.
 - `restore-key` needs the host stopped and nothing at `secret.key`, or, with
   `host.secret_key_path`, nothing at that path. It reads
   `secret.key.recovery`, or `--from PATH`, asks for the password, checks that
@@ -1137,7 +1240,9 @@ flats secret reset [--yes] [--config PATH | --data DIR]
   the values, it lists the flat secrets and operator keys it will delete,
   asks you to type `reset` (or takes `--yes`), deletes them and leaves an
   event on each flat. The next start creates a new key: run `backup-key`
-  after it, set the secrets again with `flats secret set` and redeploy, and
+  after it, set the secrets again with `flats secret set` and redeploy, set
+  the client secret of Portal sign-in again with `flats signin secret set`
+  (the list names its issuer and client ID), and
   register the operator keys again with `flats key set`. With
   `host.secret_key_path` the next start creates no key: put a key at that path
   before it, and run `backup-key` after it.
@@ -1147,6 +1252,12 @@ flats secret reset [--yes] [--config PATH | --data DIR]
   a stored Tailscale or NetBird key does not open, then flat secrets with
   `flats secret rm` once the host runs. Anything else at `secret.key`, such as
   a file of the wrong size or a broken link, must be moved away first.
+  `reset` also refuses while a pending key of a rotation waits, and names
+  `flats secret rotate-key`: that key opens the values, so nothing is lost.
+  When every sealed value carries the same key ID, and the key file is missing
+  or holds a key with another ID, `reset` names that ID before it asks. It says
+  that a key file with that ID opens the values, for example the file that
+  `rotate-key --out` wrote.
 
 The copy is the key in the [age](https://age-encryption.org) format, encrypted
 with a passphrase, so the `age` tool opens it without Flats:
@@ -1172,6 +1283,536 @@ At each start, when `secret.key.recovery` exists, the host compares the key's
 ID with `secret.key.recovery.id` and logs a warning that names
 `flats secret backup-key` when they differ or the ID file is missing, for
 example after `reset` let the start create a new key.
+
+A [key rotation](#rotating-the-key) replaces the key. `flats secret rotate-key`
+asks for the recovery password and writes `secret.key.recovery` again for the
+new key, so the same password still opens the key of the host. A copy that
+`backup-key --out` wrote is not changed and holds the old key. Run
+`backup-key --out` again after a rotation.
+
+### Rotating the key
+
+Rotate the key when it may have leaked, or when a person who had access to it
+has left. `flats secret rotate-key` makes a new key and seals every flat secret
+and every stored operator key value again under it, in one transaction. No
+value changes, so no flat needs a new deployment. The
+[Secret key rotation](spec/secret-key-rotation.md) spec has the rules.
+
+```sh
+flats secret rotate-key [--out FILE] [--password-file PATH] [--yes] [--config PATH | --data DIR]
+```
+
+The command needs the host stopped. It takes the host lock like `flats key`,
+refuses while a host runs, and checks that `flats.db` belongs to the
+configuration. It works on the data directory and never calls the host, and no
+agent tool or API route reaches it.
+
+A rotation cannot be reversed, because the command does not keep the old key.
+After it, the old key opens nothing in `flats.db`. The command therefore asks
+before it writes. On a terminal it shows how many values it will seal again and
+which file gets the new key, and asks you to type `rotate`. Any other answer
+changes nothing. Without a terminal the command needs `--yes`, and `--yes` also
+skips the question on a terminal.
+
+The key path must hold a valid key, and that key must open every sealed value.
+When it does not open them all, the command refuses and changes nothing,
+because a rotation would leave the other values under a key that no file holds.
+The message says how many values the key opens, lists the others without their
+values, and names the ways out. The first is the right key, with
+`flats secret restore-key`. When the key opens some values, `flats key rm`
+removes an operator key that it does not open, and `flats secret rm` removes a
+flat secret once the host runs. When the key opens no value,
+`flats secret reset` deletes them all. When the values that do not open carry a
+key ID, the message names it before these ways out. When the key also opens no
+value and the values carry one key ID, the message names one more way first,
+for the state after a rotation with `--out`. The file of that rotation holds
+that key: run `rotate-key --out FILE` again with the same file, and put the key
+of that file at the key path only after that run reported the re-seal durable.
+With no sealed value there is nothing to check, and the command still makes a
+new key.
+
+The output gives the number of flat secrets and of operator keys that the
+command sealed again, the key ID of the old key and of the new key, each file
+that it wrote, and what happened to the recovery copy. It never shows a key or
+a value. A key ID is 32 hex digits that name a key and do not help to open
+anything. Each sealed value carries the ID of the key that sealed it, so the
+key commands and the start can say which key file belongs to the values.
+`flats key ls`, the console, the API and MCP show no key ID.
+
+An interrupt before the command starts to write changes nothing. Once the
+command has started to write, it completes its steps. A usage mistake exits
+with status 2, a refusal with status 78 and any other failure with status 1.
+
+#### Before you rotate
+
+After a rotation the old key still opens one thing, a copy of `flats.db` from
+before the rotation:
+
+- A copy that `flats backup` made with its `secret.key` stays complete. It
+  holds the key of its own moment.
+- A copy without its key needs the old key. That is a copy made with
+  `--exclude-secret-key`, or a copy of a host whose key is at
+  `host.secret_key_path`.
+- A recovery copy that you keep apart from the host (`backup-key --out`) holds
+  the old key.
+
+When such copies must stay readable, copy the old key away before you rotate.
+Make a real copy and not a link. The command writes the new key into the key
+file, so every name of that file gets the new key, a hard link included. For
+the same reason, a rotation of a key file that two hosts use changes the key of
+both. The confirmation and the output of the command say that every name of
+the key file gets the new key.
+
+After the rotation, store the new key apart again. Run
+`flats secret backup-key --out PATH` again, and take a new backup.
+
+#### A key in the data directory
+
+Stop the host, run the command, and start the host again:
+
+```sh
+flats secret rotate-key
+```
+
+The new key goes into `secret.key`. The command writes into the file and does
+not replace it, so the file keeps its owner, its mode and its access list.
+Until `secret.key` holds the new key, the command keeps the key in the pending
+key file `secret.key.next`. It removes that file at the end.
+
+#### The recovery password
+
+When `secret.key.recovery` exists in the data directory, the command asks for
+its password once and opens the copy with it. At the end it writes the copy
+again for the new key, under the same password. The password then opens the new
+key, and the start does not warn. A copy that was out of date is made current
+too. `--password-file PATH` reads the password from a file, and the command
+needs the flag when it has no terminal. The command takes the password as it
+is, also when it is shorter than `backup-key` accepts for a new password. A
+wrong password, or a copy that does not open, is a refusal that changes
+nothing.
+
+If you lost the password, remove `secret.key.recovery` first. It opens nothing
+without its password. Then rotate, and run `flats secret backup-key` to write a
+new copy.
+
+Without a recovery copy the command asks for no password and creates no copy,
+and its output names `flats secret backup-key`. It refuses `--password-file`
+then, because there is no copy to make current.
+
+The command does not change a copy that you keep apart from the host
+(`backup-key --out`). That copy holds the old key, so run
+`flats secret backup-key --out PATH` again.
+
+#### A key at `host.secret_key_path`
+
+The command must read the key, and without `--out` it writes the new key into
+the same file. When the key path is a link, the file that the link names gets
+the new key. Until the key file holds the new key, the command keeps it in a
+pending key file beside the key, `<key path>.next`. What you do depends on what
+the user that runs the command can see and write.
+
+**A file that the user can write, in a folder where the user can create a
+file.** Rotate in place, as for a key in the data directory:
+
+```sh
+flats secret rotate-key --config PATH
+```
+
+**A file or a folder that the user cannot write.** This holds for the file with
+mode 0400 above, for a read-only mount, and for a file with the read-only
+attribute on Windows. The command refuses and names `--out`. With `--out FILE`
+it writes the new key to the new file `FILE` and does not open the key path for
+writing. You then put the key of `FILE` at the key path. Remove `FILE` only
+after that, and only when the key path does not get the key from that file:
+
+```sh
+flats secret rotate-key --out ~/flats-new.key --config PATH
+sudo cp ~/flats-new.key /etc/flats/secret.key
+rm ~/flats-new.key
+```
+
+`FILE` must not exist, its folder must exist, and it must not lie inside the
+data directory. After the command, `flats.db` holds the values under the new
+key, and the key path still holds the old one. While `flats.db` holds sealed
+values, the start refuses until the new key is at the key path. The `cp` above
+writes into the existing key file, which keeps its owner and its mode. The
+owner of a key with mode 0400 can also make it writable for the time of the
+rotation and rotate in place, when the folder lets the user create the pending
+key file.
+
+**A Docker or Compose secret.** The secret is read-only, and only a container
+that mounts it sees it
+([Keeping the key outside the volume](container.md#keeping-the-key-outside-the-volume)).
+Run the command in a one-off container that has the mounts of the service, and
+give it a folder outside the data volume for `--out`. `docker compose run`
+mounts the secrets of its service. The container user `65532` must be able to
+write the folder:
+
+```sh
+docker compose stop flats
+mkdir -m 700 newkey && sudo chown 65532 newkey
+docker compose run --rm --no-deps -v "$PWD/newkey:/newkey" flats \
+  secret rotate-key --out /newkey/flats.key
+sudo cp newkey/flats.key flats.key
+docker compose up -d --force-recreate --wait
+sudo rm -r newkey
+```
+
+`flats.key` is the file of the secret in `compose.yaml`. The `cp` puts the new
+key into it and keeps its owner and its mode, and the next line creates the
+container again with the new secret. With a secret that an orchestrator stores,
+create a new secret from the file and update the service with it. With plain
+`docker run`, give the one-off container the volume and the key mount of the
+host container:
+
+```sh
+docker stop flats
+mkdir -m 700 newkey && sudo chown 65532 newkey
+docker run --rm -it -v flats-data:/data \
+  -v "$PWD/flats.key:/run/secrets/flats.key:ro" -v "$PWD/newkey:/newkey" \
+  ghcr.io/gosuda/flats:latest secret rotate-key --out /newkey/flats.key
+sudo cp newkey/flats.key flats.key
+docker start flats
+sudo rm -r newkey
+```
+
+Both forms give the one-off container a terminal, so the command can ask for
+the confirmation and for the recovery password. Copy the new key over the old
+one only after the command ended with success.
+[If the command stops](#if-the-command-stops) says what to do otherwise.
+
+**A key that the command cannot see.** A systemd credential exists only for the
+service process, so the command finds nothing at the key path. It refuses and
+says that a key that only the service process sees is missing for it. Give the
+command a copy of the key for the time of the rotation, in a folder that
+belongs to the service user and lies outside the data directory. Point
+`host.secret_key_path` at the copy, rotate in place, put the new key into the
+source file of the credential, and set the path back. These lines are for the
+drop-in above and a service that runs as the user `flats`. Run them as root:
+
+```sh
+systemctl stop flats
+install -d -o flats -m 0700 /var/lib/flats-rotate
+install -o flats -m 0600 /etc/flats/secret.key /var/lib/flats-rotate/secret.key
+sudo -u flats flats config set host.secret_key_path /var/lib/flats-rotate/secret.key --config PATH
+sudo -u flats flats secret rotate-key --config PATH
+cp /var/lib/flats-rotate/secret.key /etc/flats/secret.key
+sudo -u flats flats config set host.secret_key_path /run/credentials/flats.service/secret.key --config PATH
+rm -r /var/lib/flats-rotate
+systemctl start flats
+```
+
+The `cp` writes into the source file of the credential, which keeps its owner
+and its mode. Go on with the `cp` only after the command ended with success. If
+the command stopped, run it again first. The pending key lies beside the key
+path that the configuration names at that moment, so a change of
+`host.secret_key_path` hides it from the command and from the start.
+
+#### The owner and the access of a key file
+
+Give a key file that you put in place the owner and the access that the host
+needs. Flats sets none. On Unix, `FILE` has mode 0600 and belongs to the user
+that ran the command. On Windows it takes the access list of its folder. The
+user of the host must be able to read the file at the key path, for example
+after `chown 65532` and `chmod 0400` for the container image. On Windows, give
+the file an access list for the service account only. The same holds for a key
+file that the command creates when it finishes a rotation and nothing is at the
+key path. That file has mode 0600 and belongs to the user that ran the command,
+and the output says that you must give it the owner and the access that the
+host needs.
+
+#### If the command stops
+
+After a stop at any point, such as a crash, a kill or a loss of power, one file
+on the host holds the key that opens every sealed value: the key file, the
+pending key file, or `FILE`. The start and the command say which step is
+missing.
+
+| What you see | What it means | What to do |
+| --- | --- | --- |
+| The start refuses and names `flats secret rotate-key` | A pending key waits. The values are under the new key, and the pending key file holds it. The key file holds the old key, nothing or a damaged file | Run `flats secret rotate-key` again, without `--out`. It finishes the rotation, makes no new key and asks no confirmation. It asks for the recovery password when a recovery copy exists. `flats key set`, `flats secret backup-key`, `flats backup --out` and `flats secret reset` refuse until then |
+| The host starts, and a file `secret.key.next` (`<key path>.next`) is left | The rotation stopped before it changed a value, and the old key is still in use. Or the new key is in place, and only the removal of the pending key is missing | Nothing is lost. Run `flats secret rotate-key` again. In the first case it starts a new rotation, which removes the file first. In the second it removes the file, writes the recovery copy when one exists, and makes no new key. Do not use that name for a file of your own, because Flats treats a valid key there as its own |
+| After a rotation with `--out`, the start refuses and names the ID of the key at the key path and the key IDs of the values | The values are under the new key, which `FILE` holds. The key path still holds the old key | When the command told you to put the key of `FILE` at the key path, do that. Remove `FILE` only after that, and only when the key path does not get the key from that file. When it stopped before, run `flats secret rotate-key --out FILE` again with the same file. Put the key of `FILE` at the key path only after that run reported the re-seal durable, and keep the old key there until then, because a loss of power can still take the re-seal back |
+| The start refuses with the same message, and no file of `--out` holds the key of the values | The key at the key path is valid, and it sealed none of the values | Restore the key that has the ID of the values with `flats secret restore-key`. When no such key is left, delete the stored values with `flats secret reset` |
+| The command stops with status 1 at the re-seal, and names a file that stays or says to run it again | The re-seal failed, or the command could not make it durable. The file is the pending key or `FILE` | Run the command again, with the same `FILE` when you used `--out`. It reads the key IDs of the values to tell whether the re-seal took place. Then it finishes the rotation, starts a new one, or refuses a `FILE` that sealed no value, which you remove. With `--out`, keep the old key at the key path until that run succeeds |
+| The command fails while it writes the key file | The re-seal is durable, and the pending key file holds the key of the values. The key file can be damaged, and the start refuses as in the first row | Remove the cause that the message names and run the command again. Or copy the bytes of the pending key into the key file by hand and run the command again, which then removes the pending key. Make a real copy, and not a symbolic link to the pending key file, because the command removes that file. Copy by hand only when the command named this way or reported the re-seal durable. Before that, a loss of power can still take the re-seal back |
+| The command says that it could not write the recovery copy, or the start warns that the recovery copy holds another key | The rotation is complete. The recovery copy still holds the old key, or it holds the new key beside an ID file that is out of date | Run `flats secret backup-key`, which writes both files. After `--out`, run it when the new key is at the key path, because it refuses before |
+| `rotate-key --out FILE` refuses because `FILE` exists | A run that stopped left `FILE`, the key of `FILE` is in place already, or `FILE` is a file that the command must not use | The message says which case it found. When `FILE` is the key file, also through a link, or lies inside the data directory, name a new file and do not remove `FILE`. When `FILE` is a second file with the key that the key path holds, the key is in place: name a new file, and remove `FILE` only when the key path does not get the key from it. When the command cannot read a valid key at the key path, it finishes nothing and refuses for the key: make the key readable for the command first, and do not remove `FILE`. The name of the pending key file is refused too. In every other case name a file that does not exist, and remove `FILE` only when it is a key file that an earlier run of the command left |
+| The start or a key command stops with an error that names the pending key file | Something at that name is no regular file, or the user cannot read it. A run of `rotate-key` as another user leaves a pending key that the user of the host cannot read. Or the key path is a symbolic link to the pending key file | Make a file that can be a pending key readable for the user of the host, or run `flats secret rotate-key` as the user that wrote it. Such a file can hold the key of the values. Move away anything else at that name, such as a folder or a link. When the key path is a link to the pending key file, put a real copy of that file at the key path in place of the link, and run `flats secret rotate-key` |
+
+On a host without a sealed value, a stop while the command writes the key file
+can leave a damaged key file. No value is sealed, so nothing is lost. The start
+and the command refuse the file and say to move it away.
+
+#### Limits of a rotation
+
+- Run one key command at a time. `flats secret backup-key` takes no host lock,
+  so it can run during a rotation. The data directory can then end with a
+  recovery copy of the old key beside the ID of the new key, and the start does
+  not report it.
+- On Windows, keep the key and the `--out` file on an NTFS volume during a
+  rotation. On another file system (ReFS, FAT, exFAT, a network share) Flats
+  cannot make each step durable before the next one.
+- The pending key lies beside the key path that the configuration names. A
+  change of `host.secret_key_path` while a rotation waits for its finish hides
+  the pending key, and the start then refuses for a key that sealed none of the
+  values. Finish the rotation before you change the setting.
+- A `flats.db` from before this release has no key ID on its values. A value
+  gets its ID when it is sealed the next time, at a rotation or when you set it
+  again. The start refuses a valid key that sealed none of the values only when
+  every value carries an ID. That check does not apply to such a database until
+  a rotation, or a new set of every value, gave each value an ID. Until then a
+  wrong key shows when a value is used, as before.
+
+### Audit log
+
+Every change of a sealed value, every key backup, key restore, key rotation and reset, every change of the visibility
+of a flat that an approval applies, every change of the origin grants or of a provider permission of a flat that
+the console or `flats network set` makes, and every applied change of the Portal sign-in of a flat, access link of it
+and end of its sessions writes one event to the audit log in
+`flats.db` (the table `audit_events`, schema version 25). It is separate from the log of a flat, which Flats
+trims to `system.events_keep` events and removes with the flat. The audit log is append-only, is never trimmed,
+and the deletion or rename of a flat does not change it. The grants that a new flat starts with, and the Tailscale grant
+that the upgrade of a legacy service adds, write no event. Agents cannot read it: no MCP tool and no API route
+returns it, and `get_logs` shows only the log of the flat. The value of a secret or key is never recorded, only
+its name.
+
+| Kind | Written when | `data` |
+| --- | --- | --- |
+| `secret.set` | a flat secret is stored or replaced | `created`: true for a new name; `origin` and `header` for an injected secret; `use` (`signin`), `issuer` and `client_id` for the client secret of [Portal sign-in](networking.md#portal-sign-in) |
+| `secret.delete` | a secret is deleted, by `flats secret reset`, or with its flat | `approval`: the approval that deleted the flat, when there is one; `use` (`signin`) for the client secret of Portal sign-in |
+| `key.set` | an operator key value is stored or replaced | `replaced`; `from` (`flag`, `env` or `config`) for a start input or a migration |
+| `key.delete` | an operator key value is removed, or a waiting zrok token is used up | `reason`: `removed` or `connected` |
+| `key.backup` | `flats secret backup-key` wrote the recovery copy, or `flats secret rotate-key` wrote it again for the new key | `key_id`, and `out` when `--out` wrote a second copy |
+| `key.restore` | `flats secret restore-key` wrote the key | `key_id`, `out`, and how many sealed values the key `opened` of the `total` |
+| `key.reset` | `flats secret reset` deleted the stored values | how many `secrets` and `keys`; each value also has its own delete event |
+| `key.rotate` | `flats secret rotate-key` sealed every stored value again under a new key | `from` and `to`, the IDs of the old and the new key; how many `secrets` and `keys` it sealed again; `out` when the command ran with `--out` |
+| `visibility.set` | an approval applied a change of the visibility or of the public access level of a flat | `from` and `to`, each with `visibility` and `access`, and the `approval` |
+| `network.set` | the list of origins that the server code of a flat may fetch changed | `count` and `origins`: the list after the change. A list whose JSON text has more than 3000 bytes is cut to its first origins, with `truncated` |
+| `provider.set` | the permission of a flat to use a network provider changed (the provider is the name of the event) | `permitted` |
+| `signin.set` | an approval applied a change of the Portal sign-in of a flat | `from` and `to`, each with `provider`, `issuer`, `client_id` and the `count` of entries; the `added` and the `removed` entries; the `approval`. Entries that do not fit into 4 KiB are cut, with `truncated` |
+| `signin.link` | the console issued an access link of Portal sign-in | `subject`, `host` and `expires_at`, never the link |
+| `signin.revoke` | the sessions and the access links of a flat ended: by `flats signin revoke` or the console, or because a rename or a deletion gave its Portal identity a new token secret | none for a revocation; `cause` (`rename` or `delete`) otherwise |
+
+Each event has a time, the slug and the ID of the flat when it concerns one, the name of the secret or key, the
+channel (`via`) and the actor. The channel is `console`, `cli` (`flats secret set` or `rm`, `flats network set`,
+`flats signin secret set` or `rm`, `flats signin revoke` or `flats rename`, through the loopback
+API), `api` (a call of the loopback API without the CLI header, for `signin.revoke` only), `mcp` (for
+`signin.revoke` only, when the host removes a new board or notebook because the first write that created it failed),
+`command` (a command that you ran on the host), `start` (an input that the host read at start, or the zrok
+enrolment after it), `migration` (the import of a legacy key), `flat-delete`, or `autopilot` (an agent decided, under [Autopilot](#autopilot-settings),
+the approval of a visibility change or of the deletion of a flat, which writes `signin.revoke`; the Autopilot record
+of that agent is the actor). The actor is the identity that the
+channel knows. For the console it is the text that the console records for approvals: a tailnet user or node, a
+NetBird peer, the external origin, or the address of the caller. For a command it is the name of the operating-system
+user, which is `root` under `sudo`. For `cli`, `api`, `mcp`, `start`, `migration` and `flat-delete` it is empty: the
+CLI header is a claim of the client and not an identity. The log holds these names for as long as the host keeps `flats.db`, so
+treat it as you treat the approval records.
+
+```sh
+flats audit ls [--since TIME] [--kind KIND] [--flat SLUG] [--flat-id ID] [--limit N] [--json] [--config PATH | --data DIR]
+```
+
+`flats audit ls` lists the events oldest first, the newest 100 by default (`--limit 0` lists all). `--since` takes
+an RFC 3339 time or a duration such as `24h`. `--flat SLUG` follows a flat through its renames, because it selects by
+the flat's ID; when no flat has that slug any more, it lists the events that were written under it, which is how you
+find a deleted flat. `--flat-id` selects one flat by its ID, which `--json` prints with every event. `--json` prints one JSON object per
+line. The command reads `flats.db` without a host lock and never calls the host, so it works while the host runs
+and while it is stopped. It writes no row. A stopped host that crashed and left a `-wal` file makes the read create an
+empty `-shm` file beside it, which needs a writable folder. The command refuses, with status 78, a data directory
+without `flats.db` and a database of another schema version, and says whether to start the host once so that it migrates
+or to use the release that wrote it.
+
+`flats secret backup-key` writes its event with a write of its own to `flats.db`, without the host lock, so run it as
+the user that runs the host, as you run `flats key`, `restore-key`, `reset` and `rotate-key`. When it cannot record the event, it
+exits with status 1 and says that the recovery copy was written and the event was not.
+
+A [key rotation](#rotating-the-key) writes one `key.rotate` event for all the values that it seals again, in the
+transaction of the re-seal, also when `flats.db` holds no sealed value. It writes no `secret.set` and no `key.set`,
+because no value changes. The event records the re-seal in `flats.db`, after which the old key opens nothing there. It
+does not record when the new key became the key of the host. A run that finishes a rotation that stopped writes no
+second event, and the step in which you put the file of `--out` at the key path writes none. After a rotation with
+`--out`, or after a stop before the key file was written on a host without a sealed value, the log can hold a `to` key
+that never became the key of the host. When the command wrote the recovery copy again, it also appends a `key.backup`
+event with the ID of the new key. When it cannot record that event, the copy stays and the error says so. The event
+webhook sends nothing for these two kinds.
+
+A restore of the host from `flats backup` replaces `flats.db`, so it drops the audit events that were written after
+the copy. Anyone who can write `flats.db` can change the log. To keep a record off the host, run
+[`flats audit export`](#audit-export) from time to time.
+
+The audit log is a schema change: an older Flats refuses a `flats.db` of schema 25. Schema 26 added the two webhook keys and the
+flat ID of an approval, and an older Flats refuses it too. Schema 27 added the key ID of each sealed value
+([Rotating the key](#rotating-the-key)), and an older Flats refuses it too. Schema 28 added the origin and the header of an
+injected secret ([Calling external APIs](external-api.md)), and an older Flats refuses it too. Schema 29 added the
+[Portal sign-in](networking.md#portal-sign-in) of each flat and the use and the binding of its client secret, and an
+older Flats refuses it too. Every flat starts with sign-in off. Make a copy with
+[`flats backup`](#what-to-back-up) before an upgrade, also before the upgrade to schema 29. To go back to an older
+release,
+restore a backup of the whole data directory that you took before the upgrade, as [flats.db](#flatsdb) says.
+
+### Audit export
+
+```sh
+flats audit export [--since TIME] [--config PATH | --data DIR]
+```
+
+`flats audit export` writes the audit log and the approval records as JSON lines, oldest first, so that you can ship
+them off the host. It prints nothing else to standard output. It reads `flats.db` as `flats audit ls` does: without a
+host lock, without calling the host, while the host runs or is stopped, and with the same refusals and exit statuses.
+It writes no row.
+
+There are three kinds of line. Each has `record` and `at`, an RFC 3339 time in UTC with milliseconds.
+
+```json
+{"record":"approval","event":"created","at":"2026-11-16T09:29:40.002Z","id":"apr-3765ym6bd21w","flat":"notes","flat_id":"754f…","action":"delete","via":"mcp","reason":"the project ended"}
+{"record":"audit","id":12,"at":"2026-11-16T09:30:00.118Z","kind":"secret.delete","flat":"notes","flat_id":"754f…","name":"API_KEY","via":"flat-delete","actor":"","data":{"approval":"apr-3765ym6bd21w"}}
+{"record":"approval","event":"decided","at":"2026-11-16T09:30:00.120Z","id":"apr-3765ym6bd21w","flat":"notes","flat_id":"754f…","action":"delete","state":"approved","decided_by":"ann@example.org","result":"flat notes was permanently deleted"}
+```
+
+- An `audit` line is one event of the [audit log](#audit-log), with the fields of `flats audit ls --json`.
+- A `created` line is written for every approval, at the time of the request.
+- A `decided` line is written for every approval that is `approved`, `rejected` or `failed`, at the time of the decision.
+
+An approval record stays when its flat is deleted, so the decision of an approved delete is in the export after the flat
+is gone, together with the `secret.delete` events of the secrets that the flat held. A delete from the console makes no
+approval. Such a flat shows only through those `secret.delete` events and through the pending approvals that its
+deletion failed. `flat_id` joins the lines of one flat: a rename changes the slug of its approval lines and not the slug
+of its older audit lines, and a flat that is created again under a deleted slug has another ID. `flat_id` is empty for an
+approval that was made before schema 26 and whose flat was gone at the upgrade.
+
+`decided_by` is the stored record of who decided: `console`, a tailnet login, a NetBird peer, or the Autopilot record of
+an agent with its address. `reason` is text that an agent wrote, and `result` can be an error text of the host with a path
+in it. Flats does not filter them. It cuts `reason` and `result` at 1 KiB and `decided_by` at 512 bytes. No line holds the
+parameters of an approval or a secret value. Treat the export as you treat the approval records.
+
+`--since` takes an RFC 3339 time or a duration such as `24h` and keeps the lines whose `at` is that time or later.
+The command stops at a cutoff, 30 seconds before it started, because a record that the host is writing can still be on
+its way to the disk. It prints the cutoff on standard error:
+
+```text
+exported 1820 lines through 2026-11-16T09:31:10.456Z
+```
+
+Run the next export with `--since` and that time. The line at the boundary can appear in both exports, so a reader
+ignores a second line with the same `record`, `event` and `id`. A write of the host that takes more than 30 seconds
+between its time stamp and its commit can be missed. To be safe against that, give `--since` a time a few minutes before
+the printed one and ignore the repeated lines. Lines are ordered by `at`. Lines with the same `at` come as audit
+lines by `id`, then `created` lines, then `decided` lines.
+
+Anyone who can write `flats.db` can change what the export shows. A restore of the host from `flats backup` drops the
+records that were written after the copy.
+
+### Event webhook
+
+Flats can send a signed HTTP POST to one URL when an approval is created or decided, when the visibility of a flat
+changes, when a grant of a flat's network access changes, and when the Portal sign-in of a flat changes. The webhook
+is off until you store its two
+[operator keys](#operator-keys) while the host is stopped:
+
+```sh
+umask 077
+openssl rand -hex 32 > webhook-secret.txt      # the receiver needs this value too
+flats key set webhook-secret --from-file webhook-secret.txt
+flats key set webhook-url --from-file webhook-url.txt   # a file that holds only the URL
+```
+
+Flats never shows a stored value again, so keep the secret for the receiver, and delete the two files when both sides
+have it. A value on a command line can stay in the shell history, which is why the URL comes from a file or from
+standard input. The next start sends events. `flats key rm webhook-url` or `flats key rm webhook-secret` turns the webhook off, and a
+host that has only one of the two keys logs that at its start and sends nothing. There is no console page for the
+webhook, and no MCP tool, API route or log of a flat shows the URL, the secret or that a webhook is on. Both values are
+sealed in `flats.db` like the other operator keys, because a webhook URL often holds a token.
+
+The URL uses `https`. `http` is accepted only for `localhost` and for an IP address in the loopback, private,
+link-local or CGNAT ranges, for a receiver on the same machine or network. It has no fragment and at most 2048 bytes.
+The secret has at least 16 bytes.
+
+| Event | Sent when |
+| --- | --- |
+| `approval.created` | an approval is requested, from the console or by an agent. A request that repeats an open one sends nothing |
+| `approval.decided` | an approval is approved, rejected or failed, also when the deletion of its flat fails it |
+| `visibility.changed` | an approved change of the visibility or of the public access level of a flat is applied |
+| `network.changed` | the provider permission of a flat, or the list of origins that its server code may fetch, changes |
+| `signin.changed` | an approval applied a change of the [Portal sign-in](networking.md#portal-sign-in) of a flat (`set_signin`), the console issued an access link (`issue_signin_link`), or the sessions and the links of a flat were ended (`revoke_signin`) |
+
+A change that alters nothing sends nothing. The host-wide `network.permitted` list, the host-wide `portal.require_auth` setting, the creation of a flat, the public
+instance mode, the downgrade of "anyone can edit" when guest editing is off, an approval that a restart finishes, the
+new token secret that a rename or a deletion gives the Portal identity of a flat, and secrets and operator keys, also
+the client secret of Portal sign-in, send no event. The [audit log](#audit-log) records the changes of secrets and
+operator keys.
+
+The body is a JSON object of at most 4 KiB:
+
+```json
+{
+  "id": "evt_mfrggzdfmztwq2lknnwg23tpob",
+  "type": "approval.decided",
+  "at": "2026-11-16T09:30:00.120Z",
+  "flat": {"slug": "notes", "id": "754f4ee971ef128d6ce458c59c730fbb"},
+  "operation": "set_visibility",
+  "state": "approved",
+  "approval_id": "apr-3765ym6bd21w",
+  "decided_by": "operator",
+  "console_url": "https://console.example.ts.net/approvals/apr-3765ym6bd21w"
+}
+```
+
+| Field | Content |
+| --- | --- |
+| `id` | the ID of the event, the same for every attempt to deliver it |
+| `type`, `at` | the event and its time on the clock of the host |
+| `flat` | the slug and the ID of the flat. The ID is empty when Flats does not know it |
+| `operation` | the action of the approval, which is `set_signin` for a change of Portal sign-in; `set_visibility`, `set_network_origins` or `set_provider_permission` for a visibility or grant change; `set_signin`, `issue_signin_link` or `revoke_signin` for `signin.changed` |
+| `state` | `pending`, then `approved`, `rejected` or `failed`; `applied` for a visibility, grant or sign-in change |
+| `approval_id` | the approval, when there is one |
+| `via` | for `approval.created`, the channel that asked (`mcp`, `cli`, `api` or `console`) |
+| `decided_by` | `operator` or `autopilot`. Absent for an approval that nobody decided |
+| `change` | for `visibility.changed`, `from` and `to`, each with `visibility` and `access`. For `network.changed`, `{"grant":"origins","count":2,"origins":[…]}` or `{"grant":"provider","provider":…,"permitted":true}`. A list of origins whose JSON text has more than 3000 bytes is cut to its first origins, with `"truncated":true`; `count` is the size of the whole list. For `signin.changed`, `{"from":{"provider":"","count":0},"to":{"provider":"oidc","count":3}}` for `set_signin`, `{"expires_at":…}` for `issue_signin_link` and `{}` for `revoke_signin` |
+| `console_url` | the page of the approval or of the flat in the console |
+
+The body never holds the content of a flat, a secret or its name, the reason, parameters or result of an approval, a
+login or an address, or an entry, a subject, a credential or a link of Portal sign-in. The export carries the reason,
+the result and the stored record of who decided.
+
+Each request has these headers:
+
+| Header | Value |
+| --- | --- |
+| `Content-Type` | `application/json` |
+| `User-Agent` | `flats/<version>` |
+| `X-Flats-Event` | the type |
+| `X-Flats-Event-Id` | the `id` of the body |
+| `X-Flats-Timestamp` | the Unix time in seconds of this attempt |
+| `X-Flats-Signature` | `v1=` and the HMAC-SHA256, in lower-case hex, of the timestamp, a `.` and the exact body, with the secret as the key |
+
+A receiver checks a request in this order. It computes the signature from the header timestamp and the bytes it
+received, and compares it with the header in constant time. It refuses a timestamp that is more than five minutes from
+its own clock. It ignores an event whose `X-Flats-Event-Id` it has handled already. With the body in `body.json`:
+
+```sh
+printf '%s.' "$TIMESTAMP" | cat - body.json | openssl dgst -sha256 -hmac "$SECRET" -hex
+```
+
+`body.json` must hold the exact bytes of the request body, with no added line end. `openssl` prints a label and then the
+hex digits. The digits must equal the header value after `v1=`.
+
+For the secret `whsec_0123456789abcdef0123456789abcdef`, the timestamp `1700000000` and the body
+`{"id":"evt_test","type":"approval.created"}`, the signature is
+`v1=edecf23a0b88e1b94a9e5c0e5534118dcd61eeaf578b04fa0696a8a3f9b79919`.
+
+A delivery succeeds on a status 200 to 299. Flats does not follow a redirect and always verifies the certificate of an
+`https` receiver. It connects to the receiver itself and ignores `HTTP_PROXY`, `HTTPS_PROXY` and `NO_PROXY`, so a host
+that reaches the network only through a proxy cannot deliver the webhook. An attempt has 10 seconds. Flats tries an event at most 4 times, and waits 5 seconds, 30 seconds and
+2 minutes between the attempts, after a network or certificate error, a timeout, and a status 408, 429 or 5xx. Any other
+status, and a redirect, end the event at once. A failed event leaves one line in the host log with the ID of the event,
+its type and a class (`connect`, `timeout`, `tls`, `status NNN` or `other`), never the URL or the secret.
+
+A delivery never delays the operation that caused it. Flats keeps at most 256 events that wait and runs 4 deliveries at
+once, so a receiver can see events in another order than they happened, can see an event twice, and can miss one: an
+event that waits when the host stops, that used its 4 attempts, or that a burst of newer events pushed out of the queue
+(an agent that requests many approvals can cause that) is not sent again. The webhook is a notification. The record is
+the audit log and the approvals, which [`flats audit export`](#audit-export) ships.
 
 ## Moving an existing installation
 

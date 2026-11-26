@@ -7,7 +7,7 @@
 // Analytics and Database are their own modules under the same tabs.
 'use strict';
 
-import { h, icon, timeEl, dateTime, bytes, plural, shortHash, visibilityOf, accessOf, publicEditOf, editWords, ACCESS, visibilityBadge, publicURL, publicNoticeOf, proxyRoute, proxyDetail } from './dom.js';
+import { h, icon, timeEl, dateTime, bytes, plural, shortHash, visibilityOf, accessOf, accessLabelOf, publicEditOf, editWords, flatBadge, signInOf, publicURL, publicNoticeOf, proxyRoute, proxyDetail } from './dom.js';
 import { api } from './api.js';
 import { confirmDialog, errorPanel, loading, toast, extLink, busy, fill, setHostProviders, addressText, privateURL } from './ui.js';
 import { publishVersion, saveVersion, nextVersion, previewVersion, deleteVersion, deleteFlat, setProvider, redeployLive, stopGuestEditing, PROVIDERS } from './actions.js';
@@ -15,6 +15,7 @@ import { siteHeader } from './site.js';
 import { hasServer, isLive, typeOf, typeNoun } from './list.js';
 import { shareDialog } from './share.js';
 import { describeApproval } from './approval.js';
+import { signInRow } from './signin.js';
 
 const LOG_POLL_MS = 5000;
 const LOG_KEEP = 500;
@@ -194,7 +195,8 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
         row('URL', 'Web address', h('div', { class: 'setting-control' }, extLink(flat.public_url || privateURL(flat)), change)), rename,
         row('Custom domain', 'Custom domains are not supported on this host yet.', h('span', { class: 'muted small', text: 'Unavailable' })),
         row('Sharing', publicEditOf(flat) ? `Who can open ${publicEditOf(flat).this}` : 'Who can view your site', sharingControl(manage)),
-        publicEditOf(flat) ? guestEditSlot() : null),
+        publicEditOf(flat) ? guestEditSlot() : null,
+        signInSlot()),
       netSlot,
       isDocs() ? null : section('Version history', 'version-history', versionQuotaBlock()),
       isDocs() ? h('section', { class: 'settings-section', id: 'revisions', 'aria-labelledby': 'revisions-title' }, h('h2', { id: 'revisions-title', text: 'Revision history' }), revisionQuotaBlock(flat.slug, typeNoun(flat))) : null,
@@ -208,13 +210,13 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
   // live counts and Stop guest editing (rule 33).
   function sharingControl(manage) {
     const key = accessOf(flat);
-    if (key !== 'edit') return h('div', { class: 'setting-control' }, h('span', { class: 'muted', text: ACCESS[key].label }), manage);
+    if (key !== 'edit') return h('div', { class: 'setting-control' }, h('span', { class: 'muted', text: accessLabelOf(flat) }), manage);
     const stop = h('button', { class: 'btn btn-small btn-danger', type: 'button', text: 'Stop guest editing' });
     stop.addEventListener('click', () => busy(stop, async () => { if (await stopGuestEditing(flat)) await refresh(); }));
     const p = flat.public_presence;
     const words = editWords(flat);
     return h('div', { class: 'setting-sharing' },
-      h('div', { class: 'setting-control' }, visibilityBadge(flat.visibility, flat.public_access), manage, stop),
+      h('div', { class: 'setting-control' }, flatBadge(flat), manage, stop),
       h('p', { class: 'muted small' }, p ? `Right now: ${plural(p.guests, 'guest')} editing, ${plural(p.viewers, 'viewer')} ${words.watching}. ` : '',
         words.cannot));
   }
@@ -242,14 +244,31 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
             h('p', { class: 'muted small', text: !pinned ? 'Retention can delete it like any unpinned revision.'
               : edit ? "Restore it from History. It can't be unpinned until guest editing stops." : 'It is now an ordinary pinned revision; you can unpin it in History.' }))));
       }
-      const waiting = ((pend && pend.approvals) || []).filter((a) => a.status === 'pending' && a.action === 'set_visibility' && a.flat === slug);
-      for (const a of waiting) {
-        rows.push(h('div', { class: 'setting-row setting-pending' },
-          h('div', null, h('span', { class: 'setting-title', text: 'Waiting for approval' }), h('div', { class: 'muted small', text: 'Nothing changes until you approve' })),
-          h('div', { class: 'setting-control' }, h('span', { text: describeApproval(a) }),
-            h('a', { class: 'btn btn-small', href: `/approvals/${encodeURIComponent(a.id)}`, 'data-nav': true, text: 'View request' }))));
-      }
-      fill(slot, rows);
+      fill(slot, rows, waitingRows(pend, 'set_visibility'));
+    })();
+    return slot;
+  }
+
+  // waitingRows are the requests of action for this flat that wait for
+  // approval, each with a link to its page.
+  function waitingRows(pend, action) {
+    return ((pend && pend.approvals) || []).filter((a) => a.status === 'pending' && a.action === action && a.flat === slug).map((a) =>
+      h('div', { class: 'setting-row setting-pending' },
+        h('div', null, h('span', { class: 'setting-title', text: 'Waiting for approval' }), h('div', { class: 'muted small', text: 'Nothing changes until you approve' })),
+        h('div', { class: 'setting-control' }, h('span', { text: describeApproval(a) }),
+          h('a', { class: 'btn btn-small', href: `/approvals/${encodeURIComponent(a.id)}`, 'data-nav': true, text: 'View request' }))));
+  }
+
+  // signInSlot is the Sign-in row (docs/spec/portal-sign-in.md, rule 63) and
+  // a sign-in change that waits for approval, read separately from the flat.
+  function signInSlot() {
+    const slot = h('div', { id: 'signin' }, loading());
+    (async () => {
+      const [view, pend] = await Promise.all([
+        api.signIn(slug).catch((err) => err),
+        api.approvals('pending').catch(() => null),
+      ]);
+      if (ctx.alive()) fill(slot, signInRow(flat, view), waitingRows(pend, 'set_signin'));
     })();
     return slot;
   }
@@ -314,12 +333,27 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
             h('label', { for: 'net-local' }, 'Local', h('span', { class: 'muted small', text: 'This device, always on' }))),
           PROVIDERS.filter((p) => p.scope === 'private').map(networkRow))),
       h('div', { class: 'networks-group' }, h('h4', { text: 'Public' }),
+        signInOf(flat) ? signInNetworks() : null,
         h('ul', { class: 'networks' }, PROVIDERS.filter((p) => p.scope === 'public').map(networkRow))),
       (flat.providers || []).includes('portal') ? listingField() : null));
   }
 
+  // While sign-in is on the flat is Public through Portal alone, so the
+  // other public networks cannot be allowed (docs/spec/portal-sign-in.md,
+  // rules 8 and 64). signInNetworks says why; networkSignIn reports a row
+  // that it disables.
+  const SIGN_IN_REASON = 'net-signin-reason';
+  const networkSignIn = (p) => !!signInOf(flat) && p.scope === 'public' && p.id !== 'portal';
+  function signInNetworks() {
+    const others = PROVIDERS.filter(networkSignIn).map((p) => p.label);
+    return h('p', { class: 'muted small', id: SIGN_IN_REASON },
+      `While Portal sign-in is on, ${slug} can be Public through Portal alone. Visitors on ${others.slice(0, -1).join(', ')} and ${others.at(-1)} do not sign in, so they cannot be allowed. Sign-in goes off only with `,
+      h('code', { text: `flats signin off ${slug}` }), ' and an approval in the console.');
+  }
+
   // Whether the Portal route appears in relay listings. Hiding is not access
-  // control: anyone with the URL can still open the flat.
+  // control: anyone with the URL, or who passes its sign-in, can still open
+  // the flat.
   function listingField() {
     const id = 'portal-listing';
     const mode = flat.portal_listing || 'default';
@@ -351,16 +385,18 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
     return h('div', { class: 'networks-group field' },
       h('label', { for: id, text: 'Portal relay listing' }), select,
       h('span', { class: 'muted small', id: id + '-help' },
-        `${state} Hiding keeps the public URL out of the relay’s list of sites; anyone with the URL can still open it. The host setting is in `,
+        `${state} Hiding keeps the public URL out of the relay’s list of sites; ${signInOf(flat) ? 'anyone who passes its sign-in' : 'anyone with the URL'} can still open it. The host setting is in `,
         h('a', { href: '/settings/networks', 'data-nav': true, text: 'Settings' }), '.'));
   }
 
   function networkRow(p) {
     const id = 'net-' + p.id;
     const allowed = (flat.providers || []).includes(p.id);
-    // A provider that is off for the host can only be unchecked here.
+    // A provider that is off for the host, or that sign-in excludes, can only
+    // be unchecked here.
     const off = hostProviders !== null && !hostProviders[p.id];
-    const box = h('input', { type: 'checkbox', id, checked: allowed, disabled: off && !allowed });
+    const gated = networkSignIn(p);
+    const box = h('input', { type: 'checkbox', id, checked: allowed, disabled: (off || gated) && !allowed, 'aria-describedby': gated ? SIGN_IN_REASON : undefined });
     box.addEventListener('change', async () => {
       box.disabled = true;
       const ok = await setProvider(flat, p.id, box.checked);
@@ -370,14 +406,19 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
       if (!(await refresh()) && !ok) box.checked = allowed;
     });
     const label = h('label', { for: id }, p.label,
-      h('span', { class: 'muted small', text: off ? 'Off in Settings' : p.hint }));
+      h('span', { class: 'muted small', text: gated ? 'Off while Portal sign-in is on' : off ? 'Off in Settings'
+        : p.id === 'portal' && signInOf(flat) ? 'Visitors that its sign-in allows, through Portal relays' : p.hint }));
     // A reverse proxy row shows its address: Flats cannot see whether the
     // proxy reaches it, and says so next to it (rule 6).
-    const route = allowed && (p.id === 'proxy' || p.id === 'proxy-public') ? proxyRoute(flat, p.id) : null;
-    if (!route || (!route.url && route.state !== 'error')) return h('li', null, box, label);
-    const state = route.state === 'error' ? [h('span', { class: 'badge badge-error', text: 'error' }), ' '] : null;
+    const route = allowed && (p.id === 'proxy' || p.id === 'proxy-public' || p.id === 'portal') ? proxyRoute(flat, p.id) : null;
+    // The Portal row shows the reason of a route that is not ready, such as one that portal.require_auth refuses
+    // (docs/spec/portal-require-auth.md, rule 24). It shows no address: the Portal address is in the share dialog.
+    const shown = p.id === 'portal' ? !!(route && route.detail && !route.ready) : !!(route && (route.url || route.state === 'error'));
+    if (!shown) return h('li', null, box, label);
+    const showUrl = p.id !== 'portal' && route.url;
+    const state = p.id === 'portal' || route.state === 'error' ? [h('span', { class: 'badge badge-' + route.state, text: route.state }), ' '] : null;
     return h('li', null, box, h('div', { class: 'network-main' }, label,
-      h('div', { class: 'network-route small' }, state, route.url ? [extLink(route.url), ' '] : null,
+      h('div', { class: 'network-route small' }, state, showUrl ? [extLink(route.url), ' '] : null,
         route.detail ? h('span', { class: 'muted', text: route.detail }) : null)));
   }
 
@@ -560,7 +601,7 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
       fill(networkSlot,
         h('p', { class: 'muted', text: 'Only the operator grants JavaScript server fetch access. WASI receives no outbound network capability. Permit at most 32 exact public HTTP:80 or HTTPS:443 origins, one per line. No wildcards, paths, credentials or private targets. An empty list denies server fetch.' }),
         form,
-        h('p', { class: 'muted small', text: 'Changes apply on the next deploy/redeploy, rollback or data restoration after any required approval, Flats host restart, or new preview. Running workers and automatic restarts retain captured grants; after clearing, redeploy to revoke live access. Browser fetch follows browser CORS/CSP independently and receives no injected secrets.' }),
+        h('p', { class: 'muted small', text: 'Changes apply on the next deploy/redeploy, rollback or data restoration after any required approval, Flats host restart, or new preview. Running workers and automatic restarts retain captured grants; after clearing, redeploy to revoke live access. Browser fetch follows browser CORS/CSP independently, and the host adds no secret to it.' }),
         flat.live_version ? redeployButton() : h('p', { class: 'muted small', text: 'Applied when this flat is first published.' }));
     } catch (err) { if (ctx.alive()) fill(networkSlot, errorPanel(err, 'Cannot load server network permissions')); }
   }
@@ -638,7 +679,7 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
         h('span', { class: 'muted', text: `Changes apply on ${activationWhen()}: redeploy the live version ${flat.live_version} to use them now.` }), redeployButton())
       : h('p', { class: 'muted', text: publishesOnSave() ? 'Changes apply on the next published save.' : 'Changes apply when a deployment is approved.' });
     fill(envSlot, add,
-      h('p', { class: 'muted', text: 'Values are stored as plain text and readable by authorized agents. Use Secrets for credentials. Server-side JavaScript reads env.NAME; WASI reads environment variables. Static files and browser bundles receive no injected values.' }),
+      h('p', { class: 'muted', text: 'Values are stored as plain text and readable by authorized agents. Use Secrets for credentials. Server-side JavaScript reads env.NAME; WASI reads environment variables. Static files and browser bundles receive none of these values.' }),
       items, form, apply,
       h('p', { class: 'muted small', text: 'Approved deployment, redeployment, rollback and standalone data snapshot restoration capture current settings. Automatic worker restarts reuse the captured settings. New previews load current settings.' }));
   }
@@ -701,9 +742,12 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
         const del = h('button', { type: 'button', class: 'btn btn-small btn-danger-text', text: 'Delete', 'aria-label': `Delete secret ${s.name}` });
         replace.addEventListener('click', () => { form.hidden = false; addSecret.setAttribute('aria-expanded', 'true'); name.value = s.name; value.value = ''; value.focus(); });
         del.addEventListener('click', () => busy(del, async () => {
+          const keep = 'The running version keeps its current environment until it is redeployed (Redeploy (apply environment) on the live version).';
           const ok = await confirmDialog({
             title: `Delete secret ${s.name}?`,
-            body: 'The running version keeps its current environment until it is redeployed (Redeploy (apply environment) on the live version).',
+            body: s.inject
+              ? `${keep} A secret added again here is readable by flat code as env.${s.name}. To make it injected again, run flats secret set with --origin and --header.`
+              : keep,
             confirmLabel: 'Delete', danger: true,
           });
           if (!ok) return;
@@ -711,7 +755,9 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
           loadSecrets();
         }));
         return h('li', { class: 'plain-row' },
-          h('div', null, h('code', { text: s.name }), h('div', { class: 'muted small' }, 'Updated ', timeEl(s.updated_at))),
+          h('div', null, h('code', { text: s.name }),
+            s.inject ? h('div', { class: 'muted small secret-inject', text: `Sent as ${s.inject.header} to ${s.inject.origin}. Not in env.` }) : null,
+            h('div', { class: 'muted small' }, 'Updated ', timeEl(s.updated_at))),
           h('div', { class: 'cell-actions' }, replace, del));
       }))
       : h('p', { class: 'muted', text: 'No secrets.' });
@@ -728,7 +774,7 @@ export function mount(main, [slug], ctx, tab = 'deployments') {
       if (!form.hidden) name.focus();
     });
     fill(secretsSlot, addSecret,
-      h('p', { class: 'muted', text: (note ? note[0].toUpperCase() + note.slice(1) : 'Values are never returned') + '. Server-only: JavaScript reads env.NAME; WASI reads environment variables. Static files and browser bundles receive no injected values.' }),
+      h('p', { class: 'muted', text: (note ? note[0].toUpperCase() + note.slice(1) : 'Values are never returned') + '. Server-only: JavaScript reads a readable secret as env.NAME, and WASI reads it as an environment variable. An injected secret is not in env: the host adds it as its header to each fetch to its origin. Static files and browser bundles receive no secret.' }),
       items, form, apply,
       h('p', { class: 'muted small', text: 'Approved deployment, redeployment, rollback and standalone data snapshot restoration capture current settings. Automatic worker restarts reuse the captured settings. New previews load current settings.' }));
   }
