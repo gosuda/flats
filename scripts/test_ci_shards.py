@@ -232,8 +232,11 @@ esac
         for lane in self.SHEET_LANES:
             self.assertEqual(self.race_args(lane, "-timeout=30m")[2:4], ["-timeout=15m", "-timeout=30m"])
         ci = (ROOT / ".github/workflows/ci.yml").read_text()
+        job = re.search(r"(?ms)^  race:\n.*?(?=^  [\w-]+:\n|\Z)", ci).group()
+        routine = re.search(r"for lane in (.+); do", job).group(1).split()
         for lane in self.SHEET_LANES:
-            self.assertIn("- {lane: " + lane + ", cache: sheet}", ci)
+            self.assertEqual(routine.count(lane), 1)
+        self.assertIn("cache-key: race-all", job)
 
     def test_sheet_race_lanes_run_each_test_once(self):
         # go test matches -run and -skip against each top-level test name
