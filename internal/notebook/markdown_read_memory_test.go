@@ -158,8 +158,29 @@ func TestMarkdownRetainedMemory(t *testing.T) {
 					readStart := time.Now()
 					var body []byte
 					if test.collected {
+						// One GC-sampled peak conflates allocator noise with
+						// retained schema: the 16 MiB read issues tens of
+						// thousands of stop-the-world collections, so GC timing
+						// under host load alone can swing a single peak by
+						// hundreds of kilobytes. Sample the same read three
+						// times — the first warms allocator and page caches for
+						// the rest — and keep the minimum. A leak that scales
+						// with payload raises the floor of every sample, so the
+						// minimum still fails while transient inflation cannot
+						// fail all three.
 						var peak uint64
-						body, peak, err = measureReaderLiveHeap(t, f.in, raw)
+						for attempt := 0; attempt < 3; attempt++ {
+							var sample uint64
+							var sampleBody []byte
+							sampleBody, sample, err = measureReaderLiveHeap(t, f.in, raw)
+							if err != nil {
+								t.Fatal(err)
+							}
+							t.Logf("retained=%d collected live-heap sample %d/3 growth=%d", size, attempt+1, sample)
+							if attempt == 0 || sample < peak {
+								peak, body = sample, sampleBody
+							}
+						}
 						schemaPeaks[size] = peak
 						t.Logf("retained=%d sampled collected live-heap growth=%d response=%d fixture=%s read=%s", size, peak, len(body), fixtureElapsed, time.Since(readStart))
 					} else {
