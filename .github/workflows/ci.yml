@@ -30,7 +30,15 @@ jobs:
         env:
           PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
           PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: python3 scripts/ci-changes.py
+        run: |
+          # A moved base skews the merge ref. Select the full set then, never
+          # fail: a red selector would skip every gate on this pull request.
+          # A partial write already ends in full=false, and for duplicate keys
+          # the last line wins, so the fallback always governs.
+          python3 scripts/ci-changes.py || {
+            echo "::notice::check selection fell back to full CI"
+            echo "full=true" >>"$GITHUB_OUTPUT"
+          }
 
   # Builds the gate binaries of scripts/lifecycle-gate.sh --prepare-only, which
   # include the pinned legacy adapter and the tagged crash adapter, on every
