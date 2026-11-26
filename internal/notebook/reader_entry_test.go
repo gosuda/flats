@@ -88,9 +88,12 @@ func measureReaderLiveHeap(t *testing.T, in *Instance, query []byte) ([]byte, ui
 	t.Helper()
 	oldGC := debug.SetGCPercent(20)
 	defer debug.SetGCPercent(oldGC)
+	// A second collection releases pool victims left by fixture construction.
+	runtime.GC()
 	runtime.GC()
 	var before runtime.MemStats
 	runtime.ReadMemStats(&before)
+	t.Logf("collected live-heap baseline=%d", before.HeapAlloc)
 	peak := before.HeapAlloc
 	var mu sync.Mutex
 	sample := func() {
