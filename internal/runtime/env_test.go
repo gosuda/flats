@@ -7,6 +7,9 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/egress"
 )
 
 // RuntimeSpec.Env is the merged server-side map of ordinary app variables and
@@ -109,7 +112,12 @@ func main() {
 		"PROTOTYPE": "legacy-prototype", "CONSTRUCTOR": "legacy-constructor",
 		"__PROTO__": "legacy-proto",
 	}
-	f := mustStart(t, newManager(t), "wasi-env", map[string]string{"environment.wasm": string(wasm)}, "environment.wasm", configured)
+	// An injected secret in the spec reaches no WASI command (docs/spec/injected-fetch-secrets.md, rules 13 and 21):
+	// the host sends no list to a WASI worker, and the worker ignores one.
+	withInjected := func(s *core.RuntimeSpec) {
+		s.FetchHeaders = []egress.Header{{Origin: "https://api.example.com", Name: "Authorization", Value: "Bearer wasi-injected-value"}}
+	}
+	f := mustStart(t, newManager(t), "wasi-env", map[string]string{"environment.wasm": string(wasm)}, "environment.wasm", configured, withInjected)
 	for i := 0; i < 2; i++ {
 		var got map[string]string
 		f.json(t, "/", &got)

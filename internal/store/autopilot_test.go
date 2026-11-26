@@ -22,11 +22,25 @@ func setAutopilot(t *testing.T, s *Store, enabled bool, ops uint16) {
 	}
 }
 
+// pendingApproval inserts a pending approval with a statement of its own. The fixtures of older schemas call it, and
+// InsertApproval writes the flat_id column that schema 26 added.
 func pendingApproval(t *testing.T, s *Store, id string) {
 	t.Helper()
-	if err := s.InsertApproval(context.Background(), Approval{ID: id, Flat: "f", Action: "delete", Params: []byte(`{"slug":"f"}`), Status: "pending", Via: "mcp", RequestedAt: time.Now()}); err != nil {
+	if _, err := s.db.Exec(`INSERT INTO approvals(id,flat,action,params,status,via,requested_at) VALUES(?,?,?,?,?,?,?)`,
+		id, "f", "delete", `{"slug":"f"}`, "pending", "mcp", unix(time.Now())); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// approvalBefore26 reads an approval from a database of a schema before 26, which has no flat_id column.
+func approvalBefore26(t *testing.T, s *Store, id string) Approval {
+	t.Helper()
+	cols := approvalCols[:len(approvalCols)-len(",flat_id")]
+	a, err := scanApproval(s.db.QueryRow(`SELECT `+cols+`, '' FROM approvals WHERE id=?`, id))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return a
 }
 
 // Migration 21 adds the settings row off, with no operation and no guide,

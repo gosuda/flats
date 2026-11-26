@@ -148,7 +148,7 @@ func (h *Host) NetworkProviders(ctx context.Context) any {
 			p.Configured = zn != nil
 			p.Namespace = h.zrokOptions.Namespace
 			p.Managed = h.Config.Zrok.Environment == ""
-			if a, err := zrok.Describe(h.zrokOptions.Environment); err == nil {
+			if a, err := zrokDescribe(h.zrokOptions.Environment); err == nil {
 				p.Connected, p.EnvID, p.APIURL = a.Connected, a.EnvironmentID, a.APIEndpoint
 			}
 			if zn != nil {
@@ -498,6 +498,15 @@ func (h *Host) ConnectZrok(ctx context.Context, token string) error {
 	return h.connectZrok(ctx, token, core.KeySourceConsole, true)
 }
 
+// The calls of the zrok package that describe, connect, replace and disconnect the account. A test replaces them,
+// because no test builds a zrok account (docs/spec/audit-events.md, "Completion criteria").
+var (
+	zrokDescribe   = zrok.Describe
+	zrokConnect    = zrok.Connect
+	zrokReplace    = zrok.Replace
+	zrokDisconnect = zrok.Disconnect
+)
+
 // errAlreadyConnected reports that an enrollment found an account or peer
 // connected meanwhile; a start input never replaces one.
 var errAlreadyConnected = errors.New("already connected")
@@ -512,14 +521,14 @@ func (h *Host) connectZrok(ctx context.Context, token, source string, replace bo
 	h.pmu.Lock()
 	defer h.pmu.Unlock()
 	dir := h.zrokOptions.Environment
-	current, err := zrok.Describe(dir)
+	current, err := zrokDescribe(dir)
 	if err != nil {
 		return fmt.Errorf("%w: %v", core.ErrUnavailable, err)
 	}
 	host, _ := os.Hostname()
 	description := "flats@" + host
 	if !current.Connected {
-		if err := zrok.Connect(ctx, dir, token, description); err != nil {
+		if err := zrokConnect(ctx, dir, token, description); err != nil {
 			return zrokAccountError(err)
 		}
 		h.logf("zrok account connected (token from %s)", source)
@@ -540,7 +549,7 @@ func (h *Host) connectZrok(ctx context.Context, token, source string, replace bo
 		}
 		h.zrokNet = nil
 	}
-	if err := zrok.Replace(ctx, dir, token, description); err != nil {
+	if err := zrokReplace(ctx, dir, token, description); err != nil {
 		if wasRunning {
 			if serr := h.startZrokLocked(ctx); serr != nil {
 				h.logf("zrok restart on the previous account: %v", serr)
@@ -608,7 +617,7 @@ func (h *Host) DisconnectZrok(ctx context.Context, force bool) error {
 		}
 		h.zrokNet = nil
 	}
-	if err := zrok.Disconnect(ctx, h.zrokOptions.Environment, force); err != nil {
+	if err := zrokDisconnect(ctx, h.zrokOptions.Environment, force); err != nil {
 		return zrokAccountError(err)
 	}
 	h.logf("zrok account disconnected from the console")

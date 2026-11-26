@@ -3,7 +3,7 @@
 // server state changed.
 'use strict';
 
-import { h, dateTime, bytes, VISIBILITY, visibilityOf, accessOf, accessLabel, editWords, ACCESS, becomingNoticeFor, publicURL, publicNoticeOf, PUBLIC_NETWORKS } from './dom.js';
+import { h, dateTime, bytes, VISIBILITY, visibilityOf, accessOf, accessLabel, editWords, ACCESS, becomingNoticeFor, publicURL, publicNoticeOf, PUBLIC_NETWORKS, signInOf, guestsOf, SIGN_IN_EDIT_NOTICE } from './dom.js';
 import { api, ApiError } from './api.js';
 import { confirmDialog, infoDialog, errorPanel, toast, extLink, privateURL, slideConfirm } from './ui.js';
 import { isLive } from './list.js';
@@ -116,7 +116,7 @@ export async function redeployLive(flat) {
       h('p', { text: `${label(flat)} redeploys version ${n} with environment variables and secrets captured when approved activation begins.` }),
       h('p', { class: 'muted', text: server
         ? 'The health check and live worker use the same settings snapshot. Changes saved after capture apply at the next activation. If the health check fails, the running instance keeps serving. Data is kept as it is.'
-        : 'This is a static flat: environment variables and secrets are not injected, so it keeps serving the same files.' }),
+        : 'This is a static flat: it gets no environment variables or secrets, so it keeps serving the same files.' }),
     ],
     confirmLabel: 'Redeploy',
   });
@@ -322,7 +322,7 @@ export async function setVisibility(flat, vis, access) {
   const to = VISIBILITY[vis];
   const widening = to.rank > from.rank;
   if (widening && !(await canGoPublic(flat))) return null;
-  const notice = becomingNoticeFor(vis);
+  const notice = becomingNoticeFor(vis, flat);
   const ok = await confirmDialog({
     title: `Make ${label(flat)} ${to.label.toLowerCase()}?`,
     body: [
@@ -353,6 +353,13 @@ export async function setVisibility(flat, vis, access) {
 async function canGoPublic(flat) {
   if (!isLive(flat) && !flat.live_version) {
     await infoDialog('Publish first', `${label(flat)} has no live version yet. Save a version and publish it, then make it public.`);
+    return false;
+  }
+  // With Portal sign-in on, the flat is Public through Portal alone
+  // (docs/spec/portal-sign-in.md, rule 8).
+  if (signInOf(flat)) {
+    if ((flat.providers || []).includes('portal')) return true;
+    await infoDialog('Allow Portal first', `While Portal sign-in is on, ${label(flat)} can be Public through Portal alone. Allow Portal for it under Networks, then make it public.`);
     return false;
   }
   if (!PUBLIC_NETWORKS.some((p) => (flat.providers || []).includes(p))) {
@@ -404,10 +411,14 @@ export async function allowGuestEditing(flat) {
   }
   const problems = pre.problems || [];
   if (problems.length) { await blockedDialog(flat, pre, problems); return null; }
+  // With Portal sign-in on, the guests are the visitors who pass it (rule 61).
+  const gated = !!signInOf(flat);
   const ok = await confirmDialog({
-    title: `Let anyone on the internet edit ${label(flat)}?`,
+    title: `Let ${guestsOf(flat)} edit ${label(flat)}?`,
     body: [
-      h('p', { text: `Anyone who opens the link can add, change and delete ${words.everything}. They type a name first, but nobody checks who they are.` }),
+      h('p', { text: gated
+        ? `Anyone who passes its sign-in can add, change and delete ${words.everything}. ${SIGN_IN_EDIT_NOTICE} They type a name first, and nobody checks the names they type.`
+        : `Anyone who opens the link can add, change and delete ${words.everything}. They type a name first, but nobody checks who they are.` }),
       h('ul', { class: 'checks' },
         check(true, 'You can restore any earlier state from History. Flats pins a ', h('strong', { text: 'safe point' }), ` of ${words.the} as it is now, and it can't be unpinned while guests can edit.`),
         check(true, words.cannot),
@@ -421,7 +432,7 @@ export async function allowGuestEditing(flat) {
   if (!ok) return null;
   try {
     const res = confirmed(await approve(await api.setVisibility(flat.slug, 'public', 'edit')));
-    toast(`Anyone with the link can now edit ${words.this}.`, 'success');
+    toast(`${gated ? 'Anyone who passes its sign-in' : 'Anyone with the link'} can now edit ${words.this}.`, 'success');
     return res;
   } catch (err) {
     if (err?.body?.category === 'public_edit_blocked') { await blockedDialog(flat, pre, err.problems); return null; }

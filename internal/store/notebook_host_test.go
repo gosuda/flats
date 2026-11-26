@@ -61,7 +61,7 @@ func TestNotebookHostPublicViewOnly(t *testing.T) {
 			}
 			next := from
 			next.Visibility, next.PublicAccess = Public, access
-			err = s.CommitVisibility(ctx, next, from, id, json.RawMessage(`{}`))
+			err = s.CommitVisibility(ctx, next, from, id, json.RawMessage(`{}`), Audit{})
 			if access == AccessEdit {
 				if err == nil {
 					t.Fatal("notebook Public edit committed")

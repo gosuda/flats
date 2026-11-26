@@ -526,7 +526,7 @@ func (s *Service) createDesignLocked(ctx context.Context, slugName, name string,
 	}
 	head, changed, err := s.prepareWrite(ctx, slugName, nil, files, nil)
 	if err != nil {
-		_ = s.st.DeleteFlat(ctx, slugName)
+		_ = s.st.DeleteFlat(ctx, slugName, store.Audit{})
 		_ = os.RemoveAll(s.flatDir(slugName))
 		return DesignWriteResult{}, err
 	}
@@ -610,7 +610,7 @@ func (s *Service) initDesignLocked(ctx context.Context, slugName, title string, 
 	})
 	if err != nil {
 		if fresh {
-			_ = s.st.DeleteFlat(ctx, slugName)
+			_ = s.st.DeleteFlat(ctx, slugName, store.Audit{})
 		}
 		return DesignWriteResult{}, err
 	}

@@ -103,7 +103,7 @@ func TestOutboundFetchPrelude(t *testing.T) {
 		t.Fatal(err)
 	}
 	exampleCode := strings.Replace(string(example), "export default", "globalThis.example =", 1) + `
- example.fetch(new Request({method: "GET", url: "https://flat.test/api/message", headers: {}}), {API_BASE: "https://api.example.test", API_TOKEN: "example-fixture-only"}).then(async (r) => JSON.stringify({status: r.status, body: await r.json()}));`
+ example.fetch(new Request({method: "GET", url: "https://flat.test/api/message", headers: {}}), {API_BASE: "https://api.example.test"}).then(async (r) => JSON.stringify({status: r.status, body: await r.json()}));`
 	exampleResult, err := eng.Eval(ctx, "server-example.js", exampleCode, false)
 	if err != nil {
 		t.Fatal(err)
@@ -111,7 +111,9 @@ func TestOutboundFetchPrelude(t *testing.T) {
 	if exampleResult != `{"status":200,"body":{"message":"안녕🌍"}}` {
 		t.Fatalf("checked-in example: %s", exampleResult)
 	}
-	if len(requests) != 3 || requests[2].URL != "https://api.example.test/message" || requests[2].Headers["authorization"][0] != "Bearer example-fixture-only" {
+	// API_TOKEN of the example is an injected secret: the host adds it, so the request of the code holds no
+	// Authorization header.
+	if len(requests) != 3 || requests[2].URL != "https://api.example.test/message" || len(requests[2].Headers) != 0 {
 		t.Fatalf("example request: %+v", requests)
 	}
 
@@ -264,9 +266,9 @@ func TestOutboundFetchServerExample(t *testing.T) {
 			t.Fatalf("%s: %d %s", test.path, r.status, r.body)
 		}
 	}
-	f = mustStart(t, m, "api-example-denied", map[string]string{manifest.Entry: string(example)}, manifest.Entry, map[string]string{"API_BASE": "https://api.example.test", "API_TOKEN": "fixture-secret-only"})
+	f = mustStart(t, m, "api-example-denied", map[string]string{manifest.Entry: string(example)}, manifest.Entry, map[string]string{"API_BASE": "https://api.example.test"})
 	r := f.do(t, "GET", "/api/message", "")
-	if r.status != 502 || r.body != "Upstream unavailable" || f.logs.find("fixture-secret-only") || f.logs.find("api.example.test") {
+	if r.status != 502 || r.body != "Upstream unavailable" || f.logs.find("api.example.test") {
 		t.Fatalf("sanitized denied example: %d %s logs %s", r.status, r.body, f.logs)
 	}
 }

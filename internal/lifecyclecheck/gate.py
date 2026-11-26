@@ -4,6 +4,8 @@
 Only disposable, loopback servers are started. No provider credentials are read.
 JSON evidence is retained locally; do not commit raw server logs.
 """
+from __future__ import annotations
+
 import argparse
 import concurrent.futures
 import hashlib
@@ -22,13 +24,14 @@ import traceback
 import urllib.error
 import urllib.parse
 import urllib.request
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[2]
 LEGACY_REVISION = "29edc2a6e13e27867603a23ff5b1b5a8d1b84df0"
 REQUIRED_LANES = {"actual-binary-local", "production-provider-manager"}
 
 
-def failed(row, category):
+def failed(row: dict[str, Any], category: str) -> dict[str, Any]:
     codes = {
         "draft-drift": "stale_approval", "policy-drift": "stale_approval",
         "live-drift": "stale_approval", "visibility-drift": "stale_approval",
@@ -43,7 +46,7 @@ def failed(row, category):
     return row
 
 
-def data_impact(row, changed=False):
+def data_impact(row: dict[str, Any], changed: bool = False) -> str:
     dto = execution(row)
     require(dto.get('data_impact') in {'none', 'runtime_start', 'restore_data', 'unknown'}, f"invalid data-impact enum: {row}")
     require(dto.get('health_data') in {'not_run', 'isolated_copy'} and
@@ -52,7 +55,7 @@ def data_impact(row, changed=False):
     return dto["data_impact"]
 
 
-def execution(row):
+def execution(row: dict[str, Any]) -> dict[str, Any]:
     require(isinstance(row, dict), f"expected typed approval DTO: {row}")
     dto = row.get('result_data', row)
     if isinstance(dto, str):
@@ -61,14 +64,14 @@ def execution(row):
     return dto
 
 
-def provider_ids(flat):
+def provider_ids(flat: dict[str, Any]) -> set[str]:
     ids = flat.get("providers")
     require(isinstance(ids, list) and all(isinstance(p, str) for p in ids),
             f"provider DTO must be a list of canonical IDs: {ids}")
     return set(ids)
 
 
-def source_identity():
+def source_identity() -> dict[str, Any]:
     def git(*args):
         return subprocess.check_output(["git", "-C", str(ROOT), *args], text=True).strip()
     paths = ["scripts/lifecycle-gate.sh", *sorted(str(p.relative_to(ROOT)) for p in
@@ -80,7 +83,7 @@ def source_identity():
             "harness_sha256": {p: hashlib.sha256((ROOT / p).read_bytes()).hexdigest() for p in paths}}
 
 
-def binary_identity(path):
+def binary_identity(path: str | None) -> dict[str, Any] | None:
     if not path:
         return None
     build = subprocess.check_output(["go", "version", "-m", str(path)], text=True)
@@ -89,23 +92,23 @@ def binary_identity(path):
             "build_info": build, "revision": settings.get("vcs.revision"), "modified": settings.get("vcs.modified")}
 
 
-def acceptance_identity(source, binaries):
+def acceptance_identity(source: dict[str, Any], binaries: dict[str, Any]) -> bool:
     return (not source["dirty"] and all(binaries.get(k) and binaries[k]["revision"] == source["head"]
             and binaries[k]["modified"] == "false" for k in ("candidate", "provider_adapter", "tagged_crash_adapter")))
 
 
-def accepted(report):
+def accepted(report: dict[str, Any]) -> bool:
     return (report["full_suite_selected"] and report["exit"] == 0 and
             report["lane_complete"] and report["identity_bound"] and
             report["human_approval"] == "proven")
 
 
-def require(condition, detail):
+def require(condition: object, detail: object) -> None:
     if not condition:
         raise AssertionError(detail)
 
 
-def archive(files):
+def archive(files: dict[str, Any]) -> bytes:
     output = io.BytesIO()
     with tarfile.open(fileobj=output, mode="w:gz") as tar:
         for name, text in sorted(files.items()):
@@ -116,12 +119,12 @@ def archive(files):
     return output.getvalue()
 
 
-def static(marker, health="/"):
+def static(marker: str, health: str = "/") -> dict[str, str]:
     return {"flats.json": json.dumps({"kind": "static", "health": health}),
             "index.html": "<!doctype html><h1>" + marker + "</h1>"}
 
 
-def server(version, broken=False, healthy_write=False):
+def server(version: int, broken: bool = False, healthy_write: bool = False) -> dict[str, str]:
     # /health writes a sentinel before failure: live DB must not see this write.
     return {"flats.json": '{"kind":"server","health":"/health"}', "server.js": """
 export default { async fetch(request, env) {
@@ -140,7 +143,7 @@ export default { async fetch(request, env) {
 """.replace("VERSION", str(version)).replace("BROKEN", str(broken).lower()).replace("HEALTHY_WRITE", str(healthy_write).lower())}
 
 
-def reserve_ports(previous=None):
+def reserve_ports(previous: list[int] | None = None) -> tuple[list[socket.socket], list[int]]:
     """Reserve only owned loopback ports, allowing their TIME_WAIT sockets."""
     sockets = []
     try:
@@ -159,7 +162,7 @@ def reserve_ports(previous=None):
         raise
 
 
-def mcp_payload(result):
+def mcp_payload(result: dict[str, Any]) -> dict[str, Any]:
     """Read a structured object or the tool formatter's complete JSON line."""
     structured = result.get('structuredContent')
     candidates = [structured] if isinstance(structured, dict) else []
@@ -183,7 +186,7 @@ def mcp_payload(result):
 
 
 class Host:
-    def __init__(self, binary, work, adapter=False, legacy=False, without_tailnet=False):
+    def __init__(self, binary: str | Path, work: str | Path, adapter: bool = False, legacy: bool = False, without_tailnet: bool = False) -> None:
         self.binary, self.work, self.adapter = str(binary), Path(work), adapter
         self.legacy = legacy
         self.without_tailnet = without_tailnet
@@ -198,7 +201,7 @@ class Host:
         self.trace = []
         self.opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
-    def start(self):
+    def start(self) -> None:
         # Reserve both ports until immediately before spawn. Bind-race failures
         # fail the run; never kill another process or reuse the operator's port.
         reservations, ports = reserve_ports(self.addresses)
@@ -243,7 +246,7 @@ class Host:
             time.sleep(.1)
         raise AssertionError("server not ready in 30 seconds")
 
-    def stop(self):
+    def stop(self) -> None:
         if self.proc is not None:
             if self.proc.poll() is None:
                 self.proc.terminate()
@@ -259,7 +262,7 @@ class Host:
             require(not re.search(rb"panic:|fatal error:", (self.work / "serve.log").read_bytes()),
                     "server log contains a panic/fatal marker")
 
-    def request(self, method, path, body=None, console=False, headers=None, local_host=None):
+    def request(self, method: str, path: str, body: Any = None, console: bool = False, headers: dict[str, str] | None = None, local_host: str | None = None) -> tuple[int, Any]:
         base = self.local if local_host else self.base
         hdr = {"Content-Type": "application/json"}
         if console:
@@ -289,7 +292,7 @@ class Host:
                            "host": local_host, "status": status, "response": value})
         return status, value
 
-    def set_host_permissions(self, permitted):
+    def set_host_permissions(self, permitted: list[str]) -> None:
         # The loopback adapter owns this current host-registry interface.
         # Production provider toggles could construct real clients and are
         # deliberately outside this gate's authority.
@@ -297,7 +300,7 @@ class Host:
         self.ok('POST', '/__gate/host-permission', {'permitted': permitted})
         self.trace.append({'kind': 'disposable-host-permission', 'permitted': permitted})
 
-    def set_flat_permission(self, slug, provider, permitted=True, allow_not_ready=False):
+    def set_flat_permission(self, slug: str, provider: str, permitted: bool = True, allow_not_ready: bool = False) -> Any:
         code, out = self.request('POST', f'/console/api/flats/{slug}/providers',
                                  {'provider': provider, 'permitted': permitted}, console=True)
         require(code == 200 or (allow_not_ready and permitted and code == 409 and out.get('category') == 'provider_not_ready'),
@@ -306,47 +309,47 @@ class Host:
         require(saved == permitted, f"permission was not saved despite readiness response: {provider}: {out}")
         return out
 
-    def ok(self, method, path, body=None, status=200, **kwargs):
+    def ok(self, method: str, path: str, body: Any = None, status: int = 200, **kwargs: Any) -> Any:
         code, value = self.request(method, path, body, **kwargs)
         require(code == status, f"{method} {path}: wanted {status}, got {code}: {value}")
         return value
 
-    def save(self, slug, files, deploy=False):
+    def save(self, slug: str, files: dict[str, Any], deploy: bool = False) -> Any:
         require(not deploy or self.legacy, "Draft saves never request version creation or deployment")
         route = "versions" if self.legacy else "draft"
         return self.ok("POST", f"/api/flats/{slug}/{route}" + ("?deploy=1" if deploy else ""),
                        archive(files), status=202 if deploy else 201,
                        headers={"Content-Type": "application/gzip"})
 
-    def flat(self, slug):
+    def flat(self, slug: str) -> Any:
         return self.ok("GET", f"/api/flats/{slug}")
 
-    def versions(self, slug):
+    def versions(self, slug: str) -> list[Any]:
         return self.ok("GET", f"/api/flats/{slug}/versions")["versions"] or []
 
-    def approval(self, response):
+    def approval(self, response: dict[str, Any]) -> str:
         if "approval" not in response and "deploy" in response:
             response = response["deploy"]
         require(response.get("status") == "pending_approval" and response.get("approval", {}).get("id"),
                 f"expected pending approval: {response}")
         return response["approval"]["id"]
 
-    def create_version(self, slug):
+    def create_version(self, slug: str) -> str:
         draft = self.ok("GET", f"/api/flats/{slug}/draft")
         out = self.ok("POST", f"/api/flats/{slug}/versions",
                       {"revision": draft["revision"], "hash": draft["hash"]}, status=202)
         require(out.get("approval", {}).get("action") == "create_version", "wrong creation approval action")
         return self.approval(out)
 
-    def deploy_version(self, slug, version):
+    def deploy_version(self, slug: str, version: int) -> str:
         return self.approval(self.ok("POST", f"/api/flats/{slug}/deploy", {"version": version}, status=202))
 
-    def decide(self, approval):
+    def decide(self, approval: str) -> Any:
         code, out = self.request("POST", f"/console/api/approvals/{approval}/approve", {}, console=True)
         require(code in (200, 409, 422), f"unexpected approval response: {code}: {out}")
         return self.ok("GET", f"/api/approvals/{approval}")
 
-    def activate(self, slug, files):
+    def activate(self, slug: str, files: dict[str, Any]) -> Any:
         self.save(slug, files)
         approval = self.create_version(slug)
         decided = self.decide(approval)
@@ -356,10 +359,10 @@ class Host:
         require(self.decide(dep_approval)["status"] == "approved", "human approval did not deploy version")
         return self.flat(slug)
 
-    def traffic(self, slug, path="/"):
+    def traffic(self, slug: str, path: str = "/") -> Any:
         return self.ok("GET", path, local_host=slug)
 
-    def cli(self, *args):
+    def cli(self, *args: str) -> subprocess.CompletedProcess[str]:
         argv = [self.binary, "--url", self.base, "--json", *args]
         env = os.environ.copy()
         for name in ("TS_AUTHKEY", "TS_AUTH_KEY", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY",
@@ -370,7 +373,7 @@ class Host:
                            "stdout": proc.stdout, "stderr": proc.stderr})
         return proc
 
-    def rpc(self, method, params):
+    def rpc(self, method: str, params: dict[str, Any]) -> Any:
         self.serial += 1
         result = self.ok("POST", "/mcp", {"jsonrpc": "2.0", "id": self.serial,
                         "method": method, "params": params}, headers={
@@ -378,19 +381,19 @@ class Host:
         require("error" not in result, f"MCP protocol error: {result}")
         return result["result"]
 
-    def initialize_mcp(self):
+    def initialize_mcp(self) -> None:
         self.rpc("initialize", {"protocolVersion": "2025-03-26", "capabilities": {},
                                 "clientInfo": {"name": "lifecyclecheck", "version": "2"}})
         self.ok("POST", "/mcp", {"jsonrpc": "2.0", "method": "notifications/initialized"}, status=202,
                 headers={"Accept": "application/json, text/event-stream", "MCP-Protocol-Version": "2025-03-26"})
 
-    def mcp(self, name, **args):
+    def mcp(self, name: str, **args: Any) -> Any:
         result = self.rpc("tools/call", {"name": name, "arguments": args})
         require(not result.get("isError"), f"MCP {name}: {result}")
         return mcp_payload(result)
 
 
-def draft_saves(h):
+def draft_saves(h: Host) -> None:
     for revision, marker in enumerate(("DRAFT-A", "DRAFT-B", "DRAFT-C"), 1):
         out = h.save("draft", static(marker))
         require(out.get("draft", {}).get("revision") == revision and not out.get("version")
@@ -406,7 +409,7 @@ def draft_saves(h):
     require(h.ok("GET", "/api/flats/draft/draft")["revision"] == 3, "conflict overwrote draft")
 
 
-def invalid_upload(h):
+def invalid_upload(h: Host) -> None:
     h.save("validate", static("VALID"))
     before = h.flat("validate")
     before_draft = h.ok("GET", "/api/flats/validate/draft")
@@ -417,7 +420,7 @@ def invalid_upload(h):
     require(h.ok("GET", "/api/flats/validate/draft") == before_draft, "invalid upload changed draft")
 
 
-def preview(h):
+def preview(h: Host) -> None:
     h.save("preview", static("PRIVATE-DRAFT"))
     p = h.ok("POST", "/api/flats/preview/previews", {"target": "draft"}, status=201)
     require("PRIVATE-DRAFT" in h.traffic(p["host"]), "preview did not serve uploaded bytes")
@@ -425,7 +428,7 @@ def preview(h):
     require(not p.get("public_url"), "draft returned public route")
 
 
-def publish_idempotency(h):
+def publish_idempotency(h: Host) -> None:
     h.save("publish", static("LIVE-V1"))
     a = h.create_version("publish")
     require(h.create_version("publish") == a, "retry created a second pending approval")
@@ -458,7 +461,7 @@ def publish_idempotency(h):
     require(len(h.ok("GET", "/api/flats/publish/deployments")["deployments"]) == 1, "restart activated twice")
 
 
-def drift(h):
+def drift(h: Host) -> None:
     h.save("drift", static("FROZEN"))
     a = h.create_version("drift")
     h.save("drift", static("NEW-DRAFT"))
@@ -478,7 +481,7 @@ def drift(h):
     require("POLICY-CANDIDATE" in h.traffic("drift"), "policy positive control did not serve")
 
 
-def cli_pending(h):
+def cli_pending(h: Host) -> None:
     folder = h.work / "upload"
     folder.mkdir()
     for name, text in static("CLI").items():
@@ -499,7 +502,7 @@ def cli_pending(h):
     require(h.flat("cli")["live_version"] == 1 and "CLI" in h.traffic("cli"), "approved CLI bytes not live")
 
 
-def mcp_pending(h):
+def mcp_pending(h: Host) -> None:
     h.initialize_mcp()
     tools = h.rpc("tools/list", {})["tools"]
     require(not any("approve" in t["name"] for t in tools), "MCP has approval capability")
@@ -519,7 +522,7 @@ def mcp_pending(h):
     require(h.flat("mcp")["live_version"] == 1 and "MCP" in h.traffic("mcp"), "approved MCP bytes not live")
 
 
-def api_pending(h):
+def api_pending(h: Host) -> None:
     out = h.save("upload", static("API-UPLOAD"))
     require(not out.get("deploy") and not out.get("approval"), "Draft save requested an approval")
     pub = h.create_version("upload")
@@ -532,7 +535,7 @@ def api_pending(h):
         require(h.flat("upload")["live_version"] == 0, "deploy surface activated before approval")
 
 
-def version_quota_deletion(h):
+def version_quota_deletion(h: Host) -> None:
     h.activate('quota', server(1))
     require(h.traffic('quota', '/hit') == {'version': 1, 'hits': 1}, 'live DB witness was not created')
     h.activate('quota', server(2))
@@ -594,7 +597,7 @@ def version_quota_deletion(h):
 NOTEBOOK_PAGE = {"op": "create_page", "ref": "p1", "parent": None, "before": None, "title": "Notes"}
 
 
-def approval_boundary(h):
+def approval_boundary(h: Host) -> None:
     h.activate("boundary", static("BOUNDARY-EARLIER"))
     h.activate("boundary", static("BOUNDARY-CURRENT-V1"))
     h.save("boundary", static("BOUNDARY-CANDIDATE"))
@@ -651,11 +654,17 @@ def approval_boundary(h):
         "delete_env": {"slug": "boundary", "name": "MODE"},
         "get_notebook": {"slug": "boundary"},
         "update_notebook": {"slug": "boundary", "op_id": "lc-1", "ops": [NOTEBOOK_PAGE]},
+        "get_board": {"slug": "boundary"},
+        "get_board_share": {"slug": "boundary"},
+        "update_board": {"slug": "boundary", "op_id": "census-board-1", "ops": []},
+        "import_board": {"slug": "boundary", "op_id": "census-import-1", "archive": "UEsFBgAAAAAAAAAAAAAAAAAAAAAAAA==", "mode": "add"},
     }
     refusals = {"get_document": "not_docs", "update_document": "not_docs", "get_design": "not_design",
                 "list_revisions": "no_revisions", "get_revision": "no_revisions",
                 "pin_revision": "no_revisions", "rollback_revision": "no_revisions",
-                "get_notebook": "not_notebook", "update_notebook": "not_notebook"}
+                "get_notebook": "not_notebook", "update_notebook": "not_notebook",
+                "get_board": "not_board", "get_board_share": "not_board",
+                "update_board": "not_board", "import_board": "not_board"}
     census = []
     for tool in tools:
         name = tool['name']
@@ -692,6 +701,8 @@ def approval_boundary(h):
         census.append({"name": tool["name"], "is_error": result.get("isError", False)})
     if any(tool['name'] == 'update_notebook' for tool in tools):
         notebook_writes_need_no_approval(h, pending)
+    if any(tool['name'] == 'update_board' for tool in tools):
+        board_writes_need_no_approval(h, pending)
     # Console decisions are authorized by the console transport (same-origin
     # browser requests). A local agent that forges those headers can decide;
     # a separate operator credential is a known open design item.
@@ -715,17 +726,59 @@ def approval_boundary(h):
                     "boundary": "console transport only; no separate operator credential"})
 
 
-def notebook_writes_need_no_approval(h, pending):
+def version_rows(h: Host, slug: str) -> dict[str, Any]:
+    # Read-only, with the store's busy timeout: the live server writes in WAL mode.
+    path = h.data / "flats.db"
+    require(path.is_file(), f"{slug}: store file is missing: {path}")
+    try:
+        conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True, timeout=5.0)
+    except sqlite3.Error as error:
+        raise AssertionError(f"{slug}: cannot open the store: {error}") from error
+    try:
+        versions = conn.execute("SELECT number, hash, published, pruned FROM versions WHERE flat = ? ORDER BY number",
+                                (slug,)).fetchall()
+        numbers = conn.execute("SELECT number FROM version_numbers WHERE flat = ? ORDER BY number", (slug,)).fetchall()
+    except sqlite3.Error as error:
+        raise AssertionError(f"{slug}: cannot read the version rows: {error}") from error
+    finally:
+        conn.close()
+    return {"versions": versions, "version_numbers": numbers}
+
+
+def approval_states(h: Host) -> list[tuple[str, str]]:
+    return sorted((a['id'], a['status']) for a in h.ok('GET', '/api/approvals')['approvals'])
+
+
+def notebook_writes_need_no_approval(h: Host, pending: str) -> None:
     h.mcp('create_flat', slug='boundary-notebook', type='notebook')
     require(h.flat('boundary-notebook')['type'] == 'notebook', 'MCP create_flat did not create a notebook')
     h.mcp('get_notebook', slug='boundary-notebook')
+    before = version_rows(h, 'boundary-notebook')
+    approvals_before = approval_states(h)
+    require(before["versions"], 'notebook snapshot has no creation row')
     written = h.mcp('update_notebook', slug='boundary-notebook', op_id='lc-2', ops=[NOTEBOOK_PAGE])
     require(not written.get('approval') and not written.get('deploy'), f"notebook write requested an approval: {written}")
-    require(h.versions('boundary-notebook') == [], 'notebook write allocated a website version')
+    require(version_rows(h, 'boundary-notebook') == before, 'notebook write changed the version rows')
+    require(approval_states(h) == approvals_before, 'notebook write changed the approval list')
     require(h.ok('GET', f'/api/approvals/{pending}')['status'] == 'pending', 'notebook write decided existing approval')
 
 
-def denied_visibility(h, slug):
+def board_writes_need_no_approval(h: Host, pending: str) -> None:
+    h.mcp('create_flat', slug='boundary-board', type='board')
+    require(h.flat('boundary-board')['type'] == 'board', 'MCP create_flat did not create a board')
+    before = version_rows(h, 'boundary-board')
+    require(before["versions"], 'board snapshot has no creation row')
+    approvals_before = approval_states(h)
+    elements_before = len(h.mcp('get_board', slug='boundary-board')['elements'])
+    h.mcp('update_board', slug='boundary-board', op_id='lc-board-2', ops=[{'op': 'add', 'el': {'type': 'sticky', 'text': 'census'}}])
+    require(len(h.mcp('get_board', slug='boundary-board')['elements']) == elements_before + 1,
+            'board write did not land')
+    require(version_rows(h, 'boundary-board') == before, 'board write changed the version rows')
+    require(approval_states(h) == approvals_before, 'board write changed the approval list')
+    require(h.ok('GET', f'/api/approvals/{pending}')['status'] == 'pending', 'board write decided existing approval')
+
+
+def denied_visibility(h: Host, slug: str) -> None:
     before = h.flat(slug)
     pending = h.approval(h.ok("POST", f"/api/flats/{slug}/visibility", {"visibility": "public"}, status=202))
     after = h.flat(slug)
@@ -734,7 +787,7 @@ def denied_visibility(h, slug):
     failed(h.decide(pending), "not-permitted")
 
 
-def actual_binary_authority(h):
+def actual_binary_authority(h: Host) -> None:
     require(not h.adapter and not h.legacy, 'authority population must exercise the real product binary')
     h.activate('authority', static('ACTUAL-BINARY-AUTHORITY'))
     before = h.flat('authority')
@@ -762,7 +815,7 @@ def actual_binary_authority(h):
     require('ACTUAL-BINARY-AUTHORITY' in h.traffic('authority'), 'authority probes changed live content')
 
 
-def provider_failure(h):
+def provider_failure(h: Host) -> None:
     capabilities = h.ok('GET', '/__gate/capabilities')
     require(capabilities.get('tailnet_backend') is False, 'missing-backend population unexpectedly has a tailnet backend')
     h.activate("provider", static("PUBLISHED"))
@@ -788,7 +841,7 @@ def provider_failure(h):
     require("PROVIDER-FAILURE-RECOVERED" in h.traffic("provider"), "provider failure poisoned future publish")
 
 
-def runtime_data(h):
+def runtime_data(h: Host) -> None:
     h.activate("counter", server(1))
     require(h.traffic("counter", "/hit")["hits"] == 1, "runtime did not persist hit")
     h.save("counter", server(2, broken=True))
@@ -822,7 +875,7 @@ def runtime_data(h):
     require(h.traffic("counter")["hits"] == 3, "rejected restore affected data")
 
 
-def resume_claimed(h):
+def resume_claimed(h: Host) -> None:
     # No direct store UPDATE: approval state must be reached by the real
     # decision path. Named phase hooks require the separately granted core
     # contract and exist only in the test executable, never product HTTP.
@@ -883,7 +936,7 @@ def resume_claimed(h):
     h.phase_marker = None
 
 
-def production_hooks_absent(h):
+def production_hooks_absent(h: Host) -> None:
     h.stop()
     h.phase = 'before_health'
     h.phase_marker = h.work / 'ordinary-build-must-not-pause.json'
@@ -894,7 +947,7 @@ def production_hooks_absent(h):
     h.phase, h.phase_marker = None, None
 
 
-def migration(h):
+def migration(h: Host) -> None:
     require(h.legacy_binary, "migration needs --legacy-binary from pre-lifecycle base")
     h.stop()
     legacy = Host(h.legacy_binary, h.work / "legacy", legacy=True)
@@ -935,7 +988,7 @@ def migration(h):
     require("LEGACY-B" in h.traffic("historical"), "migrated publish served wrong bytes")
 
 
-def visibility_transitions(h):
+def visibility_transitions(h: Host) -> None:
     h.ok("POST", "/__gate/host-permission", {"permitted": ["portal"]})
     h.activate("public", static("PUBLIC-V1"))
     h.ok("POST", "/console/api/flats/public/providers", {"provider": "portal", "permitted": True}, console=True)
@@ -992,7 +1045,7 @@ def visibility_transitions(h):
     require("PUBLIC-V1" in h.traffic("pub-public"), "provider positive control did not serve")
 
 
-def partial_provider_failures(h):
+def partial_provider_failures(h: Host) -> None:
     h.ok("POST", "/__gate/host-permission", {"permitted": ["portal", "tailscale-funnel"]})
     h.activate("siblings", static("SIBLING-CURRENT"))
     for provider in ("portal", "tailscale-funnel"):
@@ -1022,7 +1075,7 @@ def partial_provider_failures(h):
         require("SIBLING-CURRENT" in h.traffic(host), "both-provider positive control missing")
 
 
-def public_publish_rollback(h):
+def public_publish_rollback(h: Host) -> None:
     h.ok("POST", "/__gate/host-permission", {"permitted": ["portal"]})
     h.activate("binding", static("BINDING-V1"))
     h.ok("POST", "/console/api/flats/binding/providers", {"provider": "portal", "permitted": True}, console=True)
@@ -1055,7 +1108,7 @@ def public_publish_rollback(h):
     both("BINDING-V1")
 
 
-def provider_matrix(h):
+def provider_matrix(h: Host) -> None:
     h.activate("matrix", static("MANAGER-MATRIX"))
     # Both injected backends exist throughout; permission causes cannot be
     # accidentally satisfied by the unavailable-backend failure used elsewhere.
@@ -1084,7 +1137,7 @@ def provider_matrix(h):
     require("MANAGER-MATRIX" in h.traffic("matrix"), "Manager lost Private route")
 
 
-def async_ready_public(h):
+def async_ready_public(h: Host) -> None:
     h.ok('POST', '/__gate/host-permission', {'permitted': ['portal', 'tailscale-funnel']})
     for provider, host_prefix in [('portal', 'pub-'), ('tailscale-funnel', 'funnel-')]:
         slug = 'async-' + provider
@@ -1117,7 +1170,7 @@ def async_ready_public(h):
         h.ok('POST', '/__gate/fault', {})
 
 
-def private_tailscale(h):
+def private_tailscale(h: Host) -> None:
     h.ok('POST', '/__gate/host-permission', {'permitted': ['tailscale']})
     h.activate('tail-private', static('LOCAL-ONLY'))
     before = h.flat('tail-private')
@@ -1161,7 +1214,7 @@ def private_tailscale(h):
     require(h.request('GET', '/', local_host=preview['host'])[0] == 200, 'revocation stopped Local preview')
 
 
-def provider_revocation_teardown(h):
+def provider_revocation_teardown(h: Host) -> None:
     h.ok('POST', '/__gate/host-permission', {'permitted': ['portal', 'tailscale-funnel']})
     for provider, prefix in [('portal', 'pub-'), ('tailscale-funnel', 'funnel-')]:
         slug = 'cleanup-' + provider
@@ -1228,7 +1281,7 @@ ADAPTER_CASES = [("provider-permission-failure", provider_failure),
                  ("restart-claimed-approval", resume_claimed)]
 
 
-def main():
+def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--binary", required=True)
     parser.add_argument("--work", required=True)

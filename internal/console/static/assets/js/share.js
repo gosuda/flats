@@ -1,6 +1,6 @@
 'use strict';
 
-import { h, icon, visibilityOf, accessOf, publicEditOf, ACCESS, PUBLIC_ACCESS_NOTICE, PUBLIC_NETWORKS, plural } from './dom.js';
+import { h, icon, visibilityOf, accessOf, publicEditOf, ACCESS, PUBLIC_ACCESS_NOTICE, SIGN_IN_PUBLIC_NOTICE, PUBLIC_NETWORKS, plural, signInOf, signInAccessDesc } from './dom.js';
 import { api } from './api.js';
 import { setVisibility, stopGuestEditing } from './actions.js';
 import { busy, fill, toast, extLink, serverOnly, loopbackHost, SERVER_ONLY } from './ui.js';
@@ -20,7 +20,10 @@ export function shareDialog(initial, onChange = () => {}) {
   const words = publicEditOf(flat);
   const choices = words ? ['private', 'view', 'edit'] : ['private', 'public'];
   const radios = choices.map((value) => h('input', { type: 'radio', name: id + '-access', id: `${id}-${value}`, value }));
-  const desc = (value) => (value === 'view' && words ? words.viewDesc : ACCESS[value].desc);
+  // With Portal sign-in on, Public reaches only the visitors that it allows
+  // (docs/spec/portal-sign-in.md, rule 61).
+  const desc = (value) => (value !== 'private' && signInOf(flat) ? signInAccessDesc(value, words)
+    : value === 'view' && words ? words.viewDesc : ACCESS[value].desc);
   const access = h('div', { class: 'share-choices', role: 'radiogroup', 'aria-labelledby': id + '-access' },
     choices.map((value, i) => h('label', { class: 'share-choice', for: `${id}-${value}` }, radios[i],
       h('span', null, h('strong', { text: ACCESS[value].label }), h('span', { class: 'muted small', text: desc(value) })))));
@@ -74,8 +77,9 @@ export function shareDialog(initial, onChange = () => {}) {
     refresh.setAttribute('aria-disabled', String(pending));
     refresh.setAttribute('aria-busy', String(pending));
     refresh.className = 'btn btn-small' + (pending ? ' is-disabled' : '');
-    notice.textContent = vis === 'private' ? '' : (flat.public_notice || PUBLIC_ACCESS_NOTICE);
-    explanation.textContent = vis === 'private' ? (flat.private_links_off ? '' : 'Other permitted networks may provide additional private links.') : 'Public links can be opened by anyone.';
+    notice.textContent = vis === 'private' ? '' : (flat.public_notice || (signInOf(flat) ? SIGN_IN_PUBLIC_NOTICE : PUBLIC_ACCESS_NOTICE));
+    explanation.textContent = vis === 'private' ? (flat.private_links_off ? '' : 'Other permitted networks may provide additional private links.')
+      : signInOf(flat) ? 'Its Portal link opens only for the visitors that its sign-in allows.' : 'Public links can be opened by anyone.';
     status.textContent = refreshError ? 'Could not refresh. Showing the last known state: ' + route.message + ' Try Refresh again.' : route.message;
     // A Local link seen from another device is not shown: the status
     // explains where it opens.
@@ -96,8 +100,9 @@ export function shareDialog(initial, onChange = () => {}) {
       }
     }
   }
-  // drawInternet is the "Anyone on the internet" row with the live guest and
-  // viewer counts of a running Public board or document.
+  // drawInternet is the "Anyone on the internet" row, or with sign-in on the
+  // row of the visitors who pass it, with the live guest and viewer counts of
+  // a running Public board or document.
   function drawInternet(key) {
     internetRow.hidden = key === 'private';
     if (internetRow.hidden) return;
@@ -106,7 +111,7 @@ export function shareDialog(initial, onChange = () => {}) {
     const now = !p || !words ? '' : edit ? ` ${plural(p.guests, 'guest')} and ${plural(p.viewers, 'viewer')} ${words.on} now.`
       : ` ${plural(p.viewers, 'viewer')} ${words.on} now.`;
     fill(internetRow, h('span', { class: 'share-avatar' }, icon('globe')),
-      h('div', null, h('div', { text: 'Anyone on the internet' }), h('div', { class: 'muted small', text: (edit ? 'Can edit.' : 'Can view.') + now })),
+      h('div', null, h('div', { text: signInOf(flat) ? 'Visitors who pass its sign-in' : 'Anyone on the internet' }), h('div', { class: 'muted small', text: (edit ? 'Can edit.' : 'Can view.') + now })),
       h('span', { class: 'badge' + (edit ? ' badge-warn' : ''), text: edit ? 'can edit' : 'can view' }));
   }
   // change applies a link access choice; the radios show the stored state

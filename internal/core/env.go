@@ -82,6 +82,7 @@ func (s *Service) ListEnv(ctx context.Context, slugName string) ([]store.EnvVar,
 type runtimeEnvironment struct {
 	values         map[string]string
 	networkOrigins []string
+	fetchHeaders   []egress.Header // injected secrets, never in values
 	redact         func(string) string
 }
 
@@ -93,7 +94,7 @@ func (s *Service) captureEnvironment(ctx context.Context, slugName string, v sto
 	if err != nil {
 		return nil, err
 	}
-	env, err := s.decryptSecrets(secs)
+	secrets, err := s.decryptSecrets(secs)
 	if err != nil {
 		return nil, err
 	}
@@ -101,7 +102,19 @@ func (s *Service) captureEnvironment(ctx context.Context, slugName string, v sto
 	if err != nil {
 		return nil, invalidf("invalid stored network policy")
 	}
-	snapshot := &runtimeEnvironment{values: env, redact: newRedactor(env), networkOrigins: origins}
+	// The redactor knows every secret value, injected or readable (rule 22).
+	snapshot := &runtimeEnvironment{redact: newRedactor(secrets), networkOrigins: origins}
+	snapshot.fetchHeaders, err = injectedSecrets(slugName, secs, secrets)
+	if err != nil {
+		return nil, err
+	}
+	env := make(map[string]string, len(secrets)+len(vars))
+	for _, sec := range secs {
+		if !sec.Inject.Injected() {
+			env[sec.Name] = secrets[sec.Name]
+		}
+	}
+	snapshot.values = env
 	for _, v := range vars {
 		if err := validateEnvName(v.Name, "environment variable"); err != nil {
 			return nil, err
@@ -109,10 +122,53 @@ func (s *Service) captureEnvironment(ctx context.Context, slugName string, v sto
 		if err := validateEnvValue(v.Value, "environment variable"); err != nil {
 			return nil, err
 		}
-		if _, ok := env[v.Name]; ok {
+		if _, ok := secrets[v.Name]; ok {
 			return nil, invalidf("environment variable %q conflicts with an existing secret", v.Name)
 		}
 		env[v.Name] = v.Value
 	}
 	return snapshot, nil
+}
+
+// The store and the outbound client count the same limit (rule 8).
+const _ = uint(store.MaxInjectedSecrets-egress.MaxInjected) + uint(egress.MaxInjected-store.MaxInjectedSecrets)
+
+// injectedSecrets checks the injected rows of a capture again (rule 20) and returns them as the list of the worker.
+// A row that fails refuses the activation, and no value of it goes into env. No message holds a value.
+func injectedSecrets(slugName string, secs []store.SealedSecret, values map[string]string) ([]egress.Header, error) {
+	var out []egress.Header
+	seen := map[store.Binding]string{}
+	for _, sec := range secs {
+		b := sec.Inject
+		if !b.Injected() {
+			continue
+		}
+		refuse := func(reason string) error {
+			return invalidf("secret %q has a stored binding that the host cannot use: %s. Remove it with `flats secret rm %s %s` and set it again with --origin and --header",
+				sec.Name, reason, slugName, sec.Name)
+		}
+		if b.Origin == "" || b.Header == "" {
+			return nil, refuse("it has only one of its origin and its header")
+		}
+		if origin, err := egress.InjectOrigin(b.Origin); err != nil || origin != b.Origin {
+			return nil, refuse("its origin is not a normalized https origin")
+		}
+		if header, err := egress.InjectHeader(b.Header); err != nil || header != b.Header {
+			return nil, refuse("its header is not a canonical header name that can carry a secret")
+		}
+		if err := egress.CheckInjectValue(values[sec.Name]); err != nil {
+			return nil, refuse(err.Error())
+		}
+		// The checks above leave the header canonical, so equal bindings are equal values.
+		if other, ok := seen[b]; ok {
+			return nil, refuse(fmt.Sprintf("secret %q has the same origin and header", other))
+		}
+		seen[b] = sec.Name
+		out = append(out, egress.Header{Origin: b.Origin, Name: b.Header, Value: values[sec.Name]})
+	}
+	if len(out) > store.MaxInjectedSecrets {
+		return nil, invalidf("flat %s has %d injected secrets, and a flat can have %d. List them with `flats secret ls %s` and remove some with `flats secret rm`",
+			slugName, len(out), store.MaxInjectedSecrets, slugName)
+	}
+	return out, nil
 }

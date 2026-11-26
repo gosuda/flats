@@ -84,6 +84,12 @@ type Flat struct {
 	// AccessSeq counts the commits that changed visibility or the public
 	// access level. A visibility approval freezes it.
 	AccessSeq int64 `json:"-"`
+	// SignInProvider is the provider of the sign-in of the flat, empty while
+	// sign-in is off, and SignInSeq counts the applied sign-in changes
+	// (docs/spec/portal-sign-in.md, rule 19). GetSignIn reads the rest of the
+	// setting: a read of the flat on each request needs only these two.
+	SignInProvider string `json:"-"`
+	SignInSeq      int64  `json:"-"`
 }
 
 // Version is an immutable uploaded build.
@@ -138,6 +144,9 @@ type Approval struct {
 	ResultData     json.RawMessage `json:"result_data,omitempty"`
 	DecidedBy      string          `json:"decided_by,omitempty"`
 	AuthorizedAt   *time.Time      `json:"authorized_at,omitempty"`
+	// FlatID is the ID of the flat that the slug named when the request was made. It is never part of a response:
+	// agents do not see the ID of a flat (docs/spec/event-webhook.md, rule 28).
+	FlatID string `json:"-"`
 }
 
 // Preview is an ephemeral address for a saved version.
@@ -171,7 +180,12 @@ CREATE TABLE IF NOT EXISTS flats (
   uid TEXT,
   public_access TEXT NOT NULL DEFAULT '',
   access_seq INTEGER NOT NULL DEFAULT 0,
-  created_public_instance INTEGER NOT NULL DEFAULT 0 CHECK(created_public_instance IN (0,1))
+  created_public_instance INTEGER NOT NULL DEFAULT 0 CHECK(created_public_instance IN (0,1)),
+  signin_provider TEXT NOT NULL DEFAULT '',
+  signin_issuer TEXT NOT NULL DEFAULT '',
+  signin_client_id TEXT NOT NULL DEFAULT '',
+  signin_allow TEXT NOT NULL DEFAULT '[]',
+  signin_seq INTEGER NOT NULL DEFAULT 0
 );
 CREATE TABLE IF NOT EXISTS versions (
   flat TEXT NOT NULL REFERENCES flats(slug) ON DELETE CASCADE ON UPDATE CASCADE,
@@ -445,7 +459,7 @@ func (s *Store) CreateFlatRecorded(ctx context.Context, f Flat, providers []stri
 	return tx.Commit()
 }
 
-const flatCols = `slug,name,visibility,live_version,created_at,updated_at,old_slug,old_slug_until,version_quota,uid,public_access,access_seq,created_public_instance`
+const flatCols = `slug,name,visibility,live_version,created_at,updated_at,old_slug,old_slug_until,version_quota,uid,public_access,access_seq,created_public_instance,signin_provider,signin_seq`
 
 // newFlatID returns a random flat ID.
 func newFlatID() string {
@@ -460,7 +474,7 @@ func scanFlat(sc interface{ Scan(...any) error }) (Flat, error) {
 	var created, updated int64
 	var old, id sql.NullString
 	var till, quota sql.NullInt64
-	if err := sc.Scan(&f.Slug, &f.Name, &vis, &f.LiveVersion, &created, &updated, &old, &till, &quota, &id, &f.PublicAccess, &f.AccessSeq, &f.CreatedPublicInstance); err != nil {
+	if err := sc.Scan(&f.Slug, &f.Name, &vis, &f.LiveVersion, &created, &updated, &old, &till, &quota, &id, &f.PublicAccess, &f.AccessSeq, &f.CreatedPublicInstance, &f.SignInProvider, &f.SignInSeq); err != nil {
 		return f, err
 	}
 	f.ID = id.String
@@ -539,11 +553,23 @@ func (s *Store) Touch(ctx context.Context, slug string, now time.Time) error {
 // as a redirect to the flat until till. Earlier redirects follow the flat;
 // a redirect from the new slug itself is dropped.
 func (s *Store) RenameFlat(ctx context.Context, from, to string, till, now time.Time) error {
+	return s.RenameFlatRevoked(ctx, from, to, till, now, nil)
+}
+
+// RenameFlatRevoked is RenameFlat that also writes, when revoke is not nil, the signin.revoke event of the new token
+// secret that the rename gave the Portal identity of from (docs/spec/portal-sign-in.md, rules 41 and 67), in the
+// transaction of the rename: a failing write of the event leaves the rename undone.
+func (s *Store) RenameFlatRevoked(ctx context.Context, from, to string, till, now time.Time, revoke *Audit) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	if revoke != nil {
+		if err := appendSignInRevoke(ctx, tx, from, SignInRevokeRename, *revoke); err != nil {
+			return err
+		}
+	}
 	if _, err := tx.ExecContext(ctx, `DELETE FROM redirects WHERE old=?`, to); err != nil {
 		return err
 	}
@@ -574,31 +600,88 @@ func (s *Store) RenameFlat(ctx context.Context, from, to string, till, now time.
 	return tx.Commit()
 }
 
-// DeleteFlat removes a flat and everything attached to it.
-func (s *Store) DeleteFlat(ctx context.Context, slug string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	// Usage rows are keyed by the flat's ID: delete them before the flat row
-	// that names it, so a recreated slug starts with no usage.
-	if _, err := tx.ExecContext(ctx, `DELETE FROM usagedays WHERE flat_uid IN (SELECT uid FROM flats WHERE slug=? AND uid IS NOT NULL AND uid<>'')`, slug); err != nil {
-		return err
-	}
-	res, err := tx.ExecContext(ctx, `DELETE FROM flats WHERE slug=?`, slug)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return fmt.Errorf("flat %q: %w", slug, ErrNotFound)
-	}
-	for _, q := range []string{`DELETE FROM events WHERE flat=?`, `DELETE FROM pageviews WHERE flat=?`} {
-		if _, err := tx.ExecContext(ctx, q, slug); err != nil {
-			return err
+// DeleteFlat removes a flat and everything attached to it. The secrets of the flat go with it, and each one
+// writes a secret.delete audit event in the same transaction (rule 9 of docs/spec/audit-events.md), with the
+// channel flat-delete and the approval of a.Approval, when there is one.
+func (s *Store) DeleteFlat(ctx context.Context, slug string, a Audit) error {
+	return s.DeleteFlatRevoked(ctx, slug, a, nil)
+}
+
+// DeleteFlatRevoked is DeleteFlat that also writes, when revoke is not nil, the signin.revoke event of the new token
+// secret that the deletion gave the Portal identity of the flat (docs/spec/portal-sign-in.md, rules 42 and 67), in the
+// transaction of the deletion.
+func (s *Store) DeleteFlatRevoked(ctx context.Context, slug string, a Audit, revoke *Audit) error {
+	_, err := s.immediate(ctx, func(x executor) (bool, error) {
+		uid, err := flatUID(ctx, x, slug)
+		if err != nil {
+			return false, err
 		}
+		if revoke != nil {
+			if err := appendSignInRevoke(ctx, x, slug, SignInRevokeDelete, *revoke); err != nil {
+				return false, err
+			}
+		}
+		secrets, err := flatSecrets(ctx, x, slug)
+		if err != nil {
+			return false, err
+		}
+		// Usage rows are keyed by the flat's ID: delete them before the flat row
+		// that names it, so a recreated slug starts with no usage.
+		if _, err := x.ExecContext(ctx, `DELETE FROM usagedays WHERE flat_uid IN (SELECT uid FROM flats WHERE slug=? AND uid IS NOT NULL AND uid<>'')`, slug); err != nil {
+			return false, err
+		}
+		res, err := x.ExecContext(ctx, `DELETE FROM flats WHERE slug=?`, slug)
+		if err != nil {
+			return false, err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			return false, fmt.Errorf("flat %q: %w", slug, ErrNotFound)
+		}
+		for _, q := range []string{`DELETE FROM events WHERE flat=?`, `DELETE FROM pageviews WHERE flat=?`} {
+			if _, err := x.ExecContext(ctx, q, slug); err != nil {
+				return false, err
+			}
+		}
+		for _, sec := range secrets {
+			e := Audit{Time: a.Time, Via: AuditViaFlatDelete}.event(AuditSecretDelete)
+			e.Flat, e.FlatID, e.Name = slug, uid, sec.name
+			var fields map[string]any
+			if a.Approval != "" {
+				fields = map[string]any{"approval": a.Approval}
+			}
+			if sec.use == SecretUseSignIn {
+				e.Data = signInUseData(fields)
+			} else {
+				e.Data = AuditData(fields)
+			}
+			if err := appendAudit(ctx, x, e); err != nil {
+				return false, err
+			}
+		}
+		return true, nil
+	})
+	return err
+}
+
+// secretRef names a secret of a flat and its use.
+type secretRef struct{ name, use string }
+
+// flatSecrets lists the secrets of a flat by name, with their use.
+func flatSecrets(ctx context.Context, x executor, flat string) ([]secretRef, error) {
+	rows, err := x.QueryContext(ctx, `SELECT name, use FROM secrets WHERE flat=? ORDER BY name`, flat)
+	if err != nil {
+		return nil, err
 	}
-	return tx.Commit()
+	defer rows.Close()
+	var out []secretRef
+	for rows.Next() {
+		var r secretRef
+		if err := rows.Scan(&r.name, &r.use); err != nil {
+			return nil, err
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
 }
 
 // --- redirects ---
@@ -885,8 +968,10 @@ func (s *Store) EventFlats(ctx context.Context) ([]string, error) {
 
 // InsertApproval records a pending approval.
 func (s *Store) InsertApproval(ctx context.Context, a Approval) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO approvals(id,flat,action,params,status,via,reason,requested_at,idempotency_key) VALUES(?,?,?,?,?,?,?,?,?)`,
-		a.ID, a.Flat, a.Action, string(a.Params), a.Status, a.Via, a.Reason, unix(a.RequestedAt), nullString(a.IdempotencyKey))
+	// flat_id comes from the flat that the slug names now, so that a request for a flat that is deleted later still
+	// says which flat it was about.
+	_, err := s.db.ExecContext(ctx, `INSERT INTO approvals(id,flat,action,params,status,via,reason,requested_at,idempotency_key,flat_id) VALUES(?,?,?,?,?,?,?,?,?,COALESCE((SELECT uid FROM flats WHERE slug=?),''))`,
+		a.ID, a.Flat, a.Action, string(a.Params), a.Status, a.Via, a.Reason, unix(a.RequestedAt), nullString(a.IdempotencyKey), a.Flat)
 	return err
 }
 
@@ -896,7 +981,7 @@ func scanApproval(sc interface{ Scan(...any) error }) (Approval, error) {
 	var reason, result, idem, data, actor sql.NullString
 	var req int64
 	var dec, authorized sql.NullInt64
-	if err := sc.Scan(&a.ID, &a.Flat, &a.Action, &params, &a.Status, &a.Via, &reason, &result, &req, &dec, &idem, &data, &actor, &authorized); err != nil {
+	if err := sc.Scan(&a.ID, &a.Flat, &a.Action, &params, &a.Status, &a.Via, &reason, &result, &req, &dec, &idem, &data, &actor, &authorized, &a.FlatID); err != nil {
 		return a, err
 	}
 	a.Params = json.RawMessage(params)
@@ -915,7 +1000,7 @@ func scanApproval(sc interface{ Scan(...any) error }) (Approval, error) {
 	return a, nil
 }
 
-const approvalCols = `id,flat,action,params,status,via,reason,result,requested_at,decided_at,idempotency_key,result_data,decided_by,authorized_at`
+const approvalCols = `id,flat,action,params,status,via,reason,result,requested_at,decided_at,idempotency_key,result_data,decided_by,authorized_at,flat_id`
 
 // GetApproval returns one approval.
 func (s *Store) GetApproval(ctx context.Context, id string) (Approval, error) {
@@ -1119,31 +1204,58 @@ func (s *Store) PageViews(ctx context.Context, flat string, days int) ([]DayCoun
 
 // --- secrets ---
 
-// SealedSecret is an encrypted secret value.
+// SealedSecret is an encrypted secret value. KeyID is the ID of the key that sealed it, and it is empty for a
+// value from before the key IDs (docs/spec/secret-key-rotation.md, rule 1).
 type SealedSecret struct {
 	Name       string
 	Nonce      []byte
 	Ciphertext []byte
+	KeyID      string
 	UpdatedAt  time.Time
+	// Inject is the binding of an injected secret, read from the row. A write ignores it: PutSecretChecked takes
+	// the binding of a set from its SecretPut.
+	Inject Binding
+	// Use is SecretUseSignIn for the client secret of sign-in, with its binding in SignIn, and empty for every
+	// other secret. A write ignores both.
+	Use    string
+	SignIn SignInBinding
 }
 
-// PutSecret stores an encrypted secret.
-func (s *Store) PutSecret(ctx context.Context, flat string, sec SealedSecret) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO secrets(flat,name,nonce,ciphertext,updated_at) VALUES(?,?,?,?,?) ON CONFLICT(flat,name) DO UPDATE SET nonce=excluded.nonce, ciphertext=excluded.ciphertext, updated_at=excluded.updated_at`,
-		flat, sec.Name, sec.Nonce, sec.Ciphertext, unix(sec.UpdatedAt))
-	return envWriteError(err)
+// PutSecret stores an encrypted readable secret with its key ID and writes its secret.set audit event in the same
+// transaction. It refuses to replace the value of an injected secret, because it cannot check the plain value.
+func (s *Store) PutSecret(ctx context.Context, flat string, sec SealedSecret, a Audit) error {
+	_, err := s.PutSecretChecked(ctx, flat, sec, SecretPut{}, a)
+	return err
 }
 
-// DeleteSecret removes a secret.
-func (s *Store) DeleteSecret(ctx context.Context, flat, name string) error {
-	res, err := s.db.ExecContext(ctx, `DELETE FROM secrets WHERE flat=? AND name=?`, flat, name)
-	if err != nil {
-		return err
-	}
-	if n, _ := res.RowsAffected(); n == 0 {
-		return fmt.Errorf("secret %q: %w", name, ErrNotFound)
-	}
-	return nil
+// DeleteSecret removes a secret and writes its secret.delete audit event in the same transaction. A name that does
+// not exist changes nothing and writes nothing. The client secret of sign-in gets ErrSignInSecretRow: only
+// DeleteSignInSecret removes it (docs/spec/portal-sign-in.md, rule 31).
+func (s *Store) DeleteSecret(ctx context.Context, flat, name string, a Audit) error {
+	_, err := s.immediate(ctx, func(x executor) (bool, error) {
+		uid, err := flatUID(ctx, x, flat)
+		if err != nil {
+			return false, err
+		}
+		res, err := x.ExecContext(ctx, `DELETE FROM secrets WHERE flat=? AND name=? AND use=''`, flat, name)
+		if err != nil {
+			return false, err
+		}
+		if n, _ := res.RowsAffected(); n == 0 {
+			var other bool
+			if err := x.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM secrets WHERE flat=? AND name=? AND use<>'')`, flat, name).Scan(&other); err != nil {
+				return false, err
+			}
+			if other {
+				return false, ErrSignInSecretRow
+			}
+			return false, fmt.Errorf("secret %q: %w", name, ErrNotFound)
+		}
+		e := a.event(AuditSecretDelete)
+		e.Flat, e.FlatID, e.Name = flat, uid, name
+		return true, appendAudit(ctx, x, e)
+	})
+	return err
 }
 
 // FlatSecret is a sealed secret with the flat it belongs to.
@@ -1153,9 +1265,10 @@ type FlatSecret struct {
 }
 
 // ListAllSecrets returns the sealed secrets of every flat, ordered by flat
-// and name.
+// and name, also the client secrets of sign-in: the commands that treat every
+// sealed value read them here.
 func (s *Store) ListAllSecrets(ctx context.Context) ([]FlatSecret, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT flat,name,nonce,ciphertext,updated_at FROM secrets ORDER BY flat,name`)
+	rows, err := s.db.QueryContext(ctx, `SELECT flat,name,nonce,ciphertext,updated_at,key_id,fetch_origin,fetch_header,use,signin_issuer,signin_client_id FROM secrets ORDER BY flat,name`)
 	if err != nil {
 		return nil, err
 	}
@@ -1164,7 +1277,7 @@ func (s *Store) ListAllSecrets(ctx context.Context) ([]FlatSecret, error) {
 	for rows.Next() {
 		var sec FlatSecret
 		var u int64
-		if err := rows.Scan(&sec.Flat, &sec.Name, &sec.Nonce, &sec.Ciphertext, &u); err != nil {
+		if err := rows.Scan(&sec.Flat, &sec.Name, &sec.Nonce, &sec.Ciphertext, &u, &sec.KeyID, &sec.Inject.Origin, &sec.Inject.Header, &sec.Use, &sec.SignIn.Issuer, &sec.SignIn.ClientID); err != nil {
 			return nil, err
 		}
 		sec.UpdatedAt = fromUnix(u)
@@ -1175,29 +1288,82 @@ func (s *Store) ListAllSecrets(ctx context.Context) ([]FlatSecret, error) {
 
 // DeleteSealedValues deletes every flat secret and every operator key record
 // that holds a value, and adds events, in one transaction. A key record that
-// only records a connection stays.
-func (s *Store) DeleteSealedValues(ctx context.Context, events []Event) error {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return err
-	}
-	defer tx.Rollback()
-	for _, q := range []string{`DELETE FROM secrets`, `DELETE FROM host_keys WHERE ciphertext IS NOT NULL`} {
-		if _, err := tx.ExecContext(ctx, q); err != nil {
-			return err
+// only records a connection stays. Each value written off writes its own audit event
+// and one key.reset event counts them (rule 14 of docs/spec/audit-events.md).
+func (s *Store) DeleteSealedValues(ctx context.Context, events []Event, a Audit) error {
+	_, err := s.immediate(ctx, func(x executor) (bool, error) {
+		type flatSecretName struct{ flat, uid, name, use string }
+		var secrets []flatSecretName
+		rows, err := x.QueryContext(ctx, `SELECT s.flat, COALESCE(f.uid,''), s.name, s.use FROM secrets s LEFT JOIN flats f ON f.slug=s.flat ORDER BY s.flat, s.name`)
+		if err != nil {
+			return false, err
 		}
-	}
-	for _, e := range events {
-		if _, err := addEvent(ctx, tx, e); err != nil {
-			return err
+		for rows.Next() {
+			var v flatSecretName
+			if err := rows.Scan(&v.flat, &v.uid, &v.name, &v.use); err != nil {
+				rows.Close()
+				return false, err
+			}
+			secrets = append(secrets, v)
 		}
-	}
-	return tx.Commit()
+		if err := rows.Close(); err != nil {
+			return false, err
+		}
+		var keys []string
+		krows, err := x.QueryContext(ctx, `SELECT id FROM host_keys WHERE ciphertext IS NOT NULL ORDER BY id`)
+		if err != nil {
+			return false, err
+		}
+		for krows.Next() {
+			var id string
+			if err := krows.Scan(&id); err != nil {
+				krows.Close()
+				return false, err
+			}
+			keys = append(keys, id)
+		}
+		if err := krows.Close(); err != nil {
+			return false, err
+		}
+		for _, q := range []string{`DELETE FROM secrets`, `DELETE FROM host_keys WHERE ciphertext IS NOT NULL`} {
+			if _, err := x.ExecContext(ctx, q); err != nil {
+				return false, err
+			}
+		}
+		for _, e := range events {
+			if _, err := addEvent(ctx, x, e); err != nil {
+				return false, err
+			}
+		}
+		for _, v := range secrets {
+			e := a.event(AuditSecretDelete)
+			e.Flat, e.FlatID, e.Name = v.flat, v.uid, v.name
+			if v.use == SecretUseSignIn {
+				e.Data = signInUseData(nil)
+			}
+			if err := appendAudit(ctx, x, e); err != nil {
+				return false, err
+			}
+		}
+		for _, id := range keys {
+			e := a.event(AuditKeyDelete)
+			e.Name = id
+			e.Data = AuditData(map[string]any{"reason": "removed"})
+			if err := appendAudit(ctx, x, e); err != nil {
+				return false, err
+			}
+		}
+		reset := a.event(AuditKeyReset)
+		reset.Data = AuditData(map[string]any{"secrets": len(secrets), "keys": len(keys)})
+		return true, appendAudit(ctx, x, reset)
+	})
+	return err
 }
 
-// ListSecrets returns sealed secrets of a flat.
+// ListSecrets returns sealed secrets of a flat. The client secret of sign-in is not one of them: its own view shows
+// it (docs/spec/portal-sign-in.md, rule 30).
 func (s *Store) ListSecrets(ctx context.Context, flat string) ([]SealedSecret, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT name,nonce,ciphertext,updated_at FROM secrets WHERE flat=? ORDER BY name`, flat)
+	rows, err := s.db.QueryContext(ctx, `SELECT name,nonce,ciphertext,updated_at,key_id,fetch_origin,fetch_header FROM secrets WHERE flat=? AND use='' ORDER BY name`, flat)
 	if err != nil {
 		return nil, err
 	}
@@ -1206,7 +1372,7 @@ func (s *Store) ListSecrets(ctx context.Context, flat string) ([]SealedSecret, e
 	for rows.Next() {
 		var sec SealedSecret
 		var u int64
-		if err := rows.Scan(&sec.Name, &sec.Nonce, &sec.Ciphertext, &u); err != nil {
+		if err := rows.Scan(&sec.Name, &sec.Nonce, &sec.Ciphertext, &u, &sec.KeyID, &sec.Inject.Origin, &sec.Inject.Header); err != nil {
 			return nil, err
 		}
 		sec.UpdatedAt = fromUnix(u)

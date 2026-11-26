@@ -346,15 +346,50 @@ func (s *Store) DeploymentByApproval(ctx context.Context, approvalID string) (De
 	return d, true, nil
 }
 
-// SetProviderPermission records whether flat may use provider.
-func (s *Store) SetProviderPermission(ctx context.Context, flat, provider string, permitted bool) error {
+// SetProviderPermission records whether flat may use provider. It reports whether the stored permission changed (a
+// provider with no row counts as not permitted). A change and its provider.set audit event (docs/spec/event-webhook.md,
+// rule 21) are one transaction, and a write that changes nothing writes no event. While the flat has sign-in on, a
+// grant of a provider that SignInExcludes is a *SignInConflict and changes nothing: the transaction that checks the
+// setting is the one that writes the grant (docs/spec/portal-sign-in.md, rules 8 and 9).
+func (s *Store) SetProviderPermission(ctx context.Context, flat, provider string, permitted bool, a Audit) (bool, error) {
 	bit := 0
 	if permitted {
 		bit = 1
 	}
-	_, err := s.db.ExecContext(ctx, `INSERT INTO flat_providers(flat, provider, permitted) VALUES(?,?,?)
-		ON CONFLICT(flat, provider) DO UPDATE SET permitted=excluded.permitted`, flat, provider, bit)
-	return err
+	changed := false
+	_, err := s.immediate(ctx, func(x executor) (bool, error) {
+		if permitted && SignInExcludes(provider) {
+			if on, err := signInOn(ctx, x, flat); err != nil {
+				return false, err
+			} else if on {
+				return false, &SignInConflict{Reason: SignInGrantRefused, Providers: []string{provider}}
+			}
+		}
+		was := 0
+		if err := x.QueryRowContext(ctx, `SELECT permitted FROM flat_providers WHERE flat=? AND provider=?`, flat, provider).Scan(&was); err != nil && !errors.Is(err, sql.ErrNoRows) {
+			return false, err
+		}
+		if _, err := x.ExecContext(ctx, `INSERT INTO flat_providers(flat, provider, permitted) VALUES(?,?,?)
+			ON CONFLICT(flat, provider) DO UPDATE SET permitted=excluded.permitted`, flat, provider, bit); err != nil {
+			return false, err
+		}
+		if was == bit {
+			return true, nil
+		}
+		uid, err := flatUID(ctx, x, flat)
+		if err != nil {
+			return false, err
+		}
+		e := a.event(AuditProviderSet)
+		e.Flat, e.FlatID, e.Name = flat, uid, provider
+		e.Data = AuditData(map[string]any{"permitted": permitted})
+		if err := appendAudit(ctx, x, e); err != nil {
+			return false, err
+		}
+		changed = true
+		return true, nil
+	})
+	return changed && err == nil, err
 }
 
 // ProviderPermitted reports an explicit non-local permission. Local is always permitted.
@@ -545,8 +580,12 @@ func (s *Store) RejectApprovalAuthorized(ctx context.Context, id, actor, result 
 // transaction. It writes f's visibility and public access level and counts
 // the change in access_seq, only while the flat still has from's
 // visibility, level, access_seq and live version. Private has no level,
-// Public has view or edit, and only a board or a document can be edit.
-func (s *Store) CommitVisibility(ctx context.Context, f, from Flat, approval string, data json.RawMessage) error {
+// Public has view or edit, and only a board or a document can be edit. The
+// change and its visibility.set audit event (docs/spec/event-webhook.md, rule
+// 21) are one transaction: when the event cannot be written, nothing changes.
+// A change to Public of a flat with sign-in on and a grant of a provider that
+// SignInExcludes is a *SignInConflict (docs/spec/portal-sign-in.md, rule 8).
+func (s *Store) CommitVisibility(ctx context.Context, f, from Flat, approval string, data json.RawMessage, a Audit) error {
 	if !validAccess(f.Visibility, f.PublicAccess) {
 		return fmt.Errorf("public access %q is not valid for visibility %s", f.PublicAccess, f.Visibility)
 	}
@@ -555,6 +594,11 @@ func (s *Store) CommitVisibility(ctx context.Context, f, from Flat, approval str
 		return err
 	}
 	defer tx.Rollback()
+	if f.Visibility.Public() && !from.Visibility.Public() {
+		if err := refusePublic(ctx, tx, f.Slug); err != nil {
+			return err
+		}
+	}
 	if f.PublicAccess == AccessEdit {
 		if ok, err := publicEditableTx(ctx, tx, f.Slug); err != nil {
 			return err
@@ -578,6 +622,16 @@ func (s *Store) CommitVisibility(ctx context.Context, f, from Flat, approval str
 	n, _ = res.RowsAffected()
 	if n != 1 {
 		return errors.New("approval no longer applying")
+	}
+	e := a.event(AuditVisibilitySet)
+	e.Flat, e.FlatID = f.Slug, from.ID
+	e.Data = AuditData(map[string]any{
+		"from":     map[string]any{"visibility": string(from.Visibility.Canonical()), "access": from.PublicAccess},
+		"to":       map[string]any{"visibility": string(f.Visibility.Canonical()), "access": f.PublicAccess},
+		"approval": approval,
+	})
+	if err := appendAudit(ctx, tx, e); err != nil {
+		return err
 	}
 	return tx.Commit()
 }

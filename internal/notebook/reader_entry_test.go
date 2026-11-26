@@ -14,6 +14,9 @@ import (
 	"time"
 )
 
+// readerHeapCeiling bounds the sampled heap growth of one whole read.
+const readerHeapCeiling = 4 << 20
+
 func measureReaderHeap(t *testing.T, in *Instance, query []byte) ([]byte, uint64, error) {
 	t.Helper()
 	oldGC := debug.SetGCPercent(20)
@@ -26,6 +29,13 @@ func measureReaderHeap(t *testing.T, in *Instance, query []byte) ([]byte, uint64
 	sample := func() {
 		var stats runtime.MemStats
 		runtime.ReadMemStats(&stats)
+		if stats.HeapAlloc > before.HeapAlloc+readerHeapCeiling {
+			// Under host CPU contention the GC CPU limiter can turn off mutator
+			// assists, and the heap then outgrows the pacer's goal with garbage.
+			// A collection frees that garbage; what the read still holds survives.
+			runtime.GC()
+			runtime.ReadMemStats(&stats)
+		}
 		for old := peak.Load(); stats.HeapAlloc > old; old = peak.Load() {
 			if peak.CompareAndSwap(old, stats.HeapAlloc) {
 				break
@@ -132,7 +142,7 @@ func TestReaderSelectionPreparationMemory(t *testing.T) {
 					// Bound above the heap immediately before Instance.Read, including
 					// preparation, query, capture, reference indexing and delivery.
 					t.Logf("whole read sampled heap growth: %d bytes", peak)
-					if peak > 4<<20 {
+					if peak > readerHeapCeiling {
 						t.Fatalf("read preparation materialized retained payload: %d bytes", peak)
 					}
 				})
@@ -278,7 +288,7 @@ func TestReaderCollectionQueryMemory(t *testing.T) {
 						t.Fatalf("collection query order/membership: %s %v", id, err)
 					}
 					t.Logf("whole collection read sampled heap growth: %d bytes", peak)
-					if peak > 4<<20 {
+					if peak > readerHeapCeiling {
 						t.Fatalf("query materialized retained collection: %d bytes", peak)
 					}
 				})

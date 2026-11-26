@@ -18,7 +18,7 @@ import (
 // RenameSlug changes a flat's slug (and therefore its addresses). The old
 // addresses redirect to the new ones, keeping path and query, for the
 // configured redirect window (7 days by default).
-func (s *Service) RenameSlug(ctx context.Context, from, to string, via Via) (FlatView, error) {
+func (s *Service) RenameSlug(ctx context.Context, from, to string, via Via) (_ FlatView, err error) {
 	if err := slug.Validate(to); err != nil {
 		return FlatView{}, invalid(err)
 	}
@@ -53,6 +53,18 @@ func (s *Service) RenameSlug(ctx context.Context, from, to string, via Via) (Fla
 	if err := s.requireUnusedStorage(to); err != nil {
 		return FlatView{}, err
 	}
+	// The old identity gets a new token secret before anything changes (docs/spec/portal-sign-in.md, rule 41), so
+	// every session and access link of the old host names ends; a failed write leaves the flat as it was.
+	revoke, err := s.renewForChange(ctx, from, via, "rename")
+	if err != nil {
+		return FlatView{}, err
+	}
+	committed := false
+	defer func() {
+		if !committed && err != nil {
+			err = s.renewalOutlived(ctx, from, store.SignInRevokeRename, revoke, err)
+		}
+	}()
 	// Preview data lives below the flat directory. Do not rename while an
 	// old-slug preview route remains reachable; leave all flat state retryable.
 	if err := s.dropPreviews(ctx, from); err != nil {
@@ -135,7 +147,7 @@ func (s *Service) RenameSlug(ctx context.Context, from, to string, via Via) (Fla
 		restoreCurrent()
 		return FlatView{}, errors.Join(err, s.finishStorageOperation(op))
 	}
-	if err := s.st.RenameFlat(ctx, from, to, till, s.now()); err != nil {
+	if err := s.st.RenameFlatRevoked(ctx, from, to, till, s.now(), revoke); err != nil {
 		if moved {
 			if rollbackErr := os.Rename(toDir, fromDir); rollbackErr != nil {
 				// Keep the journal so startup can recover the remaining
@@ -155,6 +167,7 @@ func (s *Service) RenameSlug(ctx context.Context, from, to string, via Via) (Fla
 		}
 		return FlatView{}, err
 	}
+	committed = true
 	// Keep the journal until the metadata commit is durable: after a power
 	// loss the database could otherwise return to the old slug with nothing
 	// left that links it to the moved directory.
@@ -301,7 +314,14 @@ func (s *Service) serveRedirect(ctx context.Context, old, cur string) {
 		}
 		public := false
 		if f.Visibility.Public() && (!f.CreatedPublicInstance || f.LiveVersion > 0) {
-			res, err := n.ServeExposure(ctx, ExposureRequest{Slug: old, Host: old, Visibility: "public", Audience: AudienceCurrent, Handler: h, PrivateHandler: h, Permitted: ids, Hidden: true})
+			// The redirect sends no content of the flat and its target has the gate, so the old slug serves it
+			// without one: the mark redirect removes the gate of its Portal entry (docs/spec/portal-sign-in.md, rule
+			// 41). The other public providers stay closed while the flat has sign-in on (rule 10).
+			if f.SignInProvider != "" {
+				ids = withoutSignInExcluded(ids)
+			}
+			res, err := n.ServeExposure(ctx, ExposureRequest{Slug: old, Host: old, Visibility: "public", Audience: AudienceCurrent, Handler: h, PrivateHandler: h, Permitted: ids, Hidden: true,
+				SignIn: &PortalSignIn{Redirect: true}})
 			for _, ep := range res.Endpoints {
 				if PublicProvider(ep.Provider) {
 					public = true
@@ -324,7 +344,14 @@ func (s *Service) serveRedirect(ctx context.Context, old, cur string) {
 	s.mu.Unlock()
 	public := prev != nil && prev.public
 	if f.Visibility.Public() && (!f.CreatedPublicInstance || f.LiveVersion > 0) && s.cfg.Public != nil {
-		if _, err := s.cfg.Public.Serve(ctx, old, s.redirectHandler(true, func(ProviderID, bool) string { return s.cfg.Public.URL(cur) }), true); err != nil {
+		h := s.redirectHandler(true, func(ProviderID, bool) string { return s.cfg.Public.URL(cur) })
+		var err error
+		if g, ok := s.cfg.Public.(SignInPublicNet); ok {
+			_, err = g.ServeSignIn(ctx, old, h, true, &PortalSignIn{Redirect: true})
+		} else {
+			_, err = s.cfg.Public.Serve(ctx, old, h, true)
+		}
+		if err != nil {
 			s.Event(ctx, cur, "error", "rename", "could not serve public redirect from "+old+": "+err.Error(), nil)
 		} else {
 			public = true

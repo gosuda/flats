@@ -18,8 +18,8 @@ import (
 )
 
 const KeyUsage = `key ls [--config path | --data dir]
-       flats key set tailscale|zrok|netbird [--from-file path] [--config path | --data dir]   (value from stdin)
-       flats key rm tailscale|zrok|netbird [--config path | --data dir]`
+       flats key set tailscale|zrok|netbird|webhook-url|webhook-secret [--from-file path] [--config path | --data dir]   (value from stdin)
+       flats key rm tailscale|zrok|netbird|webhook-url|webhook-secret [--config path | --data dir]`
 
 // KeyCommand runs `flats key <subcommand>`: it manages the operator keys in
 // flats.db while the host is stopped, like `flats config set`. A key is read
@@ -57,7 +57,7 @@ func KeyCommand(ctx context.Context, args []string, in io.Reader, out io.Writer)
 	id := ""
 	if want == 1 {
 		if id = pos[0]; !slices.Contains(core.HostKeyIDs, id) {
-			return usagef("unknown key %q: use tailscale, zrok or netbird", id)
+			return usagef("unknown key %q: use tailscale, zrok, netbird, webhook-url or webhook-secret", id)
 		}
 	}
 
@@ -84,7 +84,7 @@ func KeyCommand(ctx context.Context, args []string, in io.Reader, out io.Writer)
 	if err := core.CheckSecretKey(ctx, keyFile, st); err != nil {
 		return &ActionError{err}
 	}
-	if err := core.PutHostKeyValue(ctx, keyFile, st, id, value, core.KeySourceCLI, time.Now()); err != nil {
+	if err := core.PutHostKeyValue(ctx, keyFile, st, id, value, core.KeySourceCLI, time.Now(), commandAudit()); err != nil {
 		return err
 	}
 	switch id {
@@ -92,6 +92,10 @@ func KeyCommand(ctx context.Context, args []string, in io.Reader, out io.Writer)
 		c.printf("stored the Tailscale auth key in %s; new tailnet nodes use it from the next start\n", dbPath)
 	case core.HostKeyNetbird:
 		c.printf("stored the NetBird setup key in %s; new NetBird peers register with it from the next start\n", dbPath)
+	case core.HostKeyWebhookURL:
+		c.printf("stored the webhook URL in %s; events are sent when both webhook keys are stored\n", dbPath)
+	case core.HostKeyWebhookSecret:
+		c.printf("stored the webhook secret in %s; events are sent when both webhook keys are stored\n", dbPath)
 	default:
 		c.printf("stored the %s key in %s; the next start connects %s with it if none is connected yet\n", id, dbPath, id)
 	}
@@ -173,6 +177,8 @@ func listKeys(ctx context.Context, st *store.Store, out io.Writer) error {
 		state := "none"
 		switch {
 		case !ok:
+		case r.HasValue() && (id == core.HostKeyWebhookURL || id == core.HostKeyWebhookSecret):
+			state = "set"
 		case r.HasValue() && (id == core.HostKeyTailscale || id == core.HostKeyNetbird):
 			state = "stored"
 		case r.HasValue():
@@ -180,7 +186,7 @@ func listKeys(ctx context.Context, st *store.Store, out io.Writer) error {
 		default:
 			state = "connected"
 		}
-		line := fmt.Sprintf("%-10s %s", id, state)
+		line := fmt.Sprintf("%-14s %s", id, state)
 		if ok {
 			line += fmt.Sprintf(" (from %s, %s)", r.Source, r.UpdatedAt.Local().Format(time.DateTime))
 			if r.LastError != "" {
@@ -204,7 +210,7 @@ func removeKey(ctx context.Context, st *store.Store, id string, out io.Writer) e
 	if !r.HasValue() {
 		return actionf("%s is connected and keeps no key in flats.db; disconnect it in the console (Settings > Keys)", id)
 	}
-	if err := st.DeleteHostKey(ctx, id); err != nil {
+	if err := st.DeleteHostKey(ctx, id, commandAudit()); err != nil {
 		return err
 	}
 	switch id {
@@ -212,6 +218,10 @@ func removeKey(ctx context.Context, st *store.Store, id string, out io.Writer) e
 		fmt.Fprintln(out, "removed the Tailscale auth key; new tailnet nodes wait for an interactive login")
 	case core.HostKeyNetbird:
 		fmt.Fprintln(out, "removed the NetBird setup key; running peers keep working, new ones cannot register until a key is stored")
+	case core.HostKeyWebhookURL:
+		fmt.Fprintln(out, "removed the webhook URL; the webhook is off")
+	case core.HostKeyWebhookSecret:
+		fmt.Fprintln(out, "removed the webhook secret; the webhook is off")
 	default:
 		fmt.Fprintf(out, "removed the waiting %s key\n", id)
 	}

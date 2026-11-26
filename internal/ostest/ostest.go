@@ -24,7 +24,8 @@ func Kill(pid int) error {
 const Windows = runtime.GOOS == "windows"
 
 // WrongMode reports whether the file's mode differs from want. Windows has no
-// POSIX modes, and the data directory's access list protects those files.
+// POSIX modes, and the data directory's access list protects those files (a
+// Portal identity file has an access list of its own).
 func WrongMode(fi os.FileInfo, want os.FileMode) bool {
 	return !Windows && fi.Mode().Perm() != want
 }

@@ -48,6 +48,18 @@ type worker struct {
 	js        *jsEngine      // nil for WASI
 	network   outboundClient // shared by all JS request and WebSocket VMs
 	bodies    bodyBudget     // request body bytes held at once
+	// newOutbound builds network from the origins and the injected secrets of the spec. Only tests set it; nil is
+	// newOutboundClient.
+	newOutbound func(origins []string, headers []egress.Header) (outboundClient, error)
+}
+
+// newOutboundClient is the outbound client of a JavaScript worker.
+func newOutboundClient(origins []string, headers []egress.Header) (outboundClient, error) {
+	c, err := egress.New(origins, headers...)
+	if err != nil {
+		return nil, err
+	}
+	return c, nil
 }
 
 // listenerFD is the inherited listening Unix socket (cmd.ExtraFiles[0]).
@@ -183,7 +195,11 @@ func (w *worker) init() error {
 			return err
 		}
 		w.spec.Dir, w.versionFP = dir, fp
-		client, err := egress.New(w.spec.NetworkOrigins)
+		build := w.newOutbound
+		if build == nil {
+			build = newOutboundClient
+		}
+		client, err := build(w.spec.NetworkOrigins, w.spec.FetchHeaders)
 		if err != nil {
 			return err
 		}

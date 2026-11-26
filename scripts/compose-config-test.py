@@ -5,17 +5,20 @@ Run with: python3 scripts/compose-config-test.py
 Requires Docker Compose v2 or newer; no Docker daemon is needed.
 """
 
+from __future__ import annotations
+
 import json
 import os
 from pathlib import Path
 import subprocess
 import unittest
+from typing import Any
 
 ROOT = Path(__file__).resolve().parent.parent
 
 
 class ComposeConfigTest(unittest.TestCase):
-    def config(self, **overrides):
+    def config(self, **overrides: str) -> dict[str, Any]:
         env = {key: value for key, value in os.environ.items() if key != "FLATS_IMAGE"}
         env.update(overrides)
         result = subprocess.run(

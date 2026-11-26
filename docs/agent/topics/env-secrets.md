@@ -1,7 +1,7 @@
 ## Environment variables and secrets
 
 Ordinary app environment variables and operator-managed secrets are strings
-injected as `env.NAME` when the worker starts. `env` is frozen; `env.DB` and
+given to the flat as `env.NAME` when the worker starts, except an injected secret (below). `env` is frozen; `env.DB` and
 `env.FILES` are reserved host bindings. New variable and secret writes require names matching
 `[A-Z_][A-Z0-9_]*`, at most 64 characters; `DB`, `FILES`, `__PROTO__`, `PROTOTYPE` and `CONSTRUCTOR` are rejected for new writes.
 New values are at most 64 KiB and must be valid UTF-8 without NUL; empty strings are supported.
@@ -30,10 +30,22 @@ through the existing approval flow to apply changes. Neither
 ordinary variables nor secrets enter frontend bundles, static files or build
 substitution. There is no inherited host environment.
 
-`list_secrets {slug}` shows names/update times only. Agent MCP cannot set/read
-secret values; operators use the console or `flats secret set`. Secrets are
+`list_secrets {slug}` shows names, update times and the `inject` binding of an
+injected secret, never values. Agent MCP cannot set/read secret values;
+operators use the console or `flats secret set`.
+
+An injected secret (`flats secret set <slug> <NAME> --origin <https origin>
+--header <Name>`) is not in `env` or in the WASI environment: `env.NAME` is
+undefined. The host adds the header with the value to each JavaScript `fetch`
+to that origin when the origin is also granted (`topic.server.fetch`). Write the
+code without that header; supplying it to that origin fails. Use an injected
+secret for a credential that only goes in one header to one API, so the handler
+never holds it. The binding stays until the secret is removed; a new value
+keeps it.
+
+Secrets are
 encrypted on disk with local secret.key, but anyone with data-dir access can
-recover them; trust your handler, which can itself return secrets. Never log
+recover them; trust your handler, which can itself return readable secrets. Never log
 secret values or put credentials in ordinary variables.
 
 To apply changed settings deliberately, redeploy the live version with

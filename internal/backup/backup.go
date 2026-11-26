@@ -124,12 +124,23 @@ func Run(ctx context.Context, o Options) (res *Result, err error) {
 		}
 		if !o.ExcludeSecretKey {
 			if _, err := keyFile.Read(); err != nil {
-				return nil, &RefusedError{fmt.Sprintf("%v; --exclude-secret-key makes the backup skip the key", err)}
+				msg := fmt.Sprintf("%v; --exclude-secret-key makes the backup skip the key", err)
+				// A rotation that stopped can be the cause (state C of docs/spec/secret-key-rotation.md). Which state it
+				// is needs the database, which this refusal comes before, so the message names the file and the command.
+				if _, err := os.Lstat(keyFile.PendingPath()); err == nil {
+					msg += fmt.Sprintf(". %s exists: when a rotation of the key stopped, `flats secret rotate-key` finishes it and puts the key in place, and the backup refuses until then", keyFile.PendingPath())
+				}
+				return nil, &RefusedError{msg}
 			}
 		}
 	}
-	// Last, because it is the one refusal that opens a database, and that can create a -shm file (rule 11).
+	// After the refusals above, because this one and the next one open a database, and that can create a -shm file
+	// (rule 11).
 	if err := checkSchema(flatsDB); err != nil {
+		return nil, err
+	}
+	// After the database check, because it reads the key IDs from flats.db, and before the partial directory exists.
+	if err := checkRotation(ctx, keyFile, flatsDB, o.ExcludeSecretKey); err != nil {
 		return nil, err
 	}
 	// Once, here, before any goroutine: the snapshots of one attempt open connections together, and the driver's
@@ -311,6 +322,31 @@ func checkSchema(flatsDB string) error {
 		return &RefusedError{fmt.Sprintf("%s has schema version %d and this Flats expects %d. Start the host once with this Flats, which migrates it, or copy the stopped data directory by hand", flatsDB, info.Version, info.Latest)}
 	}
 	return nil
+}
+
+// checkRotation refuses a copy in the states that a rotation of the host key can leave, with the message of the
+// start (docs/spec/secret-key-rotation.md, rules 22 and 26): a pending key waits, or the key at the key path sealed
+// none of the values. A copy made then would pair flats.db with a key that does not open it. It reads the key IDs
+// without the host lock and without a migration. With --exclude-secret-key the command copies no key and reads none
+// for the second state, so only the first state refuses. A pending key file that cannot be classified refuses in
+// both modes, because it can be a pending key that waits.
+func checkRotation(ctx context.Context, keyFile core.KeyFile, flatsDB string, excludeKey bool) error {
+	ids, ok, err := store.SealedKeyIDsBeside(ctx, flatsDB)
+	if err != nil {
+		return fmt.Errorf("read the key IDs of %s: %w", flatsDB, err)
+	}
+	if !ok {
+		ids = nil // the schema changed after the check above: no check of the labels
+	}
+	check := core.CheckRotation
+	if excludeKey {
+		check = core.CheckStoppedRotation
+	}
+	err = check(keyFile, ids)
+	if errors.Is(err, core.ErrRotationStopped) || errors.Is(err, core.ErrKeySealedNothing) || errors.Is(err, core.ErrPendingKey) {
+		return &RefusedError{err.Error()}
+	}
+	return err
 }
 
 // checkError is the error of Run for the failures of the copy's own check. A failure that a second run cannot

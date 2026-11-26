@@ -18,7 +18,7 @@ Always:
 - Saving a website or page (save_draft, save_draft_from_dir, save_page) only changes a Private Draft. Creating or deleting a version, activation, rollback, data restore, visibility changes in BOTH directions and delete_flat wait for explicit operator approval and change nothing before it. Exception: documents, designs, boards and notebooks have no Draft, versions or publish: create_flat and their save or update tools change them at once, without approval; each is Private unless the operator approved Public, where everyone sees changes immediately.
 - Give the user approval_url exactly as returned and poll get_approval. Never approve your own request or imitate the console; MCP has no approval tool.
 - Ask the user before set_visibility, delete_flat or rollback with restore_data.
-- Public is NOT access control: anyone on the internet can open a ready Public route. Private follows loopback, the tailnet or NetBird access rules, or the operator's reverse proxy; it is not owner-only.
+- Public is NOT access control: anyone can open a ready Public route not behind Portal sign-in. Private follows loopback, the tailnet or NetBird access rules, or the operator's reverse proxy; it is not owner-only.
 - Never infer state from a URL. publication, live_version, visibility and connection state are separate fields. Report a version live only after get_flat shows it current with a ready endpoint and you fetched the page.
 - Upload complete build output, not sources: at most %d bytes total per upload (operator-configurable) and %d files.`, slug.MinLen, slug.MaxLen, URI, ContentTypesURI, uploadLimit, bundle.MaxFiles)
 }

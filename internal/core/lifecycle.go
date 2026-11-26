@@ -42,6 +42,10 @@ func (e *PendingApproval) Error() string {
 
 func (e *PendingApproval) Unwrap() error { return ErrPending }
 
+// Each approval that freezes the visibility of a flat also freezes its
+// sign-in sequence in SignInSeq, so that it never applies under a notice that
+// knew another sign-in setting (docs/spec/portal-sign-in.md, rule 23). A
+// request stored before sign-in has none and is not checked.
 type publishParams struct {
 	Revision     int    `json:"revision"`
 	Hash         string `json:"hash"`
@@ -49,6 +53,7 @@ type publishParams struct {
 	ExpectedLive int    `json:"expected_live"`
 	Visibility   string `json:"visibility"`
 	Providers    string `json:"providers"`
+	SignInSeq    *int64 `json:"signin_seq,omitempty"`
 }
 
 type activateParams struct {
@@ -57,6 +62,7 @@ type activateParams struct {
 	ExpectedLive int    `json:"expected_live"`
 	Visibility   string `json:"visibility"`
 	Providers    string `json:"providers"`
+	SignInSeq    *int64 `json:"signin_seq,omitempty"`
 }
 
 type rollbackParams struct {
@@ -68,6 +74,7 @@ type rollbackParams struct {
 	RestoreData  bool   `json:"restore_data"`
 	Visibility   string `json:"visibility"`
 	Providers    string `json:"providers"`
+	SignInSeq    *int64 `json:"signin_seq,omitempty"`
 }
 
 // visibilityParams is the frozen state of a set_visibility request. A
@@ -94,6 +101,7 @@ type visibilityParams struct {
 	Access       string `json:"access,omitempty"`
 	FromAccess   string `json:"from_access,omitempty"`
 	AccessSeq    *int64 `json:"access_seq,omitempty"`
+	SignInSeq    *int64 `json:"signin_seq,omitempty"`
 }
 
 func (s *Service) contentDir(slugName string, v store.Version) string {
@@ -185,7 +193,19 @@ func (s *Service) requestFrozen(ctx context.Context, slugName, action string, pa
 		return ActionResult{}, err
 	}
 	url := s.ApprovalURL(ctx, a.ID)
-	s.Event(ctx, slugName, "warn", "approval", fmt.Sprintf("%s requested via %s; waiting for the operator: %s", action, via, url), params)
+	// The frozen state of some requests holds what a log line must not show (the entries of a sign-in allowlist);
+	// such params give the event its own form.
+	data := params
+	if p, ok := params.(interface{ eventData() any }); ok {
+		data = p.eventData()
+	}
+	s.Event(ctx, slugName, "warn", "approval", fmt.Sprintf("%s requested via %s; waiting for the operator: %s", action, via, url), data)
+	if s.notifying() {
+		// The row carries the ID of the flat, which the insert looked up.
+		if row, err := s.st.GetApproval(ctx, a.ID); err == nil {
+			s.notifyApproval(ctx, eventApprovalCreated, "pending", row)
+		}
+	}
 	return ActionResult{Status: "pending_approval", Approval: &a, ApprovalURL: url,
 		Message: "This action needs the operator's approval. Share the approval link with them; nothing changes until they approve it in the web console."}, nil
 }
@@ -231,7 +251,7 @@ func (s *Service) requestDeploy(ctx context.Context, slugName string, n int, via
 	}
 	res, err := s.requestFrozen(ctx, slugName, "activate", activateParams{
 		Version: n, Hash: v.Hash, ExpectedLive: f.LiveVersion,
-		Visibility: string(f.Visibility.Canonical()), Providers: providers,
+		Visibility: string(f.Visibility.Canonical()), Providers: providers, SignInSeq: &f.SignInSeq,
 	}, via, "")
 	if err != nil {
 		return DeployResult{}, err
@@ -284,7 +304,7 @@ func (s *Service) requestRollback(ctx context.Context, slugName string, to int, 
 	}
 	res, err := s.requestFrozen(ctx, slugName, "rollback", rollbackParams{
 		Version: to, ExpectedLive: f.LiveVersion, RestoreData: restoreData, Hash: v.Hash, Snapshot: snapshot, SnapshotHash: shash,
-		Visibility: string(f.Visibility.Canonical()), Providers: providers,
+		Visibility: string(f.Visibility.Canonical()), Providers: providers, SignInSeq: &f.SignInSeq,
 	}, via, "")
 	if err != nil {
 		return DeployResult{}, err
@@ -336,6 +356,11 @@ func (s *Service) requestVisibility(ctx context.Context, slugName string, vis st
 		if f.LiveVersion == 0 {
 			return ActionResult{}, fmt.Errorf("%w: publish and deploy a version before making this flat public", ErrConflict)
 		}
+		if !f.Visibility.Public() {
+			if err := s.refuseSignInPublic(ctx, f); err != nil {
+				return ActionResult{}, err
+			}
+		}
 	}
 	providers, err := s.providerKey(ctx, slugName)
 	if err != nil {
@@ -345,7 +370,7 @@ func (s *Service) requestVisibility(ctx context.Context, slugName string, vis st
 	legacy := visibilityParams{Visibility: string(vis), From: string(f.Visibility.Canonical()), ExpectedLive: &live, Providers: providers}
 	seq := f.AccessSeq
 	p := legacy
-	p.Access, p.FromAccess, p.AccessSeq = access, f.PublicAccess, &seq
+	p.Access, p.FromAccess, p.AccessSeq, p.SignInSeq = access, f.PublicAccess, &seq, &f.SignInSeq
 	if contenttype.RevisionModel(t) && f.ID != "" {
 		p.ExpectedLive, p.FlatID = nil, f.ID
 	}
@@ -361,7 +386,7 @@ func (s *Service) requestVisibility(ctx context.Context, slugName string, vis st
 		} else if existing, err := s.st.FindOpenApprovalByKey(ctx, key); err == nil && existing.Flat == slugName {
 			res := ActionResult{Status: "pending_approval", Approval: &existing, ApprovalURL: s.ApprovalURL(ctx, existing.ID),
 				Message: "This action is already waiting for the operator. Nothing changes until they approve it in the web console."}
-			res.Notice = pendingVisibilityNotice(vis, access, t)
+			res.Notice = pendingVisibilityNotice(vis, access, t, f.SignInProvider != "")
 			return res, nil
 		} else if err != nil && !errors.Is(err, store.ErrNotFound) {
 			return ActionResult{}, err
@@ -371,18 +396,18 @@ func (s *Service) requestVisibility(ctx context.Context, slugName string, vis st
 	if err != nil {
 		return ActionResult{}, err
 	}
-	res.Notice = pendingVisibilityNotice(vis, access, t)
+	res.Notice = pendingVisibilityNotice(vis, access, t, f.SignInProvider != "")
 	return res, nil
 }
 
 // pendingVisibilityNotice is the notice of a pending visibility request
-// for a flat of type t.
-func pendingVisibilityNotice(vis store.Visibility, access, t string) string {
+// for a flat of type t, which has sign-in on when signIn is true.
+func pendingVisibilityNotice(vis store.Visibility, access, t string, signIn bool) string {
 	switch {
 	case access == store.AccessEdit:
-		return PendingPublicEditNoticeFor(t)
+		return PendingPublicNotice(t, store.AccessEdit, signIn)
 	case vis.Public():
-		return PendingPublicAccessNotice
+		return PendingPublicNotice(t, store.AccessView, signIn)
 	}
 	return ""
 }
@@ -449,14 +474,25 @@ func (s *Service) SetProviderPermission(ctx context.Context, slugName, provider 
 			return err
 		}
 	}
-	if err := s.st.SetProviderPermission(ctx, slugName, provider, permitted); err != nil {
-		return err
+	// The store refuses a grant that sign-in excludes in the transaction that would write it.
+	changed, err := s.st.SetProviderPermission(ctx, slugName, provider, permitted, s.audit(ctx, via))
+	if err != nil {
+		return signInConflict(slugName, err)
+	}
+	if changed {
+		s.notifyProvider(ctx, f, provider, permitted)
 	}
 	s.Event(ctx, slugName, "info", "provider", fmt.Sprintf("provider %s permitted=%t via %s", provider, permitted, via), nil)
 	if !permitted {
 		return nil
 	}
 	if err := s.applyProviderGrant(ctx, f, ProviderID(provider)); err != nil {
+		if ae, ok := err.(*PortalAuthError); ok && ae.StopErr == nil {
+			// portal.require_auth refuses the route (docs/spec/portal-require-auth.md, rule 20): the grant is recorded,
+			// and allowing it again, a deploy or a restart does not help.
+			s.Event(ctx, slugName, "warn", "exposure", fmt.Sprintf("provider %s permitted, but its route is refused: %s", provider, ae.Detail), nil)
+			return fmt.Errorf("%w: %s is permitted, but its route is refused: %s", ErrProviderNotReady, provider, ae.Detail)
+		}
 		s.Event(ctx, slugName, "error", "exposure", fmt.Sprintf("provider %s permitted, but its route did not open: %v", provider, err), nil)
 		return fmt.Errorf("%w: %s is permitted, but its route did not open (allow this provider again, deploy or restart to retry): %v", ErrProviderNotReady, provider, err)
 	}
@@ -491,6 +527,11 @@ func (s *Service) RetryProviderRoutes(ctx context.Context, mesh, public Provider
 		permitted, err := s.permittedIDs(ctx, f.Slug)
 		if err != nil {
 			continue
+		}
+		// While sign-in is on, a key change opens no public route but Portal (docs/spec/portal-sign-in.md, rule
+		// 10); reapplyExposure checks it again under the lock.
+		if f.SignInProvider != "" {
+			permitted = withoutSignInExcluded(permitted)
 		}
 		p := mesh
 		if !slices.Contains(permitted, mesh) {
@@ -545,8 +586,13 @@ func (s *Service) reapplyExposure(ctx context.Context, f store.Flat, provider Pr
 		if err != nil {
 			return fmt.Errorf("read current routes: %w", err)
 		}
+		// The Portal route carries the stored setting, and while sign-in is on no other public provider serves the
+		// flat, also when a stored grant permits one (docs/spec/portal-sign-in.md, rules 10 and 38).
+		if req.SignIn = s.portalSignIn(ctx, f.Slug); req.SignIn.On() {
+			permitted = withoutSignInExcluded(permitted)
+		}
 		serving := req.Permitted
-		if publicGrant {
+		if publicGrant && slices.Contains(permitted, provider) {
 			serving = append(serving, provider)
 		}
 		for _, ep := range status.Endpoints {
@@ -573,6 +619,14 @@ func (s *Service) reapplyExposure(ctx context.Context, f store.Flat, provider Pr
 				s.Event(ctx, f.Slug, "warn", "exposure", string(provider)+" route opened; another route reported: "+err.Error(), nil)
 			}
 			return nil
+		}
+	}
+	// portal.require_auth refuses the Portal route of a flat without sign-in: that is the answer, not a failure of
+	// the open (docs/spec/portal-require-auth.md, rules 19 and 20). A failure of another provider stays the answer,
+	// so the refusal does not hide it.
+	for _, ep := range res.Endpoints {
+		if ep.Provider == provider && ep.Host == f.Slug && ep.Audience == AudienceCurrent && PortalAuthRefusal(ep) && onlyPortalAuth(err) {
+			return &PortalAuthError{Detail: ep.Detail}
 		}
 	}
 	if err == nil {
@@ -623,10 +677,17 @@ func (s *Service) finishApplying(ctx context.Context, a store.Approval) (store.A
 		if a.Action == "delete_version" {
 			msg = fmt.Sprintf("deleted version %d", receipt.Version)
 		}
+		if a.Action == actionSetSignIn {
+			var err error
+			if msg, err = s.resumeSignIn(ctx, a); err != nil {
+				return a, err
+			}
+		}
 		if err := s.st.FinishApprovalData(ctx, a.ID, "approved", msg, raw, s.now()); err != nil {
 			return a, err
 		}
 		s.agentDecisionEvent(ctx, a, msg)
+		s.notifyApproval(ctx, eventApprovalDecided, "approved", a)
 		return s.st.GetApproval(ctx, a.ID)
 	}
 
@@ -648,6 +709,7 @@ func (s *Service) finishApplying(ctx context.Context, a store.Approval) (store.A
 			return a, err
 		}
 		s.agentDecisionEvent(ctx, a, msg)
+		s.notifyApproval(ctx, eventApprovalDecided, "approved", a)
 		return s.st.GetApproval(ctx, a.ID)
 	}
 	res, err := s.applyApproval(ctx, a)
@@ -679,6 +741,7 @@ func (s *Service) finishApplying(ctx context.Context, a store.Approval) (store.A
 	if a.Action != "delete" || err != nil {
 		s.Event(ctx, a.Flat, "info", "approval", fmt.Sprintf("%s %s by %s: %s", a.Action, status, DeciderText(a.DecidedBy), result), nil)
 	}
+	s.notifyApproval(ctx, eventApprovalDecided, status, a)
 	out, gerr := s.st.GetApproval(ctx, a.ID)
 	if gerr != nil {
 		return out, gerr
@@ -700,7 +763,12 @@ func (s *Service) agentDecisionEvent(ctx context.Context, a store.Approval, msg 
 func (s *Service) applyApproval(ctx context.Context, a store.Approval) (ActionResult, error) {
 	switch a.Action {
 	case "delete":
-		return s.applyDelete(ctx, a.Flat, applyVia(a), a.ID)
+		via := applyVia(a)
+		if via == ViaAutopilot {
+			// The signin.revoke row of the deletion names the agent, as visibility.set does (audit events, rule 5).
+			ctx = WithAuditActor(ctx, DeciderText(a.DecidedBy))
+		}
+		return s.applyDelete(ctx, a.Flat, via, a.ID)
 	case "set_visibility":
 		return s.applyVisibilityApproval(ctx, a)
 	case "publish", "create_version":
@@ -711,6 +779,8 @@ func (s *Service) applyApproval(ctx context.Context, a store.Approval) (ActionRe
 		return s.applyActivateApproval(ctx, a)
 	case "rollback", "restore_data":
 		return s.applyRollbackApproval(ctx, a)
+	case actionSetSignIn:
+		return s.applySignInApproval(ctx, a)
 	default:
 		return ActionResult{}, fmt.Errorf("unknown action %q", a.Action)
 	}
@@ -754,6 +824,9 @@ func (s *Service) applyPublishApproval(ctx context.Context, a store.Approval) (A
 	}
 	if string(f.Visibility.Canonical()) != p.Visibility {
 		return ActionResult{}, mismatch(p.Visibility, string(f.Visibility.Canonical()), "visibility")
+	}
+	if err := signInStale(a.Flat, p.SignInSeq, f); err != nil {
+		return ActionResult{}, err
 	}
 	providers, err := s.providerKey(ctx, a.Flat)
 	if err != nil {
@@ -956,6 +1029,9 @@ func (s *Service) applyActivateApproval(ctx context.Context, a store.Approval) (
 	if string(f.Visibility.Canonical()) != p.Visibility {
 		return ActionResult{}, mismatch(p.Visibility, string(f.Visibility.Canonical()), "visibility")
 	}
+	if err := signInStale(a.Flat, p.SignInSeq, f); err != nil {
+		return ActionResult{}, err
+	}
 	providers, err := s.providerKey(ctx, a.Flat)
 	if err != nil {
 		return ActionResult{}, err
@@ -1006,6 +1082,9 @@ func (s *Service) applyRollbackApproval(ctx context.Context, a store.Approval) (
 	}
 	if string(f.Visibility.Canonical()) != p.Visibility {
 		return ActionResult{}, mismatch(p.Visibility, string(f.Visibility.Canonical()), "visibility")
+	}
+	if err := signInStale(a.Flat, p.SignInSeq, f); err != nil {
+		return ActionResult{}, err
 	}
 	providers, err := s.providerKey(ctx, a.Flat)
 	if err != nil {
@@ -1102,6 +1181,9 @@ func (s *Service) applyVisibilityApproval(ctx context.Context, a store.Approval)
 		return ActionResult{}, fmt.Errorf("%w: %w: the visibility or public access level changed after the request (it was %s, now %s); request a new visibility change",
 			ErrConflict, ErrStaleApproval, visibilityLabel(store.Visibility(p.From), p.FromAccess), visibilityLabel(f.Visibility.Canonical(), f.PublicAccess))
 	}
+	if err := signInStale(a.Flat, p.SignInSeq, f); err != nil {
+		return ActionResult{}, err
+	}
 	if p.FlatID == "" {
 		expected := 0
 		if p.ExpectedLive != nil {
@@ -1160,19 +1242,25 @@ func (s *Service) applyVisibilityApproval(ctx context.Context, a store.Approval)
 		next := f
 		next.Visibility, next.PublicAccess, next.UpdatedAt = target, access, s.now()
 		if f.Visibility.Public() {
-			if err := s.st.CommitVisibility(ctx, next, f, a.ID, raw); err != nil {
+			if err := s.st.CommitVisibility(ctx, next, f, a.ID, raw, s.visibilityAudit(ctx, a)); err != nil {
 				return ActionResult{}, err
 			}
+			s.notifyVisibility(ctx, a, f, next)
 		} else {
+			// Before any route opens: a route of such a provider would serve the flat without a sign-in.
+			if err := s.refuseSignInPublic(ctx, f); err != nil {
+				return ActionResult{}, err
+			}
 			if err := s.publicAvailable(ctx, a.Flat); err != nil {
 				return ActionResult{}, err
 			}
 			if err := s.ensureExposure(ctx, next); err != nil {
 				return ActionResult{}, s.rollbackPublicExposure(ctx, f, err)
 			}
-			if err := s.st.CommitVisibility(ctx, next, f, a.ID, raw); err != nil {
-				return ActionResult{}, s.rollbackPublicExposure(ctx, f, err)
+			if err := s.st.CommitVisibility(ctx, next, f, a.ID, raw, s.visibilityAudit(ctx, a)); err != nil {
+				return ActionResult{}, s.rollbackPublicExposure(ctx, f, signInConflict(a.Flat, err))
 			}
+			s.notifyVisibility(ctx, a, f, next)
 		}
 		next.AccessSeq++
 		note := s.applyLevelLocked(levelCtx, a.Flat, access, next.AccessSeq)
@@ -1189,6 +1277,9 @@ func (s *Service) applyVisibilityApproval(ctx context.Context, a store.Approval)
 		if note != "" {
 			res.Message += "; " + note
 		}
+		if refused := s.portalRefusalNote(ctx, a.Flat); refused != "" {
+			res.Message += "; " + refused
+		}
 		fv := s.view(ctx, next)
 		res.Flat, res.Notice = &fv, fv.PublicNotice
 		return res, nil
@@ -1198,9 +1289,10 @@ func (s *Service) applyVisibilityApproval(ctx context.Context, a store.Approval)
 	}
 	next := f
 	next.Visibility, next.PublicAccess, next.UpdatedAt = store.Private, "", s.now()
-	if err := s.st.CommitVisibility(ctx, next, f, a.ID, raw); err != nil {
+	if err := s.st.CommitVisibility(ctx, next, f, a.ID, raw, s.visibilityAudit(ctx, a)); err != nil {
 		return ActionResult{}, err
 	}
+	s.notifyVisibility(ctx, a, f, next)
 	next.AccessSeq++
 	note := s.applyLevelLocked(ctx, a.Flat, "", next.AccessSeq)
 	s.stopPublicRedirects(a.Flat)
@@ -1297,7 +1389,13 @@ func (s *Service) ensureLifecycle(ctx context.Context, f store.Flat, ln Lifecycl
 	if !f.Visibility.Public() {
 		permitted = privateProviders(permitted)
 	}
+	// Each open of the Portal route carries the stored setting (docs/spec/portal-sign-in.md, rule 38), and while
+	// sign-in is on no other public provider serves the flat (rule 10).
+	var signIn *PortalSignIn
 	if f.Visibility.Public() {
+		if signIn = s.portalSignIn(ctx, f.Slug); signIn.On() {
+			permitted = withoutSignInExcluded(permitted)
+		}
 		res, err := ln.ServeExposure(ctx, ExposureRequest{Slug: f.Slug, Host: f.Slug, Visibility: "private", Audience: AudienceCurrent, Handler: s.siteHandler(f.Slug, false), Permitted: privateProviders(permitted)})
 		if privateRegistrationOpened(res, f.Slug, AudienceCurrent) {
 			lf.privateServed = true
@@ -1315,7 +1413,7 @@ func (s *Service) ensureLifecycle(ctx context.Context, f store.Flat, ln Lifecycl
 	res, err := ln.ServeExposure(ctx, ExposureRequest{
 		Slug: f.Slug, Host: f.Slug, Visibility: string(f.Visibility.Canonical()),
 		Audience: AudienceCurrent, Handler: s.siteHandler(f.Slug, f.Visibility.Public()), PrivateHandler: s.siteHandler(f.Slug, false),
-		Permitted: permitted, Hidden: hidden,
+		Permitted: permitted, Hidden: hidden, SignIn: signIn,
 	})
 	if privateRegistrationOpened(res, f.Slug, AudienceCurrent) {
 		lf.privateServed = true
@@ -1882,7 +1980,7 @@ func (s *Service) CreateVersion(ctx context.Context, flat string, revision int, 
 	if err != nil {
 		return ActionResult{}, err
 	}
-	return s.requestFrozen(ctx, flat, "create_version", publishParams{Revision: d.Revision, Hash: d.Hash, BaseVersion: latest.Number, ExpectedLive: f.LiveVersion, Visibility: string(f.Visibility.Canonical()), Providers: key}, via, "")
+	return s.requestFrozen(ctx, flat, "create_version", publishParams{Revision: d.Revision, Hash: d.Hash, BaseVersion: latest.Number, ExpectedLive: f.LiveVersion, Visibility: string(f.Visibility.Canonical()), Providers: key, SignInSeq: &f.SignInSeq}, via, "")
 }
 
 // SaveDraft is the explicit Draft save facade with optimistic revision checking.

@@ -133,7 +133,7 @@ func TestPublishedSaveResultWithoutPublicLink(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := e.st.SetProviderPermission(t.Context(), "published", "portal", false); err != nil {
+	if _, err := e.st.SetProviderPermission(t.Context(), "published", "portal", false, store.Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	res, out, err := (&tools{svc: e.svc}).saved(t.Context(), "published", files, v, nil, false)

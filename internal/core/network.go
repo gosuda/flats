@@ -27,11 +27,16 @@ func (s *Service) SetNetworkPolicy(ctx context.Context, slugName string, origins
 	if err != nil {
 		return invalidf("%s", err.Error())
 	}
-	if _, err := s.st.GetFlat(ctx, slugName); err != nil {
+	f, err := s.st.GetFlat(ctx, slugName)
+	if err != nil {
 		return err
 	}
-	if err := s.st.SetNetworkPolicy(ctx, slugName, store.NetworkPolicy{Origins: normalized, UpdatedAt: s.now()}); err != nil {
+	changed, err := s.st.SetNetworkPolicy(ctx, slugName, store.NetworkPolicy{Origins: normalized, UpdatedAt: s.now()}, s.audit(ctx, via))
+	if err != nil {
 		return err
+	}
+	if changed {
+		s.notifyOrigins(ctx, f, normalized)
 	}
 	s.Event(ctx, slugName, "info", "network", fmt.Sprintf("network permissions set to %d origins via %s; redeploy to apply", len(normalized), via), nil)
 	return nil

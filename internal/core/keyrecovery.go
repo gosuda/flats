@@ -132,10 +132,13 @@ func (n SealedName) String() string {
 }
 
 // KeyCheck counts the sealed values in flats.db that a key opens, and names
-// those it does not.
+// those it does not. UnopenedKeyIDs lists, sorted, the key IDs that the values
+// that did not open carry, so that a refusal can say which key sealed them
+// (docs/spec/secret-key-rotation.md, rule 9).
 type KeyCheck struct {
-	Opened, Total int
-	Unopened      []SealedName
+	Opened, Total  int
+	Unopened       []SealedName
+	UnopenedKeyIDs []string
 }
 
 // All reports whether the key opens every sealed value.
@@ -157,7 +160,7 @@ func CheckKey(ctx context.Context, st *store.Store, key []byte) (KeyCheck, error
 		return KeyCheck{}, err
 	}
 	var c KeyCheck
-	try := func(name SealedName, nonce, ciphertext, aad []byte) {
+	try := func(name SealedName, keyID string, nonce, ciphertext, aad []byte) {
 		c.Total++
 		// Open panics on a nonce of the wrong size; a damaged row opens nothing.
 		if len(nonce) == g.NonceSize() {
@@ -167,15 +170,19 @@ func CheckKey(ctx context.Context, st *store.Store, key []byte) (KeyCheck, error
 			}
 		}
 		c.Unopened = append(c.Unopened, name)
+		if keyID != "" && !slices.Contains(c.UnopenedKeyIDs, keyID) {
+			c.UnopenedKeyIDs = append(c.UnopenedKeyIDs, keyID)
+		}
 	}
 	for _, s := range secs {
-		try(SealedName{s.Flat, s.Name}, s.Nonce, s.Ciphertext, []byte(s.Name))
+		try(SealedName{s.Flat, s.Name}, s.KeyID, s.Nonce, s.Ciphertext, []byte(s.Name))
 	}
 	for _, k := range keys {
 		if k.HasValue() {
-			try(SealedName{Name: k.ID}, k.Nonce, k.Ciphertext, hostKeyAAD(k.ID))
+			try(SealedName{Name: k.ID}, k.KeyID, k.Nonce, k.Ciphertext, hostKeyAAD(k.ID))
 		}
 	}
+	slices.Sort(c.UnopenedKeyIDs)
 	return c, nil
 }
 
@@ -184,12 +191,28 @@ func CheckKey(ctx context.Context, st *store.Store, key []byte) (KeyCheck, error
 // a copy was there. A crash between the two leaves an ID that does not match,
 // which the next start reports, never one that matches an older copy.
 func WriteKeyCopy(dataDir string, data, key []byte) (replaced bool, err error) {
+	if replaced, err = WriteKeyCopyFile(dataDir, data); err != nil {
+		return false, err
+	}
+	return replaced, WriteKeyCopyID(dataDir, key)
+}
+
+// WriteKeyCopyFile is the first write of WriteKeyCopy: it writes data, a recovery copy, to dataDir, replacing an
+// older file, and reports whether a copy was there. A caller that must say which of the two writes failed makes
+// them in two calls, this one first (docs/spec/secret-key-rotation.md, rule 20).
+func WriteKeyCopyFile(dataDir string, data []byte) (replaced bool, err error) {
 	_, err = os.Lstat(filepath.Join(dataDir, RecoveryKeyFile))
 	replaced = err == nil
 	if err := replaceFile(dataDir, RecoveryKeyFile, data); err != nil {
 		return false, err
 	}
-	return replaced, replaceFile(dataDir, RecoveryKeyIDFile, []byte(KeyID(key)+"\n"))
+	return replaced, nil
+}
+
+// WriteKeyCopyID is the second write of WriteKeyCopy: it writes the ID of key, the key in the recovery copy, beside
+// the copy, replacing an older ID file.
+func WriteKeyCopyID(dataDir string, key []byte) error {
+	return replaceFile(dataDir, RecoveryKeyIDFile, []byte(KeyID(key)+"\n"))
 }
 
 // replaceFile writes data to dir/name through a synced temporary file.

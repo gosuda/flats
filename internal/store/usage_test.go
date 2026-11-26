@@ -152,7 +152,7 @@ func TestUsageOfDeletedFlatIsDiscarded(t *testing.T) {
 	if ok, err := s.AddUsage(ctx, old.ID, []UsageDay{{Day: "2026-10-18", C2xx: 9}}); err != nil || !ok {
 		t.Fatal(ok, err)
 	}
-	if err := s.DeleteFlat(ctx, "blog"); err != nil {
+	if err := s.DeleteFlat(ctx, "blog", Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	var n int

@@ -4,27 +4,116 @@ on:
   push:
     branches: [main]
   pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 # A newer push to the same pull request replaces its running checks.
 concurrency:
-  group: ci-${{ github.event.pull_request.number || github.sha }}
+  group: ci-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('{0}-{1}', github.event_name, github.run_id) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
+  changes:
+    if: github.event_name == 'pull_request'
+    runs-on: depot-ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      full: ${{ steps.select.outputs.full }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 2
+          persist-credentials: false
+      - name: Select checks from the tested merge
+        id: select
+        env:
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          # A moved base skews the merge ref. Select the full set then, never
+          # fail: a red selector would skip every gate on this pull request.
+          # A partial write already ends in full=false, and for duplicate keys
+          # the last line wins, so the fallback always governs.
+          python3 scripts/ci-changes.py || {
+            echo "::notice::check selection fell back to full CI"
+            echo "full=true" >>"$GITHUB_OUTPUT"
+          }
+
+  # Builds the gate binaries of scripts/lifecycle-gate.sh --prepare-only, which
+  # include the pinned legacy adapter and the tagged crash adapter, on every
+  # pull request that the changes job selects as full. Not a required check.
+  legacy-build:
+    needs: changes
+    if: ${{ !cancelled() && github.event_name == 'pull_request' && (needs.changes.result != 'success' || needs.changes.outputs.full != 'false') }}
+    runs-on: depot-ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Fetch the pinned legacy revision
+        run: |
+          git fetch --no-tags --depth=1 origin 29edc2a6e13e27867603a23ff5b1b5a8d1b84df0
+          test "$(git cat-file -t 29edc2a6e13e27867603a23ff5b1b5a8d1b84df0)" = commit
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        id: go
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Locate Go caches
+        id: cache-paths
+        run: |
+          echo "mod=$(go env GOMODCACHE)" >>"$GITHUB_OUTPUT"
+          echo "build=$(go env GOCACHE)" >>"$GITHUB_OUTPUT"
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ steps.cache-paths.outputs.mod }}
+          key: go-mod-v2-${{ runner.os }}-root-${{ hashFiles('go.mod', 'go.sum') }}
+          restore-keys: |
+            go-mod-v2-${{ runner.os }}-root-
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        with:
+          path: ${{ steps.cache-paths.outputs.build }}
+          key: go-build-v2-${{ runner.os }}-${{ runner.arch }}-go${{ steps.go.outputs.go-version }}-test-other-root--${{ hashFiles('go.mod', 'go.sum') }}--read-only
+          restore-keys: |
+            go-build-v2-${{ runner.os }}-${{ runner.arch }}-go${{ steps.go.outputs.go-version }}-test-other-root--${{ hashFiles('go.mod', 'go.sum') }}--
+            go-build-v2-${{ runner.os }}-${{ runner.arch }}-go${{ steps.go.outputs.go-version }}-test-other-root--
+      - name: Build the gate binaries
+        run: |
+          mkdir -p "$HOME/lcg"
+          TMPDIR="$HOME/lcg" scripts/lifecycle-gate.sh --prepare-only
+
+  docs:
+    needs: changes
+    if: ${{ !cancelled() && needs.changes.result == 'success' && needs.changes.outputs.full == 'false' }}
+    runs-on: depot-ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: ./.github/actions/setup-go
+        with:
+          cache-key: test-other
+          save-build: "false"
+      - name: Documentation links, compilation and contracts
+        run: make docs-verify
+
+  # Main always runs the full suite, even though its changes job is skipped.
+  # Job-level conditions keep CI visible for spec/research-only pull requests.
   docs-web:
-    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.result != 'success' || needs.changes.outputs.full != 'false') }}
+    runs-on: depot-ubuntu-24.04
     timeout-minutes: 10
     defaults:
       run:
         working-directory: internal/apps/docs/_web
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 22
+          node-version: 26
           cache: npm
           cache-dependency-path: internal/apps/docs/_web/package-lock.json
       - run: npm ci
@@ -35,6 +124,8 @@ jobs:
   # budget tests (listed first) still have the runner to themselves.
   test:
     name: test (${{ matrix.lane }})
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.result != 'success' || needs.changes.outputs.full != 'false') }}
     strategy:
       fail-fast: false
       matrix:
@@ -51,10 +142,10 @@ jobs:
             shards: board
           - lane: other
             shards: other
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/setup-go
         with:
           cache-key: test-${{ matrix.lane }}
@@ -75,6 +166,8 @@ jobs:
         run: |
           python3 -B -m unittest discover -s scripts -p 'test_ci_*.py'
           python3 -B -m unittest discover -s scripts -p test_image_commits.py
+          git fetch --no-tags --depth=1 origin 29edc2a6e13e27867603a23ff5b1b5a8d1b84df0
+          python3 -B -m unittest discover -s internal/lifecyclecheck -p test_harness.py
       # Uncached, unlike TestRepositoryDocs: go test cannot see every Git
       # index change that adds or removes a link target.
       - name: Documentation links
@@ -93,10 +186,12 @@ jobs:
   # NetBird is a separate module (./netbird) because its client needs replace
   # directives; go test ./... above does not reach it.
   netbird:
-    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.result != 'success' || needs.changes.outputs.full != 'false') }}
+    runs-on: depot-ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/setup-go
         with:
           # A cohort of its own since the job also builds the darwin/amd64
@@ -131,41 +226,33 @@ jobs:
             exit 1
           fi
 
-  # The race tests in parallel lanes; see scripts/ci-race.sh.
+  # Main/manual verification retains every race lane on one runner.
   race:
-    name: race (${{ matrix.lane }})
-    strategy:
-      fail-fast: false
-      matrix:
-        lane: [core-1, core-2, services, notebook-1, notebook-2, board-1, board-2]
-        # The two lanes of a package compile it alike: one cache per package,
-        # written only by its -1 lane.
-        include:
-          - {lane: core-1, cache: core}
-          - {lane: core-2, cache: core}
-          - {lane: services, cache: services}
-          - {lane: notebook-1, cache: notebook}
-          - {lane: notebook-2, cache: notebook}
-          - {lane: board-1, cache: board}
-          - {lane: board-2, cache: board}
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    needs: changes
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+    runs-on: depot-ubuntu-24.04
+    timeout-minutes: 150
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/setup-go
         with:
-          cache-key: race-${{ matrix.cache }}
-          save-build: ${{ !endsWith(matrix.lane, '-2') }}
-          # The lanes used to share one race job.
+          cache-key: race-all
           restore-fallback: race
       - name: Races
-        run: scripts/ci-race.sh "${{ matrix.lane }}"
+        run: |
+          failed=0
+          for lane in core-1 core-2 services notebook-1 notebook-2 board-1 board-2; do
+            scripts/ci-race.sh "$lane" || failed=1
+          done
+          exit "$failed"
 
   notebook-memory:
-    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ !cancelled() && github.event_name != 'pull_request' }}
+    runs-on: depot-ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/setup-go
         with:
           cache-key: test-notebook-memory
@@ -178,54 +265,55 @@ jobs:
           done
           exit "$failed"
 
-  # Native Windows: the test suite, the service install smoke and its release
-  # archive. The job runs as an administrator, so it cannot show that the
-  # install needs no administrator rights: docs/release.md has that manual check.
-  # It leaves out the docs-budget shard, whose wall-clock budgets belong to the
-  # Linux shard, and internal/devreview, whose run command is Unix only.
+  # Native Windows builds its own archive. Tests and service smoke remain
+  # independent, and Linux failures cannot suppress the native regressions.
   windows:
-    runs-on: windows-latest
-    timeout-minutes: 75
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.result != 'success' || needs.changes.outputs.full != 'false') }}
+    runs-on: depot-windows-2025
+    timeout-minutes: 20
     defaults:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/setup-go
+        id: setup
         with:
           cache-key: windows
           module-scope: netbird
           save-modules: "true"
-      - name: Build release archive
+      - name: Build this attempt's Windows release archive
         id: archive
-        run: FLATS_RELEASE_TARGETS=windows/amd64 scripts/build-release.sh v0.0.0-ci "$RUNNER_TEMP/dist"
-      - name: Tests
-        # Verbose: the log keeps the skips and the timing lines of this job.
-        # The test data goes to the runner's temporary drive. About 11 minutes
-        # after a hosted runner boots, its system drive is read for about 45 s.
-        # A flush there then takes seconds, and a document test that writes
-        # meets the request limit (docs/gates.md). The step prints the boot
-        # time, so that a later stall can be compared with it.
-        # internal/site runs first, with the default temp directory: one of
-        # its tests needs the short (8.3) names of the system drive, and the
-        # temporary drive keeps none. It runs with -count=1, so that the test
-        # runs on this runner and is not a result from the test cache.
-        run: |
-          failed=0
-          go test -v -count=1 ./internal/site || failed=1
-          mkdir -p "$RUNNER_TEMP/test-tmp"
-          TMP=$(cygpath -w "$RUNNER_TEMP/test-tmp")
-          TEMP=$TMP
-          export TMP TEMP
-          booted=$(pwsh -NoProfile -Command "(Get-CimInstance Win32_OperatingSystem).LastBootUpTime.ToUniversalTime().ToString('yyyy-MM-dd HH:mm:ss')" | tr -d '\r\n') || booted=unknown
-          echo "the runner booted at $booted UTC, it is $(date -u '+%Y-%m-%d %H:%M:%S') UTC, and the test data is below $TEMP"
-          for shard in runtime-soak runtime-codec runtime docs-soak docs board; do
-            scripts/ci-test.sh "$shard" -v -timeout 30m || failed=1
-          done
-          # shellcheck disable=SC2046 # one argument per package path.
-          go test -v -timeout 30m $(go list ./... | grep -v -E 'internal/(runtime|apps/docs|board|devreview)') || failed=1
-          exit "$failed"
-      # Runs after a failed test step too: the two answer different questions.
+        run: FLATS_RELEASE_TARGETS="windows/amd64" scripts/build-release.sh v0.0.0-ci "$RUNNER_TEMP/dist"
+      - name: Native path regressions on the system drive
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        # Short-name tests require the system drive's default temp directory.
+        run: go test -v -count=1 ./internal/site
+      - name: Native configuration regressions
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        env:
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
+        run: go test -v -count=1 ./internal/config
+      - name: Native open-file storage regressions
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        env:
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
+        run: go test -v -count=1 ./internal/core -run '^(TestDeleteWithAnOpenFileKeepsItsSlugReserved|TestRenameWithAnOpenFileRestartsTheStoppedWorker)$'
+      - name: Native backup junction regression
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        env:
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
+        run: go test -v -count=1 ./internal/backup -run '^TestAJunctionIsSkippedAndNotEntered$'
+      - name: Back up and restore a running Windows host
+        if: ${{ !cancelled() && steps.setup.outcome == 'success' }}
+        env:
+          TMP: ${{ runner.temp }}
+          TEMP: ${{ runner.temp }}
+        run: go test -v -count=1 ./internal/app -run '^TestBackupOfARunningHostRestoresToAWorkingHost$'
       - name: Install, crash, stop and uninstall the service
         if: ${{ !cancelled() && steps.archive.outcome == 'success' }}
         shell: pwsh
@@ -233,11 +321,14 @@ jobs:
 
   # Native macOS: launchd service install smoke and its release archive.
   # The Linux install smoke runs in the container job, on its archives.
+  # Apple silicon supplies the darwin/arm64 service proof.
   install-macos:
-    runs-on: macos-latest
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.result != 'success' || needs.changes.outputs.full != 'false') }}
+    runs-on: depot-macos-latest
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/setup-go
         with:
           cache-key: install-script
@@ -262,15 +353,17 @@ jobs:
         run: scripts/install-smoke.sh "$RUNNER_TEMP/dist" v0.0.0-ci
 
   container:
-    runs-on: ubuntu-latest
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.result != 'success' || needs.changes.outputs.full != 'false') }}
+    runs-on: depot-ubuntu-24.04
     timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: ./.github/actions/setup-go
         with:
           cache-key: container
           module-scope: netbird
-      - name: Build Linux release archives
+      - name: Build release archives
         run: FLATS_RELEASE_TARGETS="linux/amd64 linux/arm64" scripts/build-release.sh v0.0.0-ci dist
       - name: Lint
         run: |
@@ -294,7 +387,7 @@ jobs:
       # install.sh picks the linux/amd64 archive of this job's build.
       - name: Install, upgrade, crash and uninstall the service
         run: scripts/install-smoke.sh dist v0.0.0-ci
-      - uses: docker/setup-buildx-action@v3
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - name: Build the image for every release platform
         run: docker buildx build --platform linux/amd64,linux/arm64 .
       - name: Build the image for this runner

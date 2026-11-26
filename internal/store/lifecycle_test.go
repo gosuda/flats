@@ -192,7 +192,7 @@ func TestExplicitLegacyTailscaleUpgradeDoesNotInventPublicPermissions(t *testing
 			t.Fatal(err)
 		}
 	}
-	if err := s.SetProviderPermission(t.Context(), "denied", ProviderTailscale, false); err != nil {
+	if _, err := s.SetProviderPermission(t.Context(), "denied", ProviderTailscale, false, Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.db.Exec(`PRAGMA user_version=1`); err != nil {
@@ -221,7 +221,7 @@ func TestExplicitLegacyTailscaleUpgradeDoesNotInventPublicPermissions(t *testing
 			}
 		}
 	}
-	if err := s.SetProviderPermission(t.Context(), "legacy", ProviderTailscale, false); err != nil {
+	if _, err := s.SetProviderPermission(t.Context(), "legacy", ProviderTailscale, false, Audit{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.PreserveLegacyTailscale(t.Context()); err != nil {

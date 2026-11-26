@@ -22,6 +22,16 @@ resolved addresses must pass validation; connections use pinned addresses and
 the original TLS hostname. Ambient proxy settings are ignored. Redirects
 default to an error; `redirect: "manual"` returns the response without following.
 
+An **injected secret** is bound to one exact HTTPS origin and one header name
+(`list_secrets` shows its `inject` binding). It is not in `env`: the host adds
+that header with the value to each `fetch` to that origin, also from a WebSocket
+callback, and to no other origin. Call `fetch` there without the header. A call
+that supplies the bound header to the bound origin fails with "outbound header
+<Name> is set by the host for this origin". The binding gives no network
+access: the origin also needs a grant. An origin that copies request headers
+into its response gives the value to your code, so never return or log such a
+response.
+
 Limits: **8 KiB URL**, **16 KiB supplied request headers**, **1 MiB request
 body**, **16 KiB response headers** and **4 MiB response body**. Supplied
 request headers allow at most **128 header names** and **128 values per name**;

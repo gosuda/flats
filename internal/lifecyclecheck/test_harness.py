@@ -1,13 +1,14 @@
 """Regression checks for the review's concrete gate false-pass classes."""
 import os
 import socket
+import sqlite3
 from pathlib import Path
 import subprocess
 import tempfile
 import unittest
 from unittest.mock import patch
 
-from gate import Host, accepted, data_impact, failed, mcp_payload, reserve_ports, source_identity
+from gate import Host, accepted, data_impact, failed, mcp_payload, reserve_ports, source_identity, version_rows
 
 
 class HarnessChecks(unittest.TestCase):
@@ -162,6 +163,72 @@ class HarnessChecks(unittest.TestCase):
                 host.proc.wait(timeout=5)
                 with self.assertRaises(AssertionError):
                     host.stop()
+
+
+class StoreSnapshotChecks(unittest.TestCase):
+    def setUp(self):
+        folder = tempfile.TemporaryDirectory()
+        self.addCleanup(folder.cleanup)
+        self.host = Host("unused", folder.name)
+        self.host.data.mkdir()
+        # The live server keeps one writer connection open in WAL mode.
+        self.writer = sqlite3.connect(self.host.data / "flats.db")
+        self.addCleanup(self.writer.close)
+        self.writer.execute("PRAGMA journal_mode=WAL")
+        self.writer.execute("CREATE TABLE versions (flat TEXT NOT NULL, number INTEGER NOT NULL, "
+                            "hash TEXT NOT NULL, published INTEGER NOT NULL DEFAULT 0, "
+                            "pruned INTEGER NOT NULL DEFAULT 0, PRIMARY KEY (flat, number))")
+        self.writer.execute("CREATE TABLE version_numbers (flat TEXT NOT NULL, number INTEGER NOT NULL, "
+                            "PRIMARY KEY (flat, number))")
+        self.write("INSERT INTO versions (flat, number, hash, published) VALUES ('boundary-notebook', 1, 'h1', 1)")
+        self.write("INSERT INTO version_numbers VALUES ('boundary-notebook', 1)")
+
+    def write(self, sql):
+        self.writer.execute(sql)
+        self.writer.commit()
+
+    def test_equal_snapshots_pass_and_read_the_slug(self):
+        before = version_rows(self.host, "boundary-notebook")
+        self.assertEqual(before["versions"], [(1, "h1", 1, 0)])
+        self.assertEqual(before["version_numbers"], [(1,)])
+        self.assertEqual(version_rows(self.host, "boundary-notebook"), before)
+        self.write("INSERT INTO versions (flat, number, hash, published) VALUES ('other-flat', 1, 'x', 1)")
+        self.write("INSERT INTO version_numbers VALUES ('other-flat', 1)")
+        self.assertEqual(version_rows(self.host, "boundary-notebook"), before)
+
+    def test_inserted_row_makes_the_snapshots_differ(self):
+        before = version_rows(self.host, "boundary-notebook")
+        self.write("INSERT INTO versions (flat, number, hash, published) VALUES ('boundary-notebook', 2, 'h2', 1)")
+        self.assertNotEqual(version_rows(self.host, "boundary-notebook"), before)
+
+    def test_a_version_numbers_row_alone_makes_the_snapshots_differ(self):
+        before = version_rows(self.host, "boundary-notebook")
+        self.write("INSERT INTO version_numbers VALUES ('boundary-notebook', 2)")
+        after = version_rows(self.host, "boundary-notebook")
+        self.assertEqual(after["versions"], before["versions"])
+        self.assertEqual(after["version_numbers"], [(1,), (2,)])
+        self.assertNotEqual(after, before)
+
+    def test_missing_store_file_raises(self):
+        with tempfile.TemporaryDirectory() as folder:
+            with self.assertRaises(AssertionError):
+                version_rows(Host("unused", folder), "boundary-notebook")
+
+    def test_missing_table_raises(self):
+        with tempfile.TemporaryDirectory() as folder:
+            host = Host("unused", folder)
+            host.data.mkdir()
+            db = sqlite3.connect(host.data / "flats.db")
+            db.execute("CREATE TABLE versions (flat TEXT, number INTEGER, hash TEXT, published INTEGER, pruned INTEGER)")
+            db.commit()
+            db.close()
+            with self.assertRaises(AssertionError):
+                version_rows(host, "boundary-notebook")
+
+    def test_locked_store_raises(self):
+        with patch("gate.sqlite3.connect", side_effect=sqlite3.OperationalError("database is locked")):
+            with self.assertRaisesRegex(AssertionError, "database is locked"):
+                version_rows(self.host, "boundary-notebook")
 
 
 if __name__ == "__main__":

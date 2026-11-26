@@ -15,8 +15,9 @@ const redacted = "[redacted]"
 
 // newRedactor returns a function that removes every value of env, and common
 // encodings of it, from output a flat's code produced (runtime logs, worker
-// stderr, health check bodies). Secrets reach a flat only through env, so
-// these are exactly the values its output can leak.
+// stderr, health check bodies). A readable secret reaches a flat through env,
+// and an injected one can come back from an origin that copies request headers,
+// so the redactor gets the values of both kinds.
 
 func newRedactor(env map[string]string) func(string) string {
 	seen := map[string]bool{}

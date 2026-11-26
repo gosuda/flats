@@ -179,6 +179,34 @@ export const ACCESS = {
 };
 export const accessLabel = (vis, access) => ACCESS[accessKey(vis, access)].label;
 
+// signInOf is the Portal sign-in of a flat while it is on: the member
+// sign_in of the flat view, which the host leaves out while sign-in is off
+// (docs/spec/portal-sign-in.md, rule 57). It is null otherwise.
+export const signInOf = (f) => (f && f.sign_in && f.sign_in.provider ? f.sign_in : null);
+
+// SIGN_IN_BADGE follows the level of a Public flat with sign-in on (rule 62).
+const SIGN_IN_BADGE = ' · Sign-in';
+
+// accessLabelOf is the level of a flat as the console names it, with the
+// sign-in of a Public flat.
+export function accessLabelOf(f) {
+  const key = accessOf(f);
+  return ACCESS[key].label + (key !== 'private' && signInOf(f) ? SIGN_IN_BADGE : '');
+}
+
+// guestsOf names who can edit a flat that guests can edit: anyone on the
+// internet, or anyone who passes its sign-in (rule 61).
+export const guestsOf = (f) => (signInOf(f) ? 'anyone who passes its sign-in' : 'anyone on the internet');
+
+// signInAccessDesc describes a Public level of a flat with sign-in on, in
+// the Share dialog; words are the publicEditOf words of a flat that has the
+// levels view and edit.
+export function signInAccessDesc(value, words) {
+  if (value === 'edit') return 'Visitors who pass its sign-in can edit and delete. They type a name first.';
+  if (value === 'view') return `Visitors who pass its sign-in can ${words.watch} live. Only your networks edit.`;
+  return 'Only the visitors that its sign-in allows, on its Portal address';
+}
+
 // Notice shown before making a flat public; the API returns the same text
 // afterwards. console_test.go checks it matches internal/core.
 export const PUBLIC_ACCESS_NOTICE = 'This flat is public: anyone on the internet can open it. A domain or URL is not what makes it public.';
@@ -186,8 +214,19 @@ export const PUBLIC_ACCESS_NOTICE = 'This flat is public: anyone on the internet
 // BECOMING_PUBLIC_NOTICE warns before a flat is made public; the flat is not
 // public yet, so it must not say that it is.
 export const BECOMING_PUBLIC_NOTICE = 'Once public, anyone on the internet can open this flat. A domain or URL is not what makes it public.';
-export function becomingNoticeFor(vis) {
-  return visibilityOf(vis) === 'public' ? BECOMING_PUBLIC_NOTICE : '';
+
+// The notices of a flat with Portal sign-in on (rule 61), as internal/core
+// words them; console_test.go checks that they match. A flat view carries
+// its own public_notice, which wins over these copies.
+export const SIGN_IN_PUBLIC_NOTICE = 'This flat is public on its Portal address behind sign-in: only the visitors that its sign-in allows can open it there. Its private routes, the console and MCP are not behind sign-in.';
+export const PENDING_SIGN_IN_PUBLIC_NOTICE = 'If approved, this flat becomes public on its Portal address behind sign-in: only the visitors that its sign-in allows can open it there. Its private routes, the console and MCP are not behind sign-in.';
+export const SIGN_IN_EDIT_NOTICE = 'Visitors who sign in can edit it as guests.';
+
+// becomingNoticeFor is the warning before flat f becomes vis: '' unless
+// that is Public, and the sign-in notice while f has sign-in on.
+export function becomingNoticeFor(vis, f) {
+  if (visibilityOf(vis) !== 'public') return '';
+  return signInOf(f) ? PENDING_SIGN_IN_PUBLIC_NOTICE : BECOMING_PUBLIC_NOTICE;
 }
 
 // NETWORK_LABELS names every provider ID for people.
@@ -244,16 +283,22 @@ export function linkTargets(f) {
 // ('' when it has none). Every public URL in the console carries one.
 export function publicNoticeOf(f) {
   if (!publicURL(f)) return '';
-  return f.public_notice || PUBLIC_ACCESS_NOTICE;
+  return f.public_notice || (signInOf(f) ? SIGN_IN_PUBLIC_NOTICE : PUBLIC_ACCESS_NOTICE);
 }
 
 // visibilityBadge never shows an editable board or document as plain
-// Public (rule 34).
-export function visibilityBadge(vis, access) {
+// Public (rule 34). With signIn a Public level reads "Public · Sign-in"
+// (docs/spec/portal-sign-in.md, rule 62); Private stays Private.
+export function visibilityBadge(vis, access, signIn) {
   const key = accessKey(vis, access);
   const v = ACCESS[key];
-  return h('span', { class: 'vis vis-' + visibilityOf(vis) + (key === 'edit' ? ' vis-edit' : '') }, icon(v.icon), h('span', { text: v.label }));
+  const gated = !!signIn && key !== 'private';
+  return h('span', { class: 'vis vis-' + visibilityOf(vis) + (key === 'edit' ? ' vis-edit' : '') + (gated ? ' vis-signin' : '') },
+    icon(v.icon), h('span', { text: gated ? v.label + SIGN_IN_BADGE : v.label }));
 }
+
+// flatBadge is the visibility badge of a flat, with its sign-in.
+export const flatBadge = (f) => visibilityBadge(f.visibility, f.public_access, signInOf(f));
 
 
 export function shortHash(s, n = 12) {

@@ -82,7 +82,7 @@ func newAddressHost(t *testing.T, backend string, permitted []string, grants ...
 		t.Fatal(err)
 	}
 	for _, p := range grants {
-		if err := st.SetProviderPermission(t.Context(), "site", p, true); err != nil {
+		if _, err := st.SetProviderPermission(t.Context(), "site", p, true, store.Audit{}); err != nil {
 			t.Fatal(err)
 		}
 	}
