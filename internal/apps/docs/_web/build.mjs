@@ -42,10 +42,39 @@ await writeFile(
   out + "/mermaid-asset.js",
   `'use strict';\n\nexport default ${JSON.stringify(mermaidJS)};\nexport const gzip = ${JSON.stringify(mermaidGzip.toString("base64"))};\n`,
 );
+const docsDOMReader = {
+  // A native line join removes the following DOM line before CodeMirror
+  // updates its tile. The old tile's breakAfter must not add a final newline.
+  name: "docs-dom-reader",
+  setup(b) {
+    b.onLoad(
+      { filter: /node_modules[\\/]@codemirror[\\/]view[\\/]dist[\\/]index\.js$/ },
+      async ({ path: file }) => {
+        const source = await readFile(file, "utf8");
+        const reader =
+          "constructor(points, view) {\n        this.points = points;";
+        const boundary =
+          "tile ? tile.breakAfter : isBlockElement(cur) && !isEmptyToEnd(cur, end)";
+        if (source.split(reader).length !== 2 || source.split(boundary).length !== 3)
+          throw new Error("CodeMirror DOM reader line boundary changed");
+        return {
+          contents: source
+            .replace(reader, reader + "\n        this.contentDOM = view.contentDOM;")
+            .replaceAll(
+              boundary,
+              "tile ? tile.breakAfter && (cur.nextSibling || cur.parentNode != this.contentDOM) : isBlockElement(cur) && !isEmptyToEnd(cur, end)",
+            ),
+          loader: "js",
+        };
+      },
+    );
+  },
+};
 const client = await build({
   ...options,
   define: mermaidDefine,
   entryPoints: ["src/client.js"],
+  plugins: [docsDOMReader],
   outfile: "client.js",
   write: false,
   platform: "browser",
