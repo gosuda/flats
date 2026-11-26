@@ -25,7 +25,7 @@ require (
 	golang.org/x/time v0.16.0
 	modernc.org/libc v1.80.1
 	modernc.org/sqlite v1.63.0
-	tailscale.com v1.106.0
+	tailscale.com v1.106.1
 )
 
 require (

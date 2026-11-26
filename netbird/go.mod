@@ -273,7 +273,7 @@ require (
 	modernc.org/memory v1.12.1 // indirect
 	modernc.org/sqlite v1.63.0 // indirect
 	nhooyr.io/websocket v1.8.17 // indirect
-	tailscale.com v1.106.0 // indirect
+	tailscale.com v1.106.1 // indirect
 	zombiezen.com/go/capnproto2 v2.18.0+incompatible // indirect
 )
 

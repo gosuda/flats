@@ -291,59 +291,90 @@ class JobSelectionTests(unittest.TestCase):
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         jobs = workflow.split("\njobs:\n", 1)[1]
         names = re.findall(r"^  ([a-z][a-z0-9-]*):$", jobs, re.M)
-        # The selector itself, the documentation-only check, and the image
-        # publication of main, which follows the test jobs.
-        own_condition = {"changes", "docs", "commit-images"}
+        # The selector itself, the documentation-only check, the legacy build
+        # of pull requests (whose condition the test below covers) and the
+        # image publication of main, which follows the test jobs.
+        own_condition = {"changes", "docs", "legacy-build", "commit-images"}
         self.assertTrue(own_condition <= set(names))
-        full = "if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') }}"
+        full = ("if: ${{ !cancelled() && (github.event_name != 'pull_request' || "
+                "needs.changes.result != 'success' || needs.changes.outputs.full != 'false') }}")
+        # The race lanes and the large memory tests run on main and manual dispatch only.
+        main_only = {"race", "notebook-memory"}
+        main_only_condition = "if: ${{ !cancelled() && github.event_name != 'pull_request' }}"
         for name, body in zip(names, re.split(r"^  [a-z][a-z0-9-]*:$", jobs, flags=re.M)[1:]):
             if name in own_condition:
                 continue
             with self.subTest(job=name):
                 header = body.split("\n    steps:\n", 1)[0]
                 self.assertIn("\n    needs: changes\n", header)
-                self.assertIn("\n    " + full + "\n", header)
+                self.assertIn("\n    " + (main_only_condition if name in main_only else full) + "\n", header)
 
 
 class WindowsPackageTests(unittest.TestCase):
-    def test_pretested_packages_are_excluded_without_losing_siblings(self) -> None:
+    def test_windows_keeps_native_regressions_and_running_host_backup(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()
         job = workflow.split("\n  windows:\n", 1)[1].split("\n  install-macos:\n", 1)[0]
-        self.assertIn("go test -v -count=1 ./internal/site || failed=1", job)
-        match = re.search(r"go list ./\.\.\. \| grep -v -E '([^']+)'", job)
-        self.assertIsNotNone(match)
-        assert match is not None
-        excluded = (
-            "runtime",
-            "apps/docs",
-            "site",
-            "board",
-            "board/engine",
-            "devreview",
-            "devreview/cmd/devreview",
-        )
-        retained = (
-            "runtimex",
-            "runtime/child",
-            "apps/docsx",
-            "apps/docs/child",
-            "sitex",
-            "site/child",
-            "boardx",
-            "devreviewx",
-            "core",
-        )
-        prefix = "github.com/gosuda/flats/internal/"
-        result = subprocess.run(
-            ["grep", "-v", "-E", match.group(1)],
-            input="\n".join(prefix + path for path in (*excluded, *retained)) + "\n",
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        self.assertEqual(
-            result.stdout.splitlines(), [prefix + path for path in retained]
-        )
+        self.assertIn("go test -v -count=1 ./internal/site", job)
+        self.assertIn("go test -v -count=1 ./internal/config", job)
+        commands = dict(re.findall(
+            r"go test -v -count=1 \./internal/(\w+) -run '([^']+)'", job
+        ))
+        for package in ("core", "backup"):
+            functions = {
+                name
+                for path in (ROOT / "internal" / package).glob("*_windows_test.go")
+                for name in re.findall(r"^func (Test\w+)\(", path.read_text(), re.M)
+            }
+            self.assertTrue(functions, package)
+            for name in functions:
+                with self.subTest(package=package, test=name):
+                    self.assertIsNotNone(re.fullmatch(commands[package], name))
+        self.assertIsNotNone(re.fullmatch(
+            commands["app"], "TestBackupOfARunningHostRestoresToAWorkingHost"
+        ))
+        self.assertNotIn("scripts/ci-test.sh", job)
+        self.assertNotIn("go list ./...", job)
+
+    def test_windows_builds_its_archive_in_the_same_attempt(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        container = workflow.split("\n  container:\n", 1)[1].split("\n  commit-images:\n", 1)[0]
+        windows = workflow.split("\n  windows:\n", 1)[1].split("\n  install-macos:\n", 1)[0]
+        self.assertNotIn("windows/amd64", container)
+        self.assertIn('FLATS_RELEASE_TARGETS="windows/amd64"', windows)
+        self.assertIn('scripts/build-release.sh v0.0.0-ci "$RUNNER_TEMP/dist"', windows)
+        self.assertNotIn("download-artifact", windows)
+        self.assertNotIn("github.run_attempt", windows)
+
+    def test_windows_results_do_not_depend_on_linux_or_each_other(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        windows = workflow.split("\n  windows:\n", 1)[1].split("\n  install-macos:\n", 1)[0]
+        self.assertIn("needs: changes", windows)
+        self.assertNotIn("needs.container", windows)
+        self.assertNotIn("needs.netbird", windows)
+        self.assertEqual(windows.count("!cancelled() && steps.setup.outcome == 'success'"), 5)
+        self.assertIn("!cancelled() && steps.archive.outcome == 'success'", windows)
+
+    def test_only_successful_explicit_prose_selection_skips_full_pr_ci(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        for job_name in ("legacy-build", "docs-web", "test", "netbird", "windows", "install-macos", "container"):
+            match = re.search(rf"(?ms)^  {job_name}:\n.*?(?=^  [\w-]+:\n|\Z)", workflow)
+            assert match is not None
+            condition = re.search(r"^    if: (.+)$", match.group(), re.M)
+            assert condition is not None
+            self.assertIn("!cancelled()", condition.group())
+            self.assertIn("needs.changes.result != 'success'", condition.group())
+            self.assertIn("needs.changes.outputs.full != 'false'", condition.group())
+        docs = workflow.split("\n  docs:\n", 1)[1].split("\n  docs-web:\n", 1)[0]
+        self.assertIn("needs.changes.result == 'success'", docs)
+        self.assertIn("needs.changes.outputs.full == 'false'", docs)
+
+    def test_main_and_manual_runs_never_replace_each_others_publication(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        group = re.search(r"^  group: (.+)$", workflow, re.M)
+        assert group is not None
+        self.assertIn("github.event_name == 'pull_request'", group.group())
+        self.assertIn("format('pr-{0}', github.event.pull_request.number)", group.group())
+        self.assertIn("format('{0}-{1}', github.event_name, github.run_id)", group.group())
 
 
 if __name__ == "__main__":

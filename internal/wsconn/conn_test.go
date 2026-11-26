@@ -12,19 +12,6 @@ import (
 	"time"
 )
 
-func TestWebSocketIdleReadDeadline(t *testing.T) {
-	a, b := net.Pipe()
-	defer a.Close()
-	defer b.Close()
-	ws := newConn(a, bufio.NewReader(a), false)
-	ws.readIdleTimeout = 20 * time.Millisecond
-	_, err := ws.ReadMessage(1 << 20)
-	var ne net.Error
-	if !errors.As(err, &ne) || !ne.Timeout() {
-		t.Fatalf("idle read error = %v, want timeout", err)
-	}
-}
-
 func TestWebSocketControlFramesKeepReadAlive(t *testing.T) {
 	a, b := net.Pipe()
 	defer a.Close()

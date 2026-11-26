@@ -21,7 +21,7 @@ import uuid
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def run(*args):
+def run(*args: str) -> str:
     return subprocess.check_output(args, text=True, stderr=subprocess.STDOUT).strip()
 
 

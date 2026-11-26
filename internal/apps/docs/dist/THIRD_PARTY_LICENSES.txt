@@ -868,7 +868,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 
-===== @codemirror/commands 6.11.1 (MIT) =====
+===== @codemirror/commands 6.11.2 (MIT) =====
 MIT License
 
 Copyright (C) 2018-2021 by Marijn Haverbeke <marijn@haverbeke.berlin> and others
@@ -1060,7 +1060,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 
-===== @codemirror/view 6.43.15 (MIT) =====
+===== @codemirror/view 6.44.0 (MIT) =====
 MIT License
 
 Copyright (C) 2018-2021 by Marijn Haverbeke <marijn@haverbeke.berlin> and others
@@ -1251,7 +1251,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 
-===== @lezer/markdown 1.8.1 (MIT) =====
+===== @lezer/markdown 1.8.2 (MIT) =====
 MIT License
 
 Copyright (C) 2020 by Marijn Haverbeke <marijn@haverbeke.berlin> and others

@@ -2,6 +2,9 @@
 // held in memory by one Instance per sheet, durable in sheet.db, calculated
 // by the formula package and served to browsers over a WebSocket and to
 // agents through Read and Update.
+//
+// The "section N" and "rule N" citations in this package refer to
+// docs/spec/sheet-as-built-technical-design.md and docs/spec/sheet-as-built.md.
 package sheet
 
 import (

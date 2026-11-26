@@ -30,7 +30,7 @@ inputs:
 runs:
   using: composite
   steps:
-    - uses: actions/setup-go@v5
+    - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
       with:
         go-version-file: go.mod
         cache: false
@@ -44,14 +44,14 @@ runs:
 
     # Go validates cache freshness (these are trusted main caches).
     - if: steps.go.outputs.save == 'true' && inputs.save-modules == 'true'
-      uses: actions/cache@v4
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
       with:
         path: ${{ steps.go.outputs.mod }}
         key: go-mod-v2-${{ runner.os }}-${{ inputs.module-scope }}-${{ steps.go.outputs.hash }}
         restore-keys: |
           go-mod-v2-${{ runner.os }}-${{ inputs.module-scope }}-
     - if: steps.go.outputs.save != 'true' || inputs.save-modules != 'true'
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
       with:
         path: ${{ steps.go.outputs.mod }}
         key: go-mod-v2-${{ runner.os }}-${{ inputs.module-scope }}-${{ steps.go.outputs.hash }}
@@ -59,7 +59,7 @@ runs:
           go-mod-v2-${{ runner.os }}-${{ inputs.module-scope }}-
 
     - if: steps.go.outputs.save == 'true' && inputs.save-build == 'true'
-      uses: actions/cache@v4
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
       with:
         path: ${{ steps.go.outputs.build }}
         key: go-build-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.toolchain }}-${{ inputs.cache-key }}-${{ inputs.module-scope }}--${{ steps.go.outputs.hash }}--${{ steps.go.outputs.week }}
@@ -68,7 +68,7 @@ runs:
           go-build-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.toolchain }}-${{ inputs.cache-key }}-${{ inputs.module-scope }}--
           ${{ inputs.restore-fallback && format('go-build-v2-{0}-{1}-{2}-{3}-{4}--', runner.os, runner.arch, steps.go.outputs.toolchain, inputs.restore-fallback, inputs.module-scope) || '' }}
     - if: steps.go.outputs.save != 'true' || inputs.save-build != 'true'
-      uses: actions/cache/restore@v4
+      uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
       with:
         path: ${{ steps.go.outputs.build }}
         key: go-build-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.go.outputs.toolchain }}-${{ inputs.cache-key }}-${{ inputs.module-scope }}--${{ steps.go.outputs.hash }}--${{ steps.go.outputs.week }}

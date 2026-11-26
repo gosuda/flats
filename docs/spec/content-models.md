@@ -233,7 +233,7 @@ These rules apply to the version, revision and pin quotas alike.
 | design | Revision | implemented |
 | board | Revision | implemented |
 | notebook | Revision | partly implemented ([notebook.md](notebook.md)) |
-| sheet | Revision | partly implemented ([sheet.md](sheet.md)) |
+| sheet | Revision | partly implemented ([sheet-as-built.md](sheet-as-built.md)) |
 
 A flat keeps its first save's type, so its model never changes.
 
