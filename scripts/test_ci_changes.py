@@ -305,6 +305,12 @@ class WindowsPackageTests(unittest.TestCase):
         self.assertIn(f"name: {upload.group(1)}", windows)
         self.assertIn("if-no-files-found: error", container)
 
+    def test_windows_waits_for_the_container_build(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        windows = workflow.split("\n  windows:\n", 1)[1].split("\n  install-macos:\n", 1)[0]
+        self.assertIn("needs: [changes, container]", windows)
+        self.assertIn("needs.container.result == 'success'", windows)
+
 
 if __name__ == "__main__":
     unittest.main()
