@@ -291,8 +291,11 @@ jobs:
   # as an administrator, so it cannot show that the install needs no
   # administrator rights: docs/release.md has that manual check.
   windows:
-    needs: changes
-    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') }}
+    # The archive comes from the container job, so this job waits for it;
+    # a failed or skipped container build skips this job instead of failing
+    # the download.
+    needs: [changes, container]
+    if: ${{ !cancelled() && (github.event_name == 'push' || needs.changes.outputs.full == 'true') && needs.container.result == 'success' }}
     runs-on: depot-windows-2025
     timeout-minutes: 20
     defaults:
