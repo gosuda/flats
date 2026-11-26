@@ -11,13 +11,17 @@ even when all cases pass, so a green run is not acceptance.
         python3 -B scripts/ci-lifecycle-gate.py [--gate PATH]
 """
 
+from __future__ import annotations
+
 import argparse
 import json
 import os
 import re
 import subprocess
 import sys
+from collections.abc import Iterator, Mapping
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 GATE_SCRIPT = ROOT / "scripts" / "lifecycle-gate.sh"
@@ -36,14 +40,14 @@ LOCAL_LANE = "actual-binary-local"
 ADAPTER_LANE = "production-provider-manager"
 
 
-def expected_cases():
+def expected_cases() -> dict[str, str]:
     """Each case ID the gate defines, mapped to the lane that must run it."""
     cases = {name: LOCAL_LANE for name, _ in gate.LOCAL_CASES}
     cases.update({name: ADAPTER_LANE for name, _ in gate.ADAPTER_CASES})
     return cases
 
 
-def verdict(report, process_exit, cases):
+def verdict(report: dict[str, Any], process_exit: int | None, cases: dict[str, str]) -> list[str]:
     """Return the problems with an acceptance report; an empty list passes.
 
     cases maps each expected case ID to its lane.
@@ -94,7 +98,7 @@ def verdict(report, process_exit, cases):
     return problems
 
 
-def protected_values(environ, canary):
+def protected_values(environ: Mapping[str, str], canary: str) -> dict[str, set[str]]:
     """Each protected value, mapped to the names of the variables that hold it."""
     names = {canary: {CANARY_NAME}}
     for name, value in environ.items():
@@ -103,12 +107,12 @@ def protected_values(environ, canary):
     return names
 
 
-def is_single(value):
+def is_single(value: str) -> bool:
     """True when the value holds no line break."""
     return value.splitlines() == [value]
 
 
-def crosses_break(value, joined, cuts):
+def crosses_break(value: str, joined: str, cuts: list[int]) -> bool:
     """True when the value occurs in the joined lines across a line break."""
     start = joined.find(value)
     while start != -1:
@@ -118,12 +122,12 @@ def crosses_break(value, joined, cuts):
     return False
 
 
-def normalize_breaks(text):
+def normalize_breaks(text: str) -> str:
     """The text with each CR LF and each bare CR read as LF."""
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
-def scan(text, values):
+def scan(text: str, values: list[str]) -> tuple[str, int, list[str]]:
     """Withhold each line that holds a protected value, and find the values the text holds.
 
     Return the text with the withheld lines replaced, the number of withheld
@@ -158,7 +162,7 @@ def scan(text, values):
     return "".join(kept), withheld, matched
 
 
-def json_strings(value):
+def json_strings(value: Any) -> Iterator[Any]:
     if isinstance(value, str):
         yield value
     elif isinstance(value, dict):
@@ -170,7 +174,7 @@ def json_strings(value):
             yield from json_strings(item)
 
 
-def evidence_matches(report, text, values):
+def evidence_matches(report: dict[str, Any] | None, text: str | None, values: list[str]) -> list[str]:
     """The protected values the evidence holds: its strings if it parses, else its raw text."""
     if report is not None:
         texts = list(json_strings(report))
@@ -179,7 +183,7 @@ def evidence_matches(report, text, values):
     return [value for value in values if any(value in item for item in texts)]
 
 
-def decode(output):
+def decode(output: bytes | str | None) -> str:
     if output is None:
         return ""
     if isinstance(output, bytes):
@@ -187,7 +191,7 @@ def decode(output):
     return output
 
 
-def run_gate(gate_path, timeout):
+def run_gate(gate_path: str, timeout: int) -> tuple[str, int | None, str | None]:
     """Run the gate. Return its output, its exit code and a reason if it did not finish."""
     try:
         done = subprocess.run(
@@ -203,11 +207,11 @@ def run_gate(gate_path, timeout):
     return decode(done.stdout), done.returncode, None
 
 
-def evidence_dirs(temp):
+def evidence_dirs(temp: Path) -> set[str]:
     return {path.name for path in temp.glob("flats-lifecycle-gate.*") if path.is_dir()}
 
 
-def read_evidence(temp, before, reasons):
+def read_evidence(temp: Path, before: set[str], reasons: list[str]) -> tuple[dict[str, Any] | None, str | None]:
     """Return the report of the one new gate directory and its raw text, or None with a reason."""
     new = sorted(evidence_dirs(temp) - before)
     if len(new) != 1:
@@ -233,7 +237,7 @@ def read_evidence(temp, before, reasons):
     return report, text
 
 
-def summary_text(report):
+def summary_text(report: dict[str, Any] | None) -> str:
     if report is None:
         return ""
     rows = report.get("cases")
@@ -247,7 +251,7 @@ def summary_text(report):
     return "\n".join(lines)
 
 
-def conclude(reasons, summary, summary_path, values):
+def conclude(reasons: list[str], summary: str, summary_path: str | None, values: list[str]) -> int:
     """Write the step summary, print the verdict and return the exit code."""
     passed = not reasons
     line = PASS_LINE if passed else "FAIL: " + "; ".join(reasons)
@@ -260,7 +264,7 @@ def conclude(reasons, summary, summary_path, values):
     return 0 if passed else 1
 
 
-def main(argv=None, timeout=GATE_TIMEOUT_SECONDS):
+def main(argv: list[str] | None = None, timeout: int = GATE_TIMEOUT_SECONDS) -> int:
     parser = argparse.ArgumentParser(description="Run the lifecycle gate and decide the CI verdict.")
     parser.add_argument("--gate", default=str(GATE_SCRIPT), help="gate executable to run")
     args = parser.parse_args(argv)
