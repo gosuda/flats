@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -19,10 +20,9 @@ const readerHeapCeiling = 4 << 20
 
 // measureReaderHeap reports the transient sampled heap growth of one whole
 // read and, after a final collection, the heap the read still retains. The
-// transient peak serves the ceiling check; growth comparisons must use the
-// retained figure, because the mid-read collection below fires only for
-// fixtures that cross the ceiling and transient peaks otherwise mix
-// collected and uncollected regimes.
+// transient peak serves the ceiling check. Growth comparisons use a separate
+// measureReaderLiveHeap read, because these transient samples mix collected
+// and uncollected regimes and the final retained figure misses capture buffers.
 func measureReaderHeap(t *testing.T, in *Instance, query []byte) ([]byte, uint64, uint64, error) {
 	t.Helper()
 	oldGC := debug.SetGCPercent(20)
@@ -70,8 +70,8 @@ func measureReaderHeap(t *testing.T, in *Instance, query []byte) ([]byte, uint64
 	sample()
 	close(stop)
 	<-joined
-	// Collect once more so every fixture in a growth comparison reports what
-	// the read retains instead of what garbage it happened to hold.
+	// Collect once more for the post-return retention diagnostic, excluding
+	// garbage the read no longer holds.
 	runtime.GC()
 	var after runtime.MemStats
 	runtime.ReadMemStats(&after)
@@ -80,6 +80,64 @@ func measureReaderHeap(t *testing.T, in *Instance, query []byte) ([]byte, uint64
 		retained = after.HeapAlloc - before.HeapAlloc
 	}
 	return body, peak.Load() - before.HeapAlloc, retained, err
+}
+
+// measureReaderLiveHeap samples collected live heap throughout a fresh read.
+// The ticker covers preparation before output; writes add bounded checkpoints.
+func measureReaderLiveHeap(t *testing.T, in *Instance, query []byte) ([]byte, uint64, error) {
+	t.Helper()
+	oldGC := debug.SetGCPercent(20)
+	defer debug.SetGCPercent(oldGC)
+	// A second collection releases pool victims left by fixture construction.
+	runtime.GC()
+	runtime.GC()
+	var before runtime.MemStats
+	runtime.ReadMemStats(&before)
+	t.Logf("collected live-heap baseline=%d", before.HeapAlloc)
+	peak := before.HeapAlloc
+	var mu sync.Mutex
+	sample := func() {
+		mu.Lock()
+		defer mu.Unlock()
+		runtime.GC()
+		var stats runtime.MemStats
+		runtime.ReadMemStats(&stats)
+		peak = max(peak, stats.HeapAlloc)
+	}
+	var written atomic.Uint64
+	in.spills.wrapWriter = func(out io.Writer) io.Writer {
+		return readerWriteFunc(func(p []byte) (int, error) {
+			after := written.Add(uint64(len(p)))
+			before := after - uint64(len(p))
+			if before == 0 || before/(64<<10) != after/(64<<10) {
+				sample()
+			}
+			return out.Write(p)
+		})
+	}
+	defer func() { in.spills.wrapWriter = nil }()
+	stop, joined := make(chan struct{}), make(chan struct{})
+	var periodic int
+	go func() {
+		defer close(joined)
+		ticker := time.NewTicker(2 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				sample()
+				periodic++
+			}
+		}
+	}()
+	body, err := in.Read(t.Context(), query, false)
+	sample()
+	close(stop)
+	<-joined
+	t.Logf("collected live-heap periodic samples=%d", periodic)
+	return body, peak - before.HeapAlloc, err
 }
 
 func readerQueryFixture(t *testing.T) (writerFixture, WriteResult) {

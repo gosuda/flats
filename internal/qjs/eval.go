@@ -12,7 +12,7 @@ func evalPreamble(c *Context, op, file string, flags ...EvalOptionFunc) (*EvalOp
 		return nil, 0, err
 	}
 
-	return option, option.Handle(), nil
+	return option, option.CreateHandle(), nil
 }
 
 func load(c *Context, file string, flags ...EvalOptionFunc) (*Value, error) {
