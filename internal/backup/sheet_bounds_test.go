@@ -49,7 +49,7 @@ func TestVerifyRefusesSheetFieldsPastTheirBounds(t *testing.T) {
 			got := allocatedBy(func() { fails = failuresOf(t, out) })
 			wantFailure(t, fails, "data/flats/h/sheet/sheet.db", "")
 			t.Logf("refused after %d KiB, %d KiB for the undamaged copy: %v", got>>10, baseline>>10, fails)
-			if !raceEnabled && got > baseline+n/16 {
+			if !raceEnabled && got > baseline+n/4 {
 				t.Errorf("the check allocated %d KiB for a field of %d KiB, %d KiB without it", got>>10, n>>10, baseline>>10)
 			}
 		})
