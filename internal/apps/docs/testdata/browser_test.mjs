@@ -67,6 +67,107 @@ async function open(name, options = {}) {
 try {
   a = await open("Alice");
   b = await open("Bora");
+  const beforeBackspace = await editorText(a);
+  const lineJoins = [
+    { name: "last line", input: "alpha\nbeta", caret: 6, expected: "alphabeta" },
+    { name: "middle line", input: "alpha\nbeta\ngamma", caret: 6, expected: "alphabeta\ngamma" },
+    { name: "retained final newline", input: "alpha\nbeta\n", caret: 6, expected: "alphabeta\n" },
+    { name: "empty first line", input: "\nbeta", caret: 1, expected: "beta" },
+    { name: "empty final line", input: "alpha\n", caret: 6, expected: "alpha" },
+    { name: "empty middle line", input: "alpha\n\nbeta", caret: 7, expected: "alpha\nbeta" },
+    { name: "character at end", input: "alphabeta", caret: 9, expected: "alphabet" },
+    { name: "character within line", input: "alpha\nbeta", caret: 8, expected: "alpha\nbta" },
+    { name: "Unicode line", input: "alpha\nβeta", caret: 6, expected: "alphaβeta" },
+    {
+      name: "trailing diagram widget",
+      input: "```mermaid\nflowchart TD\nA --> B\n````",
+      caret: 36,
+      expected: "```mermaid\nflowchart TD\nA --> B\n```",
+      diagramWidget: true,
+    },
+  ];
+  for (const { name, input, caret, expected, diagramWidget } of lineJoins) {
+    for (const operation of ["keyboard", "native"]) {
+      await a.locator(".cm-content").evaluate((el, { input, caret }) => {
+        const view = el.cmTile.root.view;
+        view.dispatch({
+          changes: { from: 0, to: view.state.doc.length, insert: input },
+          selection: { anchor: caret },
+        });
+        view.focus();
+      }, { input, caret });
+      await wait(
+        async () => (await editorText(a)) === input &&
+          (await editorText(b)) === input &&
+          (await a.locator("#status").innerText()) === "Saved" &&
+          (await b.locator("#status").innerText()) === "Saved",
+        name + ": initial text did not converge",
+      );
+      if (diagramWidget) {
+        await wait(
+          async () => a.locator(".cm-content").evaluate((el) => {
+            const view = el.cmTile.root.view;
+            const finalLine = view.state.doc.line(view.state.doc.lines);
+            const line = [...el.children].find((child) =>
+              child.classList.contains("cm-line") &&
+              view.posAtDOM(child, 0) === finalLine.from,
+            );
+            const widget = line?.nextSibling;
+            return line?.textContent === finalLine.text &&
+              widget instanceof HTMLElement &&
+              widget.matches('.cm-diagram-widget[data-active="true"]') &&
+              widget.querySelector("svg") !== null;
+          }),
+          name + ": rendered widget did not follow the final source line",
+        );
+        console.log("PASS: trailing diagram widget", operation);
+      }
+      if (operation === "keyboard") {
+        await a.keyboard.press("Backspace");
+      } else {
+        const executed = await a.locator(".cm-content").evaluate((el) => {
+          el.flatsBackspaceInput = null;
+          el.addEventListener("input", (event) => {
+            el.flatsBackspaceInput = {
+              type: event.inputType,
+              trusted: event.isTrusted,
+            };
+          }, { once: true });
+          return document.execCommand("delete");
+        });
+        assert.equal(executed, true, name + ": native delete did not execute");
+      }
+      await wait(
+        async () => (await editorText(a)) !== input &&
+          (await editorText(a)) === (await editorText(b)) &&
+          (await a.locator("#status").innerText()) === "Saved" &&
+          (await b.locator("#status").innerText()) === "Saved",
+        name + ": deletion did not converge and save",
+      );
+      assert.equal(await editorText(a), expected, name + ": " + operation);
+      assert.equal(await editorText(b), expected, name + ": remote text");
+      if (operation === "native") {
+        const event = await a.locator(".cm-content").evaluate((el) => {
+          const input = el.flatsBackspaceInput;
+          delete el.flatsBackspaceInput;
+          return input;
+        });
+        assert.deepEqual(event, { type: "deleteContentBackward", trusted: true });
+      }
+      console.log("PASS: backward deletion", name, operation);
+    }
+  }
+  await a.locator(".cm-content").evaluate((el, text) => {
+    const view = el.cmTile.root.view;
+    view.dispatch({ changes: { from: 0, to: view.state.doc.length, insert: text } });
+  }, beforeBackspace);
+  await wait(
+    async () => (await editorText(a)) === beforeBackspace &&
+      (await editorText(b)) === beforeBackspace &&
+      (await a.locator("#status").innerText()) === "Saved" &&
+      (await b.locator("#status").innerText()) === "Saved",
+    "restored text did not converge",
+  );
   await Promise.all([
     a.locator(".cm-content").click(),
     b.locator(".cm-content").click(),
@@ -293,12 +394,10 @@ try {
     await publicPage.locator("#page footer.powered a").getAttribute("href"),
     "https://github.com/gosuda/flats",
   );
-  await wait(
-    async () =>
-      /^[A-Z][a-z]+ [A-Z][a-z]+$/m.test(
-        await publicPage.locator("#presence").innerText(),
-      ),
-    "random name was not assigned",
+  assert.equal(
+    await publicPage.locator("#presence").innerText(),
+    "",
+    "public viewer received editor presence",
   );
   await b.locator(".cm-content").focus();
   await b.keyboard.press("ControlOrMeta+End");
