@@ -270,7 +270,12 @@ func TestDatabaseAdmissionCopiesCannotInheritExcess(t *testing.T) {
 			case "views":
 				limits.ViewsPerDatabase = 0
 			case "database_bytes":
-				limits.DatabaseBytes = usage[usageKey{Owner: f.database.ID, Metric: metric}] - 1
+				// The copy's rows get new ids and can share content buckets that the
+				// original's rows do not; each row after the first in a bucket costs one
+				// byte less. With all its rows in one bucket the copy still measures
+				// usage - buckets + 1, so this limit refuses it for every id assignment.
+				buckets := map[string]bool{contentBucket(f.first.ID): true, contentBucket(f.second.ID): true}
+				limits.DatabaseBytes = usage[usageKey{Owner: f.database.ID, Metric: metric}] - int64(len(buckets))
 			case "page_bytes":
 				limits.PageBytes = usage[usageKey{Owner: page, Metric: metric}]
 			}
