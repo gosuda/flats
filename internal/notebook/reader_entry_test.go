@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"runtime/debug"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -17,7 +18,12 @@ import (
 // readerHeapCeiling bounds the sampled heap growth of one whole read.
 const readerHeapCeiling = 4 << 20
 
-func measureReaderHeap(t *testing.T, in *Instance, query []byte) ([]byte, uint64, error) {
+// measureReaderHeap reports the transient sampled heap growth of one whole
+// read and, after a final collection, the heap the read still retains. The
+// transient peak serves the ceiling check. Growth comparisons use a separate
+// measureReaderLiveHeap read, because these transient samples mix collected
+// and uncollected regimes and the final retained figure misses capture buffers.
+func measureReaderHeap(t *testing.T, in *Instance, query []byte) ([]byte, uint64, uint64, error) {
 	t.Helper()
 	oldGC := debug.SetGCPercent(20)
 	defer debug.SetGCPercent(oldGC)
@@ -64,7 +70,82 @@ func measureReaderHeap(t *testing.T, in *Instance, query []byte) ([]byte, uint64
 	sample()
 	close(stop)
 	<-joined
-	return body, peak.Load() - before.HeapAlloc, err
+	// Collect once more for the post-return retention diagnostic, excluding
+	// garbage the read no longer holds.
+	runtime.GC()
+	var after runtime.MemStats
+	runtime.ReadMemStats(&after)
+	var retained uint64
+	if after.HeapAlloc > before.HeapAlloc {
+		retained = after.HeapAlloc - before.HeapAlloc
+	}
+	return body, peak.Load() - before.HeapAlloc, retained, err
+}
+
+// measureReaderLiveHeap samples collected live heap throughout a fresh read.
+// The ticker covers preparation before output; writes add bounded checkpoints.
+// It also reports the post-collection baseline the growth is measured from,
+// so callers can tell retained heap (baseline shift across reads) apart from
+// transient in-read peaks.
+func measureReaderLiveHeap(t *testing.T, in *Instance, query []byte) ([]byte, uint64, uint64, error) {
+	t.Helper()
+	oldGC := debug.SetGCPercent(20)
+	defer debug.SetGCPercent(oldGC)
+	before := settledReaderHeap()
+	t.Logf("collected live-heap baseline=%d", before)
+	peak := before
+	var mu sync.Mutex
+	sample := func() {
+		mu.Lock()
+		defer mu.Unlock()
+		runtime.GC()
+		var stats runtime.MemStats
+		runtime.ReadMemStats(&stats)
+		peak = max(peak, stats.HeapAlloc)
+	}
+	var written atomic.Uint64
+	in.spills.wrapWriter = func(out io.Writer) io.Writer {
+		return readerWriteFunc(func(p []byte) (int, error) {
+			after := written.Add(uint64(len(p)))
+			before := after - uint64(len(p))
+			if before == 0 || before/(64<<10) != after/(64<<10) {
+				sample()
+			}
+			return out.Write(p)
+		})
+	}
+	defer func() { in.spills.wrapWriter = nil }()
+	stop, joined := make(chan struct{}), make(chan struct{})
+	var periodic int
+	go func() {
+		defer close(joined)
+		ticker := time.NewTicker(2 * time.Millisecond)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-stop:
+				return
+			case <-ticker.C:
+				sample()
+				periodic++
+			}
+		}
+	}()
+	body, err := in.Read(t.Context(), query, false)
+	sample()
+	close(stop)
+	<-joined
+	t.Logf("collected live-heap periodic samples=%d", periodic)
+	return body, peak - before, before, err
+}
+
+// settledReaderHeap uses a second collection to release pool victims.
+func settledReaderHeap() uint64 {
+	runtime.GC()
+	runtime.GC()
+	var stats runtime.MemStats
+	runtime.ReadMemStats(&stats)
+	return stats.HeapAlloc
 }
 
 func readerQueryFixture(t *testing.T) (writerFixture, WriteResult) {
@@ -118,7 +199,7 @@ func TestReaderSelectionPreparationMemory(t *testing.T) {
 						t.Fatal(err)
 					}
 					raw, _ := json.Marshal(query)
-					body, peak, err := measureReaderHeap(t, f.in, raw)
+					body, peak, _, err := measureReaderHeap(t, f.in, raw)
 					if err != nil {
 						t.Fatal(err)
 					}
@@ -247,7 +328,7 @@ func TestReaderCollectionQueryMemory(t *testing.T) {
 						query["filter"] = []Filter{{Property: Target{Ref: &property}, Op: Contains, Value: json.RawMessage(fmt.Sprintf(`{"id":%q,"inc":%q}`, created.Refs["first"].Ref.ID, fmt.Sprint(created.Refs["first"].Ref.Inc)))}}
 					}
 					raw, _ := json.Marshal(query)
-					body, peak, err := measureReaderHeap(t, f.in, raw)
+					body, peak, _, err := measureReaderHeap(t, f.in, raw)
 					if err != nil {
 						t.Fatal(err)
 					}

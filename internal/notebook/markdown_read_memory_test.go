@@ -6,11 +6,23 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
 	"time"
 	"unicode/utf8"
+)
+
+// collectedAttempts is the number of collected live-heap samples per payload
+// size: one cold read to warm allocator and page caches, then two warmed
+// samples whose steadier reading feeds the growth comparison.
+// collectedGrowthBudget bounds both the cross-size growth comparison and the
+// per-size post-GC baseline shift: one yardstick for transient growth and
+// retained heap alike.
+const (
+	collectedAttempts     = 3
+	collectedGrowthBudget = 1 << 20
 )
 
 func TestMarkdownRetainedMemory(t *testing.T) {
@@ -27,8 +39,24 @@ func TestMarkdownRetainedMemory(t *testing.T) {
 			}
 			// Whole-read heap samples and the growth comparison must stay sequential.
 			schemaPeaks := map[int]uint64{}
+			type memoryCase struct {
+				size      int
+				collected bool
+			}
+			cases := make([]memoryCase, 0, len(sizes)+2)
 			for _, size := range sizes {
-				t.Run(fmt.Sprintf("%gMiB", float64(size)/(1<<20)), func(t *testing.T) {
+				cases = append(cases, memoryCase{size: size})
+			}
+			if kind == "option_schema" && !large {
+				cases = append(cases, memoryCase{size: 1 << 20, collected: true}, memoryCase{size: 16 << 20, collected: true})
+			}
+			for _, test := range cases {
+				size := test.size
+				name := fmt.Sprintf("%gMiB", float64(size)/(1<<20))
+				if test.collected {
+					name += "_live"
+				}
+				t.Run(name, func(t *testing.T) {
 					started := time.Now()
 					f, created := readerQueryFixture(t)
 					database := created.Refs["db"].Ref
@@ -140,15 +168,31 @@ func TestMarkdownRetainedMemory(t *testing.T) {
 					}
 					fixtureElapsed := time.Since(started)
 					readStart := time.Now()
-					body, peak, err := measureReaderHeap(t, f.in, raw)
-					t.Logf("retained=%d sampled whole-read heap growth=%d response=%d fixture=%s read=%s", size, peak, len(body), fixtureElapsed, time.Since(readStart))
+					var body []byte
+					if test.collected {
+						// Keep the selected measured response outside the Go
+						// heap until all three reads have contributed to retention.
+						responsePath := filepath.Join(t.TempDir(), "response.json")
+						peak, firstBaseline := measureMarkdownLiveReads(t, f.in, raw, responsePath)
+						lastBaseline := settledReaderHeap()
+						shift := collectedRetentionShift(firstBaseline, lastBaseline)
+						t.Logf("retained=%d collected live-heap baseline shift=%d first=%d last=%d", size, shift, firstBaseline, lastBaseline)
+						if shift > collectedGrowthBudget {
+							t.Errorf("Markdown read retained %s for %d MiB payload: post-GC live heap rose %d bytes across %d collected reads, exceeds 1 MiB", kind, size>>20, shift, collectedAttempts)
+						}
+						body, err = os.ReadFile(responsePath)
+						schemaPeaks[size] = peak
+						t.Logf("retained=%d sampled collected live-heap growth=%d response=%d fixture=%s read=%s", size, peak, len(body), fixtureElapsed, time.Since(readStart))
+					} else {
+						var peak, retained uint64
+						body, peak, retained, err = measureReaderHeap(t, f.in, raw)
+						t.Logf("retained=%d sampled whole-read heap growth=%d retained-heap=%d response=%d fixture=%s read=%s", size, peak, retained, len(body), fixtureElapsed, time.Since(readStart))
+						if peak > readerHeapCeiling {
+							t.Errorf("Markdown read materialized retained %s: %d bytes exceeds 4 MiB", kind, peak)
+						}
+					}
 					if err != nil {
 						t.Fatal(err)
-					}
-					if peak > readerHeapCeiling {
-						t.Errorf("Markdown read materialized retained %s: %d bytes exceeds 4 MiB", kind, peak)
-					} else if kind == "option_schema" && !large && (size == 1<<20 || size == 16<<20) {
-						schemaPeaks[size] = peak
 					}
 					// Delivery and its assertions are outside the whole-entry heap sample.
 					text, refs, warnings := continueMarkdownRead(t, f.in, body)
@@ -190,16 +234,71 @@ func TestMarkdownRetainedMemory(t *testing.T) {
 				t.Run("bounded_growth", func(t *testing.T) {
 					for _, size := range []int{1 << 20, 16 << 20} {
 						if _, ok := schemaPeaks[size]; !ok {
-							t.Fatalf("option-schema heap sample unavailable for %d MiB; run both size cases with this comparison", size>>20)
+							t.Fatalf("option-schema live-heap sample unavailable for %d MiB; run both live cases with this comparison", size>>20)
 						}
 					}
 					small, large := schemaPeaks[1<<20], schemaPeaks[16<<20]
 					delta := int64(large) - int64(small)
-					t.Logf("option-schema heap growth: 1 MiB=%d 16 MiB=%d delta=%d", small, large, delta)
-					if delta > 1<<20 {
+					t.Logf("option-schema collected live-heap growth: 1 MiB=%d 16 MiB=%d delta=%d", small, large, delta)
+					if delta > collectedGrowthBudget {
 						t.Errorf("Markdown read materialized retained option schema: heap growth increased by %d bytes from 1 to 16 MiB, exceeds 1 MiB", delta)
 					}
 				})
+			}
+		})
+	}
+}
+
+// measureMarkdownLiveReads keeps response slices within this frame so the
+// caller's final heap sample excludes them. The file preserves the response
+// from the smallest sampled peak for the continuation assertions.
+func measureMarkdownLiveReads(t *testing.T, in *Instance, query []byte, responsePath string) (peak, firstBaseline uint64) {
+	t.Helper()
+	for attempt := 0; attempt < collectedAttempts; attempt++ {
+		body, sample, baseline, err := measureReaderLiveHeap(t, in, query)
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("collected live-heap sample %d/%d growth=%d baseline=%d", attempt+1, collectedAttempts, sample, baseline)
+		if attempt == 0 || sample < peak {
+			peak = sample
+			if err := os.WriteFile(responsePath, body, 0600); err != nil {
+				t.Fatalf("store measured Markdown response: %v", err)
+			}
+		}
+		if attempt == 0 {
+			firstBaseline = baseline
+		}
+	}
+	return peak, firstBaseline
+}
+
+// collectedRetentionShift reports the positive change in settled Go heap
+// across the measured reads. Unrelated heap movement can affect the result.
+func collectedRetentionShift(first, last uint64) uint64 {
+	if last < first {
+		return 0
+	}
+	return last - first
+}
+
+func TestCollectedRetentionShift(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		first, last uint64
+		want        uint64
+		overBudget  bool
+	}{
+		{"steady", 3000000, 3000000, 0, false},
+		{"released", 3000000, 2900000, 0, false},
+		{"small drift", 3000000, 3100000, 100000, false},
+		{"retained over budget", 3000000, 3000000 + 2<<20, 2 << 20, true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if shift := collectedRetentionShift(test.first, test.last); shift != test.want {
+				t.Fatalf("shift(%d, %d) = %d, want %d", test.first, test.last, shift, test.want)
+			} else if over := shift > collectedGrowthBudget; over != test.overBudget {
+				t.Fatalf("shift %d over budget = %t, want %t", shift, over, test.overBudget)
 			}
 		})
 	}

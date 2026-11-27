@@ -100,13 +100,23 @@ lane, close to `go test`'s default of 10 minutes. `notebook-1` runs the
 runs the rest. The slowest subtests of the services lane
 (`TestEveryMCPToolPreservesPendingApproval`, `TestHistoryAdapterTraversal`
 and the metrics host tests) each build their own host, so they run in
-parallel. The default Markdown retained-memory test covers all six payload kinds at 1 MiB and keeps the option-schema cases
-at 1.5 and 16 MiB as well. Its default-only `bounded_growth` subtest permits
-at most 1 MiB more sampled heap at 16 MiB than at 1 MiB, in addition to the
-unchanged 4 MiB ceiling for each read. This rejects retaining every option id
-even when the absolute ceiling alone would pass. Run the full
-`option_schema` parent to include both measurements and their comparison;
-individual size subtests still run independently. The
+parallel. The default Markdown retained-memory test covers all six payload kinds
+at 1 MiB and keeps the option-schema cases at 1.5 and 16 MiB as well. These
+whole-read cases retain their 4 MiB ceiling. The default option-schema group
+also runs fresh `1MiB_live` and `16MiB_live` reads. Each live read samples heap
+after collection throughout capture, on a periodic timer and at bounded output
+checkpoints. Its default-only `bounded_growth` subtest permits at most 1 MiB
+more peak collected live heap at 16 MiB than at 1 MiB. Each size uses three
+sequential samples and compares settled heap before the first read with settled
+heap after the third. That per-size increase is also limited to 1 MiB. The test
+stores its selected response in a temporary file until the final sample, then
+reloads it for the continuation assertions. These measurements cover Go heap;
+unrelated process heap movement can affect the result. The separate whole-read
+cases enforce the absolute ceiling.
+The live samples can catch capture buffers released before the read returns,
+which a final retention sample misses. Run the full `option_schema` parent to
+include both live measurements and their comparison; individual size subtests
+still run independently. The
 `notebook-large-markdown` lane keeps 1, 1.5, 8 and 32 MiB for every kind.
 In the reader and Markdown tests that sample through `measureReaderHeap`, a
 whole-read heap sample above the 4 MiB ceiling counts only what survives a
