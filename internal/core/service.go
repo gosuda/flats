@@ -165,6 +165,11 @@ type Service struct {
 	notebookPending sync.Map
 	notebookRetry   sync.Map
 	notebookStats   notebookImportStats
+	sheetPending    sync.Map
+	sheetRetry      sync.Map
+	sheetRollbacks  sync.Map // op ids of sheet rollbacks that calculate without the flat lock
+	sheetStats      sheetStats
+	sheetScratch    sheetScratchState
 	settings        *SettingsSource
 	eventCount      sync.Map // slug -> *atomic.Int64, events since the last prune
 	logLimits       sync.Map // slug -> *logLimit
@@ -182,6 +187,10 @@ type Service struct {
 	// publicBoardHook, when set by a test, replaces a running board's
 	// public editing interface.
 	publicBoardHook func(*board.Instance) publicBoard
+	// sheetRollbackHook, when set by a test, runs when a sheet rollback
+	// has calculated without the flat lock and before it takes the lock
+	// back for its import.
+	sheetRollbackHook func()
 	// ap caches the stored Autopilot settings for readers.
 	ap autopilotCache
 	pi publicInstanceCache
@@ -295,6 +304,8 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 	if err := s.loadPublicInstance(ctx); err != nil {
 		return nil, err
 	}
+	// Clear the undo scratch files an earlier host left before sheets open.
+	s.sheetScratchDir()
 	if err := s.restore(ctx); err != nil {
 		return nil, err
 	}
@@ -314,6 +325,12 @@ func New(ctx context.Context, cfg Config) (*Service, error) {
 func (s *Service) Close() error {
 	close(s.stop)
 	s.routeEpochs.Range(func(key, value any) bool { value.(*routeEpoch).cancel(); return true })
+	// A sheet can calculate for hours, and a request that holds its flat
+	// lock for that time keeps the maintenance loop at that lock. Sheets
+	// stop first. The stop ends the calculation, and the loop ends.
+	for _, h := range s.sheetHandles() {
+		h.Stop()
+	}
 	s.wg.Wait()
 	s.mu.Lock()
 	live := make(map[string]*liveFlat, len(s.live))
@@ -338,6 +355,7 @@ func (s *Service) Close() error {
 	}
 	// Live sockets must close before their shared captures become unavailable.
 	s.closeNotebookSpills()
+	s.closeSheetScratch()
 	// Every worker has stopped and its exit accounting has run (Stop returns
 	// after it), so the last CPU reaches flats.db.
 	s.flushUsage(context.Background(), slices.Collect(maps.Values(live))...)
@@ -526,6 +544,9 @@ func (s *Service) buildWithEnvironment(ctx context.Context, slugName string, v s
 	}
 	if contenttype.FromManifest(v.Manifest) == contenttype.Notebook {
 		return s.buildNotebook(slugName, v, m.Name, dataDir, snapshot)
+	}
+	if contenttype.FromManifest(v.Manifest) == contenttype.Sheet {
+		return s.buildSheet(slugName, v, dataDir, snapshot)
 	}
 	dir := s.contentDir(slugName, v)
 	switch v.Kind {
@@ -1101,7 +1122,7 @@ func (s *Service) view(ctx context.Context, f store.Flat) FlatView {
 		v.Type = contenttype.FromManifest(v.Draft.Manifest)
 	}
 	switch v.Type {
-	case contenttype.Design, contenttype.Board, contenttype.Notebook:
+	case contenttype.Design, contenttype.Board, contenttype.Notebook, contenttype.Sheet:
 		// These types run from an internal shell version published
 		// at creation; they have no versions, Draft or publishing to report.
 		v.LiveVersion, v.Live, v.Versions, v.VersionCount = 0, nil, 0, 0
@@ -1283,6 +1304,8 @@ func (s *Service) saveVersionLocked(ctx context.Context, slugName string, files 
 		return store.Version{}, ErrBoardUnversioned
 	case contenttype.Notebook:
 		return store.Version{}, ErrNotebookUnversioned
+	case contenttype.Sheet:
+		return store.Version{}, ErrSheetUnversioned
 	}
 	docs := m.Type == contenttype.Docs
 	if f, err := s.st.GetFlat(ctx, slugName); errors.Is(err, store.ErrNotFound) {
@@ -1368,6 +1391,8 @@ func (s *Service) GetVersion(ctx context.Context, slugName string, n int) (store
 		return store.Version{}, err
 	} else if typ == contenttype.Notebook {
 		return store.Version{}, ErrNotebookUnversioned
+	} else if typ == contenttype.Sheet {
+		return store.Version{}, ErrSheetUnversioned
 	}
 	v, err := s.st.GetVersion(ctx, slugName, n)
 	if err != nil {
@@ -1386,7 +1411,7 @@ func (s *Service) VersionFile(slugName string, n int, rel string) (string, error
 	if err := slug.Validate(slugName); err != nil {
 		return "", invalid(err)
 	}
-	if err := s.refuseNotebookVersion(context.Background(), slugName); err != nil {
+	if err := s.refuseNotebookOrSheetVersion(context.Background(), slugName); err != nil {
 		return "", err
 	}
 	dir := s.versionDir(slugName, n)
@@ -1735,7 +1760,7 @@ func (s *Service) activate(ctx context.Context, f store.Flat, d *deployed, h Hea
 	}
 	_ = s.dropPreviews(ctx, slugName)
 	t := contenttype.FromManifest(d.version.Manifest)
-	shell := t == contenttype.Design || t == contenttype.Board || t == contenttype.Notebook
+	shell := t == contenttype.Design || t == contenttype.Board || t == contenttype.Notebook || t == contenttype.Sheet
 	if kind == "save" && shell {
 		// The shell goes live once, at creation; the content type logs it.
 	} else if kind == "save" {
@@ -2018,7 +2043,7 @@ func joinNotes(note string, err error) string {
 
 // Deployments returns the deploy history.
 func (s *Service) Deployments(ctx context.Context, slugName string) ([]store.Deployment, error) {
-	if err := s.refuseNotebookVersion(ctx, slugName); err != nil {
+	if err := s.refuseNotebookOrSheetVersion(ctx, slugName); err != nil {
 		return nil, err
 	}
 	ds, err := s.st.ListDeployments(ctx, slugName, 100)
@@ -2202,6 +2227,9 @@ func (s *Service) deleteLocked(ctx context.Context, slugName string, via Via, ex
 				}
 			}
 		}
+	}
+	if err := s.awaitSheetStorage(ctx, slugName); err != nil {
+		return ActionResult{}, fmt.Errorf("flat %q metadata deleted but storage cleanup is incomplete: %w", slugName, err)
 	}
 	if err := s.discardDeletedStorage(context.WithoutCancel(ctx), op); err != nil {
 		return ActionResult{}, fmt.Errorf("flat %q metadata deleted but storage cleanup is incomplete: %w", slugName, err)
@@ -2474,7 +2502,7 @@ func (s *Service) OpenPreview(ctx context.Context, slugName string, n int) (Prev
 
 // ListPreviews returns open previews of a flat.
 func (s *Service) ListPreviews(ctx context.Context, slugName string) ([]PreviewView, error) {
-	if err := s.refuseNotebookVersion(ctx, slugName); err != nil {
+	if err := s.refuseNotebookOrSheetVersion(ctx, slugName); err != nil {
 		return nil, err
 	}
 	ps, err := s.st.ListPreviews(ctx, slugName)

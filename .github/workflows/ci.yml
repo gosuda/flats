@@ -140,6 +140,13 @@ jobs:
             shards: docs
           - lane: board
             shards: board
+          # The sheet packages at their full sizes, in three lanes.
+          - lane: sheet-undo-1
+            shards: sheet-undo-1
+          - lane: sheet-undo-2
+            shards: sheet-undo-2
+          - lane: sheet
+            shards: sheet
           - lane: other
             shards: other
     runs-on: depot-ubuntu-24.04
@@ -149,8 +156,8 @@ jobs:
       - uses: ./.github/actions/setup-go
         with:
           cache-key: test-${{ matrix.lane }}
-          # The board packages used to be tested in the other shard.
-          restore-fallback: ${{ matrix.lane == 'board' && 'test-other' || '' }}
+          # The board and sheet packages used to be tested in the other shard.
+          restore-fallback: ${{ (matrix.lane == 'board' || startsWith(matrix.lane, 'sheet')) && 'test-other' || '' }}
           # The other shard vets every package, so it downloads every module.
           save-modules: ${{ matrix.lane == 'other' }}
       - name: Verify module files
@@ -226,6 +233,27 @@ jobs:
             exit 1
           fi
 
+  # The sheet's browser suites: the real client in the headless Chrome of the
+  # runner image (docs/gates.md). The suites skip when they find no browser,
+  # so the job fails first when the image has none. It reads the build cache
+  # of the sheet lane, which compiles the same package.
+  sheet-browser:
+    needs: changes
+    if: ${{ !cancelled() && (github.event_name != 'pull_request' || needs.changes.result != 'success' || needs.changes.outputs.full != 'false') }}
+    runs-on: depot-ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: ./.github/actions/setup-go
+        with:
+          cache-key: test-sheet
+          save-build: "false"
+      - name: Sheet browser suites
+        run: |
+          CHROME=$(command -v google-chrome) || { echo "this runner image has no google-chrome" >&2; exit 1; }
+          export CHROME
+          FLATS_SHEET_E2E=1 go test -count=1 -v -run '^TestBrowser' ./internal/sheet
+
   # Main/manual verification retains every race lane on one runner.
   race:
     needs: changes
@@ -241,7 +269,7 @@ jobs:
       - name: Races
         run: |
           failed=0
-          for lane in core-1 core-2 services notebook-1 notebook-2 board-1 board-2; do
+          for lane in core-1 core-2 services notebook-1 notebook-2 board-1 board-2 sheet-1 sheet-2 sheet-3 sheet-4 sheet-5; do
             scripts/ci-race.sh "$lane" || failed=1
           done
           exit "$failed"

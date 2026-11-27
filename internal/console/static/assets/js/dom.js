@@ -55,6 +55,7 @@ const ICONS = {
   layout: 'M4 4h9v7H4zM15 4h5v16h-5zM4 13h9v7H4z',
   board: 'M3 4h18v16H3zM6 7h5v5H6zM13 16l5-5M15 11h3v3',
   notebook: 'M7 3h11a1 1 0 0 1 1 1v16a1 1 0 0 1-1 1H7zM4 7h4M4 12h4M4 17h4M11.5 8h4M11.5 11h4M11.5 14h2.5',
+  sheet: 'M3 4h18v16H3zM3 9.5h18M3 14.5h18M9 4v16',
   chevrons: 'M6 7l5 5l-5 5M13 7l5 5l-5 5',
   spinner: 'M12 3a9 9 0 1 0 9 9',
 };

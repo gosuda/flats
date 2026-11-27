@@ -8,8 +8,11 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
+	"strings"
+	"unicode/utf8"
 )
 
 // FormatVersion is the manifest format this binary writes and reads.
@@ -41,6 +44,7 @@ const (
 	KindPreview  = "preview"
 	KindBoard    = "board"
 	KindNotebook = "notebook"
+	KindSheet    = "sheet"
 )
 
 // Manifest describes one copy (rule 4, 26 and 36 of the spec).
@@ -56,6 +60,10 @@ type Manifest struct {
 	Excluded     []string   `json:"excluded"`
 	Skipped      []Skip     `json:"skipped"`
 	Unstable     []string   `json:"unstable"`
+	// Refused lists the sheet.db files of databases that the sheet check
+	// refuses, with its reason. The copy holds their bytes as they are and
+	// no check reads their rows (rule 4).
+	Refused []Skip `json:"refused,omitempty"`
 }
 
 // File is one file of a copy, by its path below the copy's folder.
@@ -77,12 +85,73 @@ type Skip struct {
 	Reason string `json:"reason"`
 }
 
+// checkManifestPath returns why p is not a path that a copy lists, or nil.
+// A copy lists relative, clean, slash-separated paths of valid UTF-8 with no
+// backslash, no volume and no "." or ".." element, below data/ or for the
+// configuration file outside the data directory and its history. The check
+// is the same on every system: Windows reads a backslash as a separator, so
+// a path one system reads as another file than its spelling says is refused
+// everywhere (rule 26).
+func checkManifestPath(p string) error {
+	switch {
+	case p == "":
+		return errors.New("is empty")
+	case !utf8.ValidString(p):
+		return errors.New("is not valid UTF-8")
+	case strings.Contains(p, `\`):
+		return errors.New("holds a backslash")
+	case strings.HasPrefix(p, "/"):
+		return errors.New("starts with a slash")
+	case len(p) >= 2 && p[1] == ':' && (p[0]|0x20 >= 'a' && p[0]|0x20 <= 'z'):
+		return errors.New("starts with a volume")
+	}
+	for _, seg := range strings.Split(p, "/") {
+		switch seg {
+		case "..":
+			return errors.New(`has a ".." element`)
+		case ".":
+			return errors.New("is not clean")
+		}
+	}
+	if path.Clean(p) != p {
+		return errors.New("is not clean")
+	}
+	top, rest, _ := strings.Cut(p, "/")
+	switch {
+	case top == "data" && rest != "":
+	case p == nameConfig:
+	case top == nameConfigHist && rest != "" && !strings.Contains(rest, "/"):
+	default:
+		return errors.New("lies outside the layout of a copy")
+	}
+	return nil
+}
+
+// checkDatabasePath returns why the manifest's database d is not one that a
+// copy lists, or nil: its path is canonical and is the place of a database of
+// its kind in the layout, exactly as written.
+func checkDatabasePath(d Database) error {
+	if err := checkManifestPath(d.Path); err != nil {
+		return fmt.Errorf("is not a path a copy holds: it %w", err)
+	}
+	rel, ok := strings.CutPrefix(d.Path, "data/")
+	c := classify(rel)
+	switch {
+	case !ok || c.class != classDatabase:
+		return fmt.Errorf("is listed as a %q database, and the layout of a copy holds no database at this path", d.Kind)
+	case c.kind != d.Kind:
+		return fmt.Errorf("is listed as a %q database, and the layout of a copy makes it a %s database", d.Kind, c.kind)
+	}
+	return nil
+}
+
 func (m *Manifest) sort() {
 	sort.Slice(m.Files, func(i, j int) bool { return m.Files[i].Path < m.Files[j].Path })
 	sort.Slice(m.Databases, func(i, j int) bool { return m.Databases[i].Path < m.Databases[j].Path })
 	sort.Strings(m.Excluded)
 	sort.Slice(m.Skipped, func(i, j int) bool { return m.Skipped[i].Path < m.Skipped[j].Path })
 	sort.Strings(m.Unstable)
+	sort.Slice(m.Refused, func(i, j int) bool { return m.Refused[i].Path < m.Refused[j].Path })
 }
 
 // write puts the manifest at root/manifest.json through a new file.

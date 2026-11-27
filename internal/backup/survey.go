@@ -43,7 +43,7 @@ type journalInfo struct {
 	mtime time.Time
 }
 
-// survey is what steps 13 and 19 list: the flat directories with three of their
+// survey is what steps 13 and 19 list: the flat directories with four of their
 // subdirectories, the entries of flats/.lifecycle and each restore journal.
 type survey struct {
 	dirs      map[string]ident
@@ -52,7 +52,7 @@ type survey struct {
 }
 
 // subdirs are the subdirectories of a flat that the survey identifies.
-var surveyedSubdirs = []string{"data", "board", "notebook"}
+var surveyedSubdirs = []string{"data", "board", "notebook", "sheet"}
 
 func takeSurvey(data string) (*survey, error) {
 	s := &survey{dirs: map[string]ident{}, journals: map[string]journalInfo{}}

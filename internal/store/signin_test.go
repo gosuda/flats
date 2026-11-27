@@ -97,7 +97,7 @@ func TestMigrationFromVersion28AddsSignIn(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if info, err := Inspect(path); err != nil || info.Version != 29 || info.Version != latestVersion() {
+	if info, err := Inspect(path); err != nil || info.Version != 30 || info.Version != latestVersion() {
 		t.Fatalf("after: %+v, %v", info, err)
 	}
 	f, err := s.GetFlat(ctx, "app")

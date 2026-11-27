@@ -45,6 +45,7 @@ type copier struct {
 	dbs      map[string]string // manifest path of each database -> kind
 	excluded map[string]bool
 	skipped  map[string]string
+	refused  map[string]string // sheet.db snapshots that the sheet check refuses, by manifest path -> why
 	unstable map[string]bool
 	retries  int
 
@@ -61,7 +62,7 @@ func newCopier(ctx context.Context, data, root string, excludeKey bool) *copier 
 	return &copier{
 		ctx: ctx, data: data, root: root, excludeKey: excludeKey,
 		files: map[string]File{}, dbs: map[string]string{}, excluded: map[string]bool{},
-		skipped: map[string]string{}, unstable: map[string]bool{}, maxGroup: maxTogether, busy: busyTimeout,
+		skipped: map[string]string{}, refused: map[string]string{}, unstable: map[string]bool{}, maxGroup: maxTogether, busy: busyTimeout,
 	}
 }
 
@@ -227,6 +228,9 @@ func (c *copier) manifest() *Manifest {
 	}
 	for p, r := range c.skipped {
 		m.Skipped = append(m.Skipped, Skip{Path: p, Reason: r})
+	}
+	for p, r := range c.refused {
+		m.Refused = append(m.Refused, Skip{Path: p, Reason: r})
 	}
 	for p := range c.unstable {
 		m.Unstable = append(m.Unstable, p)

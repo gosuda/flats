@@ -65,6 +65,14 @@ func testSnapshot() core.MetricsSnapshot {
 			ImportCount: 3, ImportSum: 0.75, ImportCounts: []uint64{0, 1, 0, 0, 0, 1, 0, 1, 0, 0, 0, 0}},
 		Notebook: core.NotebookMetrics{Batches: map[string]int64{"applied": 11, "rejected": 2, "retry": 5}, Connections: 6,
 			ImportCount: 4, ImportSum: 12.765, ImportCounts: []uint64{1, 1, 0, 0, 0, 1, 0, 0, 0, 0, 0, 1}},
+		Sheet: core.SheetMetrics{Batches: map[string]int64{"applied": 13, "rejected": 4}, Connections: 8,
+			ImportCount: 5, ImportSum: 1.5, ImportCounts: []uint64{2, 0, 0, 0, 0, 1, 0, 0, 0, 0, 0, 2},
+			Recalc: map[string]core.SheetRecalc{
+				"edit":  {Count: 6, Sum: 0.25, Counts: []uint64{3, 0, 2, 0, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0, 0}},
+				"other": {Count: 2, Sum: 40.5, Counts: []uint64{0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1}},
+				// A start outside the fixed two never becomes a label.
+				"Budget!B2": {Count: 9, Counts: []uint64{9}},
+			}},
 		Counts: []core.FlatCount{
 			{Type: "server", Visibility: "public", Running: true, N: 1},
 			{Type: "docs", Visibility: "private", Running: true, N: 1},
@@ -578,7 +586,7 @@ func TestPerFlatMetricsOptIn(t *testing.T) {
 					t.Errorf("%s present=%v, per_flat=%v", name, present[name], enabled)
 				}
 			}
-			for _, name := range []string{"flats_build_info", "go_goroutines", "process_cpu_seconds_total", "flats_db_bytes", "flats_flats", "flats_pending_approvals", "flats_snapshot_timestamp_seconds", "flats_route_endpoints", "flats_management_requests_total", "flats_board_batches_total", "flats_board_connections", "flats_board_import_seconds", "flats_notebook_batches_total", "flats_notebook_connections", "flats_notebook_import_seconds"} {
+			for _, name := range []string{"flats_build_info", "go_goroutines", "process_cpu_seconds_total", "flats_db_bytes", "flats_flats", "flats_pending_approvals", "flats_snapshot_timestamp_seconds", "flats_route_endpoints", "flats_management_requests_total", "flats_board_batches_total", "flats_board_connections", "flats_board_import_seconds", "flats_notebook_batches_total", "flats_notebook_connections", "flats_notebook_import_seconds", "flats_sheet_batches_total", "flats_sheet_connections", "flats_sheet_import_seconds"} {
 				if !present[name] {
 					t.Errorf("host or aggregate family %s omitted", name)
 				}

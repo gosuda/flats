@@ -101,7 +101,7 @@ func TestNoAgentToolShowsTheWebhook(t *testing.T) {
 		{"guide", map[string]any{}},
 	}
 	// These tools read the content of a flat of another type and nothing of the host.
-	contentReaders := []string{"get_board", "get_board_share", "get_design", "get_document", "get_notebook", "list_revisions", "get_revision"}
+	contentReaders := []string{"get_board", "get_board_share", "get_design", "get_document", "get_notebook", "get_sheet", "list_revisions", "get_revision"}
 	names := toolNames(t, e.local)
 	called := map[string]bool{}
 	for _, c := range calls {

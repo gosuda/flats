@@ -4,6 +4,8 @@ Status: planned. Nothing on this page is implemented yet; see
 [Current state](#current-state). The technical design is in
 [sheet-technical-design.md](sheet-technical-design.md).
 
+Code for this type exists and partly implements an earlier draft, not this text: see [sheet-as-built.md](sheet-as-built.md).
+
 This page sets what the first sheet release (S1) must do, why, and the rules
 a sheet keeps. The technical design decides the storage format, the protocol
 and where computation runs. The plan and its history are in

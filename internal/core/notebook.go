@@ -52,7 +52,7 @@ func toNotebookError(err error) error {
 	return err
 }
 
-func (s *Service) refuseNotebookVersion(ctx context.Context, slugName string) error {
+func (s *Service) refuseNotebookOrSheetVersion(ctx context.Context, slugName string) error {
 	f, err := s.st.GetFlat(ctx, slugName)
 	if err != nil {
 		return err
@@ -61,8 +61,11 @@ func (s *Service) refuseNotebookVersion(ctx context.Context, slugName string) er
 	if err != nil {
 		return err
 	}
-	if typ == contenttype.Notebook {
+	switch typ {
+	case contenttype.Notebook:
 		return ErrNotebookUnversioned
+	case contenttype.Sheet:
+		return ErrSheetUnversioned
 	}
 	return nil
 }

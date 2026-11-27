@@ -138,9 +138,11 @@ in the [lifecycle core contract](lifecycle-core-contract.md).
 
 * `type`: `flat` (website, the default), `page` (one static HTML page),
   `docs` (Markdown documents), `design` (canvas of HTML artboards), `board`
-  (whiteboard) or `notebook` (tree of pages with blocks and inline
-  databases); only core writes a design, board or notebook manifest, see
-  [Designs](#designs), [Boards](#boards) and [Notebooks](#notebooks). A bundle without `type`,
+  (whiteboard), `notebook` (tree of pages with blocks and inline
+  databases) or `sheet` (spreadsheet of tabs, cells and formulas); only core
+  writes a design, board, notebook or sheet manifest, see
+  [Designs](#designs), [Boards](#boards), [Notebooks](#notebooks) and
+  [Sheets](#sheets). A bundle without `type`,
   `kind`, `index.html` or a server entry that holds a Markdown entry is a
   `docs` bundle.
 * `kind`: `static` (default) or `server`.
@@ -176,12 +178,13 @@ time and again when the approval applies, against the live (else latest
 saved) version, so content of another type that an earlier release stored
 can never go live.
 
-**Revision-model refusals.** Documents, designs, boards and notebooks refuse
+**Revision-model refusals.** Documents, designs, boards, notebooks and sheets refuse
 Deploy, Rollback, CreateVersion, DeleteVersion, version quota overrides,
 previews, ListVersions and GetDraft (`invalid`, with a message naming the
 type's own tools). Revision tools refuse websites and pages (`no_revisions`),
-board tools refuse every other type (`not_board`), and notebook tools refuse
-every other type (`not_notebook`).
+board tools refuse every other type (`not_board`), notebook tools refuse
+every other type (`not_notebook`), and sheet tools refuse every other type
+(`not_sheet`).
 
 ### Pages
 
@@ -419,6 +422,50 @@ under `/_notebook/` ([Surfaces](surfaces.md)).
   revision still references. Public guest editing never applies to notebooks.
   Withdrawing Public access cancels the route epoch, which closes every open
   Public socket and stops its reads.
+
+### Sheets
+
+A sheet is a spreadsheet of tabs whose cells hold numbers, text, dates and
+formulas that people and agents edit live
+([product spec](spec/sheet-as-built.md), [technical design](spec/sheet-as-built-technical-design.md)).
+Like a notebook it runs in the host process behind a shell `flats.json` that
+core writes once at creation, and it needs no worker. `internal/sheet` runs
+one `sheet.Instance` per sheet: the workbook in memory, a single writer queue
+that changes `flats/<slug>/sheet/sheet.db`, the editor embedded from
+`internal/sheet/web`, one same-origin WebSocket (`/_sheet/ws`) and HTTP
+routes under `/_sheet/` ([Surfaces](surfaces.md)). `internal/sheet/formula`
+holds the formula language: parser, stored reference form, evaluator,
+functions and number formats.
+
+- **Calculation.** The host calculates every formula. An edit and the values
+  that follow from it reach every reader together, and an edit whose
+  recalculation passes a limit or the time limit is refused whole. The
+  calculation date is the date of the host clock; a change of date
+  recalculates without an edit and records no revision.
+- **Editing.** The sheet checks people's actions against row, column and tab
+  identities, so an edit lands on the cell it was made for after rows moved.
+  Agent calls (`update_sheet`) name tabs and addresses, apply whole or not at
+  all, and name the state they are based on. The sheet refuses a call when a
+  structural change since that state could give an address another meaning.
+- **History.** The writer records revision boundaries in an outbox in the
+  same `sheet.db` transaction as the edit. Core imports the outbox into the
+  [revision store](revision-store.md#sheets) under the flat lock, with the
+  calculation date each revision closed with and the tabs it changed, and
+  only then acknowledges the import to the sheet.
+- **Core's part.** Core gives the instance a backend (the disk quota, the
+  flat directory measurement, blob storage in `flats/<slug>/revisions/blobs`,
+  history, pins and rollbacks) and holds the sheet in the route table through
+  a handle that loads the workbook on demand. Core unloads a sheet with no
+  connection, no open edit group, an empty outbox and no live read for 10
+  minutes, and the next request loads it again from `sheet.db`. This bounds
+  host memory to the sheets in use. Rename, deletion and stop refuse new work
+  and close sockets before moving or removing storage.
+- **Access.** The sheet trusts only the `X-Flats-Access` core sets, and
+  writes need the Private value. A Public route gets a read-only projection:
+  the tab list, cells, calculated values and CSV, without sessions, presence
+  or History. Public guest editing never applies to sheets. Withdrawing
+  Public access cancels the route epoch, which closes every open Public
+  socket and stops its reads.
 
 ## Exposure
 
@@ -1185,7 +1232,7 @@ Previews are not usage. A request counts on the day its status is sent. A
 `5xx` is an error; a request whose visitor left before the response was sent
 counts as `closed`, not as an error. WebSocket connections and event streams
 count with their status but are left out of response times. Websites, pages,
-designs, boards and notebooks run inside the host process, so their CPU and
+designs, boards, notebooks and sheets run inside the host process, so their CPU and
 memory are reported as not measured separately (`not_separate`), never as
 zero.
 
@@ -1248,8 +1295,8 @@ types, provider IDs and fixed enums (plus the build strings of
 agents, tailnet or NetBird identities, URLs or domain names. Per-flat series
 carry `flat` (the slug) and `type` and are included by default. Explicit
 `metrics.per_flat: false` omits them. This includes traffic, workers,
-preview/check CPU and storage; host-wide board and notebook metrics remain
-available.
+preview/check CPU and storage; host-wide board, notebook and sheet metrics
+remain available.
 
 | Metric | Type | Extra labels |
 | --- | --- | --- |
@@ -1278,6 +1325,10 @@ available.
 | `flats_notebook_batches_total` | counter (host) | `result` (`applied`, `rejected`, `retry`) |
 | `flats_notebook_connections` | gauge (host) | |
 | `flats_notebook_import_seconds` | histogram (host) | |
+| `flats_sheet_batches_total` | counter (host) | `result` (`applied`, `rejected`) |
+| `flats_sheet_connections` | gauge (host) | |
+| `flats_sheet_import_seconds` | histogram (host) | |
+| `flats_sheet_recalculation_seconds` | histogram (host) | `start` (`edit`, `other`) |
 
 `running` in `flats_flats` keeps its console meaning: a live document is
 running even while its worker sleeps. `flats_worker_state` is the diagnostic
@@ -1294,7 +1345,14 @@ acknowledged, refused for good, or refused as transient for the canvas to
 resend. `flats_board_import_seconds` times the outbox imports that recorded
 revisions, with buckets from 5 ms to 10 s. The `flats_notebook_*` metrics
 count the same things for notebooks, with the same buckets, and carry no page
-ids or names.
+ids or names. The `flats_sheet_*` metrics count the writes to sheets (people's
+edit batches, agent calls and rollbacks) as applied or rejected, and the open
+sheet connections. They time the outbox imports with the same buckets, and
+carry no tab names or addresses. The batch totals keep the counts of sheets
+that were unloaded or stopped. `flats_sheet_recalculation_seconds` times
+every recalculation of a sheet, with buckets from 1 ms to 30 s. Its `start`
+label is `edit` for a person's action, an agent call or a tab recovery, and
+`other` for a load, a date change, a rollback or a revision view.
 
 Worker CPU is user plus system time from the worker itself and, after it
 exits, from its process state, so it includes workers that later stopped,

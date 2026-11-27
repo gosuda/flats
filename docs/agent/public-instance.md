@@ -10,9 +10,10 @@ references and the `llms.txt` documents while this mode is on. Read
 * Every new flat starts Public, with public access set to "view only", on
   the default public network. This includes `create_flat` of every type and
   the first save through `save_draft`, `save_draft_from_dir`, `save_page`,
-  `save_document`, `save_design`, `update_board` and `import_board`.
+  `save_document`, `save_design`, `update_board`, `import_board`,
+  `update_notebook` and `update_sheet`.
   Creation needs no visibility approval and grants no private network.
-* Documents, designs and boards run at once. Everyone on the internet can
+* Documents, designs, boards, notebooks and sheets run at once. Everyone on the internet can
   see their content and subsequent saves as soon as their public link is
   ready. Repeat `public_notice` whenever you give a public URL. If the host
   setting `portal.require_auth` is on and the default public network is

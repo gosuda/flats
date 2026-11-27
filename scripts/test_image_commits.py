@@ -133,7 +133,8 @@ class ImageCommitsTests(unittest.TestCase):
         code, calls = self.run_build(commit=self.commits[1], verified="", failed=self.commits[-1])
         self.assertEqual(code, 37)
         self.assertEqual(calls, ["go vet ./...", "runtime-soak", "runtime-codec", "runtime",
-                                 "docs-soak", "docs-budget", "docs", "board", "other", "build"])
+                                 "docs-soak", "docs-budget", "docs", "board",
+                                 "sheet-undo-1", "sheet-undo-2", "sheet", "other", "build"])
 
     def test_retry_of_failed_tip_keeps_existing_image_and_reports_missing_one(self):
         tip = self.commits[-1]
@@ -160,7 +161,8 @@ class ImageCommitsTests(unittest.TestCase):
                 code, calls = self.run_build(**kwargs)
                 self.assertEqual(code, 37)
                 self.assertEqual(calls, ["go vet ./...", "runtime-soak", "runtime-codec", "runtime",
-                                         "docs-soak", "docs-budget", "docs", "board", "other", "build"])
+                                         "docs-soak", "docs-budget", "docs", "board",
+                                         "sheet-undo-1", "sheet-undo-2", "sheet", "other", "build"])
 
     def test_push_retry_skips_existing_full_sha_image(self):
         # Historical batch entries are also preserved without republication.
@@ -175,7 +177,8 @@ class ImageCommitsTests(unittest.TestCase):
         self.assertEqual(code, 37)
         self.assertEqual(calls[0], f"docker buildx imagetools inspect ghcr.io/example/flats:sha-{self.commits[-1]}")
         self.assertEqual(calls[1:], ["go vet ./...", "runtime-soak", "runtime-codec", "runtime",
-                                    "docs-soak", "docs-budget", "docs", "board", "other", "build"])
+                                    "docs-soak", "docs-budget", "docs", "board",
+                                    "sheet-undo-1", "sheet-undo-2", "sheet", "other", "build"])
 
     def test_manual_retry_and_first_attempt_do_not_inspect_registry(self):
         for kwargs in ({"event": "workflow_dispatch", "attempt": "2"}, {"attempt": "1"},

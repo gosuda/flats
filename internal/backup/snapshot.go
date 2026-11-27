@@ -48,10 +48,19 @@ func (c *copier) snapshotDB(rel, kind string, gate func()) error {
 			continue
 		}
 		err := vacuumInto(c.ctx, src, dst, kind, c.busy, gate)
+		var refusal string
+		if err == nil && kind == KindSheet {
+			refusal, err = sheetRefusal(c.ctx, dst)
+		}
 		switch {
 		case err == nil:
 			c.mu.Lock()
 			c.dbs[mp] = kind
+			if refusal != "" {
+				c.refused[mp] = refusal
+			} else {
+				delete(c.refused, mp)
+			}
 			delete(c.files, mp) // sealDatabases hashes the snapshot once the last one is made
 			if c.afterSnap != nil {
 				c.afterSnap(rel)
@@ -86,6 +95,21 @@ func (c *copier) skipLocked(rel, reason string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	c.skip(rel, reason)
+}
+
+// sheetRefusal runs the sheet check on the snapshot of a sheet.db and returns
+// why it refuses it, or "" when it passes. A host refuses such a database as
+// well, so the copy keeps it as it is, and no later step reads its rows
+// (rule 4).
+func sheetRefusal(ctx context.Context, path string) (string, error) {
+	err := preflightSheet(ctx, path)
+	if ctxErr := ctx.Err(); ctxErr != nil {
+		return "", ctxErr
+	}
+	if err != nil {
+		return err.Error(), nil
+	}
+	return "", nil
 }
 
 // vacuumInto writes a snapshot of the database src to the new file dst, which it

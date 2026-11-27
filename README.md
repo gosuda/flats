@@ -12,8 +12,8 @@
 
 <p align="center">
   Ask your AI agent for a web page, a shared document, a small app, a design,
-  a whiteboard or a notebook. Flats hosts it on your own machine and gives you
-  a link.
+  a whiteboard, a notebook or a spreadsheet. Flats hosts it on your own machine
+  and gives you a link.
 </p>
 
 <p align="center">
@@ -32,7 +32,7 @@
 ---
 
 Each thing Flats hosts is a **flat**: one web page, document, app, design,
-board or notebook with its own name and link. Your agent creates and updates flats. You
+board, notebook or sheet with its own name and link. Your agent creates and updates flats. You
 decide in the Flats console what goes live and who can open it.
 
 <p align="center"><img src="docs/assets/readme/gallery-content.png" alt="Examples of flats: a report page with a chart, a shared handbook document, a small voting app, a design canvas of phone screens and a retro board of sticky notes" width="880"></p>
@@ -53,6 +53,7 @@ decide in the Flats console what goes live and who can open it.
 | Screen mock-ups and click-through prototypes | **Design**: a canvas of HTML artboards | Edits apply at once and are kept as revisions |
 | A brainstorm, retro or flowchart that people rearrange by hand | **Board**: an infinite whiteboard with sticky notes, shapes and connectors | Edits apply at once and are kept as revisions |
 | A wiki, reading list or project tracker with pages, notes and tables | **Notebook**: a tree of pages with blocks and inline databases shown as tables or kanban boards | Edits apply at once and are kept as revisions |
+| A budget, an estimate or a plan whose numbers calculate | **Sheet**: a spreadsheet of tabs and cells with formulas | Edits apply at once and are kept as revisions |
 
 Every flat starts Private. Making any flat Public, or Private again, always
 waits for your approval. [How changes go live](#how-changes-go-live) has the
@@ -67,7 +68,7 @@ reference.
 | Where your data lives | Files and SQLite databases on that machine | Usually your account with the provider | Usually your account with the provider and the services you add |
 | Which agents can use it | Any MCP client; a plugin for Claude Code, Codex and Cursor | Often the provider's own assistant | Usually any tool that can deploy there, such as a CLI or a Git push |
 | Server code and a database | JavaScript server apps with SQLite and persistent files ([details](#static-and-server-flats)) | Varies by product | Often available through the provider's functions and add-ons |
-| People and agents editing together | Documents, designs, boards and notebooks, with history | Varies by product | Usually outside the hosting itself |
+| People and agents editing together | Documents, designs, boards, notebooks and sheets, with history | Varies by product | Usually outside the hosting itself |
 | Who decides what goes live | You approve every publish and visibility change in your console | Varies by product | Varies with your deployment setup |
 
 Other products change often; check their current documentation for details.
@@ -126,7 +127,7 @@ Try one of these:
 For a page or website, the agent saves a Private Draft and sends you a console
 link. Approve two requests there: saving the Draft as version 1, then
 publishing that version. Then open the link the agent gives you, such as
-`http://coffee-report.localhost:7879`. A document, design, board or notebook
+`http://coffee-report.localhost:7879`. A document, design, board, notebook or sheet
 opens at once, without an approval.
 
 <details>
@@ -222,13 +223,13 @@ version (v1, v2, ...) and deploying it are separate approved steps, so a
 version can exist without ever going live. Publication and rollback require
 console approval.
 
-Documents, designs, boards and notebooks are edited live by people and agents
+Documents, designs, boards, notebooks and sheets are edited live by people and agents
 together: private visitors can edit while public visitors read, unless you
 approve guest editing for a Public board, and changes to an already Public flat
 are visible immediately. Documents merge agent saves into people's edits;
-designs keep every change as a whole-canvas revision. Boards and notebooks
-record each agent write as one revision and group each person's edits into
-revisions. A Public notebook is read-only for every viewer. **Changing
+designs keep every change as a whole-canvas revision. Boards, notebooks and
+sheets record each agent write as one revision and group each person's edits
+into revisions. A Public notebook or sheet is read-only for every viewer. **Changing
 visibility in either direction requires approval for every type.**
 
 Explore [content types](docs/content-types.md) for the full lifecycle and
@@ -236,9 +237,12 @@ agent tools, including `save_page`, `update_document` and `save_design`. The
 [Boards guide](docs/content-types.md#boards) covers `get_board`, `update_board`,
 live collaboration, imports and history. The
 [Notebooks guide](docs/content-types.md#notebooks) covers `get_notebook`,
-`update_notebook`, inline databases, Markdown and history. Choose a board for
+`update_notebook`, inline databases, Markdown and history. The
+[Sheets guide](docs/content-types.md#sheets) covers `get_sheet`,
+`update_sheet`, formulas and history. Choose a board for
 ideas people will move and connect, a notebook for pages of notes and tables,
-and a design for HTML screens and prototypes.
+a sheet for numbers that calculate, and a design for HTML screens and
+prototypes.
 
 ## Agent integration
 
@@ -346,7 +350,7 @@ Funnel permission.
 
 Making a flat Public requires an approved transition and a configured,
 permitted public route. Websites and pages also need a published version;
-documents, designs, boards and notebooks run without publication.
+documents, designs, boards, notebooks and sheets run without publication.
 Configuration alone never publishes or changes visibility. Wait for a route to report ready and verify
 its endpoint before sharing it: relay availability and network connectivity
 are external dependencies.

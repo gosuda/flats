@@ -108,6 +108,10 @@ func (s *Service) RenameSlug(ctx context.Context, from, to string, via Via) (_ F
 		}
 		lf.cur.Store(rebuilt)
 	}
+	if err := s.awaitSheetStorage(ctx, from); err != nil {
+		restoreCurrent()
+		return FlatView{}, err
+	}
 	fromDir, err := s.storagePath(from)
 	if err != nil {
 		restoreCurrent()

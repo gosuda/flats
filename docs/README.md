@@ -19,9 +19,10 @@ deploy.
 | --- | --- |
 | [Connecting agents](agents.md) | Plugin, `flats connect`, direct MCP setup, using Flats for documents with `flats agent-setup docs`, the `guide` tool, llms.txt |
 | [Runtime API v1](runtime-api-v1.md) | The complete server-flat contract: handler, FILES, DB, encoding, limits (generated) |
-| [Content types](content-types.md) | Websites, HTML pages, Markdown documents, HTML design canvases, whiteboards and notebooks (generated) |
+| [Content types](content-types.md) | Websites, HTML pages, Markdown documents, HTML design canvases, whiteboards, notebooks and sheets (generated) |
 | [Boards](content-types.md#boards) | Create and edit whiteboards with people and agents; structured operations, imports and revision history (generated) |
 | [Notebooks](content-types.md#notebooks) | Create and edit page trees with blocks and inline databases with people and agents; structured operations, Markdown and revision history (generated) |
+| [Sheets](content-types.md#sheets) | Create and edit spreadsheets with people and agents; cells, formulas, state and guards, paged reads, CSV and revision history (generated) |
 | [Server runtime types](agent/types/flats-runtime-v1.d.ts) | TypeScript declarations of runtime API v1, served as guide `topic.server.types` |
 | [`agent/`](agent) | Source of the MCP `guide` topics and both generated references |
 
@@ -36,11 +37,12 @@ the full list.
 
 | Page | Covers |
 | --- | --- |
-| [Content data models](spec/content-models.md) | The Version model (websites, pages) and the Revision model (documents, designs, boards, notebooks); implemented |
+| [Content data models](spec/content-models.md) | The Version model (websites, pages) and the Revision model (documents, designs, boards, notebooks, sheets); implemented |
 | [Design content type](spec/design-type.md) | Canvas of HTML artboards with live editing and revisions; background in [research](research/claude-artifacts-design.md) |
 | [Board content type](spec/board.md) | Infinite-canvas whiteboard people and agents edit together, with revisions; [technical design](spec/board-technical-design.md) |
 | [Notebook content type](spec/notebook.md) | Tree of pages with blocks and inline databases people and agents edit together, with revisions; [technical design](spec/notebook-technical-design.md) |
 | [Sheet content type](spec/sheet.md) | Workbook of worksheets with a cell grid, formulas, and xlsx and CSV import and export that people and agents edit together, with revisions; planned; [technical design](spec/sheet-technical-design.md) |
+| [Sheet content type as built](spec/sheet-as-built.md) | Spreadsheet of tabs and cells with formulas people and agents edit together, with revisions; partly implemented; [technical design](spec/sheet-as-built-technical-design.md) |
 
 ## Design and contracts
 
@@ -49,7 +51,7 @@ the full list.
 | [Design](design.md) | Architecture and trust model: process layout, manifest, content types, exposure, approvals, secrets, handler ABI |
 | [Lifecycle core contract](lifecycle-core-contract.md) | Drafts, versions, deploys, approvals, data and store migrations in the core |
 | [Surfaces](surfaces.md) | HTTP API routes, CLI, MCP tools and the web console |
-| [Revision store](revision-store.md) | Revisions, pins, quotas and rollback for documents, designs, boards and notebooks |
+| [Revision store](revision-store.md) | Revisions, pins, quotas and rollback for documents, designs, boards, notebooks and sheets |
 | [Network provider lifecycle](network-provider-lifecycle.md) | Provider manager states and teardown |
 | [Docs app internals](internal/docs-app.md) | Host integration of the collaborative Markdown editor |
 | [Idle document worker internals](internal/docs-worker-idle.md) | How document workers sleep when idle and wake on demand: ownership, leases, preparation, clean sleep, tests |

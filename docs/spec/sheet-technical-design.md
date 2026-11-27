@@ -4,6 +4,8 @@ Status: planned. Nothing on this page is implemented. See the product spec's
 [Current state](sheet.md#current-state).
 Base: `a9191be` (origin/main). Product contract: [sheet.md](sheet.md), S1.
 
+Code for this type exists and partly implements an earlier draft, not this text: see [sheet-as-built-technical-design.md](sheet-as-built-technical-design.md).
+
 This page specifies S1's server, storage, browser and agent contracts. Rule
 numbers link to the product spec. Section numbers refer to this page.
 Existing shared revision behavior is defined in

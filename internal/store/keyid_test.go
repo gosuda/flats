@@ -63,8 +63,8 @@ func oldSchemaDBWith(t *testing.T, secretNonce, secretText, keyNonce, keyText []
 	return path
 }
 
-// A flats.db of schema 26 migrates to 27. Each row keeps its bytes, its time and its source, and has an empty label
-// (rule 33).
+// A flats.db of schema 26 migrates through 27 to the latest schema. Each row keeps its bytes, its time and its
+// source and has an empty label (rule 33).
 func TestMigrationFromVersion26AddsTheLabels(t *testing.T) {
 	ctx := context.Background()
 	path := oldSchemaDB(t)
@@ -73,7 +73,7 @@ func TestMigrationFromVersion26AddsTheLabels(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if info, err := Inspect(path); err != nil || info.Version != 29 || info.Version != latestVersion() {
+	if info, err := Inspect(path); err != nil || info.Version != 30 || info.Version != latestVersion() {
 		t.Fatalf("after: %+v, %v", info, err)
 	}
 	secs, err := s.ListSecrets(ctx, "app")

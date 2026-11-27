@@ -10,7 +10,8 @@ structured data.
 Choose a notebook for wikis, meeting notes, reading lists and trackers: prose
 and records on the same page, such as a project page with its goals next to a
 task table people sort by status. Choose a document (`topic.docs`) for
-Markdown files people edit as text, a board (`topic.board`) to arrange ideas
+Markdown files people edit as text, a sheet (`topic.sheet`) for numbers that
+calculate with formulas, a board (`topic.board`) to arrange ideas
 spatially, a design (`topic.canvas`) for pixel-exact screens, and a page
 (`topic.page`) for one finished HTML document.
 

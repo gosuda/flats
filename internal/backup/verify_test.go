@@ -163,27 +163,32 @@ func TestVerifyRefusesAnotherSchemaVersion(t *testing.T) {
 
 func TestVerifyFindsADamagedDatabase(t *testing.T) {
 	t.Parallel()
-	_, out := goodCopy(t)
-	p := filepath.Join(out, "data", "flats", "s", "data", nameDataDB)
-	raw, err := os.ReadFile(p)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for i := 100; i < len(raw); i++ { // keep the header, break every page after it
-		raw[i] = 0xff
-	}
-	if err := os.WriteFile(p, raw, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	rehash(t, out)
-	var found bool
-	for _, f := range failuresOf(t, out) {
-		if f.Path == "data/flats/s/data/db.sqlite" && (strings.Contains(f.Reason, "quick_check") || strings.Contains(f.Reason, "does not open")) {
-			found = true
-		}
-	}
-	if !found {
-		t.Error("no failure for the damaged database")
+	for _, rel := range []string{"data/flats/s/data/" + nameDataDB, "data/flats/h/sheet/" + nameSheetDB} {
+		t.Run(rel, func(t *testing.T) {
+			t.Parallel()
+			_, out := goodCopy(t)
+			p := filepath.Join(out, filepath.FromSlash(rel))
+			raw, err := os.ReadFile(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			for i := 100; i < len(raw); i++ { // keep the header, break every page after it
+				raw[i] = 0xff
+			}
+			if err := os.WriteFile(p, raw, 0o600); err != nil {
+				t.Fatal(err)
+			}
+			rehash(t, out)
+			var found bool
+			for _, f := range failuresOf(t, out) {
+				if f.Path == rel && (strings.Contains(f.Reason, "quick_check") || strings.Contains(f.Reason, "does not open")) {
+					found = true
+				}
+			}
+			if !found {
+				t.Error("no failure for the damaged database")
+			}
+		})
 	}
 }
 
@@ -191,6 +196,7 @@ func TestVerifyFindsAnOutboxBehindItsCursor(t *testing.T) {
 	t.Parallel()
 	for slug, rel := range map[string]string{
 		"b": "data/flats/b/board/board.db", "n": "data/flats/n/notebook/notebook.db", "d": "data/flats/d/data/db.sqlite",
+		"h": "data/flats/h/sheet/sheet.db",
 	} {
 		t.Run(slug, func(t *testing.T) {
 			t.Parallel()
@@ -225,6 +231,7 @@ func TestVerifyFindsAnOutboxAheadOfItsCursor(t *testing.T) {
 	t.Parallel()
 	for slug, rel := range map[string]string{
 		"b": "data/flats/b/board/board.db", "n": "data/flats/n/notebook/notebook.db", "d": "data/flats/d/data/db.sqlite",
+		"h": "data/flats/h/sheet/sheet.db",
 	} {
 		t.Run(slug, func(t *testing.T) {
 			t.Parallel()
@@ -269,6 +276,53 @@ func TestVerifyFindsAMissingBlobOfANotebook(t *testing.T) {
 	rehash(t, out)
 	rel, _ := filepath.Rel(out, blob)
 	wantFailure(t, failuresOf(t, out), filepath.ToSlash(rel), "needs it")
+}
+
+// A sheet names the files of its newest revision and of each pending entry in sheet.db (rule 27). The
+// copy needs the blob of each of them, apart from a file whose bytes sheet.db still holds for the import.
+func TestVerifyFindsAMissingBlobOfASheet(t *testing.T) {
+	t.Parallel()
+	f := populated(t)
+	pending := f.blob("h", "revisions", "rows of a pending entry")
+	unimported := hashOf("rows that wait for their import") // its bytes are in sheet.db only
+	f.sql("flats/h/sheet/sheet.db",
+		sheetEntry(`'`+sheetFiles(pending, unimported)+`'`),
+		`INSERT INTO snapshots(hash, data, refs) VALUES('`+unimported+`', x'00', 1)`)
+	_, out := f.mustRun("c1")
+	if fails := failuresOf(t, out); len(fails) > 0 {
+		t.Fatalf("a copy with an entry that waits for its import fails its check: %v", fails)
+	}
+	blobs, err := filepath.Glob(filepath.Join(out, "data", "flats", "h", "revisions", "blobs", "*", "*"))
+	if err != nil || len(blobs) != 2 {
+		t.Fatalf("blobs = %v, %v; want the file of the newest revision and the one of the pending entry", blobs, err)
+	}
+	for _, blob := range blobs {
+		if err := os.Remove(blob); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rehash(t, out)
+	fails := failuresOf(t, out)
+	for _, blob := range blobs {
+		rel, _ := filepath.Rel(out, blob)
+		wantFailure(t, fails, filepath.ToSlash(rel), "needs it")
+	}
+	if n := len(fails); n != 2 {
+		t.Errorf("%d failures, want 2: %v", n, fails)
+	}
+	// Without the bytes in sheet.db, the file that was not imported needs its blob as well.
+	(&fixture{t: t, data: filepath.Join(out, "data")}).sql("flats/h/sheet/sheet.db", `UPDATE snapshots SET refs = 0`)
+	rehash(t, out)
+	wantFailure(t, failuresOf(t, out), "data/flats/h/revisions/blobs/"+unimported[:2]+"/"+unimported, "needs it")
+}
+
+// A file list of sheet.db that cannot be read fails the check: the blobs that the sheet needs are unknown.
+func TestVerifyFindsASheetFileListItCannotRead(t *testing.T) {
+	t.Parallel()
+	_, out := goodCopy(t)
+	(&fixture{t: t, data: filepath.Join(out, "data")}).sql("flats/h/sheet/sheet.db", `UPDATE meta SET files = 'not a list'`)
+	rehash(t, out)
+	wantFailure(t, failuresOf(t, out), "data/flats/h/sheet/sheet.db", "file list")
 }
 
 func TestVerifyChecksSealedValuesAgainstTheKey(t *testing.T) {

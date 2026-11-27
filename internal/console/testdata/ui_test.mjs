@@ -641,6 +641,71 @@ const wikiCalls = calls.slice(wikiCallsFrom).map((c) => c.key).filter((k) => k.i
 assert.ok(wikiCalls.includes('GET /console/api/flats/wiki/revision-quota'), wikiCalls.join(', '));
 assert.deepEqual(wikiCalls.filter((k) => /\/flats\/wiki\/(versions|previews|deployments|version-quota|env|secrets|network|snapshots|database|public-edit)/.test(k)), [],
   'a notebook requests no versions, previews, database, server or guest-edit settings');
+// A sheet is a Revision-model flat with its own label and icon (not the
+// board's or the notebook's), an open link, Overview, revision quotas and no
+// versions, previews, Database or server settings. Its pages request none of
+// them.
+const ledger = { ...notes, type: 'sheet', slug: 'ledger', name: 'Ledger', private_url: 'https://ledger.tail.ts.net' };
+routes['GET /console/api/flats/ledger'] = ledger;
+routes['GET /console/api/flats/ledger/revision-quota'] = { revision_quota: 30, pin_quota: null, default_revision_quota: 100, default_pin_quota: 20, pins: 3 };
+const ledgerCallsFrom = calls.length;
+routes['GET /console/api/flats'] = { flats: [ledger] };
+const sheetList = new Element('main');
+const stopSheetList = list.mount(sheetList, [], ctx);
+await tick();
+const sheetRow = all(sheetList, (e) => e.tagName === 'LI' && e.className === 'flat')[0];
+assert.deepEqual(typeLabel(sheetRow), [['img', 'Sheet', 'Sheet', '0']]);
+const sheetIcon = all(sheetRow, (e) => e.className.startsWith('type-icon'))[0];
+assert.ok(sheetIcon.className.includes('type-sheet'), sheetIcon.className);
+const sheetGlyph = all(sheetIcon, (e) => e.tagName === 'PATH')[0]?.getAttribute('d');
+assert.ok(sheetGlyph && sheetGlyph !== 'M3 4h18v16H3zM6 7h5v5H6zM13 16l5-5M15 11h3v3' && sheetGlyph !== notebookGlyph, 'a sheet has its own glyph');
+assert.ok(sheetRow.textContent.includes('Running') && !sheetRow.textContent.includes('Live v'), 'a sheet row shows no version: ' + sheetRow.textContent);
+assert.equal(startsWith(sheetRow, 'Save as').length + startsWith(sheetRow, 'Publish').length, 0);
+assert.equal(all(sheetRow, (e) => (e.getAttribute('class') || '').includes('open-private')).length, 1, 'a running sheet links to itself');
+assert.equal(byText(sheetRow, 'Overview').length, 1);
+for (const label of ['Deployments', 'Database']) assert.equal(byText(sheetRow, label).length, 0, `a sheet row offers ${label}`);
+stopSheetList();
+routes['GET /console/api/flats'] = { flats: [{ ...ledger, running: false }] };
+const stoppedSheetList = new Element('main');
+const stopStoppedSheetList = list.mount(stoppedSheetList, [], ctx);
+await tick();
+assert.ok(all(stoppedSheetList, (e) => e.tagName === 'LI' && e.className === 'flat')[0].textContent.includes('Not running'));
+stopStoppedSheetList();
+routes['GET /console/api/flats'] = listedFlats;
+const sheetMain = new Element('main');
+const stopSheet = flat.mount(sheetMain, ['ledger'], ctx);
+await tick();
+assert.deepEqual(typeLabel(sheetMain), [['img', 'Sheet', 'Sheet', '0']]);
+assert.deepEqual(tabLinks(sheetMain).map((a) => a.textContent), ['Overview', 'Analytics', 'Settings']);
+for (const id of ['versions', 'previews']) {
+  assert.equal(all(sheetMain, (e) => e.getAttribute('id') === id).length, 0, `sheet page shows ${id}`);
+}
+for (const id of ['status', 'logs']) {
+  assert.equal(all(sheetMain, (e) => e.tagName === 'SECTION' && e.getAttribute('id') === id).length, 1, `sheet page lacks ${id}`);
+}
+assert.equal(all(sheetMain, (e) => e.tagName === 'DT' && e.textContent === 'Sheet').length, 1, 'sheet status names the type');
+assert.ok(sheetMain.textContent.includes('Running') && !sheetMain.textContent.includes('Not published'));
+for (const prefix of ['Save as', 'Publish', 'Roll back', 'Redeploy']) {
+  assert.equal(startsWith(sheetMain, prefix).length, 0, `sheet page offers ${prefix}`);
+}
+stopSheet();
+const sheetSettings = new Element('main');
+const stopSheetSettings = flat.mountSettings(sheetSettings, ['ledger'], ctx);
+await tick();
+for (const id of ['env', 'secrets', 'network', 'version-history']) {
+  assert.equal(all(sheetSettings, (e) => e.getAttribute('id') === id).length, 0, `sheet settings show ${id}`);
+}
+assert.equal(all(sheetSettings, (e) => e.getAttribute('id') === 'revisions').length, 1, 'sheet settings lack revision quotas');
+assert.equal(all(sheetSettings, (e) => e.getAttribute('id') === 'rev-quota')[0].value, '30');
+assert.ok(sheetSettings.textContent.includes('People and agents manage revisions on the sheet itself'));
+assert.ok(sheetSettings.textContent.includes('3 in use'));
+assert.ok(sheetSettings.textContent.includes('Who can view your site'), 'a sheet has no guest-edit wording');
+assert.equal(all(sheetSettings, (e) => e.getAttribute('id') === 'delete').length, 1);
+stopSheetSettings();
+const ledgerCalls = calls.slice(ledgerCallsFrom).map((c) => c.key).filter((k) => k.includes('/flats/ledger'));
+assert.ok(ledgerCalls.includes('GET /console/api/flats/ledger/revision-quota'), ledgerCalls.join(', '));
+assert.deepEqual(ledgerCalls.filter((k) => /\/flats\/ledger\/(versions|previews|deployments|version-quota|env|secrets|network|snapshots|database|public-edit)/.test(k)), [],
+  'a sheet requests no versions, previews, database, server or guest-edit settings');
 // The Settings tab holds every setting once, and still offers the redeploy
 // that applies environment changes.
 const management = new Element('main');
@@ -854,9 +919,10 @@ assert.ok(!publicConfirm.textContent.includes(PUBLIC), 'the confirm must not cla
 publicConfirm.close('cancel');
 await tick();
 quietShare.close();
-// Designs and boards run without published versions (live_version 0), so
-// widening them reaches the confirm; a versioned flat still publishes first.
-for (const type of ['design', 'board', 'notebook']) {
+// Designs, boards, notebooks and sheets run without published versions
+// (live_version 0), so widening them reaches the confirm; a versioned flat
+// still publishes first.
+for (const type of ['design', 'board', 'notebook', 'sheet']) {
   const live = { ...quiet, type, slug: 'live-' + type, name: 'Live ' + type, running: true, live_version: 0, versions: 0, draft: null, providers: ['portal'] };
   const widened = versionActions.setVisibility(live, 'public');
   await tick();
@@ -2444,7 +2510,7 @@ localShare.close();
 globalThis.location = shareLocation;
 assert.ok(shareRoute({ ...shareFixture, private_url: '', private_state: '' }).message.includes('No link'));
 assert.ok(shareRoute({ ...shareFixture, live_version: 0 }).message.includes('not been published'));
-for (const type of ['docs', 'design', 'board', 'notebook']) {
+for (const type of ['docs', 'design', 'board', 'notebook', 'sheet']) {
   const message = shareRoute({ ...shareFixture, type, running: false }).message;
   assert.ok(message.includes('not running') && !message.includes('publish'));
 }
@@ -2503,9 +2569,11 @@ assert.equal(observedChanges, 1, 'parent refreshes after an observed change');
   assert.equal(dom.accessOf({ type: 'board', visibility: 'public' }), 'view', 'a Public board without a level is view only');
   assert.equal(dom.accessOf({ type: 'flat', visibility: 'public' }), 'public');
   assert.equal(dom.accessOf({ type: 'board', visibility: 'public', public_access: 'edit' }), 'edit');
-  // A notebook has no public edit level: it is plain Public.
-  assert.equal(dom.publicEditOf({ type: 'notebook' }), null);
-  assert.equal(dom.accessOf({ type: 'notebook', visibility: 'public' }), 'public');
+  // A notebook or sheet has no public edit level: it is plain Public.
+  for (const type of ['notebook', 'sheet']) {
+    assert.equal(dom.publicEditOf({ type }), null);
+    assert.equal(dom.accessOf({ type, visibility: 'public' }), 'public');
+  }
 }
 const retro = { ...notes, type: 'board', slug: 'retro', name: 'Retro', visibility: 'public', public_access: 'view', running: true, live_version: 0,
   providers: ['portal'], private_url: 'https://retro.tail.ts.net', public_url: 'https://retro.portal.example', public_notice: PUBLIC,
@@ -2525,17 +2593,18 @@ const retroEdit = { ...retro, public_access: 'edit', public_presence: { guests: 
 }
 const visCalls = () => calls.filter((c) => c.key === 'POST /console/api/flats/retro/visibility').map((c) => JSON.parse(c.body));
 const openDialogs = () => all(document.body, (e) => e.tagName === 'DIALOG' && e.open);
-{
-  // A Public notebook offers only Private and Public: guests never edit it.
-  const atlas = { ...retro, type: 'notebook', slug: 'atlas', name: 'Atlas', public_access: undefined, public_presence: undefined };
+for (const type of ['notebook', 'sheet']) {
+  // A Public notebook or sheet offers only Private and Public: guests never
+  // edit it.
+  const atlas = { ...retro, type, slug: 'atlas', name: 'Atlas', public_access: undefined, public_presence: undefined };
   const before = calls.length;
   shareDialog(atlas);
   const dlg = openDialogs().pop();
-  assert.deepEqual(radios(dlg).map((r) => r.value), ['private', 'public']);
+  assert.deepEqual(radios(dlg).map((r) => r.value), ['private', 'public'], type);
   assert.equal(radios(dlg).find((r) => r.checked).value, 'public');
   assert.ok(!dlg.textContent.includes('anyone can edit') && dlg.textContent.includes('Can open'));
   assert.equal(byText(dlg, 'Stop guest editing')[0].parentNode.hidden, true);
-  assert.equal(calls.slice(before).some((c) => c.key.includes('/public-edit')), false, 'a notebook has no guest-edit preflight');
+  assert.equal(calls.slice(before).some((c) => c.key.includes('/public-edit')), false, `a ${type} has no guest-edit preflight`);
   dlg.close();
 }
 {

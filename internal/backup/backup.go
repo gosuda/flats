@@ -52,6 +52,7 @@ type Result struct {
 	KeyPath   string // the external key's path, when SecretKey is "external"
 	Skipped   []Skip
 	Unstable  []string
+	Refused   []Skip // sheet.db files copied as they are because the sheet check refuses them
 }
 
 func (o *Options) hook(step int) error {
@@ -295,7 +296,7 @@ func Run(ctx context.Context, o Options) (res *Result, err error) {
 	}
 	published = true
 
-	res = &Result{Out: final, Files: len(m.Files), Attempts: attempts, Retries: c.retries, SecretKey: m.SecretKey, Skipped: m.Skipped, Unstable: m.Unstable}
+	res = &Result{Out: final, Files: len(m.Files), Attempts: attempts, Retries: c.retries, SecretKey: m.SecretKey, Skipped: m.Skipped, Unstable: m.Unstable, Refused: m.Refused}
 	if m.SecretKey == SecretKeyExternal {
 		res.KeyPath = keyFile.Path()
 	}
@@ -441,6 +442,13 @@ func (c *copier) databasesAndCoherence(hook func(int) error) (int, error) {
 		if err != nil {
 			return 0, fmt.Errorf("read the import cursors of the copy: %w", err)
 		}
+		// A refused sheet.db is kept as it is, and no check reads its rows.
+		c.mu.Lock()
+		cursors = slices.DeleteFunc(cursors, func(cur cursor) bool {
+			_, refused := c.refused[manifestPath(outboxPath(cur.flat, cur.typ))]
+			return cur.typ == typeSheet && refused
+		})
+		c.mu.Unlock()
 		bad, err := incoherentCursors(c.ctx, dataRoot, cursors)
 		if err != nil {
 			return 0, err
@@ -502,6 +510,10 @@ func (c *copier) copyExternalConfig(configPath string) (string, error) {
 			continue
 		}
 		rel := nameConfigHist + "/" + de.Name()
+		if err := checkManifestPath(rel); err != nil {
+			c.skipMP(rel, "name that a copy cannot list: it "+err.Error())
+			continue
+		}
 		if err := c.copyTo(filepath.Join(histDir, de.Name()), filepath.Join(c.root, nameConfigHist, de.Name()), rel, rel, classHost); err != nil {
 			return "", err
 		}

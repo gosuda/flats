@@ -286,6 +286,30 @@ class ChangeSelectionTests(unittest.TestCase):
                     self.assertEqual(output, "full=true\n")
 
 
+class JobSelectionTests(unittest.TestCase):
+    def test_every_full_suite_job_follows_the_documentation_selection(self) -> None:
+        workflow = (ROOT / ".github/workflows/ci.yml").read_text()
+        jobs = workflow.split("\njobs:\n", 1)[1]
+        names = re.findall(r"^  ([a-z][a-z0-9-]*):$", jobs, re.M)
+        # The selector itself, the documentation-only check, the legacy build
+        # of pull requests (whose condition the test below covers) and the
+        # image publication of main, which follows the test jobs.
+        own_condition = {"changes", "docs", "legacy-build", "commit-images"}
+        self.assertTrue(own_condition <= set(names))
+        full = ("if: ${{ !cancelled() && (github.event_name != 'pull_request' || "
+                "needs.changes.result != 'success' || needs.changes.outputs.full != 'false') }}")
+        # The race lanes and the large memory tests run on main and manual dispatch only.
+        main_only = {"race", "notebook-memory"}
+        main_only_condition = "if: ${{ !cancelled() && github.event_name != 'pull_request' }}"
+        for name, body in zip(names, re.split(r"^  [a-z][a-z0-9-]*:$", jobs, flags=re.M)[1:]):
+            if name in own_condition:
+                continue
+            with self.subTest(job=name):
+                header = body.split("\n    steps:\n", 1)[0]
+                self.assertIn("\n    needs: changes\n", header)
+                self.assertIn("\n    " + (main_only_condition if name in main_only else full) + "\n", header)
+
+
 class WindowsPackageTests(unittest.TestCase):
     def test_windows_keeps_native_regressions_and_running_host_backup(self) -> None:
         workflow = (ROOT / ".github/workflows/ci.yml").read_text()

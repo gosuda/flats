@@ -66,6 +66,7 @@ var migrations = []migration{
 	{27, "key IDs", addKeyIDs},
 	{28, "fetch bindings of secrets", addFetchBindings},
 	{29, "portal sign-in", addSignIn},
+	{30, "sheet revision imports and tabs", addSheetRevisions},
 }
 
 func latestVersion() int { return migrations[len(migrations)-1].version }

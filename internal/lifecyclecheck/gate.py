@@ -595,6 +595,8 @@ def version_quota_deletion(h: Host) -> None:
 
 # The smallest valid update_notebook operation (notebook-TECH Appendix A).
 NOTEBOOK_PAGE = {"op": "create_page", "ref": "p1", "parent": None, "before": None, "title": "Notes"}
+# A valid update_sheet operation (sheet technical design, section 18.2).
+SHEET_WRITE = {"op": "write", "tab": "Sheet1", "at": "A1", "rows": [["Item", "Amount"], ["Total", "=SUM(B1:B1)"]]}
 
 
 def approval_boundary(h: Host) -> None:
@@ -654,6 +656,8 @@ def approval_boundary(h: Host) -> None:
         "delete_env": {"slug": "boundary", "name": "MODE"},
         "get_notebook": {"slug": "boundary"},
         "update_notebook": {"slug": "boundary", "op_id": "lc-1", "ops": [NOTEBOOK_PAGE]},
+        "get_sheet": {"slug": "boundary"},
+        "update_sheet": {"slug": "boundary", "op_id": "lc-1", "ops": [SHEET_WRITE]},
         "get_board": {"slug": "boundary"},
         "get_board_share": {"slug": "boundary"},
         "update_board": {"slug": "boundary", "op_id": "census-board-1", "ops": []},
@@ -663,6 +667,7 @@ def approval_boundary(h: Host) -> None:
                 "list_revisions": "no_revisions", "get_revision": "no_revisions",
                 "pin_revision": "no_revisions", "rollback_revision": "no_revisions",
                 "get_notebook": "not_notebook", "update_notebook": "not_notebook",
+                "get_sheet": "not_sheet", "update_sheet": "not_sheet",
                 "get_board": "not_board", "get_board_share": "not_board",
                 "update_board": "not_board", "import_board": "not_board"}
     census = []
@@ -701,6 +706,8 @@ def approval_boundary(h: Host) -> None:
         census.append({"name": tool["name"], "is_error": result.get("isError", False)})
     if any(tool['name'] == 'update_notebook' for tool in tools):
         notebook_writes_need_no_approval(h, pending)
+    if any(tool['name'] == 'update_sheet' for tool in tools):
+        sheet_writes_need_no_approval(h, pending)
     if any(tool['name'] == 'update_board' for tool in tools):
         board_writes_need_no_approval(h, pending)
     # Console decisions are authorized by the console transport (same-origin
@@ -761,6 +768,21 @@ def notebook_writes_need_no_approval(h: Host, pending: str) -> None:
     require(version_rows(h, 'boundary-notebook') == before, 'notebook write changed the version rows')
     require(approval_states(h) == approvals_before, 'notebook write changed the approval list')
     require(h.ok('GET', f'/api/approvals/{pending}')['status'] == 'pending', 'notebook write decided existing approval')
+
+
+def sheet_writes_need_no_approval(h: Host, pending: str) -> None:
+    h.mcp('create_flat', slug='boundary-sheet', type='sheet')
+    require(h.flat('boundary-sheet')['type'] == 'sheet', 'MCP create_flat did not create a sheet')
+    state = h.mcp('get_sheet', slug='boundary-sheet')['state']
+    written = h.mcp('update_sheet', slug='boundary-sheet', state=state, op_id='lc-3', ops=[SHEET_WRITE])
+    require(not written.get('approval') and not written.get('deploy') and written.get('revision') == 2,
+            f"sheet write requested an approval or recorded no revision: {written}")
+    total = h.mcp('get_sheet', slug='boundary-sheet', tab='Sheet1', range='B2')['rows'][0][0]
+    require(total == {"formula": "=SUM(B1:B1)", "value": 0}, f"sheet write did not calculate: {total}")
+    flat = h.flat('boundary-sheet')
+    require(not flat.get('live_version') and not flat.get('version_count') and not flat.get('draft'),
+            'sheet write allocated a website version or Draft')
+    require(h.ok('GET', f'/api/approvals/{pending}')['status'] == 'pending', 'sheet write decided existing approval')
 
 
 def board_writes_need_no_approval(h: Host, pending: str) -> None:
