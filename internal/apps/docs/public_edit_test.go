@@ -1208,11 +1208,23 @@ func TestPublicPresenceCounts(t *testing.T) {
 	}
 	g, _ := a.guest(t, "index.md", "Mina", "", 1)
 	v, _ := a.viewer(t, "index.md", "", publicHeaders("edit", 1))
+	// The counts are best effort. The server writes a changed count at most
+	// once a second, sends the pong before it writes, and skips a write while
+	// the database is busy until a later event. Each ping is such an event,
+	// so the counts must show both sockets before the deadline.
 	time.Sleep(1100 * time.Millisecond)
-	v.send(t, map[string]any{"t": "ping"})
-	v.next(t, "pong")
-	if guests, viewers, at := counts(); guests != 1 || viewers != 1 || time.Since(time.UnixMilli(int64(at))) > 5*time.Second {
-		t.Fatal(guests, viewers, at)
+	counted := time.Now().Add(5 * time.Second)
+	for {
+		v.send(t, map[string]any{"t": "ping"})
+		v.next(t, "pong")
+		guests, viewers, at := counts()
+		if guests == 1 && viewers == 1 && time.Since(time.UnixMilli(int64(at))) <= 5*time.Second {
+			break
+		}
+		if time.Now().After(counted) {
+			t.Fatal(guests, viewers, at)
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 	g.Close()
 	v.Close()
