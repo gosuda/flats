@@ -38,7 +38,7 @@ func TestMarkdownRetainedMemory(t *testing.T) {
 				sizes = append(sizes, 16<<20)
 			}
 			// Whole-read heap samples and the growth comparison must stay sequential.
-			schemaPeaks := map[int]uint64{}
+			schemaPeaks := map[int]collectedGrowth{}
 			type memoryCase struct {
 				size      int
 				collected bool
@@ -182,7 +182,7 @@ func TestMarkdownRetainedMemory(t *testing.T) {
 						}
 						body, err = os.ReadFile(responsePath)
 						schemaPeaks[size] = peak
-						t.Logf("retained=%d sampled collected live-heap growth=%d response=%d fixture=%s read=%s", size, peak, len(body), fixtureElapsed, time.Since(readStart))
+						t.Logf("retained=%d sampled collected live-heap growth=%d raw=%d response=%d fixture=%s read=%s", size, peak.net, peak.raw, len(body), fixtureElapsed, time.Since(readStart))
 					} else {
 						var peak, retained uint64
 						body, peak, retained, err = measureReaderHeap(t, f.in, raw)
@@ -238,8 +238,8 @@ func TestMarkdownRetainedMemory(t *testing.T) {
 						}
 					}
 					small, large := schemaPeaks[1<<20], schemaPeaks[16<<20]
-					delta := int64(large) - int64(small)
-					t.Logf("option-schema collected live-heap growth: 1 MiB=%d 16 MiB=%d delta=%d", small, large, delta)
+					delta := int64(large.net) - int64(small.net)
+					t.Logf("option-schema collected live-heap growth: 1 MiB=%d 16 MiB=%d delta=%d (raw 1 MiB=%d 16 MiB=%d)", small.net, large.net, delta, small.raw, large.raw)
 					if delta > collectedGrowthBudget {
 						t.Errorf("Markdown read materialized retained option schema: heap growth increased by %d bytes from 1 to 16 MiB, exceeds 1 MiB", delta)
 					}
@@ -252,22 +252,22 @@ func TestMarkdownRetainedMemory(t *testing.T) {
 // measureMarkdownLiveReads keeps response slices within this frame so the
 // caller's final heap sample excludes them. The file preserves the response
 // from the smallest sampled peak for the continuation assertions.
-func measureMarkdownLiveReads(t *testing.T, in *Instance, query []byte, responsePath string) (peak, firstBaseline uint64) {
+func measureMarkdownLiveReads(t *testing.T, in *Instance, query []byte, responsePath string) (peak collectedGrowth, firstBaseline uint64) {
 	t.Helper()
 	for attempt := 0; attempt < collectedAttempts; attempt++ {
-		body, sample, baseline, err := measureReaderLiveHeap(t, in, query)
+		body, sample, err := measureReaderLiveHeap(t, in, query)
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Logf("collected live-heap sample %d/%d growth=%d baseline=%d", attempt+1, collectedAttempts, sample, baseline)
-		if attempt == 0 || sample < peak {
+		t.Logf("collected live-heap sample %d/%d growth=%d raw=%d baseline=%d", attempt+1, collectedAttempts, sample.net, sample.raw, sample.baseline)
+		if attempt == 0 || sample.net < peak.net {
 			peak = sample
 			if err := os.WriteFile(responsePath, body, 0600); err != nil {
 				t.Fatalf("store measured Markdown response: %v", err)
 			}
 		}
 		if attempt == 0 {
-			firstBaseline = baseline
+			firstBaseline = sample.baseline
 		}
 	}
 	return peak, firstBaseline

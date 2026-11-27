@@ -82,61 +82,126 @@ func measureReaderHeap(t *testing.T, in *Instance, query []byte) ([]byte, uint64
 	return body, peak.Load() - before.HeapAlloc, retained, err
 }
 
-// measureReaderLiveHeap samples collected live heap throughout a fresh read.
-// The ticker covers preparation before output; writes add bounded checkpoints.
-// It also reports the post-collection baseline the growth is measured from,
-// so callers can tell retained heap (baseline shift across reads) apart from
-// transient in-read peaks.
-func measureReaderLiveHeap(t *testing.T, in *Instance, query []byte) ([]byte, uint64, uint64, error) {
-	t.Helper()
-	oldGC := debug.SetGCPercent(20)
-	defer debug.SetGCPercent(oldGC)
-	before := settledReaderHeap()
-	t.Logf("collected live-heap baseline=%d", before)
-	peak := before
-	var mu sync.Mutex
-	sample := func() {
-		mu.Lock()
-		defer mu.Unlock()
-		runtime.GC()
-		var stats runtime.MemStats
-		runtime.ReadMemStats(&stats)
-		peak = max(peak, stats.HeapAlloc)
+// collectedGrowth is the peak growth of one live read over its baseline. Net
+// is what the growth checks use; raw is the plain post-collection reading,
+// logged so that a failure can be attributed.
+type collectedGrowth struct {
+	net, raw, baseline uint64
+}
+
+// collectedHeapSampler records the peak heap that survives a forced collection,
+// net of the bytes allocated while each sample ran. Work running beside a
+// sample keeps allocating during the collection, and CPU contention lengthens
+// it, so the plain reading counts that allocation as growth. The net reading is
+// a lower bound: a structure counts from the first sample that starts while it
+// exists, and one that lives and dies within a single sample is not counted.
+type collectedHeapSampler struct {
+	mu       sync.Mutex
+	baseline uint64
+	net, raw uint64
+	skipped  int
+}
+
+func newCollectedHeapSampler(baseline uint64) *collectedHeapSampler {
+	return &collectedHeapSampler{baseline: baseline, net: baseline, raw: baseline}
+}
+
+func (s *collectedHeapSampler) sample() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var start, end runtime.MemStats
+	runtime.ReadMemStats(&start)
+	runtime.GC()
+	runtime.ReadMemStats(&end)
+	s.record(start, end)
+}
+
+// record takes the snapshots before and after one forced collection; sample
+// calls it with s.mu held.
+func (s *collectedHeapSampler) record(start, end runtime.MemStats) {
+	s.raw = max(s.raw, end.HeapAlloc)
+	net, ok := collectedNetHeap(start.TotalAlloc, end.TotalAlloc, end.HeapAlloc)
+	if !ok {
+		s.skipped++
+		return
 	}
-	var written atomic.Uint64
-	in.spills.wrapWriter = func(out io.Writer) io.Writer {
-		return readerWriteFunc(func(p []byte) (int, error) {
-			after := written.Add(uint64(len(p)))
-			before := after - uint64(len(p))
-			if before == 0 || before/(64<<10) != after/(64<<10) {
-				sample()
-			}
-			return out.Write(p)
-		})
-	}
-	defer func() { in.spills.wrapWriter = nil }()
+	s.net = max(s.net, net)
+}
+
+// sampleEvery samples on a timer until the returned function is called; that
+// function returns the number of timer samples.
+func (s *collectedHeapSampler) sampleEvery(interval time.Duration) func() int {
 	stop, joined := make(chan struct{}), make(chan struct{})
-	var periodic int
+	var count int
 	go func() {
 		defer close(joined)
-		ticker := time.NewTicker(2 * time.Millisecond)
+		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
 			select {
 			case <-stop:
 				return
 			case <-ticker.C:
-				sample()
-				periodic++
+				s.sample()
+				count++
 			}
 		}
 	}()
+	return func() int {
+		close(stop)
+		<-joined
+		return count
+	}
+}
+
+func (s *collectedHeapSampler) result() (collectedGrowth, int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return collectedGrowth{net: s.net - s.baseline, raw: s.raw - s.baseline, baseline: s.baseline}, s.skipped
+}
+
+// collectedNetHeap subtracts the bytes allocated between two MemStats
+// snapshots from the heap in the later one. It reports false when that
+// allocation reaches the heap, which leaves no usable value.
+func collectedNetHeap(totalBefore, totalAfter, heapAfter uint64) (uint64, bool) {
+	during := totalAfter - totalBefore
+	if during >= heapAfter {
+		return 0, false
+	}
+	return heapAfter - during, true
+}
+
+// measureReaderLiveHeap samples collected live heap throughout a fresh read,
+// each sample net of the bytes allocated while it ran (collectedHeapSampler).
+// The ticker covers preparation before output; writes add bounded checkpoints,
+// where the reader waits for the sample. It also reports the post-collection
+// baseline the growth is measured from, so callers can tell retained heap
+// (baseline shift across reads) apart from transient in-read peaks.
+func measureReaderLiveHeap(t *testing.T, in *Instance, query []byte) ([]byte, collectedGrowth, error) {
+	t.Helper()
+	oldGC := debug.SetGCPercent(20)
+	defer debug.SetGCPercent(oldGC)
+	s := newCollectedHeapSampler(settledReaderHeap())
+	t.Logf("collected live-heap baseline=%d", s.baseline)
+	var written atomic.Uint64
+	in.spills.wrapWriter = func(out io.Writer) io.Writer {
+		return readerWriteFunc(func(p []byte) (int, error) {
+			after := written.Add(uint64(len(p)))
+			before := after - uint64(len(p))
+			if before == 0 || before/(64<<10) != after/(64<<10) {
+				s.sample()
+			}
+			return out.Write(p)
+		})
+	}
+	defer func() { in.spills.wrapWriter = nil }()
+	stop := s.sampleEvery(2 * time.Millisecond)
 	body, err := in.Read(t.Context(), query, false)
-	sample()
-	close(stop)
-	<-joined
-	t.Logf("collected live-heap periodic samples=%d", periodic)
-	return body, peak - before, before, err
+	s.sample()
+	periodic := stop()
+	growth, skipped := s.result()
+	t.Logf("collected live-heap periodic samples=%d skipped=%d net growth=%d raw growth=%d", periodic, skipped, growth.net, growth.raw)
+	return body, growth, err
 }
 
 // settledReaderHeap uses a second collection to release pool victims.
@@ -146,6 +211,109 @@ func settledReaderHeap() uint64 {
 	var stats runtime.MemStats
 	runtime.ReadMemStats(&stats)
 	return stats.HeapAlloc
+}
+
+func TestCollectedNetHeap(t *testing.T) {
+	for _, test := range []struct {
+		name                               string
+		totalBefore, totalAfter, heapAfter uint64
+		want                               uint64
+		ok                                 bool
+	}{
+		{"no allocation in the window", 1000, 1000, 600, 600, true},
+		{"allocation below the heap", 1000, 1400, 600, 200, true},
+		{"allocation equal to the heap", 1000, 1600, 600, 0, false},
+		{"allocation above the heap", 1000, 1700, 600, 0, false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			got, ok := collectedNetHeap(test.totalBefore, test.totalAfter, test.heapAfter)
+			if got != test.want || ok != test.ok {
+				t.Fatalf("collectedNetHeap(%d, %d, %d) = %d, %t; want %d, %t", test.totalBefore, test.totalAfter, test.heapAfter, got, ok, test.want, test.ok)
+			}
+		})
+	}
+}
+
+func TestCollectedHeapSamplerRecord(t *testing.T) {
+	snapshot := func(total, heap uint64) runtime.MemStats {
+		return runtime.MemStats{TotalAlloc: total, HeapAlloc: heap}
+	}
+	s := newCollectedHeapSampler(1000)
+	// 2000 bytes allocated during the collection: the raw peak keeps them, the net peak does not.
+	s.record(snapshot(10000, 0), snapshot(12000, 3500))
+	// Allocation that reaches the heap leaves no net value; only the raw peak moves.
+	s.record(snapshot(12000, 0), snapshot(20000, 7000))
+	// A lower sample changes neither peak.
+	s.record(snapshot(20000, 0), snapshot(20100, 1200))
+	growth, skipped := s.result()
+	if want := (collectedGrowth{net: 500, raw: 6000, baseline: 1000}); growth != want || skipped != 1 {
+		t.Fatalf("growth = %+v, skipped = %d; want %+v, skipped 1", growth, skipped, want)
+	}
+	// Samples below the baseline leave both peaks at the baseline.
+	low := newCollectedHeapSampler(5000)
+	low.record(snapshot(0, 0), snapshot(1000, 3000))
+	if growth, _ := low.result(); growth != (collectedGrowth{baseline: 5000}) {
+		t.Fatalf("growth below the baseline = %+v, want none", growth)
+	}
+}
+
+var collectedChurnSink []byte
+
+// TestCollectedHeapSamplerCountsHeldHeapNotChurn checks the runtime figures the
+// net reading relies on: heap held across samples counts in full, and garbage
+// allocated beside the samples does not count as growth.
+func TestCollectedHeapSamplerCountsHeldHeapNotChurn(t *testing.T) {
+	if runtime.GOMAXPROCS(0) < 2 {
+		// With one P the churn goroutine allocates past the heap in every
+		// sample window, so no sample is usable.
+		t.Skip("needs GOMAXPROCS of at least 2")
+	}
+	oldGC := debug.SetGCPercent(20)
+	defer debug.SetGCPercent(oldGC)
+	const held, block = 3 << 20, 64 << 10
+	measure := func(hold bool) collectedGrowth {
+		s := newCollectedHeapSampler(settledReaderHeap())
+		stop, churned := make(chan struct{}), make(chan struct{})
+		go func() {
+			defer close(churned)
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+					collectedChurnSink = make([]byte, block)
+				}
+			}
+		}()
+		stopTimer := s.sampleEvery(2 * time.Millisecond)
+		var blocks [][]byte
+		if hold {
+			for range held / block {
+				blocks = append(blocks, make([]byte, block))
+			}
+		}
+		for range 5 {
+			s.sample()
+			time.Sleep(10 * time.Millisecond)
+		}
+		runtime.KeepAlive(blocks)
+		periodic := stopTimer()
+		close(stop)
+		<-churned
+		collectedChurnSink = nil
+		growth, skipped := s.result()
+		t.Logf("hold=%t periodic samples=%d skipped=%d net growth=%d raw growth=%d", hold, periodic, skipped, growth.net, growth.raw)
+		if samples := periodic + 5; skipped >= samples {
+			t.Fatalf("hold=%t: no usable sample, all %d allocated past the heap during their collection", hold, samples)
+		}
+		return growth
+	}
+	if got := measure(true); got.net < held*9/10 {
+		t.Errorf("net growth %d with %d bytes held across samples, below 90%% of them", got.net, held)
+	}
+	if got := measure(false); got.net > collectedGrowthBudget {
+		t.Errorf("net growth %d from churn alone, over the %d-byte budget", got.net, collectedGrowthBudget)
+	}
 }
 
 func readerQueryFixture(t *testing.T) (writerFixture, WriteResult) {
