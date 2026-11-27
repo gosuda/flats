@@ -32,8 +32,10 @@ func wantValidTabNames(t *testing.T, e *env) {
 
 // A tab that comes back under a taken name gets a valid name, whatever
 // the length of the name it had, and the revision that records it loads.
+// The name has the most characters a tab name may have, so the name the
+// tab comes back under cannot be that name with more added.
 func TestRestoredTabNameStaysValid(t *testing.T) {
-	long := strings.Repeat("n", 100)
+	long := strings.Repeat("n", maxTabName)
 	setup := func(t *testing.T) (*env, *person, TabID) {
 		e := start(t)
 		e.mustAgent(`{"ops":[{"op":"rename_tab","tab":"Sheet1","name":"` + long + `"},{"op":"add_tab","name":"Other"},

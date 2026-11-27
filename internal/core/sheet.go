@@ -163,12 +163,27 @@ func (s *Service) openSheet(slugName string, cursor store.ContentState) (*sheet.
 	// A host whose scratch storage could not be made tries again here,
 	// where no workbook is locked.
 	s.sheetScratchDir()
-	in, _, err := sheet.Open(s.sheetDir(slugName), sheetBackend{s: s, slug: slugName}, sheet.Options{Slug: slugName, Now: func() time.Time { return s.now() }, ImportStore: cursor.ImportStore, ImportSeq: cursor.ImportSeq, OnRecalc: s.sheetStats.observeRecalc, ScratchRoot: s.sheetScratchNow})
+	in, _, err := sheet.Open(s.sheetDir(slugName), sheetBackend{s: s, slug: slugName}, sheet.Options{Slug: slugName, Now: func() time.Time { return s.now() }, ImportStore: cursor.ImportStore, ImportSeq: cursor.ImportSeq, OnRecalc: s.sheetStats.observeRecalc, ScratchRoot: s.sheetScratchNow, OnLoadError: s.sheetLoadFailed(slugName)})
 	if err != nil {
 		return nil, err
 	}
 	s.sheetStats.track(in)
 	return in, nil
+}
+
+// sheetLoadFailed is the OnLoadError of the sheet of slugName. The load of
+// a sheet.db with a -wal file refuses it after Open returned, and the flat
+// records the refusal as the restore event that a board or a notebook that
+// does not open gets. The load must not wait, so the event is recorded in a
+// goroutine of its own, which Close waits for.
+func (s *Service) sheetLoadFailed(slugName string) func(error) {
+	return func(err error) {
+		s.wg.Add(1)
+		go func() {
+			defer s.wg.Done()
+			s.Event(context.Background(), slugName, "error", "restore", "could not load the sheet: "+err.Error(), nil)
+		}()
+	}
 }
 
 // closeSheet stops an instance for the reason code and keeps its batch

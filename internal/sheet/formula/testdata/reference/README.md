@@ -12,18 +12,18 @@ changing an expected value to match the engine.
 |---|---|---|
 | `math.jsonl` | 371 | the 21 math functions |
 | `statistics.jsonl` | 212 | the 14 statistics functions |
-| `conditional.jsonl` | 198 | the 8 conditional totals |
+| `conditional.jsonl` | 207 | the 8 conditional totals |
 | `logic.jsonl` | 247 | the 18 logic functions |
-| `text.jsonl` | 401 | the 19 text functions |
-| `lookup.jsonl` | 241 | the 10 lookup functions |
-| `date.jsonl` | 293 | the 14 date and time functions |
-| `operators.jsonl` | 489 | grammar, comparisons, coercion, errors, references, number formats and shown text, CSV fields, the 32,767-character rule, other tabs |
-| `typed.jsonl` | 69 | typed entry (rule 5) |
+| `text.jsonl` | 409 | the 19 text functions |
+| `lookup.jsonl` | 245 | the 10 lookup functions |
+| `date.jsonl` | 309 | the 14 date and time functions |
+| `operators.jsonl` | 524 | grammar, comparisons, coercion, errors, references, number formats and shown text, CSV fields, the 32,767-character rule, other tabs |
+| `typed.jsonl` | 79 | typed entry (rule 5) |
 | `check_reference.py` | | the independent checker |
 
-2,452 rows in the eight formula files, 2,521 with `typed.jsonl`:
-1,031 normal, 297 boundary, 492 error and
-701 coercion cases. Every function of rule 12 has at least 8
+2,524 rows in the eight formula files, 2,603 with `typed.jsonl`:
+1,092 normal, 314 boundary, 494 error and
+703 coercion cases. Every function of rule 12 has at least 8
 rows, among them a normal case, an error case and a call with a wrong
 number of arguments.
 
@@ -33,7 +33,9 @@ cycles (140 to 206), references (207 to 240), number formats and shown
 text (241 to 348), CSV fields (349 to 414), the length limit on calculated
 text (415 to 427), and from 428 on other tabs, formulas in other cells and
 the grammar, error order, blank value, case folding and formula object
-cases added later.
+cases added later. From 490 on: the text order in the comparisons and criteria (490 to 514), the
+full-width guard of rule 60 (515 to 520), the last date (521, 522), 15-digit text in arithmetic (523)
+and a sum near zero (524).
 
 Each file is UTF-8 without a byte order mark, one JSON object per line,
 lines end with a line feed. `typed.jsonl` has its own fields, see below. Ids are stable: new rows are added at the end
@@ -134,7 +136,8 @@ evaluator of the 104 functions. It compares as the contract does: numbers
 after rounding to 15 significant digits, everything else exactly. It
 checks the layout as well: key order, ids, classes, `differs` values, the
 group of each function, at least 8 rows and a normal and an error case per
-function, UTF-8, and line ends.
+function, UTF-8, and line ends. It also computes the CSV bytes of `../export/cells.json` (rule 60) and
+compares them with `../export/expected.csv`, which is the fixture of technical design section 22.2.
 
 The checker is test tooling, not an engine. It is not used at run time and
 the Go engine shares no code with it.
@@ -195,6 +198,13 @@ the Go engine shares no code with it.
    read every cell of a range before it looked for the deciding value, so
    an error cell after that value was its result, and it was corrected with
    the rows.
+11. Revision of 2026-11-19. The checker was changed first, to the settled
+   decisions of the design (sections 9.3 to 9.5 and rules 5, 12, 22 and 60).
+   It flagged 154 rows of the formula files, all with a changed `csv` and no
+   other changed field, and the export fixture; each kind is listed under
+   "Revision of 2026-11-19" below and was checked against the design before
+   its rows were changed. The 82 new rows were written by hand from the
+   design, and the checker agreed with every one of them on the first run.
 
 The table and the checker have the same author. The checker catches slips
 of arithmetic, counting, rounding and formatting. It does not catch a
@@ -261,8 +271,44 @@ one means changing its rows and the checker together.
 | Typed entry: a percent sets 0 decimals when none are typed and 2 otherwise. | neither | `typed-010` to `typed-013` |
 | Typed entry: a currency sign sets 2 decimals. | Excel (0 for a whole amount) | `typed-014` to `typed-021` |
 | Typed entry: commas set no format, `1e6` is a number, and `007` is the number 7. | both set a Number format for commas | `typed-005`, `typed-003`, `typed-009`, `value-005` |
+| Text order (rule 22, section 9.3): `<`, `<=`, `>`, `>=`, text criteria and the sorted approximate match order two texts by `CompareText`: digits, then the ASCII punctuation in the listed order, then the letters, then other code points by value, with apostrophes and hyphens skipped in the first pass; then the text with fewer apostrophes and hyphens comes first; then code point order. `=` is still equality apart from capitals. | neither in effect; the apostrophe and non-ASCII order is open question 4 of the spec | `operators-490` to `operators-514`, `countif-046` to `countif-052`, `match-047` to `match-050` |
+| Typed entry (rule 5, section 9.5): a whole number of more than 15 digits, before any `%`, stays text. Leading zeros and zeros after the decimal point do not count. `VALUE`, criteria and arithmetic still read such text as a number. | Excel (15 digits kept, the rest zeroed) | `typed-070` to `typed-075` are text; `typed-076` to `typed-079` are numbers (`typed-079` is the 15-digit boundary); `value-025` to `value-032`, `operators-523`, `countif-053` |
+| The last date is 9999-12-31 (rule 12): a date function whose result is after it, or whose argument is after it or before day 0, gives `#NUM!`. Arithmetic on a date is a number, and a date format shows a number past the last date in General. | neither in effect, except that `DATE` and `DAYS` agree with Excel; the date format rule is not confirmed | `date-042`, `date-043`, `edate-023`, `eomonth-022`, `year-017`, `year-018`, `weekday-027`, `hour-016`, `days-020`, `days-021`; `date-044`, `edate-024`, `eomonth-023`, `weekday-028`, `hour-017`, `days-022` as the boundary that is still valid; `operators-521`, `operators-522` |
+| The CSV field of a cell (rule 60, section 9.5) is computed from its value, content kind and number format, not from the shown text: a number is rounded to 15 significant digits, half away from zero, as `Show` rounds it, and written plain up to 15 digits before the point and 9 zeros after it, otherwise with an exponent; negative zero is `0`. | Excel (shown text) and the earlier rules (17 digits, shown text) | the rows listed under "Revision of 2026-11-19" and "Revision of 2026-11-19: 15 significant digits" |
+| A date, time or date and time value under a date or time pattern is written in ISO 8601 form, rounded to the millisecond. A time that carries to a whole day is `00:00:00`, and a value of a whole day or more under a time format is a date with time (rule 60, spec open question 5). | neither; the earlier rule shows the pattern | the rows listed under "Revision of 2026-11-19" |
+| A text whose first character, after leading spaces, is `=`, `+`, `-`, `@`, a tab, a carriage return, a line feed or one of the full-width `＝`, `＋`, `－`, `＠` gets an apostrophe in the CSV field, also a text that reads as a number, such as `-5` from a formula. A number never does. | Excel (no apostrophe; the full-width signs are not in its list) | `operators-364` to `operators-370`, `operators-379`, `operators-404`, `text-010`, `text-014`, `text-043`, `text-044`; `operators-515` to `operators-520` |
+| `LOG10` of a power of ten is the exact logarithm (`math.log10` of the checker), so its value is `3`, not `2.9999999999999996`; `LOG` with base 10 is the same. Its CSV field is `3`, the 15 significant digits of either double. | neither | `log10-001`, `log10-002`, `log-005` |
+| Addition and subtraction give the double result, so `=1.333+1.225-1.333-1.225` is `-2.220446049250313e-16`, which is `-2.22044604925031E-16` in CSV at 15 significant digits and shows `-2.22045E-16` (rule 11). | Excel (0) | `operators-524` |
+| A date format on a number past the last date shows it in General, and its CSV field is the plain number. | not confirmed | `operators-522` |
 
-### Unicode versions
+### Revision of 2026-11-19
+
+The decisions of 2026-11-19 changed rows in four ways. The checker was changed
+first, and before any row was updated it flagged 154 rows of the formula files
+(conditional 3, date 12, math 13, operators 84, statistics 11, text 7, typed 24),
+all with a changed `csv` field and no other field: no `value`, `shown` or `sets`
+changed. Each row's `csv` was then taken from the checker. The kinds, with their
+reasons and rows (ids in ranges are consecutive):
+
+| Kind | Rows | Reason and rows |
+|---|---|---|
+| A General number is written as its value, not its shown text | 54 | Rule 60: this revision wrote the shortest decimal that reads back as the same double, up to 17 digits. The revision of 15 significant digits below replaced that, and these rows now hold the value rounded to 15 significant digits. `averageif-004`, `averageif-013`, `averageifs-012`, `exp-002` to `exp-004`, `exp-012`, `ln-003`, `log-006`, `log10-004`, `operators-047`, `operators-049`, `operators-051` to `operators-055`, `operators-246` to `operators-247`, `operators-249`, `operators-250`, `operators-255`, `operators-260` to `operators-261`, `operators-338`, `pi-001` to `pi-002`, `pi-005`, `pi-008`, `sqrt-003`, `stdev-001` to `stdev-003`, `stdev-005`, `stdev-008` to `stdev-009`, `stdev-013`, `stdevp-003`, `sum-004`, `time-002`, `time-006`, `time-008`, `time-010`, `time-015`, `time-018` to `time-019`, `time-021`, `time-023`, `value-012` to `value-014`, `var-001` to `var-003` |
+| A number, percent or currency is written as the value | 50 | Rule 60: the value, not the text its number format shows. `date-026`, `operators-265` to `operators-278`, `operators-280` to `operators-300`, `operators-412`, `operators-414`, `typed-010` to `typed-021` |
+| A date or time is written in ISO 8601 form | 37 | Rule 60, section 9.5 step 2. `operators-301`, `operators-303` to `operators-306`, `operators-308`, `operators-315`, `operators-319`, `operators-321` to `operators-325`, `operators-327`, `operators-329` to `operators-335`, `operators-344`, `operators-347`, `time-003`, `today-009`, `typed-027` to `typed-029`, `typed-031`, `typed-037` to `typed-038`, `typed-040` to `typed-043`, `typed-045` to `typed-046` |
+| A text starting with `-` gets the apostrophe | 13 | Rule 60, step 4, as the revised rule has it: the minus sign is one of the first characters of a formula for a program that opens the file. Before, the apostrophe came only when the text did not read as a number. `operators-364` to `operators-370`, `operators-379`, `operators-404`, `text-010`, `text-014`, `text-043` to `text-044` |
+
+The changed rows of the export fixture are `E-47` to `E-56`, `E-59` to `E-64`,
+`E-67`, `E-68` and `E-85`, with the same reasons; the cells `E-87` to `E-130`
+are new.
+
+New rows of the revision (82): `operators-490` to `operators-524` (35),
+`date-042` to `date-044`, `edate-023`, `edate-024`, `eomonth-022`, `eomonth-023`,
+`year-017`, `year-018`, `weekday-027`, `weekday-028`, `hour-016`, `hour-017`,
+`days-020` to `days-022` (16), `typed-070` to `typed-079` (10),
+`value-025` to `value-032` (8), `countif-046` to `countif-053` and `sumif-029`
+(9), `match-047` to `match-050` (4).
+
+
 
 The contract for text comparison is Unicode simple case folding, statuses
 C and S of CaseFolding.txt, as `fold_table.go` of the formula package
@@ -279,6 +325,7 @@ agree:
 | Checked with | Unicode version |
 |---|---|
 | `check_reference.py` under Python 3.10.13 | 13.0.0 |
+| `check_reference.py` under Python 3.12.14 | 15.0.0 |
 | Go 1.27.1, `unicode.Version` | 17.0.0 |
 
 The checker prints the Unicode version of the Python it runs with. It
@@ -290,8 +337,54 @@ status S in version 15.1. Go 1.27.1 puts each of these pairs in one
 `unicode.SimpleFold` orbit, so the rows `operators-487` to `operators-489`
 fix them. Letters added after Unicode 13.0.0 have no row, because the
 checker's Python does not know them; rows for them can be added when the
-checker runs on a newer Python.
+checker runs on a newer Python. Under Python 3.12 (Unicode 15.0.0) the rows
+`operators-487` to `operators-489` pass as well, because the pairs already have equal full
+case foldings there: the derivation uses full folding, not the list.
 
 Not in the table: `#LIMIT!`, which needs 50,000,000 characters of
 calculated text, the limits on formula length and nesting, which refuse a
 write and give no value, and `####`, which the browser draws.
+
+### Revision of 2026-11-19: 15 significant digits
+
+The requester decided on 2026-11-19 that a number in a CSV export has up to 15
+significant digits, whatever its number format: the precision that comparisons
+use and that Excel keeps (rule 60, section 9.5 step 3). The checker was changed
+first. `csv_number` rounds the exact value of the double to 15 significant
+digits, half away from zero, as `Show` rounds a number, and writes the digits
+with no zeros at the end: plain when the rounded number needs at most 15 digits
+before the point and 9 zeros after it, otherwise with an exponent such as
+`1.23456789012346E+15` or `1E-11`. Negative zero is `0`. Dates, times and text
+keep their rules.
+
+Before any row was updated, the checker flagged 64 rows: conditional 3, date 9,
+math 13, operators 17, statistics 11, text 10 and typed 1. Each had a changed
+`csv` field and no other field: no `value`, `shown` or `sets` changed. Each
+row's `csv` was then taken from the checker. The kind, with its reason and
+rows (ids in ranges are consecutive):
+
+| Kind | Rows | Reason and rows |
+|---|---|---|
+| A number is rounded to 15 significant digits | 64 | Rule 60, section 9.5 step 3, in place of the 17 digits of the revision above. `averageif-004`, `averageif-013`, `averageifs-012`, `exp-002` to `exp-004`, `exp-012`, `ln-003`, `log-006`, `log10-004`, `operators-047`, `operators-049`, `operators-051` to `operators-055`, `operators-246` to `operators-247`, `operators-249` to `operators-250`, `operators-255`, `operators-261`, `operators-275`, `operators-338`, `operators-523` to `operators-524`, `pi-001` to `pi-002`, `pi-005`, `pi-008`, `sqrt-003`, `stdev-001` to `stdev-003`, `stdev-005`, `stdev-008` to `stdev-009`, `stdev-013`, `stdevp-003`, `sum-004`, `time-002`, `time-006`, `time-008`, `time-010`, `time-015`, `time-018` to `time-019`, `time-021`, `time-023`, `typed-078`, `value-012` to `value-014`, `value-025` to `value-030`, `value-032`, `var-001` to `var-003` |
+
+The export fixture changed in four cells, `E-121`, `E-122`, `E-123` and
+`E-128`, which now write `0.333333333333333`, `0.3`, `1.23456789012346E+15` and
+`1.23456789012346E+19`. The cases after `E-127` have one id each: `E-128` is
+`=12345678901234567890`, `E-129` is `=LOG10(1000)` (new, `3`), `E-130` is
+`=DATE(2026,3,15)+0.75` under a date format, `E-131` is `=1.5` under a time
+format, and `E-132` is `=-0` (new, `0`). The fixture has 134 rows and 536 cells.
+
+### Exact doubles
+
+A `csv` field (rule 60) shows the 15th significant digit of the double a
+function gives, rounded. The checker computes `EXP`, `LN`, `LOG` and `LOG10` with
+Python's `math` library (`LOG` with base 10 with `math.log10`), `STDEV`,
+`STDEVP` and `VAR` with exact sums (`math.fsum`) and the mean and square
+sums of their numbers, and `SUM` and `AVERAGE` the same way. An engine with
+another library or another order of additions may give a double one step
+away. At 15 digits that changes the field only where the digits after the 15th
+lie near a rounding boundary, as they do for `EXP(1)` and `SQRT(2)`. The rows
+that depend on this are the rows named in the revision list above for EXP, LN,
+LOG, LOG10, STDEV, STDEVP and VAR. The requester chose 15 significant digits on
+2026-11-19; the design does not fix the order of the sums, so these rows remain
+the contract.

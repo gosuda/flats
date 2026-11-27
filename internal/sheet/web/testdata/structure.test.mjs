@@ -388,9 +388,13 @@ test('tab names follow rule 2', () => {
   assert.equal(tabNameError('Costs', tabs, 1), null);
   assert.equal(tabNameError('Budget', tabs, 1), null, 'a tab may keep its own name');
   assert.match(tabNameError('budget', tabs, 2), /already has this name/, 'names are unique apart from capitals');
-  assert.match(tabNameError('', tabs, 1), /1 to 100 characters/);
-  assert.match(tabNameError('x'.repeat(101), tabs, 1), /1 to 100 characters/);
-  assert.equal(tabNameError('가'.repeat(100), tabs, 1), null, 'characters are code points');
+  assert.match(tabNameError('', tabs, 1), /1 to 31 characters/);
+  assert.match(tabNameError('x'.repeat(32), tabs, 1), /1 to 31 characters/);
+  assert.equal(tabNameError('x'.repeat(31), tabs, 1), null);
+  assert.equal(tabNameError('\u{1F600}'.repeat(31), tabs, 1), null, 'characters are code points');
+  assert.match(tabNameError('\u{1F600}'.repeat(32), tabs, 1), /1 to 31 characters/);
+  for (const reserved of ['History', 'HISTORY', 'history']) assert.match(tabNameError(reserved, tabs, 1), /cannot be named History/);
+  assert.equal(tabNameError('History 2', tabs, 1), null);
   for (const bad of ['a[b', 'a]b', 'a:b', 'a*b', 'a?b', 'a/b', 'a\\b', 'a\tb']) assert.match(tabNameError(bad, tabs, 1), /cannot hold/);
   for (const bad of [' a', 'a ', "'a", "a'"]) assert.match(tabNameError(bad, tabs, 1), /start or end/);
   assert.equal(tabNameError("Q1 costs, o'clock", tabs, 1), null);
@@ -408,6 +412,7 @@ test('tabs are added, renamed in place and reordered from the menu and by draggi
   const input = list.querySelector('input');
   assert.equal(t.doc.activeElement, input);
   assert.equal(input.getAttribute('aria-label'), 'New name for tab Notes');
+  assert.equal(input.getAttribute('maxlength'), '62', 'room for 31 code points of two UTF-16 units');
   input.value = 'budget';
   fire(input, 'keydown', { key: 'Enter' });
   assert.match(notices(t)[0][1], /The name was not changed\. Another tab already has this name\./);

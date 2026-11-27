@@ -250,7 +250,7 @@ export function installDOM({ hash = '' } = {}) {
   g.localStorage = { getItem: (k) => (store.has(k) ? store.get(k) : null), setItem: (k, v) => store.set(k, String(v)) };
   g.__clipboard = null;
   Object.defineProperty(g, 'navigator', { value: { clipboard: { writeText: async (t) => { g.__clipboard = t; }, readText: async () => g.__clipboard ?? '' } }, configurable: true });
-  for (const [tag, attrs] of [['div', { id: 'app', class: 'app' }], ['div', { id: 'announce' }], ['div', { id: 'announce-cell' }]]) {
+  for (const [tag, attrs] of [['div', { id: 'app', class: 'app' }], ['div', { id: 'announce' }], ['div', { id: 'announce-cell' }], ['div', { id: 'announce-find' }]]) {
     const el = doc.createElement(tag);
     for (const [k, v] of Object.entries(attrs)) el.setAttribute(k, v);
     doc.body.appendChild(el);

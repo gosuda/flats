@@ -22,7 +22,7 @@ const referenceDir = "testdata/reference"
 
 // referenceRows is the number of cases the technical design, section 9.6,
 // and the README of the table state.
-const referenceRows = 2521
+const referenceRows = 2603
 
 // knownFailures lists rows that cannot pass without contradicting another
 // row or the spec. It is empty: every row of the table passes.
@@ -469,7 +469,7 @@ func formulaResult(t testing.TB, row *refRow, formula string, today Date, nf *Nu
 		format = *nf
 	}
 	shown := Show(cell.val, cell.showKind(), format)
-	return refResult{value: jsonOf(cell.val), shown: shown, csv: string(AppendCSVField(nil, shown))}
+	return refResult{value: jsonOf(cell.val), shown: shown, csv: string(AppendCSVField(nil, cell.val, cell.showKind(), format))}
 }
 
 func typedResult(t testing.TB, typed string) refResult {
@@ -485,7 +485,7 @@ func typedResult(t testing.TB, typed string) refResult {
 		format = *sets
 	}
 	shown := Show(content.Value(), content.Kind, format)
-	res := refResult{shown: shown, csv: string(AppendCSVField(nil, shown)), sets: sets}
+	res := refResult{shown: shown, csv: string(AppendCSVField(nil, content.Value(), content.Kind, format)), sets: sets}
 	iso := NumberFormat{Kind: NumberDate}
 	hms := NumberFormat{Kind: NumberTime, Time: TimeHMS}
 	switch content.Kind {

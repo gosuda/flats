@@ -5,17 +5,33 @@ import (
 	"strings"
 )
 
-// dayNumber reads a date argument as a whole day. A negative number is
-// #NUM!.
+// dayNumber reads a date argument as a whole day. A day before day 0 or
+// after the last date is #NUM! (rule 12). A fraction of the last day is
+// still that day.
 func (ev *evaluator) dayNumber(n *node) (int64, ErrorCode) {
 	x, err := ev.num(n)
-	switch {
-	case err != ErrNone:
+	if err != ErrNone {
 		return 0, err
-	case x < 0 || x > maxWhole:
+	}
+	return wholeDay(x)
+}
+
+// wholeDay returns the day of a date or time, or #NUM! for a day before
+// day 0 or after the last date.
+func wholeDay(x float64) (int64, ErrorCode) {
+	if x < 0 || x >= lastDateDay+1 {
 		return 0, ErrNum
 	}
 	return int64(math.Floor(x)), ErrNone
+}
+
+// dateResult is the value of a date a function calculates: #NUM! before
+// day 0 or after the last date.
+func dateResult(serial int64) Value {
+	if serial < 0 || serial > lastDateDay {
+		return errValue(ErrNum)
+	}
+	return NumberValue(float64(serial))
 }
 
 // wholeArg reads an argument as a whole number the calendar can count
@@ -62,11 +78,7 @@ func (ev *evaluator) fnDate(a []*node) Value {
 		y += 1900
 	}
 	years, month := floorDivMod(m-1, 12)
-	serial := serialOf(y+years, month+1, 1) + d - 1
-	if serial < 0 {
-		return errValue(ErrNum)
-	}
-	return NumberValue(float64(serial))
+	return dateResult(serialOf(y+years, month+1, 1) + d - 1)
 }
 
 // fnDatePart is YEAR (part 0), MONTH (1) and DAY (2).
@@ -84,7 +96,15 @@ func (ev *evaluator) fnDays(a []*node) Value {
 	if err != ErrNone {
 		return errValue(err)
 	}
-	return NumberValue(math.Floor(end) - math.Floor(start))
+	endDay, err := wholeDay(end)
+	if err != ErrNone {
+		return errValue(err)
+	}
+	startDay, err := wholeDay(start)
+	if err != ErrNone {
+		return errValue(err)
+	}
+	return NumberValue(float64(endDay - startDay))
 }
 
 func (ev *evaluator) fnWeekday(a []*node) Value {
@@ -126,11 +146,7 @@ func (ev *evaluator) fnShiftMonths(a []*node, toEnd bool) Value {
 	if last := monthLen(y, m); toEnd || d > last {
 		d = last
 	}
-	shifted := serialOf(y, m, d)
-	if shifted < 0 {
-		return errValue(ErrNum)
-	}
-	return NumberValue(float64(shifted))
+	return dateResult(serialOf(y, m, d))
 }
 
 // fnDateDif counts the time from one date to a later one in the unit Y, M,
@@ -191,11 +207,11 @@ func (ev *evaluator) fnDateDif(a []*node) Value {
 // fnTimePart is HOUR (part 0), MINUTE (1) and SECOND (2).
 func (ev *evaluator) fnTimePart(a []*node, part int) Value {
 	x, err := ev.num(a[0])
-	switch {
-	case err != ErrNone:
+	if err == ErrNone {
+		_, err = wholeDay(x)
+	}
+	if err != ErrNone {
 		return errValue(err)
-	case x < 0:
-		return errValue(ErrNum)
 	}
 	_, secs := splitDayTime(x)
 	return NumberValue(float64([3]int{secs / 3600, secs / 60 % 60, secs % 60}[part]))

@@ -87,7 +87,7 @@ test('a fill keeps the source and the targets it was prepared with, and the base
   t.server.insertRows(1, 3);
   t.grid.h.up(ev());
   const a = actions(t).at(-1);
-  assert.deepEqual(a.ops[0], { op: 'fill', tab: 1, source: { rows: [[t.source, 1]], cols: [[t.col, 1]] }, target: { rows: packIds(t.targets), cols: [[t.col, 1]] } });
+  assert.deepEqual(a.ops[0], { op: 'fill', tab: 1, source: { rows: [[t.source, 1]], cols: [[t.col, 1]] }, target: { rows: packIds(t.targets), cols: [[t.col, 1]] }, mode: 'auto' });
   assert.equal(a.base, base);
   const b = t.sel.box();
   assert.deepEqual([b.r1, b.r2], [1, 6], 'the selection covers the source and the targets where they are');

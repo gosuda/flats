@@ -145,7 +145,7 @@ func TestRetainedFormulaPastTheLimitKeepsItsReferences(t *testing.T) {
 
 // The parts of the bound match what the stored lexer reads: a row part of
 // at most 13 bytes, a column part of at most 9 and a quoted tab name of at
-// most 402, two apostrophes and 100 code points of four bytes.
+// most 126, two apostrophes and 31 code points of four bytes.
 func TestStoredBoundParts(t *testing.T) {
 	if n := len("R[-" + strconv.Itoa(rowCap-1) + "]"); n != maxRowPart {
 		t.Errorf("the longest row part has %d bytes, maxRowPart %d", n, maxRowPart)
@@ -221,7 +221,7 @@ func TestMaxStoredBytes(t *testing.T) {
 
 // A stored form holds at most as many tokens as a formula has code points
 // at the limit. A sum of ones of MaxStoredBytes bytes, and one of
-// 1,875,968 bytes for ParseRetained, has far more: each is refused once
+// MaxRetainedBytes for ParseRetained, has far more: each is refused once
 // the lexer reaches the token past the bound, so the refusal allocates no
 // more than that many tokens take and builds no tree. A form of exactly
 // that many tokens is read.
@@ -272,12 +272,18 @@ func TestStoredTokenBound(t *testing.T) {
 }
 
 // MaxRetainedBytes is what a form takes when every two code points of a
-// formula of 8,192 are a reference that became the longest slot: a form
-// of that room is read, one a byte longer is not, without a byte read. The
+// formula of 8,192 are a reference that became the longest slot of 174
+// bytes: 4 × 8,192 + 4,096 × 174, which is 745,472. This is L-20 of the
+// technical design, section 22.2, at ParseRetained, which holds the forms
+// of an undo scratch file to MaxRetainedBytes: a form of 745,472 bytes is
+// read, and one of 745,473 is damaged, refused without a byte read. The
 // longest form a rename makes of a formula a cell held, a sum of as many
-// references to a tab as a formula holds renamed to a tab name of 100
-// code points of four bytes each, is within it and is read.
+// references to a tab as a formula holds renamed to a tab name of 31 code
+// points of four bytes each, is within it and is read.
 func TestMaxRetainedBytesWorstCase(t *testing.T) {
+	if MaxRetainedBytes != 745472 || maxSlotBytes != 174 {
+		t.Fatalf("MaxRetainedBytes is %d with slots of %d bytes, want 745,472 and 174", MaxRetainedBytes, maxSlotBytes)
+	}
 	name := strings.Repeat("😀", MaxTabNameChars)
 	corner := "R[-" + strconv.Itoa(rowCap-1) + "]C[-" + strconv.Itoa(colCap-1) + "]"
 	slot := "{" + quoteTabName(name) + "!" + corner + ":" + corner + "}"
@@ -298,6 +304,9 @@ func TestMaxRetainedBytesWorstCase(t *testing.T) {
 		t.Fatalf("ParseRetained at MaxRetainedBytes: %v", err)
 	}
 	over := refs + `+"` + strings.Repeat("x", pad+1) + `"`
+	if len(over) != 745473 {
+		t.Fatalf("the form past the bound has %d bytes", len(over))
+	}
 	if _, err := ParseRetained(over); !errors.Is(err, ErrStored) {
 		t.Fatalf("ParseRetained at %d bytes: %v", len(over), err)
 	}

@@ -48,6 +48,39 @@ func TestLimitTabs(t *testing.T) {
 	}
 }
 
+// L-19: a tab name has at most 31 code points and is not History, apart
+// from capitals, by add, rename and agent call.
+func TestLimitTabNames(t *testing.T) {
+	e := start(t)
+	alice := e.person("Alice")
+	tab := e.tabID("Sheet1")
+	long := strings.Repeat("가", 31)
+	over := strings.Repeat("😀", 32)
+	for _, bad := range []string{over, "History", "HISTORY", "history"} {
+		if ack := alice.do(jsonf(`{"op":"add_tab","name":%q}`, bad)); status(ack) != "refused:invalid" {
+			t.Errorf("add_tab %q: %s", bad, status(ack))
+		}
+		if ack := alice.do(jsonf(`{"op":"rename_tab","tab":%d,"name":%q}`, tab, bad)); status(ack) != "refused:invalid" {
+			t.Errorf("rename_tab %q: %s", bad, status(ack))
+		}
+		_, err := e.agent(jsonf(`{"ops":[{"op":"add_tab","name":%q}]}`, bad))
+		e.wantRefusal(err, "invalid", "tab_name")
+		_, err = e.agent(jsonf(`{"ops":[{"op":"rename_tab","tab":"Sheet1","name":%q}]}`, bad))
+		e.wantRefusal(err, "invalid", "tab_name")
+	}
+	if got := e.tabNames(); !slices.Equal(got, []string{"Sheet1"}) {
+		t.Fatalf("tabs after the refusals = %v", got)
+	}
+	// 31 code points apply, and so do names that only hold History.
+	if ack := alice.do(jsonf(`{"op":"add_tab","name":%q}`, long)); status(ack) != "applied" {
+		t.Fatalf("add_tab of 31 code points: %s", status(ack))
+	}
+	e.mustAgent(jsonf(`{"ops":[{"op":"rename_tab","tab":"Sheet1","name":%q},{"op":"add_tab","name":"History 2026"}]}`, strings.Repeat("😀", 31)))
+	if got := e.tabNames(); !slices.Equal(got, []string{strings.Repeat("😀", 31), long, "History 2026"}) {
+		t.Fatalf("tabs = %v", got)
+	}
+}
+
 func TestLimitRowsAndColumns(t *testing.T) {
 	e := start(t)
 	// L-02: row 100,001 by write, insert, append and CSV import.

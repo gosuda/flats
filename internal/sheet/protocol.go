@@ -202,7 +202,7 @@ var (
 		"format":      {"tab rows cols set"},
 		"width":       {"tab cols width"},
 		"copy":        {"from to mode", "cut"},
-		"fill":        {"tab source target"},
+		"fill":        {"tab source target", "mode"},
 		"insert_rows": {"tab beside side count"},
 		"insert_cols": {"tab beside side count"},
 		"append_rows": {"tab count"},
@@ -1136,8 +1136,9 @@ func (op personOp) MarshalJSON() ([]byte, error) { return op.appendJSON(nil), ni
 // check finds what makes the operation none of section 7.1 although its
 // members are well formed: applying it gives the refusal as its result.
 // Such a value is an operation of an unknown kind, an id that is no
-// positive integer, a side that is neither before nor after, or an index
-// of at that is no position.
+// positive integer, a side that is neither before nor after, an index of
+// at that is no position, or a mode of a fill other than copy, auto and
+// series. A fill without a mode is a copy.
 func (op *personOp) check() {
 	if _, known := opShape.kinds[op.Op]; !known {
 		op.bad = invalidf("op", "unknown operation %q", op.Op)
@@ -1165,6 +1166,9 @@ func (op *personOp) check() {
 	}
 	if op.has&opBit(sOpAt) != 0 && (op.At[0] < 0 || op.At[0] > math.MaxInt32 || op.At[1] < 0 || op.At[1] > math.MaxInt32) {
 		op.bad = invalidf("at", "at is a row index and a column index")
+	}
+	if op.Op == "fill" && op.has&opBit(sOpMode) != 0 && op.Mode != "copy" && op.Mode != "auto" && op.Mode != "series" {
+		op.bad = invalidf("mode", "the mode of a fill is copy, auto or series")
 	}
 }
 

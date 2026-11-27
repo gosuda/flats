@@ -101,17 +101,18 @@ func TestOversizedRecordFieldsAreNotRead(t *testing.T) {
 	resume := func(e *env) error { _, err := e.in.resumeSession(ctx, r.token); return err }
 	// The tick closes groups that are an hour old. The damaged group
 	// staying is the refusal; a tick that closed it read it, and a count
-	// that cannot be read fails the test.
+	// that cannot be read fails the test. The count reads through a
+	// connection of its own, since a refused load closed the instance's.
 	groups := func(e *env) error {
 		count := func() int {
-			var n int
-			if err := e.in.rdb.QueryRow(`SELECT count(*) FROM groups`).Scan(&n); err != nil {
-				t.Fatalf("the groups cannot be counted: %v", err)
+			n, err := groupCount(ctx, e.dir)
+			if err != nil {
+				e.t.Fatalf("the groups cannot be counted: %v", err)
 			}
 			return n
 		}
 		if before := count(); before != 1 {
-			t.Fatalf("the sheet holds %d groups", before)
+			e.t.Fatalf("the sheet holds %d groups", before)
 		}
 		e.clock.Add(time.Hour)
 		err := e.in.execute(ctx, &work{run: func() error {

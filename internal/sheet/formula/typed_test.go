@@ -3,6 +3,7 @@ package formula
 import (
 	"math"
 	"math/rand"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -66,6 +67,84 @@ func TestParseTyped(t *testing.T) {
 	}
 }
 
+// A number form that is whole as typed, before any %, and that has more
+// than 15 digits as typed stays text on entry, so that no digit is lost
+// (rule 5, T-01). Leading zeros and zeros at the end after the decimal
+// point do not count, and the sign, commas and a currency sign change
+// nothing. VALUE, arithmetic and criteria still read such text as a number.
+func TestLongTypedNumbersStayText(t *testing.T) {
+	texts := []string{
+		"1234567890123456", "-1,234,567,890,123,456", "1234567890123456.0", "1.234567890123456E15", "1234567890123456%",
+		"$1234567890123456", "-$1234567890123456", "1,234,567,890,123,456.00", "1000000000000000", "100000000000000000000",
+		"0.1234567890123456E16", "1234567890123450E-1", "12345678901234567890" + strings.Repeat("0", 280), strings.Repeat("9", 300),
+	}
+	for _, typed := range texts {
+		got, sets := ParseTyped(typed)
+		if got != (Content{Kind: ContentText, Text: typed}) || sets != nil {
+			t.Errorf("ParseTyped(%.40q) = %+v, %v, want the text", typed, got, sets)
+		}
+		if edit := EditText(got, Pos{}); edit != typed {
+			t.Errorf("the text %.40q is edited as %.40q", typed, edit)
+		}
+		if _, ok := textToNumber(typed); !ok {
+			t.Errorf("%.40q is no number where a number is needed", typed)
+		}
+	}
+	for typed, want := range map[string]float64{
+		"0001234567890123":     1234567890123,
+		"123456789012345":      123456789012345,
+		"-123,456,789,012,345": -123456789012345,
+		"1.5E+20":              1.5e20,
+		"1E+20":                1e20,
+		"12345678901234567.5":  12345678901234567.5,
+		"1234567890123456E-1":  123456789012345.6,
+		"1234567890123456.5%":  12345678901234.565,
+		"1.0E+15":              1e15,
+		"0.000000000000000":    0,
+		"0000000000000000000":  0,
+		"999999999999999.000":  999999999999999,
+	} {
+		if got, _ := ParseTyped(typed); got.Kind != ContentNumber || got.Num != want {
+			t.Errorf("ParseTyped(%q) = %+v, want the number %v", typed, got, want)
+		}
+	}
+	sheet := &testSheet{tabs: []*testTab{newTab(t, "Sheet1", map[string]*testCell{
+		"A1": textCell("1234567890123456"), "A2": numberCell(1234567890123456),
+	})}}
+	for formula, want := range map[string]Value{
+		`=VALUE("1234567890123456")`:          NumberValue(1234567890123456),
+		`=VALUE("-1,234,567,890,123,456")`:    NumberValue(-1234567890123456),
+		`=VALUE("1234567890123456%")`:         NumberValue(12345678901234.56),
+		`=VALUE("$1234567890123456")`:         NumberValue(1234567890123456),
+		`=A1+0`:                               NumberValue(1234567890123456),
+		`=COUNTIF(A1:A2,"1234567890123456")`:  NumberValue(2),
+		`=COUNTIF(A1:A2,">1234567890123400")`: NumberValue(1),
+		`=SUMIF(A1:A2,"=1234567890123456")`:   NumberValue(1234567890123456),
+	} {
+		if got := evalOn(t, sheet, formula); got != want {
+			t.Errorf("%s = %v, want %v", formula, got, want)
+		}
+	}
+}
+
+// readBack is what typed entry gives for the edit text of c: c itself,
+// except for a whole number of more than 15 significant digits, whose edit
+// text, its plain digits or from 10^21 on an exponent of all its digits,
+// entry keeps as text (technical design, section 9.5). A whole number of
+// at most 15 significant digits is edited with an exponent once it needs
+// more than 15 digits before the point.
+func readBack(c Content, edit string) Content {
+	if c.Kind != ContentNumber || c.Num != math.Trunc(c.Num) || math.Abs(c.Num) < 1e15 {
+		return c
+	}
+	mant := strconv.FormatFloat(math.Abs(c.Num), 'e', -1, 64)
+	mant, _, _ = strings.Cut(mant, "e")
+	if len(strings.Replace(mant, ".", "", 1)) <= 15 {
+		return c
+	}
+	return Content{Kind: ContentText, Text: edit}
+}
+
 // TestEditText checks rule 18: the formula bar shows content as it would
 // be typed, so that typing it again gives the same content.
 func TestEditText(t *testing.T) {
@@ -78,25 +157,38 @@ func TestEditText(t *testing.T) {
 		"0.30000000000000004": {Kind: ContentNumber, Num: tenth + 0.2},
 		"123456789012345680":  {Kind: ContentNumber, Num: 123456789012345678},
 		"1.5E+21":             {Kind: ContentNumber, Num: 1.5e21},
-		"1E-10":               {Kind: ContentNumber, Num: 1e-10},
-		"0.000001":            {Kind: ContentNumber, Num: 1e-6},
-		"Rent":                {Kind: ContentText, Text: "Rent"},
-		"'007":                {Kind: ContentText, Text: "007"},
-		"'=not a formula":     {Kind: ContentText, Text: "=not a formula"},
-		"''tis":               {Kind: ContentText, Text: "'tis"},
-		"'TRUE":               {Kind: ContentText, Text: "TRUE"},
-		"'2026-03-15":         {Kind: ContentText, Text: "2026-03-15"},
-		"'50%":                {Kind: ContentText, Text: "50%"},
-		"'":                   {Kind: ContentText},
-		"=":                   {Kind: ContentText, Text: "="},
-		"TRUE":                {Kind: ContentBool, Num: 1},
-		"FALSE":               {Kind: ContentBool},
-		"2026-03-15":          {Kind: ContentDate, Num: day},
-		"14:30":               {Kind: ContentTime, Num: 52200.0 / 86400},
-		"14:30:05":            {Kind: ContentTime, Num: 52205.0 / 86400},
-		"00:00":               {Kind: ContentTime},
-		"2026-03-15 14:30":    {Kind: ContentDateTime, Num: day + 52200.0/86400},
-		"2026-03-15 00:00:01": {Kind: ContentDateTime, Num: day + 1.0/86400},
+		// A whole number of at most 15 significant digits with more than
+		// 15 digits before the point has an exponent, and one of more
+		// significant digits its plain digits below 10^21 and an exponent
+		// of all its digits from 10^21 on.
+		"1.5E+20":                {Kind: ContentNumber, Num: 1.5e20},
+		"1E+15":                  {Kind: ContentNumber, Num: 1e15},
+		"-1.23456789012345E+15":  {Kind: ContentNumber, Num: -1234567890123450},
+		"999999999999999":        {Kind: ContentNumber, Num: 999999999999999},
+		"12345678901234568":      {Kind: ContentNumber, Num: 12345678901234568},
+		"1.2345678901234568E+22": {Kind: ContentNumber, Num: 1.2345678901234568e22},
+		"1234567890123456.5":     {Kind: ContentNumber, Num: 1234567890123456.5},
+		"1E-10":                  {Kind: ContentNumber, Num: 1e-10},
+		"0.000001":               {Kind: ContentNumber, Num: 1e-6},
+		"Rent":                   {Kind: ContentText, Text: "Rent"},
+		"'007":                   {Kind: ContentText, Text: "007"},
+		"'=not a formula":        {Kind: ContentText, Text: "=not a formula"},
+		"''tis":                  {Kind: ContentText, Text: "'tis"},
+		"'TRUE":                  {Kind: ContentText, Text: "TRUE"},
+		"'2026-03-15":            {Kind: ContentText, Text: "2026-03-15"},
+		"'50%":                   {Kind: ContentText, Text: "50%"},
+		"1234567890123456":       {Kind: ContentText, Text: "1234567890123456"},
+		"'123456789012345":       {Kind: ContentText, Text: "123456789012345"},
+		"'":                      {Kind: ContentText},
+		"=":                      {Kind: ContentText, Text: "="},
+		"TRUE":                   {Kind: ContentBool, Num: 1},
+		"FALSE":                  {Kind: ContentBool},
+		"2026-03-15":             {Kind: ContentDate, Num: day},
+		"14:30":                  {Kind: ContentTime, Num: 52200.0 / 86400},
+		"14:30:05":               {Kind: ContentTime, Num: 52205.0 / 86400},
+		"00:00":                  {Kind: ContentTime},
+		"2026-03-15 14:30":       {Kind: ContentDateTime, Num: day + 52200.0/86400},
+		"2026-03-15 00:00:01":    {Kind: ContentDateTime, Num: day + 1.0/86400},
 		// Content that typed entry does not give is written as its number.
 		"46096.5": {Kind: ContentDate, Num: day + 0.5},
 		"1.5":     {Kind: ContentTime, Num: 1.5},
@@ -112,7 +204,7 @@ func TestEditText(t *testing.T) {
 		if c.Kind <= ContentDateTime && c.Kind >= ContentDate && back.Kind == ContentNumber {
 			back.Kind = c.Kind // such content has no typed form of its own kind
 		}
-		if back != c {
+		if back != readBack(c, got) {
 			t.Errorf("EditText(%+v) = %q, which reads back as %+v", c, got, back)
 		}
 	}
@@ -136,11 +228,13 @@ func TestEditText(t *testing.T) {
 		if x == 0 {
 			c.Num = 0
 		}
-		if back, _ := ParseTyped(EditText(c, Pos{})); back != c {
-			t.Fatalf("the number %v is shown as %q and reads back as %+v", x, EditText(c, Pos{}), back)
+		edit := EditText(c, Pos{})
+		if back, _ := ParseTyped(edit); back != readBack(c, edit) {
+			t.Fatalf("the number %v is shown as %q and reads back as %+v", x, edit, back)
 		}
 	}
-	texts := []string{"1", "-1", "1e5", "1,000", "$5", "5%", "3/15/2026", "Mar 15, 2026", "2:30 PM", "true", "=1", "'", "''", "x", " 1", "1 ", "-", "2026-03-15 14:30"}
+	texts := []string{"1", "-1", "1e5", "1,000", "$5", "5%", "3/15/2026", "Mar 15, 2026", "2:30 PM", "true", "=1", "'", "''", "x", " 1", "1 ", "-", "2026-03-15 14:30",
+		"1234567890123456", "1234567890123456%", "$1234567890123456", "1.234567890123456E15", "123456789012345", "12345678901234567.5"}
 	for _, s := range texts {
 		c := Content{Kind: ContentText, Text: s}
 		if back, _ := ParseTyped(EditText(c, Pos{})); back != c {
@@ -155,6 +249,49 @@ func TestEditText(t *testing.T) {
 	}
 	if strings.Contains(EditText(Content{Kind: ContentNumber, Num: math.MaxFloat64}, Pos{}), "e") {
 		t.Error("EditText writes a small e, which is fine to read but not the form General shows")
+	}
+}
+
+// TestEditTextOfLongNumbers covers T-04 of the technical design, section
+// 22.2: the edit text of a number typed as 1.5E+20 has an exponent and
+// reads back as the number. A number typed as 12345678901234567.5 is the
+// whole number 12345678901234568, and it and the JSON number
+// 1234567890123456 of an agent's write cells are edited as their plain
+// digits, which entry keeps as text (rule 5). Such a whole number is
+// written with its plain digits below 10^21 and from 10^21 on with an
+// exponent of all its significant digits (section 9.5), and entry keeps
+// either as text.
+func TestEditTextOfLongNumbers(t *testing.T) {
+	typed := func(s string) Content {
+		t.Helper()
+		c, sets := ParseTyped(s)
+		if c.Kind != ContentNumber || sets != nil {
+			t.Fatalf("ParseTyped(%q) = %+v, want a number", s, c)
+		}
+		return c
+	}
+	for _, c := range []struct {
+		name    string
+		content Content
+		edit    string
+		back    Content
+	}{
+		{"typed as 1.5E+20", typed("1.5E+20"), "1.5E+20", Content{Kind: ContentNumber, Num: 1.5e20}},
+		{"typed as 12345678901234567.5", typed("12345678901234567.5"), "12345678901234568", Content{Kind: ContentText, Text: "12345678901234568"}},
+		{"the JSON number 1234567890123456", Content{Kind: ContentNumber, Num: 1234567890123456}, "1234567890123456", Content{Kind: ContentText, Text: "1234567890123456"}},
+		{"the largest number below 10^21", Content{Kind: ContentNumber, Num: math.Nextafter(1e21, 0)}, "999999999999999900000", Content{Kind: ContentText, Text: "999999999999999900000"}},
+		{"10^21", Content{Kind: ContentNumber, Num: 1e21}, "1E+21", Content{Kind: ContentNumber, Num: 1e21}},
+		{"the smallest number above 10^21", Content{Kind: ContentNumber, Num: math.Nextafter(1e21, math.Inf(1))}, "1.0000000000000001E+21", Content{Kind: ContentText, Text: "1.0000000000000001E+21"}},
+		{"the JSON number -12345678901234567890123", Content{Kind: ContentNumber, Num: -12345678901234567890123}, "-1.2345678901234568E+22", Content{Kind: ContentText, Text: "-1.2345678901234568E+22"}},
+	} {
+		edit := EditText(c.content, Pos{})
+		if edit != c.edit {
+			t.Errorf("%s: the edit text is %q, want %q", c.name, edit, c.edit)
+			continue
+		}
+		if back, sets := ParseTyped(edit); back != c.back || sets != nil {
+			t.Errorf("%s: %q committed as typed is %+v with the format %v, want %+v", c.name, edit, back, sets, c.back)
+		}
 	}
 }
 

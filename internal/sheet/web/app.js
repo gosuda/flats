@@ -9,7 +9,7 @@ import { GRID_KEYS, announce, nextRegion } from './a11y.js';
 import { Clipboard, destination } from './clipboard.js';
 import { $, button, h, icon, plural, replace } from './dom.js';
 import { Editor, Rebaser, barText } from './editor.js';
-import { dragTarget, fillOp, keyFill, union } from './fill.js';
+import { FillChoice, dragTarget, fillOp, keyFill, union } from './fill.js';
 import { Find } from './find.js';
 import { Grid } from './grid.js';
 import { History } from './history.js';
@@ -237,7 +237,7 @@ export class App {
     this.badge = h('span', { class: 'badge', text: 'Public · read-only', hidden: true });
     this.facesEl = h('span', { class: 'faces-slot' });
     this.findBtn = h('button', { type: 'button', class: 'btn', 'aria-label': 'Find in this tab (Ctrl or Cmd+F)', title: 'Find in this tab (Ctrl or Cmd+F)', onclick: () => this.find.show() }, icon('find'), h('span', { class: 'hide-s', text: 'Find' }));
-    this.csvBtn = h('button', { type: 'button', class: 'btn', 'aria-label': 'Download this tab as CSV', title: 'Download this tab as a CSV file of its shown values', onclick: () => this.downloadCSV() }, icon('download'), h('span', { class: 'hide-s', text: 'CSV' }));
+    this.csvBtn = h('button', { type: 'button', class: 'btn', 'aria-label': 'Download this tab as CSV', title: 'Download this tab as a CSV file', onclick: () => this.downloadCSV() }, icon('download'), h('span', { class: 'hide-s', text: 'CSV' }));
     this.histBtn = h('button', { type: 'button', class: 'btn', 'aria-pressed': 'false', 'aria-label': 'History: revisions, tab recovery, rollback', title: 'History: revisions, tab recovery, rollback', onclick: () => this.toggleHistory() }, icon('history'), h('span', { class: 'hide-s', text: 'History' }));
     this.keysBtn = h('button', { type: 'button', class: 'btn', 'aria-haspopup': 'dialog', 'aria-label': `Keyboard paths. ${GRID_KEYS}`, title: 'Keyboard paths', onclick: (e) => this.#keysDialog(e.currentTarget) }, icon('keys'), h('span', { class: 'hide-s', text: 'F6: next region' }));
     this.top = h('header', { class: 'top' }, h('span', { class: 'kind' }, icon('sheet'), h('span', { text: 'Sheet' })), this.titleEl, this.badge, h('span', { class: 'grow' }),
@@ -259,6 +259,7 @@ export class App {
     this.fbar = h('div', { class: 'fbar' }, this.nameBox, h('div', { class: 'fx', 'aria-hidden': 'true', text: 'fx' }), this.bar);
     this.find = new Find({
       model: () => this.cur,
+      selection: () => this.sel,
       // The find field keeps focus while the person steps through matches.
       settle: () => this.#settle(false),
       go: (r, c) => {
@@ -268,6 +269,10 @@ export class App {
       },
       marks: (set) => { this.grid.overlays.hits = set; this.changed(); },
       closed: () => this.focusGrid(),
+    });
+    this.fillChoice = new FillChoice({
+      choose: (btn) => this.#fillMenu(btn),
+      closed: (focused) => { if (focused) this.focusGrid(); },
     });
     this.cover = h('div', { class: 'cover', hidden: true });
     this.tabs = new Tabs({
@@ -290,7 +295,7 @@ export class App {
     this.main = h('div', { class: 'main' }, this.top, this.banners, this.toolbar.el, this.fbar, this.grid.el, this.cover, this.tabs.el);
     this.histEl = h('aside', { class: 'hist', 'aria-label': 'History', hidden: true });
     this.toasts = h('div', { class: 'toasts', role: 'region', 'aria-label': 'Notices', 'aria-live': 'polite', 'aria-relevant': 'additions' });
-    replace(this.root, this.main, this.histEl, this.toasts, this.find.el, h('div', { class: 'sr', id: 'grid-keys', text: GRID_KEYS }));
+    replace(this.root, this.main, this.histEl, this.toasts, this.find.el, this.fillChoice.el, h('div', { class: 'sr', id: 'grid-keys', text: GRID_KEYS }));
   }
 
   #events() {
@@ -304,6 +309,8 @@ export class App {
       e.returnValue = '';
     });
     addEventListener('resize', () => this.changed());
+    // A scroll of the grid closes the fill button (rule 21a).
+    this.grid.el.addEventListener('scroll', () => this.fillChoice.check(this.selection, this.grid.el.scrollTop, this.grid.el.scrollLeft));
     this.grid.input.addEventListener('keydown', (e) => { if (this.editor.ed) this.editor.key(e); else this.#gridKey(e); });
     this.bar.addEventListener('keydown', (e) => {
       if (this.editor.ed) { this.editor.key(e); return; }
@@ -732,6 +739,9 @@ export class App {
     // did, every cut cell is where it was, and a paste can move it again.
     if (a.meta.cut && results.every((res) => !res.applied)) this.clipboard.unmoved(a.meta.cut);
     if (m.undo) this.#undoResult(a.ops[0].op === 'redo', m.undo);
+    // A fill drag that applied to a cell leaves its button (rule 21a). One
+    // whose cells were all deleted first applied to none.
+    if (a.meta.fillDrag) this.fillChoice.acked(a.n, results[0]?.status === 'applied' && results[0].applied > 0);
     this.changed();
   }
 
@@ -892,6 +902,8 @@ export class App {
   // editing would stop for it and for every action behind it.
   #act(list, { base: prepared, ...meta } = {}, grid = true) {
     if (!this.canWrite(true, grid)) return null;
+    // The next edit closes the button of a fill drag (rule 21a).
+    this.fillChoice.close();
     const tab = this.model.tab.id;
     const base = prepared ?? this.preparedBase ?? this.model.seq;
     if (!this.net.fits(list, base)) {
@@ -1267,7 +1279,7 @@ export class App {
     this.root.appendChild(a);
     a.click();
     a.remove();
-    this.notices.show({ id: 'csv', kind: 'ok', text: `Downloading “${t.name}.csv”: the shown values of this tab, one field per cell, up to the last filled cell.` });
+    this.notices.show({ id: 'csv', kind: 'ok', text: `Downloading “${t.name}.csv”: a CSV file of this tab, one field per cell, up to the last filled cell.` });
   }
 
   // ---- keyboard ----
@@ -1349,11 +1361,13 @@ export class App {
       return;
     }
     if (mod && e.key.toLowerCase() === 'f') { e.preventDefault(); this.find.show(); return; }
+    if (e.key === 'Escape' && !this.editor.ed && this.fillChoice.open) { e.preventDefault(); this.fillChoice.close(); return; }
     if (e.key === 'Escape' && !this.editor.ed && !this.grid.focused && !this.popups.open) { e.preventDefault(); this.focusGrid(); }
   }
 
   // #cycle moves focus along the F6 route: top bar, toolbar, formula bar,
-  // grid, tab bar, then History and the notices when they are shown.
+  // grid, the button of a fill drag when it shows, tab bar, then History
+  // and the notices when they are shown.
   #cycle(dir) {
     const first = (root, sel) => () => (root.hidden ? null : root.querySelector(sel));
     const regions = [
@@ -1361,6 +1375,7 @@ export class App {
       { name: 'Toolbar', root: this.toolbar.el, target: first(this.toolbar.el, 'button:not([disabled]), select:not([disabled])') },
       { name: 'Formula bar', root: this.fbar, target: () => this.bar },
       { name: 'Grid', root: this.grid.el, target: () => (this.cur.tab ? this.grid.input : null) },
+      { name: 'Fill options', root: this.fillChoice.el, target: () => (this.fillChoice.open ? this.fillChoice.btn : null) },
       { name: 'Tabs', root: this.tabs.el, target: () => this.tabs.list.querySelector('[aria-selected="true"]') || this.tabs.addBtn },
       { name: 'History', root: this.histEl, target: first(this.histEl, 'button') },
       { name: 'Notices', root: this.toasts, target: first(this.toasts, 'button') },
@@ -1577,9 +1592,9 @@ export class App {
     this.changed();
   }
 
-  // #fill sends a fill drag: its source and the target the pointer last
-  // chose, by ids, with the base of the screen the target was chosen on.
-  // A target cell the settle deleted is not filled.
+  // #fill sends a fill drag with mode auto (rule 21a): its source and the
+  // target the pointer last chose, by ids, with the base of the screen the
+  // target was chosen on. A target cell the settle deleted is not filled.
   #fill(d) {
     const src = this.#box(d.source);
     const at = d.hit && this.#hitAfter(d.hit, d.hit);
@@ -1589,13 +1604,52 @@ export class App {
     }
     const t = d.target;
     const m = this.model;
+    const fill = { tab: m.tab.id, source: { rows: packIds(d.source.rows), cols: packIds(d.source.cols) }, target: { rows: packIds(t.rows), cols: packIds(t.cols) } };
     // A fill the page cannot send leaves the selection as it was.
-    if (!this.#act([ops.fill(m.tab.id, { rows: packIds(d.source.rows), cols: packIds(d.source.cols) }, { rows: packIds(t.rows), cols: packIds(t.cols) })], { label: 'fill', base: t.base })) return;
+    const a = this.#act([ops.fill(fill.tab, fill.source, fill.target, 'auto')], { label: 'fill', base: t.base, fillDrag: true });
+    if (!a) return;
     // The selection covers the source and the target cells that are left.
     const u = { ...src };
     for (const id of t.rows) { const r = m.rowIndex(id); if (r >= 0) { u.r1 = Math.min(u.r1, r); u.r2 = Math.max(u.r2, r); } }
     for (const id of t.cols) { const c = m.colIndex(id); if (c >= 0) { u.c1 = Math.min(u.c1, c); u.c2 = Math.max(u.c2, c); } }
     this.selection.range(u.r1, u.c1, u.r2, u.c2);
+    this.fillChoice.expect(a.n, fill, { moved: this.selection.moved, top: this.grid.el.scrollTop, left: this.grid.el.scrollLeft });
+  }
+
+  // #fillMenu offers the fill of the button again by the same ids, as a
+  // copy or as a series. Each is one more fill with the sequence of the
+  // screen on show, so undo takes it back on its own. The fill, as the
+  // next edit, closes the button; a choice the sheet cannot take now, as
+  // while it calculates, says why and leaves the button.
+  #fillMenu(btn) {
+    const r = btn.getBoundingClientRect();
+    const again = (mode, label) => () => {
+      const f = this.fillChoice.open ? this.fillChoice.fill : null;
+      if (f && this.model.tab?.id === f.tab) this.#act([ops.fill(f.tab, f.source, f.target, mode)], { label });
+    };
+    this.popups.menu('Fill options', [
+      { label: 'Copy cells', fn: again('copy', 'fill as a copy') },
+      { label: 'Fill series', fn: again('series', 'fill as a series') },
+    ], { x: r.left, y: r.bottom + 2 });
+  }
+
+  // #fillCheck closes the button of a fill drag once an edit starts, the
+  // selection moves, the grid scrolls, or another tab or a revision is on
+  // screen, and keeps it by the corner of the filled cells. A choice made
+  // while the sheet cannot be edited says why, as any edit does.
+  #fillCheck() {
+    const fc = this.fillChoice;
+    const f = fc.fill;
+    if (!f) return;
+    if (this.editor.ed || this.view || this.model.tab?.id !== f.tab) { fc.close(); return; }
+    fc.check(this.selection, this.grid.el.scrollTop, this.grid.el.scrollLeft);
+    if (!fc.open) return;
+    const b = this.selection.box();
+    const cell = this.grid.cellRect(b.r2, b.c2);
+    const g = this.grid.el.getBoundingClientRect();
+    const host = this.root.getBoundingClientRect();
+    const within = (v, lo, hi) => Math.max(lo, Math.min(hi, v));
+    fc.place(within(cell.right + 2, g.left, g.right - 32) - host.left, within(cell.bottom + 2, g.top, g.bottom - 32) - host.top);
   }
 
   // #selectForMenu selects what a right click names when the selection
@@ -1812,7 +1866,9 @@ export class App {
     o.people = this.view ? [] : this.presence.outlines(this.model);
     o.handle = !this.readOnly && !this.editor.ed && !this.theme.phone;
     this.grid.paint();
+    this.find.sync();
     if (this.editor.ed) this.editor.placeHint();
+    this.#fillCheck();
     this.#chrome();
     // A stale grid holds ids of a state the host has left; after a rollback
     // they can be ids the host never gave out. Nothing is said from it.

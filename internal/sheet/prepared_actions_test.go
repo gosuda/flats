@@ -153,7 +153,8 @@ func kept(run clientRun) []string {
 // 50. A source deleted before the button is let go, deleted and brought
 // back by an undo, or deleted by a change that settling the open edit
 // applies, sends no fill, so 99 is never repeated. A row inserted above
-// moves the cells, and the fill repeats 10 over the four cells it was
+// moves the cells, and the fill, in mode auto as a drag sends it (spec
+// rule 21a), repeats the one plain number 10 over the four cells it was
 // aimed at.
 func TestFillDragKeepsItsSourceAndTargets(t *testing.T) {
 	node := nodeOrSkip(t)
@@ -228,7 +229,7 @@ func TestFillDragKeepsItsSourceAndTargets(t *testing.T) {
 			if len(fills) != 1 {
 				t.Fatalf("the client sent %d fills: %s", len(fills), run.Frames)
 			}
-			want := fmt.Sprintf(`{"type":"action","n":"1","base":"%d","ops":[{"op":"fill","tab":%d,"source":{"rows":[[%d,1]],"cols":[[%d,1]]},"target":{"rows":[[%d,4]],"cols":[[%d,1]]}}]}`, base, tab, source, col, targets[0], col)
+			want := fmt.Sprintf(`{"type":"action","n":"1","base":"%d","ops":[{"op":"fill","tab":%d,"source":{"rows":[[%d,1]],"cols":[[%d,1]]},"target":{"rows":[[%d,4]],"cols":[[%d,1]]},"mode":"auto"}]}`, base, tab, source, col, targets[0], col)
 			if !sameFrame(t, string(fills[0]), want) {
 				t.Fatalf("the client sent %s, want %s", fills[0], want)
 			}

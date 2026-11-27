@@ -1276,10 +1276,10 @@ tell the user before you write to one. Version tools refuse a sheet
 ### The model
 
 - A sheet holds 1 to 50 tabs in a fixed order. You name a tab by its name.
-  A new sheet has one empty tab named `Sheet1`. A name has 1 to 100
+  A new sheet has one empty tab named `Sheet1`. A name has 1 to 31
   characters, is unique apart from capitals, and holds none of
   `[ ] : * ? / \` and no control character. It does not start or end with
-  a space or an apostrophe.
+  a space or an apostrophe. It is not `History`, in any capitals.
 - A cell is named by its address: column letters `A` to `ZZ` and a row
   number from 1, as in `B7`. A tab has at most 100,000 rows and 702
   columns, and starts with 1,000 rows and 26 columns. A write past the last
@@ -1327,8 +1327,15 @@ tell the user before you write to one. Version tools refuse a sheet
 4. `include` adds parts: `"shown"` is the text each cell shows under its
    number format, `"formats"` the formats grouped into ranges, and
    `"widths"` the column widths.
-5. `format: "csv"` returns `csv`, the shown values as CSV text, in place of
-   `rows`.
+5. `format: "csv"` returns `csv`, the cell values as CSV text, in place of
+   `rows`. A number has up to 15 significant digits whatever its number
+   format. A date, a time or a date with time is in ISO 8601 form, such as
+   `2026-03-15`, `14:30:00` or `2026-03-15 14:30:00`. A boolean is `TRUE`
+   or `FALSE`, and an error is its text, such as `#N/A`. A text field whose
+   first character, after any leading spaces, is `=`, `+`, `-`, `@`, a tab,
+   a carriage return, a line feed, or the full-width `＝`, `＋`, `－` or `＠`
+   is written with a leading apostrophe, so that a spreadsheet program does
+   not read it as a formula.
 6. One page holds at most `limit` cells (at most 10,000) and 4 MiB. When
    the result has `next`, call `get_sheet {slug, cursor: next.cursor}` with
    nothing else for the next page. `next.start` names the cell where it
@@ -1397,7 +1404,9 @@ operation in order, or none, and records one revision.
   what a cell shows, never what it holds.
 - `import_csv` is the one operation that reads text as typed: a field such
   as `1,200` or `2026-03-15` becomes a number or a date, as when a person
-  types it.
+  types it. A field that is a whole number of more than 15 digits stays
+  text, so that no digit is lost. A JSON number in `write` stays a number,
+  whatever its digits.
 - One call writes at most 50,000 cells and 8 MiB. The `slug` field of the
   tool does not count, so a call has the same bound through the API and
   the CLI. Cells the call does not name stay as they are.

@@ -4,6 +4,8 @@ import (
 	"math"
 	"slices"
 	"sort"
+	"strings"
+	"unicode/utf8"
 
 	"github.com/gosuda/flats/internal/sheet/formula"
 )
@@ -382,9 +384,14 @@ func (x *txn) applyPerson(op *personOp) (applied, ignored int, err error) {
 		}
 		return applied, gone, nil
 	case "fill":
-		// The shape of a fill gives it both ranges, on the operation's tab.
+		// The shape of a fill gives it both ranges, on the operation's tab,
+		// and the decoder left only the modes of section 8.5. A fill
+		// without a mode is a copy.
 		from, to := *op.Source, *op.Target
 		from.Tab, to.Tab = op.Tab, op.Tab
+		if op.Mode == "auto" || op.Mode == "series" {
+			return x.fillLines(t, &from, &to, op.Mode == "series")
+		}
 		return x.copyOp(&from, &to, "all", false)
 	case "insert_rows", "insert_cols":
 		rows := op.Op == "insert_rows"
@@ -597,7 +604,6 @@ func (x *txn) deleteIDs(t *Tab, rows bool, ids []uint64) (int, *WriteError) {
 // copyOp copies, fills or cuts a source rectangle over a target, repeating
 // the source when the target is larger (spec rule 15).
 func (x *txn) copyOp(from, to *rectSpec, mode string, cut bool) (applied, ignored int, err error) {
-	wb := x.wb
 	switch {
 	case from == nil:
 		return 0, 0, invalidf("from", "copy needs the cells to copy from")
@@ -641,15 +647,7 @@ func (x *txn) copyOp(from, to *rectSpec, mode string, cut bool) (applied, ignore
 			return 0, 0, err
 		}
 	}
-	type source struct {
-		ok      bool
-		content formula.Content
-		f       *formula.Formula
-		val     formula.Value
-		format  formula.Format
-		pos     formula.Pos
-	}
-	src := make([]source, len(srcRows)*len(srcCols))
+	src := make([]copySource, len(srcRows)*len(srcCols))
 	for i, row := range srcRows {
 		// Reading a source cell is a unit.
 		x.spend(64 * len(srcCols))
@@ -657,14 +655,7 @@ func (x *txn) copyOp(from, to *rectSpec, mode string, cut bool) (applied, ignore
 			return 0, 0, calcTimeout()
 		}
 		for j, col := range srcCols {
-			if row == 0 || col == 0 {
-				continue
-			}
-			s := &src[i*len(srcCols)+j]
-			s.ok, s.pos = true, x.posOf(ft, RowID(row), ColID(col))
-			if c := ft.cell(RowID(row), ColID(col)); c != nil {
-				s.content, s.f, s.val, s.format = c.content, c.f, c.val, wb.styles.format(c.style)
-			}
+			src[i*len(srcCols)+j] = x.readSource(ft, row, col)
 		}
 	}
 	rowsBefore, colsBefore := tt.rows.len(), tt.cols.len()
@@ -675,7 +666,6 @@ func (x *txn) copyOp(from, to *rectSpec, mode string, cut bool) (applied, ignore
 	if len(dstRows)*len(dstCols) > maxCells {
 		return 0, 0, capacity("cells", maxCells, int64(len(dstRows)*len(dstCols)))
 	}
-	all := formatPatch{mask: 1<<propCount - 1}
 	var plan *cutPlan
 	if cut {
 		if plan, werr = x.planCut(ft == tt, srcRows, srcCols, dstRows, dstCols, func(k int) bool { return src[k].ok }); werr != nil {
@@ -693,42 +683,14 @@ func (x *txn) copyOp(from, to *rectSpec, mode string, cut bool) (applied, ignore
 				return 0, 0, err
 			}
 			k := (i%len(srcRows))*len(srcCols) + j%len(srcCols)
-			s := src[k]
+			s := &src[k]
 			if row == 0 || col == 0 || !s.ok || cut && plan.held(i*len(dstCols)+j) {
 				ignored++
 				continue
 			}
-			r, c := RowID(row), ColID(col)
 			applied++
-			if tt.cell(r, c) == nil && s.content.Kind == formula.ContentBlank && s.format == (formula.Format{}) {
-				continue
-			}
-			content, f := s.content, s.f
-			if mode == "values" {
-				content, f = valueContent(s.content, s.val), nil
-			} else if f != nil {
-				dst := x.posOf(tt, r, c)
-				if cut {
-					f = f.Cut(s.pos, dst, ft.name, tt.name)
-				} else {
-					f = f.Moved(s.pos, dst)
-				}
-				// The copy is also measured at its cell and looked up
-				// among the formulas of the sheet: its text twice.
-				x.rewrote(s.f, f)
-				x.spend(2 * len(f.Stored()))
-				if n := f.TextLen(dst); n > formula.MaxFormulaChars {
-					return 0, 0, capacity("formula_length", formula.MaxFormulaChars, int64(n))
-				}
-			}
-			if content.Kind == formula.ContentBlank {
-				x.clearContent(tt, r, c)
-			} else {
-				x.setContent(tt, r, c, content, f)
-			}
-			if mode == "all" && (s.format != (formula.Format{}) || tt.cell(r, c) != nil && tt.cell(r, c).style != 0) {
-				all.f = s.format
-				x.setStyle(tt, r, c, all)
+			if werr := x.writeCopy(ft, tt, RowID(row), ColID(col), s, mode, cut); werr != nil {
+				return 0, 0, werr
 			}
 		}
 	}
@@ -739,7 +701,7 @@ func (x *txn) copyOp(from, to *rectSpec, mode string, cut bool) (applied, ignore
 		return 0, 0, errGone
 	}
 	if cut {
-		all.f = formula.Format{}
+		none := formatPatch{mask: 1<<propCount - 1}
 		for i, row := range srcRows {
 			x.spend(64 * len(srcCols))
 			if err := x.stop(); err != nil {
@@ -752,12 +714,260 @@ func (x *txn) copyOp(from, to *rectSpec, mode string, cut bool) (applied, ignore
 				}
 				x.clearContent(ft, r, c)
 				if mode == "all" && ft.cell(r, c).style != 0 {
-					x.setStyle(ft, r, c, all)
+					x.setStyle(ft, r, c, none)
 				}
 			}
 		}
 	}
 	return applied, ignored, nil
+}
+
+// copySource is a source cell of a copy, a fill or a cut, as the operation
+// read it. It is not ok for a cell of a row or a column that is gone.
+type copySource struct {
+	ok      bool
+	content formula.Content
+	f       *formula.Formula
+	val     formula.Value
+	format  formula.Format
+	pos     formula.Pos
+}
+
+// readSource reads the source cell of row and col of t, ids that resolve
+// gave, with 0 for one that is gone.
+func (x *txn) readSource(t *Tab, row, col uint64) copySource {
+	if row == 0 || col == 0 {
+		return copySource{}
+	}
+	s := copySource{ok: true, pos: x.posOf(t, RowID(row), ColID(col))}
+	if c := t.cell(RowID(row), ColID(col)); c != nil {
+		s.content, s.f, s.val, s.format = c.content, c.f, c.val, x.wb.styles.format(c.style)
+	}
+	return s
+}
+
+// writeCopy writes source s, read from tab ft, into the cell of tt at row r
+// and column c as a copy does (spec rule 15): its content or, in mode
+// values, its value, a formula moved or cut from its source cell, and in
+// mode all its format.
+func (x *txn) writeCopy(ft, tt *Tab, r RowID, c ColID, s *copySource, mode string, cut bool) *WriteError {
+	if tt.cell(r, c) == nil && s.content.Kind == formula.ContentBlank && s.format == (formula.Format{}) {
+		return nil
+	}
+	content, f := s.content, s.f
+	if mode == "values" {
+		content, f = valueContent(s.content, s.val), nil
+	} else if f != nil {
+		dst := x.posOf(tt, r, c)
+		if cut {
+			f = f.Cut(s.pos, dst, ft.name, tt.name)
+		} else {
+			f = f.Moved(s.pos, dst)
+		}
+		// The copy is also measured at its cell and looked up among the
+		// formulas of the sheet: its text twice.
+		x.rewrote(s.f, f)
+		x.spend(2 * len(f.Stored()))
+		if n := f.TextLen(dst); n > formula.MaxFormulaChars {
+			return capacity("formula_length", formula.MaxFormulaChars, int64(n))
+		}
+	}
+	if content.Kind == formula.ContentBlank {
+		x.clearContent(tt, r, c)
+	} else {
+		x.setContent(tt, r, c, content, f)
+	}
+	if mode == "all" {
+		x.copyFormat(tt, r, c, s.format)
+	}
+	return nil
+}
+
+// copyFormat gives a cell the format of its source, as a copy in mode all
+// does. A cell without a record and a format of its own keeps none.
+func (x *txn) copyFormat(t *Tab, r RowID, c ColID, format formula.Format) {
+	if format != (formula.Format{}) || t.cell(r, c) != nil && t.cell(r, c).style != 0 {
+		x.setStyle(t, r, c, formatPatch{mask: 1<<propCount - 1, f: format})
+	}
+}
+
+// fillLines is a fill in mode auto or, with step, in mode series (spec rule
+// 21a, technical design, section 8.5). The target lies on one side of the
+// source: below or above it in the same columns, and each column is a
+// line, or right or left of it in the same rows, and each row is a line.
+// Any other target is invalid. Where the target lies is read from the rows
+// or columns that are there; one that is gone is left out.
+//
+// The source cells of a line, in the order the operation names them, go to
+// formula.FillSeries. A line without a series is a copy of its own source
+// cells, which repeat in order along the line, each formula moved from its
+// source cell. A line with a series takes the content of each target cell
+// from it, counted from the cell next to the source outward. Either way a
+// target cell takes the format of the source cell a copy writes there. A
+// line whose source has a cell that is gone has no series, and the target
+// cells of that source cell are ignored, as in a copy.
+//
+// A fill is checked and counted as a copy over the same target: each
+// target cell is a unit, and each text of a series counts its bytes.
+func (x *txn) fillLines(t *Tab, source, target *rectSpec, step bool) (applied, ignored int, err error) {
+	srcRows, srcCols, _, werr := x.rect(t, &source.Rows, &source.Cols, false)
+	if werr != nil {
+		return 0, 0, werr
+	}
+	if len(srcRows) == 0 || len(srcCols) == 0 {
+		return 0, 0, invalidf("source", "the source names no cell")
+	}
+	if n := len(srcRows) * len(srcCols); n > maxCells {
+		return 0, 0, capacity("cells", maxCells, int64(n))
+	}
+	rowsBefore, colsBefore := t.rows.len(), t.cols.len()
+	dstRows, dstCols, _, werr := x.rect(t, &target.Rows, &target.Cols, true)
+	if werr != nil {
+		return 0, 0, werr
+	}
+	if n := len(dstRows) * len(dstCols); n > maxCells {
+		return 0, 0, capacity("cells", maxCells, int64(n))
+	}
+	down := slices.Equal(srcCols, dstCols)
+	var back, ok bool
+	switch {
+	case down:
+		back, ok = x.side(&t.rows, srcRows, dstRows)
+	case slices.Equal(srcRows, dstRows):
+		back, ok = x.side(&t.cols, srcCols, dstCols)
+	}
+	if x.late() {
+		return 0, 0, calcTimeout()
+	}
+	if !ok {
+		return 0, 0, invalidf("target", "a fill in auto or series fills below or above its source in its columns, or right or left of it in its rows")
+	}
+	// A line has m source cells and n target cells.
+	m, n, lines := len(srcRows), len(dstRows), len(srcCols)
+	if !down {
+		m, n, lines = len(srcCols), len(dstCols), len(srcRows)
+	}
+	at := func(rows, cols []uint64, line, i int) (uint64, uint64) {
+		if down {
+			return rows[i], cols[line]
+		}
+		return rows[line], cols[i]
+	}
+	src := make([]copySource, m)
+	contents := make([]formula.Content, m)
+	var text int64 // code points the series of texts write, at least
+	for line := 0; line < lines; line++ {
+		// Reading a source cell is a unit.
+		x.spend(64 * m)
+		if x.late() {
+			return 0, 0, calcTimeout()
+		}
+		whole := true
+		for i := range src {
+			row, col := at(srcRows, srcCols, line, i)
+			src[i] = x.readSource(t, row, col)
+			contents[i], whole = src[i].content, whole && src[i].ok
+		}
+		var series []formula.Content
+		if whole {
+			if series, werr = x.series(contents, n, back, step, &text); werr != nil {
+				return 0, 0, werr
+			}
+		}
+		for i := 0; i < n; i++ {
+			// Each target cell is a unit, what is written to it is
+			// counted where it is written, and the deadline, or the bound
+			// of what the action holds, ends the fill.
+			x.spend(64)
+			if err := x.stop(); err != nil {
+				return 0, 0, err
+			}
+			row, col := at(dstRows, dstCols, line, i)
+			s := &src[i%m]
+			if row == 0 || col == 0 || !s.ok {
+				ignored++
+				continue
+			}
+			r, c := RowID(row), ColID(col)
+			applied++
+			if series == nil {
+				if werr := x.writeCopy(t, t, r, c, s, "all", false); werr != nil {
+					return 0, 0, werr
+				}
+				continue
+			}
+			k := i
+			if back {
+				k = n - 1 - i // the target is named top down or left to right
+			}
+			content := series[k]
+			if content.Kind == formula.ContentText {
+				// The text was built for this cell.
+				x.spend(len(content.Text))
+				if werr := checkText(content.Text); werr != nil {
+					return 0, 0, werr
+				}
+			}
+			x.setContent(t, r, c, content, nil)
+			x.copyFormat(t, r, c, s.format)
+		}
+	}
+	// As for a copy: added rows and columns stay only with a cell.
+	if applied == 0 && (t.rows.len() != rowsBefore || t.cols.len() != colsBefore) {
+		return 0, 0, errGone
+	}
+	return applied, ignored, nil
+}
+
+// side tells where the target ids lie on an axis beside the source ids:
+// after them, or before them with back. It is not ok when a target id lies
+// between the source ids or on one of them. Ids that are gone are left
+// out. Each id looked up is a unit, as in resolve.
+func (x *txn) side(a *axis, src, dst []uint64) (back, ok bool) {
+	lo, hi := int32(math.MaxInt32), int32(-1)
+	for _, id := range src {
+		x.spend(64)
+		if p, live := a.pos[id]; live {
+			lo, hi = min(lo, p), max(hi, p)
+		}
+	}
+	before, after := false, false
+	for _, id := range dst {
+		x.spend(64)
+		p, live := a.pos[id]
+		switch {
+		case !live:
+		case p > hi:
+			after = true
+		case p < lo:
+			before = true
+		default:
+			return false, false
+		}
+	}
+	return before, !(before && after)
+}
+
+// series is formula.FillSeries for the source contents of one line and n
+// target cells, or nil for a line without a series. Every text of a series
+// of texts that end in a number holds the text before that number, and
+// text counts those code points over the lines of the fill. A fill whose
+// series pass the typed text of a sheet is refused before they are built,
+// with the limit its end would find.
+func (x *txn) series(src []formula.Content, n int, back, step bool, text *int64) ([]formula.Content, *WriteError) {
+	if _, ok := formula.FillSeries(src, 1, back, step); !ok {
+		return nil, nil
+	}
+	if last := src[len(src)-1].Text; src[len(src)-1].Kind == formula.ContentText && last != "" && last[len(last)-1] >= '0' && last[len(last)-1] <= '9' {
+		stem := strings.TrimRight(last, "0123456789")
+		x.spend(len(stem))
+		if *text += int64(n) * int64(utf8.RuneCountInString(stem)); *text > maxSheetText {
+			return nil, capacity("sheet_text", maxSheetText, *text)
+		}
+	}
+	// A date series can pass the last date further out: no series then.
+	out, _ := formula.FillSeries(src, n, back, step)
+	return out, nil
 }
 
 // namesOnce refuses a list that names a row or a column twice: an id,

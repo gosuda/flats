@@ -312,8 +312,9 @@ func (app *appBundle) serve(w http.ResponseWriter, r *http.Request, name string)
 	http.ServeContent(w, r, "", time.Time{}, bytes.NewReader(data))
 }
 
-// serveCSV downloads one tab as a CSV file of its shown values, from a
-// capture of its used range. The file starts with the byte order mark.
+// serveCSV downloads one tab as a CSV file of its values (spec rule 60),
+// from a capture of its used range. The file starts with the byte order
+// mark.
 func (in *Instance) serveCSV(w http.ResponseWriter, r *http.Request) {
 	id, err := strconv.ParseUint(r.URL.Query().Get("tab"), 10, 64)
 	if err != nil {

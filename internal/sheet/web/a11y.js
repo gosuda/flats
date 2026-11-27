@@ -5,7 +5,8 @@ import { address } from './protocol.js';
 
 // announce speaks text through a polite live region without moving focus.
 // Save status and notices use #announce; each move in the grid uses
-// #announce-cell so a status never cuts a cell short.
+// #announce-cell so a status never cuts a cell short, and the find count
+// uses #announce-find for the same reason.
 export function announce(text, region = '#announce') {
   const live = document.querySelector(region);
   if (!live) return;

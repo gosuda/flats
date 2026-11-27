@@ -2,6 +2,7 @@ package sheet
 
 import (
 	"fmt"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -15,6 +16,11 @@ import (
 func (e *env) indexHeap() int64 {
 	e.in.mu.Lock()
 	defer e.in.mu.Unlock()
+	// A sync.Pool moves its contents to a victim cache at the start of a
+	// collection and drops them at the start of the next. Buffers that
+	// encoders put back during earlier actions would be counted as held
+	// here, so one collection drops them before the first reading.
+	runtime.GC()
 	with := liveHeap()
 	e.in.wb.deps = newDepIndex()
 	e.in.wb.deps.stale = true

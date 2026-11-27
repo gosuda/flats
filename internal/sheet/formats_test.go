@@ -121,10 +121,16 @@ func TestFormatsSurviveStorage(t *testing.T) {
 		data, _ := io.ReadAll(resp.Body)
 		return strings.TrimPrefix(string(data), csvBOM)
 	}
-	const wantCSV = "Item,Amount,Share,Due\r\nVenue,\"$1,200.00\",25%,\"Mar 1, 2026\"\r\nFood,$900.50,75%,\"Mar 15, 2026\"\r\nTotal,\"$2,100.50\",,\r\n"
+	// A CSV file holds values (spec rule 60). A number is written in full
+	// whatever its format, and a date in ISO form. The one field its format
+	// decides is E2, a plain number that its date format shows as a date:
+	// it is written as the date only when the format came back.
+	const wantCSV = "Item,Amount,Share,Due,\r\nVenue,1200,0.25,2026-03-01,2026-03-01\r\nFood,900.5,0.75,2026-03-15,\r\nTotal,2100.5,,,\r\n"
 
 	t.Run("restart", func(t *testing.T) {
 		e, _ := seed(t)
+		e.mustAgent(`{"ops":[{"op":"write","tab":"Budget","at":"E2","rows":[[46082]]},
+			{"op":"format","tab":"Budget","ranges":["E2"],"format":{"number":{"kind":"date","pattern":"mmm d, yyyy"}}}]}`)
 		e.restart()
 		if got := e.liveView("Budget", "A1:D4"); got != formattedView {
 			t.Fatalf("after the restart the sheet reads\n%s\nwant\n%s", got, formattedView)

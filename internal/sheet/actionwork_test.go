@@ -1,6 +1,7 @@
 package sheet
 
 import (
+	"encoding/json"
 	"fmt"
 	"maps"
 	"math"
@@ -280,6 +281,118 @@ func TestSortCountsItsWorkAndMeetsTheDeadline(t *testing.T) {
 				t.Errorf("after the undo the first rows are %s", got)
 			}
 		})
+	}
+}
+
+// O-02: a sort orders text in the text order of rule 22, and <, = and
+// criteria and the sorted approximate match of formulas agree with it. A
+// sort of 100,000 such texts meets the deadline.
+func TestSortTextOrder(t *testing.T) {
+	e := start(t)
+	keys := []string{"co-op", "coop", "a-c", "ab", "a'b", "a-b", "A", "a", "가방", "zebra", "나", "Zoo", "abc", "a b", "a1", "aa", "a~", "a+", "cop"}
+	var rows []string
+	for _, k := range keys {
+		rows = append(rows, jsonf(`[%q]`, k))
+	}
+	e.mustAgent(jsonf(`{"ops":[{"op":"write","tab":"Sheet1","at":"A1","rows":[%s]},{"op":"sort","tab":"Sheet1","rows":"1:%d","by":"A"}]}`, strings.Join(rows, ","), len(keys)))
+	want := slices.Clone(keys)
+	slices.SortStableFunc(want, formula.CompareText)
+	got := e.column("Sheet1", "A", 1, len(keys))
+	if !slices.Equal(got, want) {
+		t.Fatalf("the sort gives %q, want %q", got, want)
+	}
+	for _, w := range [][2]string{{"ab", "a'b"}, {"a'b", "a-b"}, {"coop", "co-op"}, {"co-op", "cop"}, {"zebra", "가방"}, {"a1", "aa"}, {"a~", "a+"}} {
+		if i, j := slices.Index(got, w[0]), slices.Index(got, w[1]); i > j {
+			t.Errorf("%q sorts after %q", w[0], w[1])
+		}
+	}
+	// Column C holds criteria, = and MATCH of each key, and column D
+	// compares each row with the next.
+	n := len(keys)
+	cell := func(f string) string {
+		data, _ := json.Marshal(f)
+		return "[" + string(data) + "]"
+	}
+	column := fmt.Sprintf("A1:A%d", n)
+	cells := []string{cell(`=COUNTIF(` + column + `,"<b")`), cell(`="ab"="a-b"`), cell(`="a"="A"`), cell(`="ab"<"a-b"`)}
+	for _, k := range want {
+		cells = append(cells, cell(`=MATCH("`+k+`",`+column+`,1)`))
+	}
+	var next []string
+	for i := 1; i < n; i++ {
+		next = append(next, cell(fmt.Sprintf(`=IF(A%d=A%d,"tie",A%d<A%d)`, i, i+1, i, i+1)))
+	}
+	e.mustAgent(jsonf(`{"ops":[{"op":"write","tab":"Sheet1","at":"C1","rows":[%s]},{"op":"write","tab":"Sheet1","at":"D1","rows":[%s]}]}`,
+		strings.Join(cells, ","), strings.Join(next, ",")))
+	below := 0
+	for _, k := range want {
+		if formula.CompareText(k, "b") < 0 {
+			below++
+		}
+	}
+	e.want("C1", strconv.Itoa(below))
+	e.want("C2", "FALSE")
+	e.want("C3", "TRUE")
+	e.want("C4", "TRUE")
+	for i, k := range want {
+		last := i
+		for j := i + 1; j < n; j++ {
+			if formula.CompareText(want[j], k) == 0 {
+				last = j
+			}
+		}
+		e.want(fmt.Sprintf("C%d", 5+i), strconv.Itoa(last+1))
+		if i+1 < n {
+			wantNext := "TRUE"
+			if formula.CompareText(k, want[i+1]) == 0 {
+				wantNext = "tie"
+			}
+			e.want(fmt.Sprintf("D%d", i+1), wantNext)
+		}
+	}
+
+	heavy(t, "sorts 100,000 texts")
+	const many = 100_000
+	pieces := []string{"a", "B", "-", "'", " ", "1", "가", "~", "+", "co"}
+	var b strings.Builder
+	texts := make([]string, many)
+	for i := range texts {
+		b.Reset()
+		for k := i; ; k /= len(pieces) {
+			b.WriteString(pieces[k%len(pieces)])
+			if k < len(pieces) {
+				break
+			}
+		}
+		texts[(i*7919)%many] = b.String()
+	}
+	for at := 0; at < many; at += maxCallCells {
+		var block strings.Builder
+		for i, s := range texts[at : at+maxCallCells] {
+			if i > 0 {
+				block.WriteByte(',')
+			}
+			fmt.Fprintf(&block, `[%q]`, s)
+		}
+		e.mustAgent(jsonf(`{"ops":[{"op":"write","tab":"Sheet1","at":"E%d","rows":[%s]}]}`, at+1, block.String()))
+	}
+	alice := e.person("Alice")
+	if ack := alice.do(e.sortOp("Sheet1", 1, many, 5, false)); status(ack) != "applied" {
+		t.Fatalf("the sort of %d texts: %s", many, status(ack))
+	}
+	// A lone apostrophe is written as no text, and a blank cell sorts last.
+	sorted := e.column("Sheet1", "E", 1, many)
+	end := many
+	for end > 0 && sorted[end-1] == "" {
+		end--
+	}
+	if blank := many - end; blank != 1 {
+		t.Errorf("%d rows end the sort without text, want the one lone apostrophe", blank)
+	}
+	for i := 1; i < end; i++ {
+		if formula.CompareText(sorted[i-1], sorted[i]) > 0 {
+			t.Fatalf("row %d holds %q after %q", i+1, sorted[i], sorted[i-1])
+		}
 	}
 }
 

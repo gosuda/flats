@@ -11,11 +11,14 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/gosuda/flats/internal/sheet/formula"
 )
 
 // muteListener is the listener of one route of the browser test. Its
@@ -685,15 +688,62 @@ func (s *browserTest) find(t *testing.T) {
 	a.wait("the match marked", `T.classes('A3').split(' ').includes('hit')`)
 	a.key("Escape", 0)
 	a.wait("find closed and focus in the grid", `document.querySelector('.find').hidden && document.activeElement === sheet.grid.input`)
-	a.key("f", modCtrl)
-	a.key("a", modMeta)
-	a.eval(`document.querySelector('.find input').select()`, nil)
-	a.typeText("0.00")
-	a.wait("several matches", `/^1 of [2-9]$/.test(document.querySelector('.find-count').textContent)`)
+
+	// The anchor is the active cell when the field opens, A3. Opening the
+	// field leaves the selection there, the text selects the first match
+	// at or after it, and Next the match after that (rule 20a).
+	matches := s.e.findMatches("Budget", "0.00")
+	first := slices.IndexFunc(matches, func(m findMatch) bool { return m.row >= 2 })
+	if first < 1 || len(matches)-first < 2 {
+		t.Fatalf("the case needs a match of 0.00 before A3 and two at or after it; the tab has %v", matches)
+	}
+	count := func(i int) string { return fmt.Sprintf("%d of %d", i+1, len(matches)) }
+	search := func(from string) {
+		a.key("f", modCtrl)
+		a.wait("the find field", `document.activeElement === document.querySelector('.find input')`)
+		a.waitText("the selection after the field opens", `T.active()`, from)
+		a.eval(`document.querySelector('.find input').select()`, nil)
+		a.typeText("0.00")
+	}
+	search("A3")
+	a.waitText("the match count", `document.querySelector('.find-count').textContent`, count(first))
+	a.waitText("the first match at or after A3", `T.active()`, matches[first].addr)
 	a.key("Enter", 0)
-	a.wait("the second match", `/^2 of /.test(document.querySelector('.find-count').textContent)`)
+	a.waitText("the match count after Next", `document.querySelector('.find-count').textContent`, count(first+1))
+	a.waitText("the next match", `T.active()`, matches[first+1].addr)
 	a.key("Escape", 0)
 	a.wait("find closed", `document.querySelector('.find').hidden`)
+
+	// A person's move takes the anchor along: from A1 the same text selects
+	// the first match of the tab.
+	s.pick(a, "A1")
+	search("A1")
+	a.waitText("the match count from A1", `document.querySelector('.find-count').textContent`, count(0))
+	a.waitText("the first match of the tab", `T.active()`, matches[0].addr)
+	a.key("Escape", 0)
+	a.wait("find closed", `document.querySelector('.find').hidden`)
+}
+
+// findMatch is a cell that Find matches, and its 0-based row.
+type findMatch struct {
+	addr string
+	row  int
+}
+
+// findMatches lists the cells of a tab whose shown text holds text,
+// capitals aside, in reading order, as Find matches them (rule 20a). The
+// texts of this test have no letter whose browser lower case differs.
+func (e *env) findMatches(tab, text string) []findMatch {
+	e.t.Helper()
+	var out []findMatch
+	for r, row := range e.readSheet(ReadQuery{Tab: tab, Include: []string{"shown"}}).Shown {
+		for c, shown := range row {
+			if strings.Contains(strings.ToLower(shown), strings.ToLower(text)) {
+				out = append(out, findMatch{fmt.Sprintf("%s%d", formula.ColumnName(int32(c)), r+1), r})
+			}
+		}
+	}
+	return out
 }
 
 // clipboardEvent sends a copy, cut or paste event with a clipboard of its
@@ -1017,7 +1067,9 @@ func (s *browserTest) reconnect(t *testing.T) {
 	s.saved(a)
 }
 
-const wantCSV = "\ufeffItem,Qty,Price,Total\r\nVenue,4,\"$1,800.00\",\"$7,200.00\"\r\nLunch,24,$32.00,$768.00\r\nBus,2,$420.00,$840.00\r\nTotal,,,\"$8,808.00\"\r\n"
+// wantCSV is the CSV of the Budget tab at the public case: each field is
+// the cell's value, not the text its currency format shows (rule 60).
+const wantCSV = "\ufeffItem,Qty,Price,Total\r\nVenue,4,1800,7200\r\nLunch,24,32,768\r\nBus,2,420,840\r\nTotal,,,8808\r\n"
 
 func (s *browserTest) publicRoute(t *testing.T) {
 	a, e := s.a, s.e

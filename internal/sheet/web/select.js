@@ -17,6 +17,9 @@ export class Selection {
     this.focus = null;
     this.activeId = null;
     this.last = { ar: 0, ac: 0, r1: 0, c1: 0, r2: 0, c2: 0 };
+    // moved counts the moves of the selection, so that whoever moved it
+    // last can tell a later move by someone else (Find's anchor, rule 20a).
+    this.moved = 0;
   }
 
   #ids(r, c) { return { row: this.model.rowAt(r), col: this.model.colAt(c) }; }
@@ -66,6 +69,7 @@ export class Selection {
     this.kind = 'cells';
     this.anchor = this.focus = this.activeId = this.#ids(r, c);
     this.last = { ar: r, ac: c, r1: r, c1: c, r2: r, c2: c };
+    this.moved++;
   }
 
   // extend moves the far corner and keeps the anchor and the active cell.
@@ -77,6 +81,7 @@ export class Selection {
     this.focus = this.#ids(r, c);
     this.last.r2 = r;
     this.last.c2 = c;
+    this.moved++;
   }
 
   range(r1, c1, r2, c2, kind = 'cells') {

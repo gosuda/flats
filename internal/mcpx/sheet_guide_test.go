@@ -308,8 +308,9 @@ func TestSheetGuideCellValues(t *testing.T) {
 		t.Errorf("the tab did not grow to the far write: %+v", first)
 	}
 	// A name the guide rules out is refused, and one it allows applies.
-	for name, ok := range map[string]bool{"Plan 2026 (draft)": true, "a/b": false, "q1 COSTS": false, strings.Repeat("n", 100): true, strings.Repeat("n", 101): false,
-		"'24 plan": false, "plan ": false, " plan": false, "plan\tb": false, "it's fine": true} {
+	for name, ok := range map[string]bool{"Plan 2026 (draft)": true, "a/b": false, "q1 COSTS": false, strings.Repeat("n", 31): true, strings.Repeat("n", 32): false,
+		"'24 plan": false, "plan ": false, " plan": false, "plan\tb": false, "it's fine": true,
+		"History": false, "HISTORY": false, "history": false, "History 2026": true} {
 		read = nil
 		call(t, cs, "get_sheet", map[string]any{"slug": "cells"}, &read)
 		text, bad := call(t, cs, "update_sheet", map[string]any{"slug": "cells", "state": read["state"], "ops": []any{map[string]any{"op": "add_tab", "name": name}}}, nil)

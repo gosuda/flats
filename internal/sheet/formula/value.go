@@ -16,7 +16,7 @@ const (
 
 	MaxFormulaChars = 8192 // code points of a formula
 	MaxFormulaDepth = 64   // nesting of brackets and calls
-	MaxTabNameChars = 100  // code points of a tab name (spec rule 2)
+	MaxTabNameChars = 31   // code points of a tab name (spec rule 2)
 )
 
 // ErrorCode is one of the nine error values of spec rule 11.

@@ -9,8 +9,10 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -21,8 +23,10 @@ import (
 	"github.com/gosuda/flats/internal/board"
 	"github.com/gosuda/flats/internal/board/engine"
 	"github.com/gosuda/flats/internal/core"
+	"github.com/gosuda/flats/internal/design"
 	"github.com/gosuda/flats/internal/sheet"
 	"github.com/gosuda/flats/internal/sqliteuri"
+	"github.com/gosuda/flats/internal/wsconn"
 )
 
 func runBackup(t *testing.T, args ...string) (string, error) {
@@ -122,9 +126,14 @@ func writeNotebook(h *Host, slug string, n int64) (int64, error) {
 // readSheet reads a sheet as get_sheet does. A sheet whose workbook still loads, as after a start of the host,
 // refuses the read for that time, and readSheet tries again.
 func readSheet(ctx context.Context, h *Host, slug, query string) (map[string]any, error) {
+	return readSheetRevision(ctx, h, slug, 0, query)
+}
+
+// readSheetRevision is readSheet of revision rev, or of the sheet when rev is 0.
+func readSheetRevision(ctx context.Context, h *Host, slug string, rev int, query string) (map[string]any, error) {
 	deadline := time.Now().Add(60 * time.Second)
 	for {
-		raw, err := h.Svc.GetSheet(ctx, slug, 0, []byte(query))
+		raw, err := h.Svc.GetSheet(ctx, slug, rev, []byte(query))
 		var problem *sheet.WriteError
 		if errors.As(err, &problem) && problem.Code == "unavailable" && problem.Reason == "calculating" && time.Now().Before(deadline) {
 			time.Sleep(10 * time.Millisecond)
@@ -533,6 +542,256 @@ func checkSheetsInTheCopy(t *testing.T, out string) {
 			t.Errorf("%s in the copy: %s = %d, %v; want %d", filepath.Base(q.path), q.query, got, err, q.want)
 		}
 	}
+}
+
+// originConn adds the Origin header of the flat to the handshake that wsconn.Dial writes, as the sheet's page
+// sends it from the flat's own origin.
+type originConn struct {
+	net.Conn
+	origin string
+	sent   bool
+}
+
+func (c *originConn) Write(p []byte) (int, error) {
+	if c.sent {
+		return c.Conn.Write(p)
+	}
+	c.sent = true
+	if _, err := c.Conn.Write(bytes.Replace(p, []byte("\r\n\r\n"), []byte("\r\nOrigin: "+c.origin+"\r\n\r\n"), 1)); err != nil {
+		return 0, err
+	}
+	return len(p), nil
+}
+
+// personSession is a person's session on a sheet of a running host: the WebSocket that the sheet's page opens
+// at the flat's private address, which takes the person's actions as the page sends them.
+type personSession struct {
+	ws     *wsconn.Conn
+	frames chan map[string]any
+	tab    uint64
+	rows   uint64 // the first row id of the tab, which holds its rows in one run
+	cols   uint64
+	seq    string
+	n      int64
+}
+
+func openPersonSession(t *testing.T, h *Host, slug, name string) *personSession {
+	t.Helper()
+	origin := h.Private.URL(slug)
+	host := strings.TrimPrefix(origin, "http://")
+	_, port, err := net.SplitHostPort(host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	ws, err := wsconn.Dial(ctx, func(ctx context.Context) (net.Conn, error) {
+		c, err := new(net.Dialer).DialContext(ctx, "tcp", net.JoinHostPort("127.0.0.1", port))
+		if err != nil {
+			return nil, err
+		}
+		return &originConn{Conn: c, origin: origin}, nil
+	}, host, "/_sheet/ws")
+	if err != nil {
+		t.Fatalf("the person's connection to %s: %v", slug, err)
+	}
+	p := &personSession{ws: ws, frames: make(chan map[string]any, 1<<16)}
+	go func() {
+		defer close(p.frames)
+		for {
+			raw, err := ws.ReadMessage(64 << 20)
+			if err != nil {
+				return
+			}
+			var f map[string]any
+			if json.Unmarshal([]byte(raw), &f) == nil {
+				p.frames <- f
+			}
+		}
+	}()
+	t.Cleanup(p.close)
+	if err := ws.Send(fmt.Sprintf(`{"type":"hello","version":1,"name":%q,"pending":0}`, name)); err != nil {
+		t.Fatal(err)
+	}
+	welcome, err := p.next("welcome")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tabs, _ := welcome["tabs"].([]any)
+	if welcome["access"] != "private" || len(tabs) != 1 {
+		t.Fatalf("welcome = %v", welcome)
+	}
+	p.seq, _ = welcome["seq"].(string)
+	id, _ := tabs[0].(map[string]any)["id"].(float64)
+	p.tab = uint64(id)
+	if err := ws.Send(fmt.Sprintf(`{"type":"watch","generation":1,"tab":%d}`, p.tab)); err != nil {
+		t.Fatal(err)
+	}
+	head, err := p.next("tab_head")
+	if err != nil {
+		t.Fatal(err)
+	}
+	first := func(axis string) uint64 {
+		runs, _ := head[axis].([]any)
+		if len(runs) != 1 {
+			t.Fatalf("the %s of the new tab are %v, want one run", axis, head[axis])
+		}
+		run, _ := runs[0].([]any)
+		id, _ := run[0].(float64)
+		return uint64(id)
+	}
+	p.rows, p.cols = first("rows"), first("cols")
+	if _, err := p.next("tab_done"); err != nil {
+		t.Fatal(err)
+	}
+	return p
+}
+
+// next returns the next frame of one of the types and passes over the others.
+func (p *personSession) next(types ...string) (map[string]any, error) {
+	timeout := time.After(30 * time.Second)
+	for {
+		select {
+		case f, ok := <-p.frames:
+			if !ok {
+				code, reason := p.ws.CloseStatus()
+				return nil, fmt.Errorf("the connection ended (%d %s) before a %v frame", code, reason, types)
+			}
+			if slices.Contains(types, fmt.Sprint(f["type"])) {
+				return f, nil
+			}
+		case <-timeout:
+			return nil, fmt.Errorf("no %v frame", types)
+		}
+	}
+}
+
+// personCell is the cell of the n-th action of the person, as tallyCell names it, and its text.
+func personCell(n int64) (row, col int64, text string) {
+	return (n-1)/26 + 1, (n-1)%26 + 1, fmt.Sprintf("Ann %d", n)
+}
+
+// set sends the person's n-th action, which types its text in its cell, and waits until the host acknowledges
+// that it applied.
+func (p *personSession) set(n int64) error {
+	row, col, text := personCell(n)
+	p.n++
+	if err := p.ws.Send(fmt.Sprintf(`{"type":"action","n":"%d","base":%q,"ops":[{"op":"set","tab":%d,"row":%d,"col":%d,"text":%q,"at":[%d,%d]}]}`,
+		p.n, p.seq, p.tab, p.rows+uint64(row-1), p.cols+uint64(col-1), text, row-1, col-1)); err != nil {
+		return err
+	}
+	ack, err := p.next("ack", "fatal")
+	if err != nil {
+		return err
+	}
+	results, _ := ack["results"].([]any)
+	if ack["type"] != "ack" || ack["n"] != fmt.Sprint(p.n) || len(results) != 1 || results[0].(map[string]any)["status"] != "applied" {
+		return fmt.Errorf("the action %d was answered with %v", n, ack)
+	}
+	p.seq, _ = ack["seq"].(string)
+	return nil
+}
+
+func (p *personSession) close() { p.ws.Close(1000, "") }
+
+// personCellsOf checks that revision rev of the sheet, or the sheet when rev is 0, holds the text of each of the
+// first n actions of the person.
+func personCellsOf(t *testing.T, ctx context.Context, h *Host, slug string, rev int, n int64) {
+	t.Helper()
+	last, _, _ := personCell(n)
+	page, err := readSheetRevision(ctx, h, slug, rev, fmt.Sprintf(`{"tab":"Sheet1","range":"A1:Z%d"}`, last))
+	if err != nil {
+		t.Fatalf("read revision %d of %s: %v", rev, slug, err)
+	}
+	if page["start"] != "A1" || page["next"] != nil {
+		t.Fatalf("revision %d of %s reads from %v with the continuation %v", rev, slug, page["start"], page["next"])
+	}
+	rows, _ := page["rows"].([]any)
+	for i := int64(1); i <= n; i++ {
+		row, col, text := personCell(i)
+		var got any
+		if row <= int64(len(rows)) {
+			if cells, _ := rows[row-1].([]any); col <= int64(len(cells)) {
+				got = cells[col-1]
+			}
+		}
+		if got != text {
+			t.Fatalf("revision %d of %s holds %v for the action %d of the person, want %q", rev, slug, got, i, text)
+		}
+	}
+}
+
+// A backup of a running host while a person's session keeps an edit group open with its actions. The copy
+// holds the group, the restored sheet holds every action that the host acknowledged before the backup began,
+// and once the group is idle it closes as one revision of the person, which holds them all.
+func TestBackupKeepsAnOpenEditGroupOfAPerson(t *testing.T) {
+	ctx := context.Background()
+	dir := t.TempDir()
+	path := initConfig(t, dir)
+	h, err := Start(ctx, configModeOptions(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := h.Svc.CreateSheet(ctx, "desk", "Desk", core.ViaMCP); err != nil {
+		t.Fatal(err)
+	}
+	ann := openPersonSession(t, h, "desk", "Ann")
+	personW := &writer{write: func(n int64) (int64, error) { return n, ann.set(n) }}
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	personW.run(t, stop, &wg)
+	deadline := time.Now().Add(30 * time.Second)
+	for personW.acked.Load() < 5 {
+		if time.Now().After(deadline) {
+			t.Fatal("the person's actions did not get going")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// The actions that the host acknowledged before the backup began must be in the restored host.
+	before := personW.acked.Load()
+	out := filepath.Join(t.TempDir(), "copy")
+	text, err := runBackup(t, "--out", out, "--config", path)
+	close(stop)
+	wg.Wait()
+	if err != nil {
+		t.Fatalf("backup: %v\n%s", err, text)
+	}
+	// The group is open in the copy, with edits that no revision holds yet.
+	desk := filepath.Join(out, "data", "flats", "desk", "sheet", "sheet.db")
+	if n, err := queryCopy(desk, `SELECT count(*) FROM groups WHERE dirty = 1`); err != nil || n != 1 {
+		t.Fatalf("the copy holds %d open groups with edits, %v; want the person's", n, err)
+	}
+	ann.close()
+	if err := h.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	restoreFrom(t, dir, out)
+	h2, err := Start(ctx, configModeOptions(path))
+	if err != nil {
+		t.Fatalf("the restored host does not start: %v", err)
+	}
+	t.Cleanup(func() { h2.Close() })
+	personCellsOf(t, ctx, h2, "desk", 0, before)
+	t.Logf("restored: the person's %d actions acknowledged before the backup (%d in all)", before, personW.acked.Load())
+	// A group closes once it is idle for 30 seconds. The restored sheet holds it open until then, and then
+	// records one revision of the person.
+	var page design.RevisionPage
+	for deadline := time.Now().Add(2 * time.Minute); ; time.Sleep(250 * time.Millisecond) {
+		if page, err = h2.Svc.ListRevisions(ctx, "desk", 0, 10); err != nil {
+			t.Fatal(err)
+		}
+		if len(page.Revisions) > 1 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("the restored group did not close: revisions %+v", page.Revisions)
+		}
+	}
+	if got := page.Revisions; len(got) != 2 || got[0].Number != 2 || got[0].Kind != "person" || !slices.Contains(got[0].Authors, "Ann") || got[1].Kind != "created" {
+		t.Fatalf("the revisions of the restored sheet are %+v; want the group as one revision of the person after the first", got)
+	}
+	personCellsOf(t, ctx, h2, "desk", 2, before)
 }
 
 func TestBackupWithoutTheSecretKeyRestoresWithTheRecoveryPassword(t *testing.T) {

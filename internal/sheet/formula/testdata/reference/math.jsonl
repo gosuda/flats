@@ -23,7 +23,7 @@
 {"id":"exp-001","fn":"EXP","class":"normal","date":"2026-11-13","cells":{},"formula":"=EXP(0)","format":null,"value":1,"shown":"1","csv":"1","note":"e to the power 0"}
 {"id":"exp-002","fn":"EXP","class":"normal","date":"2026-11-13","cells":{},"formula":"=EXP(1)","format":null,"value":2.718281828459045,"shown":"2.71828182845905","csv":"2.71828182845905","note":"e, shown with 15 significant digits"}
 {"id":"exp-003","fn":"EXP","class":"normal","date":"2026-11-13","cells":{},"formula":"=EXP(-1)","format":null,"value":0.36787944117144233,"shown":"0.367879441171442","csv":"0.367879441171442","note":"negative exponent"}
-{"id":"exp-004","fn":"EXP","class":"boundary","date":"2026-11-13","cells":{},"formula":"=EXP(709)","format":null,"value":8.218407461554972e+307,"shown":"8.21841E+307","csv":"8.21841E+307","note":"the largest whole exponent with a finite result"}
+{"id":"exp-004","fn":"EXP","class":"boundary","date":"2026-11-13","cells":{},"formula":"=EXP(709)","format":null,"value":8.218407461554972e+307,"shown":"8.21841E+307","csv":"8.21840746155497E+307","note":"the largest whole exponent with a finite result"}
 {"id":"exp-005","fn":"EXP","class":"error","date":"2026-11-13","cells":{},"formula":"=EXP(710)","format":null,"value":{"error":"#NUM!"},"shown":"#NUM!","csv":"#NUM!","note":"a result that is not finite"}
 {"id":"exp-006","fn":"EXP","class":"coercion","date":"2026-11-13","cells":{},"formula":"=EXP(\"2\")","format":null,"value":7.3890560989306495,"shown":"7.38905609893065","csv":"7.38905609893065","note":"numeric text"}
 {"id":"exp-007","fn":"EXP","class":"coercion","date":"2026-11-13","cells":{},"formula":"=EXP(\"x\")","format":null,"value":{"error":"#VALUE!"},"shown":"#VALUE!","csv":"#VALUE!","note":"text that is no number"}

@@ -118,7 +118,9 @@ func TestSheetCommandsAgainstAHost(t *testing.T) {
 		t.Fatalf("values = %v / %v", read.Rows, read.Shown)
 	}
 
-	want := "\xef\xbb\xbfItem,Amount\r\nVenue,\"$1,200.00\"\r\n\"Food, drinks\",$900.00\r\nTotal,\"$2,100.00\"\r\nBad,#DIV/0!\r\n"
+	// A CSV field is the cell's value, not the text its format shows (spec
+	// rule 60): the amounts are written as plain numbers.
+	want := "\xef\xbb\xbfItem,Amount\r\nVenue,1200\r\n\"Food, drinks\",900\r\nTotal,2100\r\nBad,#DIV/0!\r\n"
 	r = run(t, srv.URL, "", "sheet", "get", "budget", "--tab", "Sheet1", "--format", "csv", "--limit", "3")
 	if r.code != 0 || r.stdout != want {
 		t.Fatalf("csv to standard output: %q", r.stdout)

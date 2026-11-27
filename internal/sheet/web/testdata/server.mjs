@@ -172,7 +172,7 @@ const OP = variant('op', {
   format: [['tab', 'rows', 'cols', 'set'], []],
   width: [['tab', 'cols', 'width'], []],
   copy: [['from', 'to', 'mode'], ['cut']],
-  fill: [['tab', 'source', 'target'], []],
+  fill: [['tab', 'source', 'target'], ['mode']],
   insert_rows: [['tab', 'beside', 'side', 'count'], []],
   insert_cols: [['tab', 'beside', 'side', 'count'], []],
   append_rows: [['tab', 'count'], []],
@@ -289,6 +289,8 @@ function checkOp(op) {
     case 'copy': case 'fill': {
       const [from, to] = op.op === 'copy' ? [op.from, op.to] : [op.source, op.target];
       if (op.op === 'copy' && op.mode !== 'all' && op.mode !== 'values') invalid(`the mode ${op.mode}`);
+      // A fill without a mode is a copy.
+      if (op.op === 'fill' && 'mode' in op && !['copy', 'auto', 'series'].includes(op.mode)) invalid(`the mode ${op.mode}`);
       checkIds(from.rows, ROWS_MAX, false);
       checkIds(from.cols, COLS_MAX, false);
       checkIds(to.rows, ROWS_MAX, true);
@@ -932,17 +934,18 @@ export class FakeServer {
   }
 
   #apply(op, d) {
-    if (op.op === 'copy') {
+    if (op.op === 'copy' || op.op === 'fill') {
       // The fake moves no cell, but it answers with the engine's counts:
       // the destinations that applied and those in deleted rows or
       // columns. A row or column the copy adds is a destination that
-      // applied.
-      const to = this.tab(op.to.tab);
-      if (!to || !this.tab(op.from.tab)) return { status: 'ignored', reason: 'gone' };
+      // applied. A fill names one tab, and its target.
+      const dest = op.op === 'copy' ? op.to : { ...op.target, tab: op.tab };
+      const to = this.tab(dest.tab);
+      if (!to || (op.op === 'copy' && !this.tab(op.from.tab))) return { status: 'ignored', reason: 'gone' };
       let applied = 0;
       let ignored = 0;
-      for (const row of targets(op.to.rows, to.rows)) {
-        for (const col of targets(op.to.cols, to.cols)) {
+      for (const row of targets(dest.rows, to.rows)) {
+        for (const col of targets(dest.cols, to.cols)) {
           if ((row === null || to.rows.includes(row)) && (col === null || to.cols.includes(col))) applied++;
           else ignored++;
         }

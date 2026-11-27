@@ -171,6 +171,72 @@ func readNumber(s string) (typedValue, bool) {
 	return v, true
 }
 
+// maxTypedDigits is the most digits of a whole number that typed entry
+// reads as a number (rule 5). Excel keeps 15 and changes later ones to 0.
+const maxTypedDigits = 15
+
+// keepsDigits reports whether typed entry keeps a number form as text: its
+// value before any % is whole, and it has more than maxTypedDigits digits
+// as typed, without leading zeros and without zeros at the end after the
+// decimal point. The sign, commas and a currency sign change nothing. It
+// works on the digits as typed, since a double above 2^53 holds no
+// fraction that would tell whether the typed number had one.
+func keepsDigits(p numberParts) bool {
+	frac := strings.TrimRight(p.frac, "0")
+	digits, zeros := 0, 0 // the digits counted, and the zeros they end in
+	for _, s := range [2]string{p.whole, frac} {
+		for i := 0; i < len(s); i++ {
+			switch c := s[i]; {
+			case c == ',' || (c == '0' && digits == 0):
+			case c == '0':
+				digits++
+				zeros++
+			default:
+				digits++
+				zeros = 0
+			}
+		}
+	}
+	if digits <= maxTypedDigits {
+		return false
+	}
+	// The value is the digits times ten to the power of the exponent less
+	// the decimals. The zeros the digits end in make up for a power below
+	// 0 as far as they go.
+	return exponentOf(p.exponent)-len(frac)+zeros >= 0
+}
+
+// exponentOf reads the exponent of a number form, such as "+20" or "-5".
+// One far beyond what a double holds is held at a million either way.
+func exponentOf(s string) int {
+	neg := false
+	if s != "" && (s[0] == '+' || s[0] == '-') {
+		neg, s = s[0] == '-', s[1:]
+	}
+	e := 0
+	for i := 0; i < len(s) && e < 1e6; i++ {
+		e = e*10 + int(s[i]-'0')
+	}
+	e = min(e, 1e6)
+	if neg {
+		return -e
+	}
+	return e
+}
+
+// keepsText reports whether typed entry keeps text that readValue reads as
+// v as the text itself: a number form with more digits than a number keeps.
+// VALUE, criteria and arithmetic read it as v (technical design, section
+// 9.5).
+func keepsText(v typedValue, s string) bool {
+	switch v.kind {
+	case typedNumber, typedPercent, typedCurrency:
+		p, _ := scanNumber(s)
+		return keepsDigits(p)
+	}
+	return false
+}
+
 // digitRun reads between lo and hi digits at the start of s.
 func digitRun(s string, lo, hi int) (v int64, rest string, ok bool) {
 	i := 0
@@ -362,7 +428,8 @@ func isBoolText(s string) (value, ok bool) {
 
 // ParseTyped reads what a person typed into a cell (spec rule 5). It
 // returns the content and the number format the entry sets on a cell
-// without a number format, or nil when it sets none.
+// without a number format, or nil when it sets none. A whole number typed
+// with more than 15 digits stays text, so that no digit is lost.
 //
 // A formula comes back with its typed text in Content.Text; the caller
 // parses it with Parse. Text content is text itself, or a copy of it
@@ -388,7 +455,7 @@ func ParseTyped(text string) (Content, *NumberFormat) {
 		return Content{Kind: ContentBool}, nil
 	}
 	v, ok := readValue(text)
-	if !ok {
+	if !ok || keepsText(v, text) {
 		return Content{Kind: ContentText, Text: text}, nil
 	}
 	switch v.kind {
@@ -446,14 +513,20 @@ func textReadsAsItself(s string) bool {
 	if _, ok := isBoolText(s); ok {
 		return false
 	}
-	_, ok := readValue(s)
-	return !ok
+	v, ok := readValue(s)
+	return !ok || keepsText(v, s)
 }
 
 // editNumber writes a number with the fewest digits that read back as the
-// same number, in a form typed entry reads.
+// same number, in a form typed entry reads. A whole number of more than 15
+// digits before the point is written with an exponent when its digits are
+// at most 15, so that entry reads it back as the number. With more digits
+// it is written as its plain digits below 10^21 and with an exponent of all
+// its digits from 10^21 on, as other numbers are, and entry keeps either as
+// text (technical design, section 9.5).
 func editNumber(x float64) string {
-	if x == math.Trunc(x) && math.Abs(x) < 1e15 {
+	whole := x == math.Trunc(x)
+	if whole && math.Abs(x) < 1e15 {
 		return strconv.FormatInt(int64(x), 10)
 	}
 	var buf [32]byte
@@ -467,7 +540,17 @@ func editNumber(x float64) string {
 			break
 		}
 	}
-	if e >= -7 && e < 21 {
+	plain := e >= -7 && e < 21
+	if whole {
+		digits := 0
+		for _, c := range mant {
+			if c >= '0' && c <= '9' {
+				digits++
+			}
+		}
+		plain = digits > sigDigits && e < 21
+	}
+	if plain {
 		return strconv.FormatFloat(x, 'f', -1, 64)
 	}
 	out := append([]byte(nil), mant...)

@@ -116,7 +116,8 @@ func FoldName(s string) string {
 	return strings.Map(foldRune, s)
 }
 
-// compareFold orders two texts by their folded code points.
+// compareFold orders two texts by their folded code points. Tab names are
+// matched with it (equalFold); the text of cells is ordered by CompareText.
 func compareFold(a, b string) int {
 	order, _ := foldOrder(a, b)
 	return order

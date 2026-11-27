@@ -120,7 +120,9 @@ func TestCopyPastWhatAFormulaCanNameEndsTheReferences(t *testing.T) {
 // applies as well.
 func TestUndoAfterARenamePastTheStoredBound(t *testing.T) {
 	typed := "=D!A1" + strings.Repeat("+D!A1", 799)
-	long := strings.Repeat("d", maxTabName)
+	// The tab name of the most bytes, of a character of four: each of the
+	// 800 references takes it.
+	long := strings.Repeat("\U0001F600", maxTabName)
 	f, err := formula.Parse(typed, formula.Pos{Row: 1, Col: 1}, formula.Limits{})
 	if err != nil {
 		t.Fatal(err)
