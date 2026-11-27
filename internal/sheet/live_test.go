@@ -56,9 +56,7 @@ func serve(e *env, wrap ...func(http.Handler) http.Handler) *site {
 	for _, w := range wrap {
 		handler = w(handler)
 	}
-	s.server = httptest.NewUnstartedServer(handler)
-	s.server.Listener = cappedSendListener{s.server.Listener}
-	s.server.Start()
+	s.server = httptest.NewServer(handler)
 	e.t.Cleanup(s.server.Close)
 	return s
 }

@@ -49,7 +49,7 @@ func (s *site) fanReader(t *testing.T, route string, tab TabID) *fanReader {
 	host := strings.TrimPrefix(s.server.URL, "http://")
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	ws, err := wsconn.Dial(ctx, func(ctx context.Context) (net.Conn, error) { return cappedDial(ctx, "tcp", host) }, host, "/"+route+"/_sheet/ws")
+	ws, err := wsconn.Dial(ctx, func(ctx context.Context) (net.Conn, error) { return new(net.Dialer).DialContext(ctx, "tcp", host) }, host, "/"+route+"/_sheet/ws")
 	if err != nil {
 		t.Fatal(err)
 	}
