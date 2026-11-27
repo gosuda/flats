@@ -1060,7 +1060,7 @@ OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 THE SOFTWARE.
 
 
-===== @codemirror/view 6.44.0 (MIT) =====
+===== @codemirror/view 6.44.2 (MIT) =====
 MIT License
 
 Copyright (C) 2018-2021 by Marijn Haverbeke <marijn@haverbeke.berlin> and others
